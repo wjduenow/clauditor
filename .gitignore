@@ -13,7 +13,7 @@ build/
 .mypy_cache/
 *.so
 
-# Local-only symlinked skills (not part of this repo)
+# Local-only symlinked skills and agents (not part of this repo)
 .claude/commands/super-plan.md
 .claude/commands/super-plan-team.md
 .claude/commands/chunk.md
@@ -22,3 +22,6 @@ build/
 .claude/commands/closeout.md
 .claude/commands/validate.md
 .claude/commands/close-ticket.md
+.claude/agents/pr-reviewer.md
+.claude/agents/code-reviewer.md
+.claude/agents/planner.md
