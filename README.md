@@ -1,5 +1,9 @@
 # clauditor
 
+<p align="center">
+  <img src="docs/assets/clauditor-social-preview.png" alt="clauditor" width="600">
+</p>
+
 [![CI](https://github.com/wjduenow/clauditor/actions/workflows/ci.yml/badge.svg)](https://github.com/wjduenow/clauditor/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/clauditor)](https://pypi.org/project/clauditor/)
 [![Python versions](https://img.shields.io/pypi/pyversions/clauditor)](https://pypi.org/project/clauditor/)
