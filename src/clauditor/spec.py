@@ -1,0 +1,111 @@
+"""SkillSpec — the main entry point for testing a skill.
+
+Combines the skill file, eval spec, and runner into a single interface.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from clauditor.assertions import AssertionSet, run_assertions
+from clauditor.runner import SkillResult, SkillRunner
+from clauditor.schemas import EvalSpec
+
+
+class SkillSpec:
+    """Test specification for a Claude Code skill.
+
+    Usage:
+        spec = SkillSpec.from_file(".claude/commands/find-kid-activities.md")
+        result = spec.run()
+        result.assert_contains("Venues")
+
+        # Or run the full eval spec:
+        assertion_set = spec.evaluate()
+        assert assertion_set.passed
+    """
+
+    def __init__(
+        self,
+        skill_path: Path,
+        eval_spec: EvalSpec | None = None,
+        runner: SkillRunner | None = None,
+    ):
+        self.skill_path = skill_path
+        self.skill_name = skill_path.stem
+        self.eval_spec = eval_spec
+        self.runner = runner or SkillRunner(project_dir=skill_path.parent.parent.parent)
+
+    @classmethod
+    def from_file(
+        cls,
+        skill_path: str | Path,
+        eval_path: str | Path | None = None,
+        runner: SkillRunner | None = None,
+    ) -> SkillSpec:
+        """Load a skill spec from a skill .md file.
+
+        Automatically looks for a sibling eval.json if eval_path
+        is not specified. For `my-skill.md`, looks for `my-skill.eval.json`.
+        """
+        skill_path = Path(skill_path)
+        if not skill_path.exists():
+            raise FileNotFoundError(f"Skill file not found: {skill_path}")
+
+        # Auto-discover eval spec
+        eval_spec = None
+        if eval_path:
+            eval_spec = EvalSpec.from_file(eval_path)
+        else:
+            default_eval = skill_path.with_suffix(".eval.json")
+            if default_eval.exists():
+                eval_spec = EvalSpec.from_file(default_eval)
+
+        return cls(skill_path=skill_path, eval_spec=eval_spec, runner=runner)
+
+    def run(self, args: str | None = None) -> SkillResult:
+        """Run the skill and return captured output.
+
+        If args is None and an eval spec exists, uses the eval spec's test_args.
+        """
+        run_args = (
+            args
+            if args is not None
+            else (self.eval_spec.test_args if self.eval_spec else "")
+        )
+        return self.runner.run(self.skill_name, run_args)
+
+    def evaluate(self, output: str | None = None) -> AssertionSet:
+        """Run Layer 1 assertions from the eval spec against output.
+
+        If output is None, runs the skill first to get output.
+        """
+        if not self.eval_spec:
+            raise ValueError(
+                f"No eval spec found for {self.skill_name}. "
+                f"Create {self.skill_path.with_suffix('.eval.json')}"
+            )
+
+        if output is None:
+            result = self.run()
+            if not result.succeeded:
+                return AssertionSet(
+                    results=[
+                        _failed_run_result(
+                            self.skill_name, result.error or "Unknown error"
+                        )
+                    ]
+                )
+            output = result.output
+
+        return run_assertions(output, self.eval_spec.assertions)
+
+
+def _failed_run_result(skill_name: str, error: str):
+    from clauditor.assertions import AssertionResult
+
+    return AssertionResult(
+        name="skill_execution",
+        passed=False,
+        message=f"Skill '{skill_name}' failed to run: {error}",
+    )
