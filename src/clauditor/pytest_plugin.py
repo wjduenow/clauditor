@@ -43,6 +43,35 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default="claude",
         help="Path to claude CLI binary (default: claude)",
     )
+    group.addoption(
+        "--clauditor-grade",
+        action="store_true",
+        default=False,
+        help="Enable Layer 3 LLM-graded quality tests (requires API key, costs money)",
+    )
+    group.addoption(
+        "--clauditor-model",
+        default=None,
+        help="Override grading model for Layer 3 tests (default: claude-sonnet-4-6)",
+    )
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers",
+        "clauditor_grade: mark test as requiring Layer 3 LLM grading "
+        "(skipped without --clauditor-grade)",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
+    if not config.getoption("--clauditor-grade"):
+        skip_grade = pytest.mark.skip(
+            reason="need --clauditor-grade to run Layer 3 tests"
+        )
+        for item in items:
+            if "clauditor_grade" in item.keywords:
+                item.add_marker(skip_grade)
 
 
 @pytest.fixture
@@ -71,5 +100,50 @@ def clauditor_spec(request: pytest.FixtureRequest):
 
     def _factory(skill_path: str | Path, eval_path: str | Path | None = None):
         return SkillSpec.from_file(skill_path, eval_path=eval_path, runner=runner)
+
+    return _factory
+
+
+@pytest.fixture
+def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
+    """Fixture factory for quality grading. Returns a callable that grades a skill."""
+    import asyncio
+
+    from clauditor.quality_grader import grade_quality
+
+    model = request.config.getoption("--clauditor-model") or "claude-sonnet-4-6"
+
+    def _factory(
+        skill_path: str | Path,
+        eval_path: str | Path | None = None,
+        output: str | None = None,
+    ):
+        spec = clauditor_spec(skill_path, eval_path)
+        if spec.eval_spec is None:
+            raise ValueError(f"No eval spec found for {skill_path}")
+        if output is None:
+            result = spec.run()
+            output = result.output
+        return asyncio.run(grade_quality(output, spec.eval_spec, model))
+
+    return _factory
+
+
+@pytest.fixture
+def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
+    """Fixture factory for trigger precision testing."""
+    import asyncio
+
+    from clauditor.triggers import test_triggers as run_triggers
+
+    model = request.config.getoption("--clauditor-model") or "claude-sonnet-4-6"
+
+    def _factory(
+        skill_path: str | Path, eval_path: str | Path | None = None
+    ):
+        spec = clauditor_spec(skill_path, eval_path)
+        if spec.eval_spec is None:
+            raise ValueError(f"No eval spec found for {skill_path}")
+        return asyncio.run(run_triggers(spec.eval_spec, model))
 
     return _factory

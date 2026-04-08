@@ -148,3 +148,51 @@ class SkillRunner:
                 args=args,
                 error=f"Claude CLI not found: {self.claude_bin}",
             )
+
+    def run_raw(self, prompt: str) -> SkillResult:
+        """Run a raw prompt without skill prefix for baseline comparison.
+
+        Args:
+            prompt: The raw prompt to send to Claude (no /{skill} prefix).
+
+        Returns:
+            SkillResult with skill_name="__baseline__"
+        """
+        import time
+
+        start = time.monotonic()
+        try:
+            result = subprocess.run(
+                [self.claude_bin, "-p", prompt, "--no-input"],
+                capture_output=True,
+                text=True,
+                timeout=self.timeout,
+                cwd=str(self.project_dir),
+            )
+            duration = time.monotonic() - start
+            return SkillResult(
+                output=result.stdout,
+                exit_code=result.returncode,
+                skill_name="__baseline__",
+                args=prompt,
+                duration_seconds=duration,
+                error=result.stderr if result.returncode != 0 else None,
+            )
+        except subprocess.TimeoutExpired:
+            duration = time.monotonic() - start
+            return SkillResult(
+                output="",
+                exit_code=-1,
+                skill_name="__baseline__",
+                args=prompt,
+                duration_seconds=duration,
+                error=f"Timed out after {self.timeout}s",
+            )
+        except FileNotFoundError:
+            return SkillResult(
+                output="",
+                exit_code=-1,
+                skill_name="__baseline__",
+                args=prompt,
+                error=f"Claude CLI not found: {self.claude_bin}",
+            )

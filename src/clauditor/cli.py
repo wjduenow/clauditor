@@ -83,6 +83,190 @@ def cmd_run(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
+def cmd_grade(args: argparse.Namespace) -> int:
+    """Run Layer 3 quality grading against a skill's output."""
+    import asyncio
+
+    spec = SkillSpec.from_file(args.skill, eval_path=args.eval)
+
+    if not spec.eval_spec:
+        print(f"ERROR: No eval spec found for {args.skill}", file=sys.stderr)
+        return 1
+
+    if not spec.eval_spec.grading_criteria:
+        print("ERROR: No grading_criteria defined in eval spec", file=sys.stderr)
+        return 1
+
+    model = args.model or spec.eval_spec.grading_model
+
+    # --dry-run: print prompt and exit
+    if args.dry_run:
+        from clauditor.quality_grader import build_grading_prompt
+
+        prompt = build_grading_prompt(spec.eval_spec)
+        print(f"Model: {model}")
+        print(f"Prompt:\n{prompt}")
+        return 0
+
+    # Get output
+    if args.output:
+        output = Path(args.output).read_text()
+    else:
+        print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
+        result = spec.run()
+        if not result.succeeded:
+            print(f"ERROR: Skill failed: {result.error}", file=sys.stderr)
+            return 1
+        output = result.output
+
+    # Grade (and optionally compare / measure variance in a single event loop)
+    from clauditor.quality_grader import grade_quality
+
+    async def _run_grade():
+        report = await grade_quality(output, spec.eval_spec, model)
+        ab_report = None
+        if args.compare:
+            from clauditor.comparator import compare_ab
+
+            ab_report = await compare_ab(spec, model)
+        variance_report = None
+        if args.variance:
+            from clauditor.quality_grader import measure_variance
+
+            variance_report = await measure_variance(
+                spec, args.variance, model
+            )
+        return report, ab_report, variance_report
+
+    report, ab_report, variance_report = asyncio.run(_run_grade())
+
+    if args.json:
+        data: dict = {
+            "skill": spec.skill_name,
+            "model": model,
+            "grade": {
+                "passed": report.passed,
+                "pass_rate": report.pass_rate,
+                "mean_score": report.mean_score,
+                "results": [
+                    {
+                        "criterion": r.criterion,
+                        "passed": r.passed,
+                        "score": r.score,
+                        "evidence": r.evidence,
+                        "reasoning": r.reasoning,
+                    }
+                    for r in report.results
+                ],
+            },
+            "comparison": None,
+            "variance": None,
+        }
+        if ab_report:
+            data["comparison"] = {
+                "passed": ab_report.passed,
+                "regressions": len(ab_report.regressions),
+                "results": [
+                    {
+                        "criterion": r.criterion,
+                        "skill_passed": r.skill_grade.passed,
+                        "baseline_passed": r.baseline_grade.passed,
+                        "regression": r.regression,
+                    }
+                    for r in ab_report.results
+                ],
+            }
+        if variance_report:
+            data["variance"] = {
+                "passed": variance_report.passed,
+                "n_runs": variance_report.n_runs,
+                "score_mean": variance_report.score_mean,
+                "score_stddev": variance_report.score_stddev,
+                "pass_rate_mean": variance_report.pass_rate_mean,
+                "stability": variance_report.stability,
+            }
+        print(json.dumps(data, indent=2))
+    else:
+        print(f"Quality Grade: {spec.skill_name} ({model})")
+        print(report.summary())
+        if ab_report:
+            print(f"\n{ab_report.summary()}")
+        if variance_report:
+            print(f"\n{variance_report.summary()}")
+
+    # Determine exit code
+    passed = report.passed
+    if ab_report:
+        passed = passed and ab_report.passed
+    if variance_report:
+        passed = passed and variance_report.passed
+    return 0 if passed else 1
+
+
+def cmd_triggers(args: argparse.Namespace) -> int:
+    """Run trigger precision testing for a skill."""
+    import asyncio
+
+    spec = SkillSpec.from_file(args.skill, eval_path=args.eval)
+
+    if not spec.eval_spec:
+        print(f"ERROR: No eval spec found for {args.skill}", file=sys.stderr)
+        return 1
+
+    model = args.model or spec.eval_spec.grading_model
+
+    if args.dry_run:
+        from clauditor.triggers import build_trigger_prompt
+
+        trigger_tests = spec.eval_spec.trigger_tests
+        if not trigger_tests:
+            print("ERROR: No trigger_tests defined in eval spec", file=sys.stderr)
+            return 1
+        print(f"Model: {model}")
+        queries = [
+            (q, True) for q in trigger_tests.should_trigger
+        ] + [(q, False) for q in trigger_tests.should_not_trigger]
+        for query, expected in queries:
+            label = "should_trigger" if expected else "should_not_trigger"
+            prompt = build_trigger_prompt(
+                spec.eval_spec.skill_name, spec.eval_spec.description, query
+            )
+            print(f"\n--- {label}: \"{query}\" ---")
+            print(prompt)
+        return 0
+
+    from clauditor.triggers import test_triggers
+
+    report = asyncio.run(test_triggers(spec.eval_spec, model))
+
+    if args.json:
+        data = {
+            "skill": spec.skill_name,
+            "model": model,
+            "passed": report.passed,
+            "accuracy": report.accuracy,
+            "precision": report.precision,
+            "recall": report.recall,
+            "results": [
+                {
+                    "query": r.query,
+                    "expected": r.expected_trigger,
+                    "predicted": r.predicted_trigger,
+                    "passed": r.passed,
+                    "confidence": r.confidence,
+                    "reasoning": r.reasoning,
+                }
+                for r in report.results
+            ],
+        }
+        print(json.dumps(data, indent=2))
+    else:
+        print(f"Trigger Precision: {spec.skill_name} ({model})")
+        print(report.summary())
+
+    return 0 if report.passed else 1
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     """Generate a starter eval.json for a skill."""
     skill_path = Path(args.skill)
@@ -115,7 +299,19 @@ def cmd_init(args: argparse.Namespace) -> int:
                 ],
             }
         ],
-        "grading_criteria": [],
+        "grading_criteria": [
+            "Are results relevant to the query?",
+            "Are descriptions specific (not generic filler)?",
+        ],
+        "grading_model": "claude-sonnet-4-6",
+        "trigger_tests": {
+            "should_trigger": [],
+            "should_not_trigger": [],
+        },
+        "variance": {
+            "n_runs": 3,
+            "min_stability": 0.8,
+        },
     }
 
     eval_path.write_text(json.dumps(starter, indent=2) + "\n")
@@ -153,6 +349,50 @@ def main(argv: list[str] | None = None) -> int:
     p_run.add_argument("--project-dir", help="Project directory (default: cwd)")
     p_run.add_argument("--timeout", type=int, default=180, help="Timeout in seconds")
 
+    # grade
+    p_grade = subparsers.add_parser(
+        "grade", help="Run Layer 3 quality grading against a skill's output"
+    )
+    p_grade.add_argument("skill", help="Path to skill .md file")
+    p_grade.add_argument(
+        "--eval", help="Path to eval.json (auto-discovered if omitted)"
+    )
+    p_grade.add_argument(
+        "--output", help="Path to pre-captured output file (skips running the skill)"
+    )
+    p_grade.add_argument("--model", help="Override grading model")
+    p_grade.add_argument(
+        "--json", action="store_true", help="Output results as JSON"
+    )
+    p_grade.add_argument(
+        "--dry-run", action="store_true", help="Print prompt without making API calls"
+    )
+    p_grade.add_argument(
+        "--compare", action="store_true", help="Also run A/B comparison"
+    )
+    p_grade.add_argument(
+        "--variance",
+        type=int,
+        metavar="N",
+        help="Run N times with variance measurement",
+    )
+
+    # triggers
+    p_triggers = subparsers.add_parser(
+        "triggers", help="Run trigger precision testing for a skill"
+    )
+    p_triggers.add_argument("skill", help="Path to skill .md file")
+    p_triggers.add_argument(
+        "--eval", help="Path to eval.json (auto-discovered if omitted)"
+    )
+    p_triggers.add_argument("--model", help="Override grading model")
+    p_triggers.add_argument(
+        "--json", action="store_true", help="Output results as JSON"
+    )
+    p_triggers.add_argument(
+        "--dry-run", action="store_true", help="Print sample trigger prompts"
+    )
+
     # init
     p_init = subparsers.add_parser(
         "init", help="Generate a starter eval.json for a skill"
@@ -168,6 +408,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_validate(parsed)
     elif parsed.command == "run":
         return cmd_run(parsed)
+    elif parsed.command == "grade":
+        return cmd_grade(parsed)
+    elif parsed.command == "triggers":
+        return cmd_triggers(parsed)
     elif parsed.command == "init":
         return cmd_init(parsed)
 

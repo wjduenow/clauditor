@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "clauditor",
+  "project_id": "096ade28-e1aa-4473-99cb-b8091a8a5012"
+}

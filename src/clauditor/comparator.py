@@ -1,0 +1,126 @@
+"""A/B baseline comparator — runs skill vs raw Claude and detects regressions.
+
+Compares skill output against a raw-Claude baseline using the same grading
+rubric, flagging regressions where the baseline passes but the skill fails.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from clauditor.quality_grader import GradingReport, GradingResult, grade_quality
+from clauditor.spec import SkillSpec
+
+
+@dataclass
+class ABResult:
+    """Comparison of a single criterion between skill and baseline."""
+
+    criterion: str
+    skill_grade: GradingResult
+    baseline_grade: GradingResult
+    regression: bool  # True if baseline passed but skill failed
+
+
+@dataclass
+class ABReport:
+    """Full A/B comparison report."""
+
+    skill_name: str
+    skill_report: GradingReport
+    baseline_report: GradingReport
+    results: list[ABResult]
+    model: str
+
+    @property
+    def passed(self) -> bool:
+        """No regressions detected."""
+        return not any(r.regression for r in self.results)
+
+    @property
+    def regressions(self) -> list[ABResult]:
+        """All criteria where the skill regressed relative to baseline."""
+        return [r for r in self.results if r.regression]
+
+    def summary(self) -> str:
+        """Format a human-readable summary table."""
+        reg_count = len(self.regressions)
+        status = "PASS" if self.passed else f"FAIL ({reg_count} regression(s))"
+        lines = [f"A/B Report: {self.skill_name} — {status}"]
+        lines.append(f"{'Criterion':<40} {'Skill':<8} {'Baseline':<8} {'Status'}")
+        lines.append("-" * 70)
+        for r in self.results:
+            skill_str = "PASS" if r.skill_grade.passed else "FAIL"
+            base_str = "PASS" if r.baseline_grade.passed else "FAIL"
+            row_status = "REGRESSION" if r.regression else "ok"
+            lines.append(
+                f"{r.criterion:<40} {skill_str:<8} {base_str:<8} {row_status}"
+            )
+        return "\n".join(lines)
+
+
+async def compare_ab(
+    spec: SkillSpec, model: str = "claude-sonnet-4-6"
+) -> ABReport:
+    """Run skill vs baseline, grade both, compare for regressions.
+
+    1. Run skill via spec.run()
+    2. Run raw baseline via spec.runner.run_raw(test_args)
+    3. Grade both outputs against the same rubric
+    4. Zip results per-criterion and flag regressions
+    """
+    if not spec.eval_spec:
+        raise ValueError(
+            f"No eval spec found for {spec.skill_name}. "
+            "A/B comparison requires grading_criteria in the eval spec."
+        )
+
+    test_args = spec.eval_spec.test_args
+    if not test_args or not test_args.strip():
+        raise ValueError(
+            "A/B comparison requires non-empty test_args in the eval spec "
+            "to serve as the baseline prompt."
+        )
+
+    # Run both
+    skill_result = spec.run()
+    baseline_result = spec.runner.run_raw(test_args)
+
+    # Grade both against the same rubric
+    skill_report = await grade_quality(
+        skill_result.output, spec.eval_spec, model=model
+    )
+    baseline_report = await grade_quality(
+        baseline_result.output, spec.eval_spec, model=model
+    )
+
+    # Zip results per-criterion by index (not string match — LLM may paraphrase)
+    results: list[ABResult] = []
+    for i, skill_grade in enumerate(skill_report.results):
+        if i < len(baseline_report.results):
+            baseline_grade = baseline_report.results[i]
+        else:
+            baseline_grade = GradingResult(
+                criterion=skill_grade.criterion,
+                passed=False,
+                score=0.0,
+                evidence="",
+                reasoning="Criterion not evaluated in baseline",
+            )
+        regression = baseline_grade.passed and not skill_grade.passed
+        results.append(
+            ABResult(
+                criterion=skill_grade.criterion,
+                skill_grade=skill_grade,
+                baseline_grade=baseline_grade,
+                regression=regression,
+            )
+        )
+
+    return ABReport(
+        skill_name=spec.skill_name,
+        skill_report=skill_report,
+        baseline_report=baseline_report,
+        results=results,
+        model=model,
+    )

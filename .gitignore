@@ -25,3 +25,8 @@ build/
 .claude/agents/pr-reviewer.md
 .claude/agents/code-reviewer.md
 .claude/agents/planner.md
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
