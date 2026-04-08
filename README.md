@@ -1,5 +1,11 @@
 # clauditor
 
+[![CI](https://github.com/wjduenow/clauditor/actions/workflows/ci.yml/badge.svg)](https://github.com/wjduenow/clauditor/actions/workflows/ci.yml)
+[![PyPI version](https://img.shields.io/pypi/v/clauditor)](https://pypi.org/project/clauditor/)
+[![Python versions](https://img.shields.io/pypi/pyversions/clauditor)](https://pypi.org/project/clauditor/)
+[![License](https://img.shields.io/github/license/wjduenow/clauditor)](https://github.com/wjduenow/clauditor/blob/dev/LICENSE)
+[![codecov](https://codecov.io/gh/wjduenow/clauditor/branch/dev/graph/badge.svg)](https://codecov.io/gh/wjduenow/clauditor)
+
 Auditor for Claude Code skills and slash commands. Validates structured output against schemas using layered evaluation — deterministic assertions, LLM-graded extraction, and quality regression testing. Catches when your skill produces the wrong shape, not just the wrong answer.
 
 ## Install
@@ -148,7 +154,19 @@ Define rubric criteria in your eval spec for full model review:
 }
 ```
 
-*Layer 3 implementation coming soon.*
+```bash
+# Grade against rubric:
+clauditor grade .claude/commands/my-skill.md
+
+# A/B comparison (skill vs raw Claude):
+clauditor grade .claude/commands/my-skill.md --compare
+
+# Trigger precision testing:
+clauditor triggers .claude/commands/my-skill.md
+
+# Dry run (print prompts, no API calls):
+clauditor grade .claude/commands/my-skill.md --dry-run
+```
 
 ## CLI Reference
 
@@ -157,6 +175,10 @@ clauditor init <skill.md>              # Generate starter eval.json
 clauditor validate <skill.md>          # Run Layer 1 assertions
 clauditor validate <skill.md> --json   # JSON output for CI
 clauditor run <skill-name> --args "…"  # Run skill, print output
+clauditor grade <skill.md>             # Layer 3 quality grading
+clauditor grade <skill.md> --compare   # A/B comparison
+clauditor grade <skill.md> --variance 3  # Variance measurement
+clauditor triggers <skill.md>          # Trigger precision testing
 ```
 
 ## Pytest Integration
@@ -165,6 +187,8 @@ clauditor registers as a pytest plugin automatically. Available fixtures:
 
 - `clauditor_runner` — pre-configured `SkillRunner`
 - `clauditor_spec` — factory for loading `SkillSpec` from skill files
+- `clauditor_grader` — factory for Layer 3 quality grading
+- `clauditor_triggers` — factory for trigger precision testing
 
 Options:
 
@@ -172,6 +196,8 @@ Options:
 pytest --clauditor-project-dir /path/to/project
 pytest --clauditor-timeout 300
 pytest --clauditor-claude-bin /usr/local/bin/claude
+pytest --clauditor-grade              # Enable Layer 3 tests (costs money)
+pytest --clauditor-model claude-sonnet-4-6  # Override grading model
 ```
 
 ## Eval Spec Format

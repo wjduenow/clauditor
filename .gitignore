@@ -22,6 +22,7 @@ build/
 .claude/commands/closeout.md
 .claude/commands/validate.md
 .claude/commands/close-ticket.md
+.claude/commands/ralph-run.md
 .claude/agents/pr-reviewer.md
 .claude/agents/code-reviewer.md
 .claude/agents/planner.md
@@ -30,3 +31,6 @@ build/
 .dolt/
 *.db
 .beads-credential-key
+work-ss5.3/
+work-ss5.5/
+work-ss5.7/
