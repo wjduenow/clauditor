@@ -1,0 +1,47 @@
+{
+  "skill_name": "find-kid-activities",
+  "description": "Validates /find-kid-activities produces venues and events with required fields",
+  "test_args": "\"Cupertino, CA\" --dates today --distance 15mi --ages 4-6 --cost \"Free, $\" --type both --category any --count 5 --depth quick",
+  "assertions": [
+    {"type": "contains", "value": "Venues"},
+    {"type": "contains", "value": "Events"},
+    {"type": "has_entries", "value": "3"},
+    {"type": "has_urls", "value": "3"},
+    {"type": "min_length", "value": "500"},
+    {"type": "not_contains", "value": "AskUserQuestion"},
+    {"type": "regex", "value": "\\*\\*\\d+\\.\\s+"},
+    {"type": "regex", "value": "https?://[^\\s]+"}
+  ],
+  "sections": [
+    {
+      "name": "Venues",
+      "min_entries": 2,
+      "fields": [
+        {"name": "name", "required": true},
+        {"name": "address", "required": true},
+        {"name": "hours", "required": true},
+        {"name": "website", "required": true},
+        {"name": "phone", "required": false},
+        {"name": "cost", "required": true},
+        {"name": "ages", "required": true}
+      ]
+    },
+    {
+      "name": "Events",
+      "min_entries": 0,
+      "fields": [
+        {"name": "name", "required": true},
+        {"name": "date", "required": true},
+        {"name": "time", "required": true},
+        {"name": "event_url", "required": true},
+        {"name": "ages", "required": true}
+      ]
+    }
+  ],
+  "grading_criteria": [
+    "Are all venues within the specified distance?",
+    "Are venues appropriate for the specified age range?",
+    "Are events actually happening on the target date?",
+    "Do cost tiers match the specified budget filter?"
+  ]
+}
