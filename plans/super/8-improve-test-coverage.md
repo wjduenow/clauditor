@@ -6,7 +6,7 @@
 |--------------|-------|
 | Ticket       | [#8](https://github.com/wjduenow/clauditor/issues/8) |
 | Branch       | `feature/8-improve-test-coverage` |
-| Phase        | `detailing` |
+| Phase        | `devolved` |
 | Sessions     | 1 |
 | Last session | 2026-04-08 |
 
@@ -530,4 +530,21 @@ _Rationale: cli.py is the main entry point; broad coverage catches regressions i
 
 ## Beads Manifest
 
-_Pending Phase 7._
+| Story | Bead ID | Title |
+|-------|---------|-------|
+| Epic | clauditor-n75 | #8: Improve test coverage from 44% to 80%+ |
+| US-001 | clauditor-n75.1 | Fix coverage config + test __init__.py |
+| US-002 | clauditor-n75.2 | Create shared conftest.py |
+| US-003 | clauditor-n75.3 | Test SkillResult methods + SkillRunner.run() |
+| US-004 | clauditor-n75.4 | Test schemas.py from_file, to_dict, edge cases |
+| US-005 | clauditor-n75.5 | Test assertions.py coverage gaps |
+| US-006 | clauditor-n75.6 | Test spec.py from_file, run, evaluate |
+| US-007 | clauditor-n75.7 | Test grader.py + fix dead branch |
+| US-008 | clauditor-n75.8 | Test comparator.py compare_ab async flow |
+| US-009 | clauditor-n75.9 | Test cli.py all 5 subcommands |
+| US-010 | clauditor-n75.10 | Test pytest_plugin.py with pytester |
+| US-011 | clauditor-n75.11 | Add CI coverage gate |
+| QG | clauditor-n75.12 | Quality Gate — code review x4 + validation |
+| P&M | clauditor-n75.13 | Patterns & Memory — update conventions and docs |
+
+**Worktree:** `/home/wesd/Projects/clauditor` (branch: `feature/8-improve-test-coverage`)
