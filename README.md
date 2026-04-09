@@ -12,6 +12,19 @@
 
 Auditor for Claude Code skills and slash commands. Validates structured output against schemas using layered evaluation — deterministic assertions, LLM-graded extraction, and quality regression testing. Catches when your skill produces the wrong shape, not just the wrong answer.
 
+When you build a skill — like a slash command that finds restaurants or generates reports — you need to know it keeps working correctly after every change. clauditor answers three questions at different cost/confidence levels:
+
+**"Does it have the right shape?"** (Layer 1 — free, instant)
+Did the output include URLs? At least 5 results? The word "Venues"? No error messages? These are deterministic checks that run in milliseconds with no API costs. Good for CI on every commit.
+
+**"Did it extract the right fields?"** (Layer 2 — pennies, ~1 second)
+Uses a cheap, fast model (Haiku) to read the output and check: does each venue have a name, address, and phone number? Are there at least 3 entries in each section? Catches structural problems that string matching can't.
+
+**"Is the answer actually good?"** (Layer 3 — dollars, release-gating)
+Uses a stronger model (Sonnet) to grade output against a rubric you write: "Are venues within the specified distance? Are events on the right date?" Also does A/B testing (is the skill better than raw Claude?), variance measurement (does it give consistent results across runs?), and trigger precision testing (does the right query activate the right skill?).
+
+You ship AI features faster because you catch regressions automatically instead of manually spot-checking output. Layer 1 runs in CI on every push for free. Layer 3 runs before releases to catch quality problems that would otherwise reach users. The layered approach means you're not burning API dollars on every commit — just on the checks that need intelligence.
+
 ## Install
 
 ```bash
