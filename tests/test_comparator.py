@@ -1,7 +1,12 @@
 """Tests for the A/B baseline comparator."""
 
-from clauditor.comparator import ABReport, ABResult
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from clauditor.comparator import ABReport, ABResult, compare_ab
 from clauditor.quality_grader import GradingReport, GradingResult
+from clauditor.runner import SkillResult
 
 
 def _make_grade(criterion: str, passed: bool, score: float = 0.8) -> GradingResult:
@@ -174,3 +179,160 @@ class TestABReport:
         summary = report.summary()
         assert "PASS" in summary
         assert "REGRESSION" not in summary
+
+
+def _mock_eval_spec(test_args="find kid activities near me"):
+    """Create a mock eval spec with test_args and grading criteria."""
+    es = MagicMock()
+    es.test_args = test_args
+    return es
+
+
+def _mock_spec(
+    eval_spec=None,
+    skill_output="skill output",
+    baseline_output="baseline output",
+):
+    """Create a mock SkillSpec with a mock runner."""
+    spec = MagicMock()
+    spec.skill_name = "test-skill"
+    spec.eval_spec = eval_spec
+    spec.run.return_value = SkillResult(
+        output=skill_output, exit_code=0, skill_name="test-skill", args="test"
+    )
+    spec.runner.run_raw.return_value = SkillResult(
+        output=baseline_output, exit_code=0, skill_name="__baseline__", args="test"
+    )
+    return spec
+
+
+class TestCompareAB:
+    """Tests for the compare_ab async function."""
+
+    @pytest.mark.asyncio
+    async def test_success_no_regressions(self):
+        eval_spec = _mock_eval_spec()
+        spec = _mock_spec(eval_spec=eval_spec)
+
+        skill_grades = [
+            _make_grade("clarity", True, 0.9),
+            _make_grade("accuracy", True, 0.85),
+        ]
+        baseline_grades = [
+            _make_grade("clarity", True, 0.8),
+            _make_grade("accuracy", True, 0.75),
+        ]
+
+        skill_report = _make_report(skill_grades)
+        baseline_report = _make_report(baseline_grades)
+
+        mock_grade = AsyncMock(side_effect=[skill_report, baseline_report])
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("clauditor.comparator.grade_quality", mock_grade)
+            report = await compare_ab(spec)
+
+        assert report.passed is True
+        assert len(report.results) == 2
+        assert report.regressions == []
+        assert report.skill_name == "test-skill"
+        assert mock_grade.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_regression_detected(self):
+        eval_spec = _mock_eval_spec()
+        spec = _mock_spec(eval_spec=eval_spec)
+
+        skill_grades = [
+            _make_grade("clarity", False, 0.3),
+            _make_grade("accuracy", True, 0.9),
+        ]
+        baseline_grades = [
+            _make_grade("clarity", True, 0.9),
+            _make_grade("accuracy", True, 0.8),
+        ]
+
+        skill_report = _make_report(skill_grades)
+        baseline_report = _make_report(baseline_grades)
+
+        mock_grade = AsyncMock(side_effect=[skill_report, baseline_report])
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("clauditor.comparator.grade_quality", mock_grade)
+            report = await compare_ab(spec)
+
+        assert report.passed is False
+        assert len(report.regressions) == 1
+        assert report.regressions[0].criterion == "clarity"
+
+    @pytest.mark.asyncio
+    async def test_no_eval_spec_raises(self):
+        spec = _mock_spec(eval_spec=None)
+
+        with pytest.raises(ValueError, match="No eval spec found"):
+            await compare_ab(spec)
+
+    @pytest.mark.asyncio
+    async def test_empty_test_args_raises(self):
+        eval_spec = _mock_eval_spec(test_args="")
+        spec = _mock_spec(eval_spec=eval_spec)
+
+        with pytest.raises(ValueError, match="non-empty test_args"):
+            await compare_ab(spec)
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_test_args_raises(self):
+        eval_spec = _mock_eval_spec(test_args="   ")
+        spec = _mock_spec(eval_spec=eval_spec)
+
+        with pytest.raises(ValueError, match="non-empty test_args"):
+            await compare_ab(spec)
+
+    @pytest.mark.asyncio
+    async def test_baseline_fewer_criteria_pads_with_synthetic(self):
+        eval_spec = _mock_eval_spec()
+        spec = _mock_spec(eval_spec=eval_spec)
+
+        skill_grades = [
+            _make_grade("clarity", True, 0.9),
+            _make_grade("accuracy", True, 0.8),
+            _make_grade("format", False, 0.4),
+        ]
+        baseline_grades = [
+            _make_grade("clarity", True, 0.85),
+        ]
+
+        skill_report = _make_report(skill_grades)
+        baseline_report = _make_report(baseline_grades)
+
+        mock_grade = AsyncMock(side_effect=[skill_report, baseline_report])
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("clauditor.comparator.grade_quality", mock_grade)
+            report = await compare_ab(spec)
+
+        assert len(report.results) == 3
+        assert report.results[0].baseline_grade.passed is True
+        assert report.results[1].baseline_grade.passed is False
+        assert report.results[1].baseline_grade.score == 0.0
+        assert "not evaluated" in report.results[1].baseline_grade.reasoning
+        assert report.results[2].baseline_grade.passed is False
+        assert report.results[1].regression is False
+        assert report.results[2].regression is False
+
+    @pytest.mark.asyncio
+    async def test_custom_model_passed_through(self):
+        eval_spec = _mock_eval_spec()
+        spec = _mock_spec(eval_spec=eval_spec)
+
+        grades = [_make_grade("clarity", True, 0.9)]
+        report_obj = _make_report(grades)
+        mock_grade = AsyncMock(side_effect=[report_obj, report_obj])
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("clauditor.comparator.grade_quality", mock_grade)
+            report = await compare_ab(spec, model="claude-haiku-4-5")
+
+        assert report.model == "claude-haiku-4-5"
+        for call in mock_grade.call_args_list:
+            assert call.kwargs.get("model") == "claude-haiku-4-5"
