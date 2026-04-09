@@ -208,6 +208,23 @@ class TestExtractAndGrade:
         assert result.passed
 
     @pytest.mark.asyncio
+    async def test_generic_code_block_stripped(self):
+        data = {
+            "Venues": [
+                {"name": "A", "address": "B", "website": "C"},
+                {"name": "D", "address": "E", "website": "F"},
+            ]
+        }
+        wrapped = f"```\n{json.dumps(data)}\n```"
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=wrapped)]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            result = await extract_and_grade("some output", _make_spec())
+        assert result.passed
+
+    @pytest.mark.asyncio
     async def test_json_parse_failure(self):
         mock_response = MagicMock()
         mock_response.content = [MagicMock(text="not valid json at all")]

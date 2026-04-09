@@ -145,7 +145,6 @@ class TestPluginFunctionsDirect:
                 "--clauditor-claude-bin": "claude",
             }[opt]
         )
-        # Access the underlying function, bypassing the fixture decorator
         runner = clauditor_runner.__wrapped__(request)
         assert runner.timeout == 60
         assert runner.claude_bin == "claude"
