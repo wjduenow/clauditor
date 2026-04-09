@@ -141,8 +141,6 @@ async def extract_and_grade(
         json_str = response_text
         if "```" in json_str:
             json_str = json_str.split("```json")[-1].split("```")[0]
-        elif "```" in json_str:
-            json_str = json_str.split("```")[-2]
 
         raw = json.loads(json_str.strip())
     except (json.JSONDecodeError, IndexError):
