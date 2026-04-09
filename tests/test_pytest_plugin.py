@@ -1,51 +1,185 @@
-"""Tests for the clauditor pytest plugin (marker registration, skip logic)."""
+"""Tests for the clauditor pytest plugin using pytester."""
 
 from __future__ import annotations
 
-import pytest
+import importlib
+from unittest.mock import MagicMock
+
+import clauditor.pytest_plugin as _plugin_mod
+from clauditor.pytest_plugin import (
+    clauditor_runner,
+    clauditor_spec,
+    pytest_addoption,
+    pytest_collection_modifyitems,
+    pytest_configure,
+)
+
+# Re-import to ensure coverage sees the module code
+importlib.reload(_plugin_mod)
+
+pytest_plugins = ["pytester"]
 
 
-def test_clauditor_grade_marker_registered(pytestconfig):
-    """Verify the clauditor_grade marker is registered via pytest_configure."""
-    markers = pytestconfig.getini("markers")
-    assert any("clauditor_grade" in m for m in markers)
+class TestPytestPlugin:
+    def test_marker_registered(self, pytester):
+        """Check that clauditor_grade marker appears in help."""
+        result = pytester.runpytest_inprocess("--markers")
+        result.stdout.fnmatch_lines(["*clauditor_grade*"])
+
+    def test_grade_marker_skipped_by_default(self, pytester):
+        """Grade-marked tests are skipped without --clauditor-grade."""
+        pytester.makepyfile("""
+            import pytest
+            @pytest.mark.clauditor_grade
+            def test_graded():
+                pass
+            def test_normal():
+                pass
+        """)
+        result = pytester.runpytest_inprocess("-v")
+        result.assert_outcomes(passed=1, skipped=1)
+
+    def test_grade_marker_runs_with_flag(self, pytester):
+        """Grade-marked tests run when --clauditor-grade is passed."""
+        pytester.makepyfile("""
+            import pytest
+            @pytest.mark.clauditor_grade
+            def test_graded():
+                pass
+        """)
+        result = pytester.runpytest_inprocess("--clauditor-grade", "-v")
+        result.assert_outcomes(passed=1)
+
+    def test_runner_fixture_available(self, pytester):
+        """The clauditor_runner fixture is available and non-None."""
+        pytester.makepyfile("""
+            def test_runner(clauditor_runner):
+                assert clauditor_runner is not None
+        """)
+        result = pytester.runpytest_inprocess()
+        result.assert_outcomes(passed=1)
+
+    def test_cli_options_passed(self, pytester):
+        """CLI options are forwarded to fixture-created objects."""
+        pytester.makepyfile("""
+            def test_timeout(clauditor_runner):
+                assert clauditor_runner.timeout == 42
+        """)
+        result = pytester.runpytest_inprocess("--clauditor-timeout=42")
+        result.assert_outcomes(passed=1)
+
+    def test_spec_fixture_available(self, pytester):
+        """The clauditor_spec fixture is available and callable."""
+        pytester.makepyfile("""
+            def test_spec(clauditor_spec):
+                assert callable(clauditor_spec)
+        """)
+        result = pytester.runpytest_inprocess()
+        result.assert_outcomes(passed=1)
 
 
-@pytest.mark.clauditor_grade
-def test_marked_test_is_skipped_without_flag():
-    """This test should be skipped when --clauditor-grade is not passed."""
-    pytest.fail("This test should have been skipped")
+class TestPluginFunctionsDirect:
+    """Direct unit tests for plugin functions to ensure coverage."""
 
+    def test_pytest_addoption_registers_options(self):
+        """pytest_addoption adds the expected CLI options."""
+        parser = MagicMock()
+        group = MagicMock()
+        parser.getgroup.return_value = group
+        pytest_addoption(parser)
+        parser.getgroup.assert_called_once_with(
+            "clauditor", "Claude Code skill testing"
+        )
+        assert group.addoption.call_count == 5
+        # Verify option names
+        option_names = [call.args[0] for call in group.addoption.call_args_list]
+        assert "--clauditor-project-dir" in option_names
+        assert "--clauditor-timeout" in option_names
+        assert "--clauditor-claude-bin" in option_names
+        assert "--clauditor-grade" in option_names
+        assert "--clauditor-model" in option_names
 
-def test_skip_logic_via_subprocess(tmp_path):
-    """Verify skip behaviour end-to-end using a subprocess pytest run."""
-    import subprocess
-    import sys
+    def test_pytest_configure_adds_marker(self):
+        """pytest_configure registers the clauditor_grade marker."""
+        config = MagicMock()
+        pytest_configure(config)
+        config.addinivalue_line.assert_called_once()
+        args = config.addinivalue_line.call_args
+        assert args[0][0] == "markers"
+        assert "clauditor_grade" in args[0][1]
 
-    test_file = tmp_path / "test_grade_check.py"
-    test_file.write_text(
-        "import pytest\n\n"
-        "@pytest.mark.clauditor_grade\n"
-        "def test_graded():\n"
-        "    pass\n\n"
-        "def test_normal():\n"
-        "    pass\n"
-    )
+    def test_collection_modifyitems_skips_grade_tests(self):
+        """Grade-marked items are skipped when flag is not set."""
+        config = MagicMock()
+        config.getoption.return_value = False
+        item = MagicMock()
+        item.keywords = {"clauditor_grade": True}
+        pytest_collection_modifyitems(config, [item])
+        item.add_marker.assert_called_once()
 
-    # Run WITHOUT --clauditor-grade: graded test should be skipped
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", str(test_file), "-v"],
-        capture_output=True,
-        text=True,
-    )
-    assert "test_graded SKIPPED" in result.stdout
-    assert "test_normal PASSED" in result.stdout
+    def test_collection_modifyitems_no_skip_with_flag(self):
+        """Grade-marked items are NOT skipped when flag is set."""
+        config = MagicMock()
+        config.getoption.return_value = True
+        item = MagicMock()
+        item.keywords = {"clauditor_grade": True}
+        pytest_collection_modifyitems(config, [item])
+        item.add_marker.assert_not_called()
 
-    # Run WITH --clauditor-grade: graded test should pass
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", str(test_file), "-v", "--clauditor-grade"],
-        capture_output=True,
-        text=True,
-    )
-    assert "test_graded PASSED" in result.stdout
-    assert "test_normal PASSED" in result.stdout
+    def test_collection_modifyitems_ignores_normal_tests(self):
+        """Non-grade items are never skipped."""
+        config = MagicMock()
+        config.getoption.return_value = False
+        item = MagicMock()
+        item.keywords = {}
+        pytest_collection_modifyitems(config, [item])
+        item.add_marker.assert_not_called()
+
+    def test_runner_fixture_returns_skill_runner(self):
+        """clauditor_runner fixture returns a configured SkillRunner."""
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": 60,
+                "--clauditor-claude-bin": "claude",
+            }[opt]
+        )
+        # Access the underlying function, bypassing the fixture decorator
+        runner = clauditor_runner.__wrapped__(request)
+        assert runner.timeout == 60
+        assert runner.claude_bin == "claude"
+
+    def test_spec_fixture_returns_callable(self):
+        """clauditor_spec fixture returns a callable factory."""
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": 180,
+                "--clauditor-claude-bin": "claude",
+            }[opt]
+        )
+        factory = clauditor_spec.__wrapped__(request)
+        assert callable(factory)
+
+    def test_spec_factory_calls_from_file(self):
+        """clauditor_spec factory delegates to SkillSpec.from_file."""
+        from unittest.mock import patch
+
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": 180,
+                "--clauditor-claude-bin": "claude",
+            }[opt]
+        )
+        factory = clauditor_spec.__wrapped__(request)
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file"
+        ) as mock_from_file:
+            mock_from_file.return_value = MagicMock()
+            result = factory("some/skill.md")
+            mock_from_file.assert_called_once()
+            assert result is mock_from_file.return_value
