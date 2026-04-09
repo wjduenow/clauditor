@@ -1,6 +1,12 @@
 """Tests for Layer 1 deterministic assertions."""
 
-from clauditor.assertions import (
+import importlib
+
+import clauditor.assertions as _assertions_mod
+
+importlib.reload(_assertions_mod)
+
+from clauditor.assertions import (  # noqa: E402
     AssertionResult,
     AssertionSet,
     assert_contains,

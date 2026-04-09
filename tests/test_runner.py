@@ -1,11 +1,16 @@
 """Tests for SkillRunner."""
 
+import importlib
 import subprocess
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from clauditor.runner import SkillResult, SkillRunner
+import clauditor.runner as _runner_mod
+
+importlib.reload(_runner_mod)
+
+from clauditor.runner import SkillResult, SkillRunner  # noqa: E402
 
 
 class TestRunRaw:

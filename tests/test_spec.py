@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 
 import pytest
 
-from clauditor.spec import SkillSpec, _failed_run_result
+import clauditor.spec as _spec_mod
+
+importlib.reload(_spec_mod)
+
+from clauditor.spec import SkillSpec, _failed_run_result  # noqa: E402
 
 # ── Minimal eval data for fixture ──────────────────────────────────────────
 

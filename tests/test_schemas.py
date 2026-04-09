@@ -1,11 +1,16 @@
 """Tests for eval spec loading and schema definitions."""
 
+import importlib
 import json
 import tempfile
 
 import pytest
 
-from clauditor.schemas import (
+import clauditor.schemas as _schemas_mod
+
+importlib.reload(_schemas_mod)
+
+from clauditor.schemas import (  # noqa: E402
     EvalSpec,
     FieldRequirement,
     SectionRequirement,
