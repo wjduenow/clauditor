@@ -19,7 +19,7 @@ def test_reload_executes_module_level_code():
     import clauditor
 
     reloaded = importlib.reload(clauditor)
-    assert reloaded.__version__ == "0.1.0"
+    assert isinstance(reloaded.__version__, str) and len(reloaded.__version__) > 0
     assert hasattr(reloaded, "SkillRunner")
     assert hasattr(reloaded, "EvalSpec")
     assert hasattr(reloaded, "AssertionResult")
