@@ -17,8 +17,16 @@ Auditor for Claude Code skills and slash commands. Validates structured output a
 ```bash
 pip install clauditor
 
-# With LLM grading support (Layer 2):
+# With LLM grading support (Layers 2 & 3):
 pip install clauditor[grader]
+```
+
+Or install from source:
+
+```bash
+git clone https://github.com/wjduenow/clauditor.git
+cd clauditor
+uv sync --dev
 ```
 
 ## Quick Start
@@ -146,7 +154,11 @@ The eval spec defines what fields each section should have:
 
 ### Layer 3: Quality Grading (expensive, release-only)
 
-Define rubric criteria in your eval spec for full model review:
+Uses Sonnet to grade skill output against a rubric you define. Requires `ANTHROPIC_API_KEY` and `pip install clauditor[grader]`.
+
+#### Quality Grading
+
+Define rubric criteria in your eval spec:
 
 ```json
 {
@@ -159,17 +171,98 @@ Define rubric criteria in your eval spec for full model review:
 ```
 
 ```bash
-# Grade against rubric:
 clauditor grade .claude/commands/my-skill.md
+clauditor grade .claude/commands/my-skill.md --json
+clauditor grade .claude/commands/my-skill.md --dry-run   # Print prompt, no API call
+```
 
-# A/B comparison (skill vs raw Claude):
+Each criterion gets a pass/fail, score (0.0-1.0), evidence (quoted output), and reasoning.
+
+#### A/B Comparison
+
+Runs your skill and raw Claude side-by-side against the same rubric. Flags regressions where the baseline passes but your skill fails.
+
+```bash
 clauditor grade .claude/commands/my-skill.md --compare
+```
 
-# Trigger precision testing:
+Requires `test_args` in the eval spec — these become the baseline prompt.
+
+#### Variance Measurement
+
+Runs the skill N times and measures output stability across runs:
+
+```bash
+clauditor grade .claude/commands/my-skill.md --variance 5
+```
+
+Configure thresholds in the eval spec:
+
+```json
+{
+  "variance": {
+    "n_runs": 5,
+    "min_stability": 0.8
+  }
+}
+```
+
+Reports `score_mean`, `score_stddev`, `pass_rate_mean`, and `stability` (fraction of runs where all criteria passed). Fails if stability drops below `min_stability`.
+
+#### Trigger Precision Testing
+
+Tests whether an LLM correctly identifies which user queries should invoke your skill:
+
+```bash
 clauditor triggers .claude/commands/my-skill.md
+clauditor triggers .claude/commands/my-skill.md --json
+```
 
-# Dry run (print prompts, no API calls):
-clauditor grade .claude/commands/my-skill.md --dry-run
+Define test queries in the eval spec:
+
+```json
+{
+  "trigger_tests": {
+    "should_trigger": [
+      "Find kid activities in Cupertino",
+      "What are some things to do with kids near me?"
+    ],
+    "should_not_trigger": [
+      "What's the weather today?",
+      "Help me write a Python script"
+    ]
+  }
+}
+```
+
+Reports accuracy, precision, and recall. Passes only when every classification is correct.
+
+#### Python API
+
+```python
+import asyncio
+from clauditor.quality_grader import grade_quality, measure_variance
+from clauditor.comparator import compare_ab
+from clauditor.triggers import test_triggers
+from clauditor.spec import SkillSpec
+
+spec = SkillSpec.from_file(".claude/commands/my-skill.md")
+
+# Quality grading
+report = asyncio.run(grade_quality(output, spec.eval_spec))
+print(f"{report.pass_rate:.0%} passed, mean score {report.mean_score:.2f}")
+
+# A/B comparison
+ab = asyncio.run(compare_ab(spec))
+print(f"Regressions: {len(ab.regressions)}")
+
+# Variance
+var = asyncio.run(measure_variance(spec, n_runs=3))
+print(f"Stability: {var.stability:.0%}")
+
+# Trigger precision
+triggers = asyncio.run(test_triggers(spec.eval_spec))
+print(f"Accuracy: {triggers.accuracy:.0%}, Precision: {triggers.precision:.0%}")
 ```
 
 ## CLI Reference
@@ -216,7 +309,60 @@ Place `<skill-name>.eval.json` alongside your `.claude/commands/<skill-name>.md`
 └── find-restaurants.eval.json
 ```
 
-See [examples/](examples/) for complete eval specs.
+A complete eval spec with all three layers:
+
+```json
+{
+  "skill_name": "find-kid-activities",
+  "description": "Finds kid-friendly activities near a location",
+  "test_args": "\"Cupertino, CA\" --ages 4-6 --count 5 --depth quick",
+
+  "assertions": [
+    {"type": "contains", "value": "Venues"},
+    {"type": "has_entries", "value": "3"},
+    {"type": "has_urls", "value": "3"},
+    {"type": "min_length", "value": "500"},
+    {"type": "not_contains", "value": "Error"}
+  ],
+
+  "sections": [
+    {
+      "name": "Venues",
+      "min_entries": 3,
+      "fields": [
+        {"name": "name", "required": true},
+        {"name": "address", "required": true},
+        {"name": "website", "required": true}
+      ]
+    }
+  ],
+
+  "grading_criteria": [
+    "Are all venues within the specified distance?",
+    "Are venues appropriate for the specified age range?",
+    "Do cost tiers match the budget filter?"
+  ],
+  "grading_model": "claude-sonnet-4-6",
+
+  "trigger_tests": {
+    "should_trigger": [
+      "Find kid activities in Cupertino",
+      "What are some things to do with kids near me?"
+    ],
+    "should_not_trigger": [
+      "What's the weather today?",
+      "Help me write a Python script"
+    ]
+  },
+
+  "variance": {
+    "n_runs": 5,
+    "min_stability": 0.8
+  }
+}
+```
+
+See [`examples/`](examples/.claude/commands/example-skill.eval.json) for a complete working eval spec.
 
 ## License
 
