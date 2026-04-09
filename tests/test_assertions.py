@@ -1,10 +1,18 @@
 """Tests for Layer 1 deterministic assertions."""
 
-from clauditor.assertions import (
+import importlib
+
+import clauditor.assertions as _assertions_mod
+
+importlib.reload(_assertions_mod)
+
+from clauditor.assertions import (  # noqa: E402
+    AssertionResult,
     AssertionSet,
     assert_contains,
     assert_has_entries,
     assert_has_urls,
+    assert_max_length,
     assert_min_count,
     assert_min_length,
     assert_not_contains,
@@ -176,3 +184,105 @@ class TestAssertionSet:
         assert s.passed
         assert s.pass_rate == 1.0
         assert len(s.failed) == 0
+
+    def test_pass_rate_mixed(self):
+        s = AssertionSet(
+            results=[
+                assert_contains("hello", "hello"),
+                assert_contains("hello", "missing"),
+                assert_contains("hello", "also_missing"),
+            ]
+        )
+        assert not s.passed
+        assert abs(s.pass_rate - 1 / 3) < 0.01
+
+    def test_failed_returns_only_failures(self):
+        s = AssertionSet(
+            results=[
+                assert_contains("hello", "hello"),
+                assert_contains("hello", "nope"),
+            ]
+        )
+        failed = s.failed
+        assert len(failed) == 1
+        assert not failed[0].passed
+
+    def test_summary_format(self):
+        s = AssertionSet(
+            results=[
+                assert_contains("hello", "hello"),
+                assert_contains("hello", "nope"),
+            ]
+        )
+        summary = s.summary()
+        assert "1/2" in summary
+        assert "50%" in summary
+        assert "FAIL" in summary
+        assert "nope" in summary
+
+
+class TestMaxLength:
+    def test_pass(self):
+        result = assert_max_length("short", 100)
+        assert result.passed
+        assert "5" in result.message
+
+    def test_fail(self):
+        result = assert_max_length("this is too long", 5)
+        assert not result.passed
+
+    def test_exact(self):
+        result = assert_max_length("12345", 5)
+        assert result.passed
+
+
+class TestAssertionResultBool:
+    def test_bool_true(self):
+        r = AssertionResult(name="test", passed=True, message="ok")
+        assert bool(r) is True
+
+    def test_bool_false(self):
+        r = AssertionResult(name="test", passed=False, message="fail")
+        assert bool(r) is False
+
+
+class TestRunAssertionsEdgeCases:
+    def test_empty_assertions(self):
+        result = run_assertions("anything", [])
+        assert isinstance(result, AssertionSet)
+        assert result.passed  # vacuous truth
+        assert len(result.results) == 0
+
+    def test_unknown_type_message(self):
+        result = run_assertions("text", [{"type": "bogus", "value": "x"}])
+        assert not result.passed
+        assert len(result.results) == 1
+        assert "Unknown assertion type" in result.results[0].message
+        assert result.results[0].name == "unknown:bogus"
+
+    def test_max_length_via_run(self):
+        result = run_assertions("short", [{"type": "max_length", "value": "100"}])
+        assert result.passed
+
+    def test_regex_via_run(self):
+        result = run_assertions("hello 123", [{"type": "regex", "value": r"\d+"}])
+        assert result.passed
+
+    def test_min_count_via_run(self):
+        assertion = {"type": "min_count", "value": "a", "minimum": 3}
+        result = run_assertions("aaa", [assertion])
+        assert result.passed
+
+    def test_has_urls_via_run(self):
+        result = run_assertions(
+            "visit https://example.com",
+            [{"type": "has_urls", "value": "1"}],
+        )
+        assert result.passed
+
+    def test_has_entries_via_run(self):
+        result = run_assertions(
+            "**1. Item** **2. Item**",
+            [{"type": "has_entries", "value": "2"}],
+        )
+        assert result.passed

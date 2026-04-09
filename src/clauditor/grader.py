@@ -139,10 +139,14 @@ async def extract_and_grade(
     try:
         # Extract JSON from response (may be wrapped in markdown code block)
         json_str = response_text
-        if "```" in json_str:
+        if "```json" in json_str:
             json_str = json_str.split("```json")[-1].split("```")[0]
         elif "```" in json_str:
-            json_str = json_str.split("```")[-2]
+            # Generic fence without language tag
+            parts = json_str.split("```")
+            # Take the content between the first pair of fences
+            if len(parts) >= 3:
+                json_str = parts[1]
 
         raw = json.loads(json_str.strip())
     except (json.JSONDecodeError, IndexError):

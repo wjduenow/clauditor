@@ -10,6 +10,9 @@ build/
 .env
 .ruff_cache/
 .pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
 .mypy_cache/
 *.so
 
@@ -31,6 +34,4 @@ build/
 .dolt/
 *.db
 .beads-credential-key
-work-ss5.3/
-work-ss5.5/
-work-ss5.7/
+work-*/

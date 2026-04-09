@@ -60,6 +60,7 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "strict"
+addopts = "--import-mode=importlib --cov-fail-under=80"
 
 [dependency-groups]
 dev = [
