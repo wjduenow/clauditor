@@ -52,18 +52,28 @@ bd close <id>         # Complete work
 
 ## Build & Test
 
-_Add your build and test commands here_
-
 ```bash
-# Example:
-# npm install
-# npm test
+uv sync --dev               # Install dependencies
+uv run ruff check src/ tests/  # Lint
+uv run pytest --cov=clauditor --cov-report=term-missing  # Test with coverage (80% gate enforced)
 ```
 
 ## Architecture Overview
 
-_Add a brief overview of your project architecture_
+Three-layer skill evaluation framework:
+- **Layer 1** (`assertions.py`): Deterministic checks (regex, string matching, counting)
+- **Layer 2** (`grader.py`): LLM-graded schema extraction via Haiku
+- **Layer 3** (`quality_grader.py`, `triggers.py`): LLM-graded quality and trigger precision via Sonnet
+
+Supporting modules: `runner.py` (subprocess execution), `spec.py` (orchestrator), `schemas.py` (data models), `cli.py` (CLI entry point), `comparator.py` (A/B testing), `pytest_plugin.py` (pytest integration).
 
 ## Conventions & Patterns
 
-_Add your project-specific conventions here_
+### Testing
+- Tests in `tests/`, one file per source module (`test_<module>.py`)
+- Class-based test organization (`TestFromFile`, `TestEvaluate`, etc.)
+- `asyncio_mode = "strict"` — async tests require `@pytest.mark.asyncio`
+- Mock external calls with `unittest.mock` (MagicMock, AsyncMock, patch)
+- Modules imported by the pytest plugin before coverage starts need `importlib.reload()` at the top of their test file (see `test_schemas.py` for pattern)
+- `tests/conftest.py` has shared fixtures; must NOT shadow plugin fixture names (`clauditor_runner`, `clauditor_spec`, `clauditor_grader`, `clauditor_triggers`)
+- Use `tmp_path` for file-based tests, not `tempfile` directly
