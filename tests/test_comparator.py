@@ -1,6 +1,6 @@
 """Tests for the A/B baseline comparator."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -228,8 +228,7 @@ class TestCompareAB:
 
         mock_grade = AsyncMock(side_effect=[skill_report, baseline_report])
 
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr("clauditor.comparator.grade_quality", mock_grade)
+        with patch("clauditor.comparator.grade_quality", mock_grade):
             report = await compare_ab(spec)
 
         assert report.passed is True
@@ -257,8 +256,7 @@ class TestCompareAB:
 
         mock_grade = AsyncMock(side_effect=[skill_report, baseline_report])
 
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr("clauditor.comparator.grade_quality", mock_grade)
+        with patch("clauditor.comparator.grade_quality", mock_grade):
             report = await compare_ab(spec)
 
         assert report.passed is False
@@ -307,8 +305,7 @@ class TestCompareAB:
 
         mock_grade = AsyncMock(side_effect=[skill_report, baseline_report])
 
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr("clauditor.comparator.grade_quality", mock_grade)
+        with patch("clauditor.comparator.grade_quality", mock_grade):
             report = await compare_ab(spec)
 
         assert len(report.results) == 3
@@ -329,8 +326,7 @@ class TestCompareAB:
         report_obj = _make_report(grades)
         mock_grade = AsyncMock(side_effect=[report_obj, report_obj])
 
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr("clauditor.comparator.grade_quality", mock_grade)
+        with patch("clauditor.comparator.grade_quality", mock_grade):
             report = await compare_ab(spec, model="claude-haiku-4-5")
 
         assert report.model == "claude-haiku-4-5"

@@ -161,7 +161,7 @@ class TestSkillResultAssertions:
         assertion_set = result.run_assertions(
             [{"type": "contains", "value": "hello"}]
         )
-        assert assertion_set.passed > 0
+        assert assertion_set.passed
 
 
 # ---------------------------------------------------------------------------

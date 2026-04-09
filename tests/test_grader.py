@@ -236,6 +236,14 @@ class TestExtractAndGrade:
 
     @pytest.mark.asyncio
     async def test_import_error_when_no_anthropic(self):
-        with patch.dict("sys.modules", {"anthropic": None}):
-            with pytest.raises(ImportError, match="anthropic SDK"):
-                await extract_and_grade("output", _make_spec())
+        # Remove anthropic from sys.modules and block re-import
+        import sys
+
+        real_anthropic = sys.modules.pop("anthropic", None)
+        try:
+            with patch.dict("sys.modules", {"anthropic": None}):
+                with pytest.raises(ImportError, match="anthropic SDK"):
+                    await extract_and_grade("output", _make_spec())
+        finally:
+            if real_anthropic is not None:
+                sys.modules["anthropic"] = real_anthropic
