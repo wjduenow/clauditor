@@ -217,3 +217,47 @@ class TestSkillRunnerRun:
             assert result.exit_code == -1
             assert "not found" in result.error
             assert result.output == ""
+
+
+# ---------------------------------------------------------------------------
+# SkillResult.outputs dict
+# ---------------------------------------------------------------------------
+
+
+class TestSkillResultOutputs:
+    def _make(self, **kwargs) -> SkillResult:
+        defaults = dict(output="some output", exit_code=0, skill_name="test", args="")
+        defaults.update(kwargs)
+        return SkillResult(**defaults)
+
+    def test_outputs_defaults_to_empty_dict(self):
+        result = self._make()
+        assert result.outputs == {}
+
+    def test_outputs_can_be_populated_with_multiple_files(self):
+        files = {"report.md": "# Report", "data.csv": "a,b\n1,2"}
+        result = self._make(outputs=files)
+        assert result.outputs == files
+        assert result.outputs["report.md"] == "# Report"
+        assert result.outputs["data.csv"] == "a,b\n1,2"
+
+    def test_succeeded_works_when_outputs_populated(self):
+        result = self._make(
+            output="primary output",
+            exit_code=0,
+            outputs={"file.txt": "content"},
+        )
+        assert result.succeeded is True
+
+    def test_succeeded_works_with_empty_outputs(self):
+        result = self._make(output="primary output", exit_code=0)
+        assert result.outputs == {}
+        assert result.succeeded is True
+
+    def test_assertion_methods_use_output_not_outputs(self):
+        result = self._make(
+            output="hello world",
+            outputs={"other.txt": "completely different text"},
+        )
+        result.assert_contains("hello world")
+        result.assert_not_contains("completely different text")

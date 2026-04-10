@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from clauditor.assertions import (
@@ -29,6 +29,7 @@ class SkillResult:
     args: str
     duration_seconds: float = 0.0
     error: str | None = None
+    outputs: dict[str, str] = field(default_factory=dict)
 
     @property
     def succeeded(self) -> bool:
