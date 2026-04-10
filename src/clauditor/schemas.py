@@ -186,7 +186,11 @@ class EvalSpec:
                     "tiers": [
                         {
                             "label": t.label,
-                            "description": t.description,
+                            **(
+                                {"description": t.description}
+                                if t.description
+                                else {}
+                            ),
                             "min_entries": t.min_entries,
                             "fields": [
                                 {
