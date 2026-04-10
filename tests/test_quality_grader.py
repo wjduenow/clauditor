@@ -126,6 +126,95 @@ class TestGradingReport:
         assert "FAIL: Tone is professional" in s
 
 
+class TestGradingReportSerialization:
+    def test_to_json_basic(self):
+        report = GradingReport(
+            skill_name="test-skill",
+            results=_make_results([True, False, True]),
+            model="claude-sonnet-4-6",
+            duration_seconds=1.5,
+        )
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert data["skill_name"] == "test-skill"
+        assert data["model"] == "claude-sonnet-4-6"
+        assert data["duration_seconds"] == 1.5
+        assert len(data["results"]) == 3
+        assert (
+            data["results"][0]["criterion"]
+            == "Output contains actionable recommendations"
+        )
+        assert data["results"][0]["passed"] is True
+        assert "timestamp" in data
+
+    def test_from_json_roundtrip(self):
+        original = GradingReport(
+            skill_name="roundtrip-skill",
+            results=_make_results([True, False, True]),
+            model="claude-sonnet-4-6",
+            duration_seconds=2.3,
+        )
+        raw = original.to_json()
+        restored = GradingReport.from_json(raw)
+        assert restored.skill_name == original.skill_name
+        assert restored.model == original.model
+        assert restored.duration_seconds == pytest.approx(original.duration_seconds)
+        assert len(restored.results) == len(original.results)
+        for orig_r, rest_r in zip(original.results, restored.results):
+            assert rest_r.criterion == orig_r.criterion
+            assert rest_r.passed == orig_r.passed
+            assert rest_r.score == pytest.approx(orig_r.score)
+            assert rest_r.evidence == orig_r.evidence
+            assert rest_r.reasoning == orig_r.reasoning
+
+    def test_from_json_preserves_floats(self):
+        report = GradingReport(
+            skill_name="float-test",
+            results=[
+                GradingResult(
+                    criterion="precision",
+                    passed=True,
+                    score=0.8765,
+                    evidence="e",
+                    reasoning="r",
+                )
+            ],
+            model="claude-sonnet-4-6",
+            duration_seconds=3.14159,
+        )
+        restored = GradingReport.from_json(report.to_json())
+        assert restored.results[0].score == pytest.approx(0.8765)
+        assert restored.duration_seconds == pytest.approx(3.14159)
+
+    def test_from_json_handles_missing_duration(self):
+        data = json.dumps({
+            "skill_name": "no-duration",
+            "model": "claude-sonnet-4-6",
+            "results": [
+                {
+                    "criterion": "c1",
+                    "passed": True,
+                    "score": 0.9,
+                    "evidence": "e",
+                    "reasoning": "r",
+                }
+            ],
+        })
+        restored = GradingReport.from_json(data)
+        assert restored.duration_seconds == 0.0
+
+    def test_to_json_includes_timestamp(self):
+        report = GradingReport(
+            skill_name="ts-test",
+            results=[],
+            model="claude-sonnet-4-6",
+        )
+        raw = report.to_json()
+        data = json.loads(raw)
+        # ISO 8601 timestamp should contain a 'T' separator
+        assert "T" in data["timestamp"]
+
+
 class TestParseGradingResponse:
     def test_valid_json(self):
         data = [
