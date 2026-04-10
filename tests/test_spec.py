@@ -188,10 +188,10 @@ class TestFileBasedOutput:
         spec = SkillSpec.from_file(skill_path, runner=runner)
         result = spec.run()
         assert len(result.outputs) == 2
-        assert result.outputs["a.txt"] == "alpha"
-        assert result.outputs["b.txt"] == "beta"
-        # result.output should be set to the first match
-        assert result.output in ("alpha", "beta")
+        assert result.outputs["out/a.txt"] == "alpha"
+        assert result.outputs["out/b.txt"] == "beta"
+        # result.output should be set to the first file read
+        assert result.output == "alpha"
 
     def test_no_output_file_fields_keeps_stdout(self, tmp_skill_file, mock_runner):
         eval_data = {

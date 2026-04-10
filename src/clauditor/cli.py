@@ -198,8 +198,10 @@ def cmd_grade(args: argparse.Namespace) -> int:
             print(f"\n{variance_report.summary()}")
 
     # --diff: compare against prior results
+    # Use stderr for human output when --json is set to keep stdout valid JSON
     save_dir = Path(".clauditor")
     save_path = save_dir / f"{spec.skill_name}.grade.json"
+    diff_out = sys.stderr if args.json else sys.stdout
 
     if args.diff:
         if save_path.exists():
@@ -210,9 +212,14 @@ def cmd_grade(args: argparse.Namespace) -> int:
             current_by_name = {r.criterion: r for r in report.results}
             common = set(prior_by_name) & set(current_by_name)
             regressions = []
-            print("\nDiff vs prior results:")
-            print(f"  {'Criterion':<40} {'Prior':>6} {'Current':>8} {'Delta':>6}")
-            print(f"  {'-'*40} {'-'*6} {'-'*8} {'-'*6}")
+            print("\nDiff vs prior results:", file=diff_out)
+            print(
+                f"  {'Criterion':<40} {'Prior':>6} {'Current':>8} {'Delta':>6}",
+                file=diff_out,
+            )
+            print(
+                f"  {'-'*40} {'-'*6} {'-'*8} {'-'*6}", file=diff_out
+            )
             for name in sorted(common):
                 p_score = prior_by_name[name].score
                 c_score = current_by_name[name].score
@@ -226,13 +233,15 @@ def cmd_grade(args: argparse.Namespace) -> int:
                     f"  {name:<40} {p_score:>6.2f}"
                     f" {c_score:>8.2f} {delta:>+6.2f}{marker}"
                 )
-                print(line)
+                print(line, file=diff_out)
                 if is_regression:
                     regressions.append(name)
             if regressions:
-                print(f"\n  {len(regressions)} regression(s) detected.")
+                print(
+                    f"\n  {len(regressions)} regression(s) detected.", file=diff_out
+                )
             else:
-                print("\n  No regressions detected.")
+                print("\n  No regressions detected.", file=diff_out)
         else:
             print(
                 f"\nWARNING: No prior results at {save_path}. "
@@ -243,7 +252,7 @@ def cmd_grade(args: argparse.Namespace) -> int:
     if args.save:
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path.write_text(report.to_json())
-        print(f"\nGrade report saved to {save_path}")
+        print(f"\nGrade report saved to {save_path}", file=diff_out)
 
     # Determine exit code
     passed = report.passed

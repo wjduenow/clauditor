@@ -101,8 +101,8 @@ class GradingReport:
                 criterion=item.get("criterion", ""),
                 passed=bool(item.get("passed", False)),
                 score=float(item.get("score", 0.0)),
-                evidence=item.get("evidence", ""),
-                reasoning=item.get("reasoning", ""),
+                evidence=item.get("evidence") or "",
+                reasoning=item.get("reasoning") or "",
             )
             for item in parsed.get("results", [])
         ]
