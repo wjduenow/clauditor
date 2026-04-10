@@ -285,9 +285,13 @@ clauditor init <skill.md>              # Generate starter eval.json
 clauditor validate <skill.md>          # Run Layer 1 assertions
 clauditor validate <skill.md> --json   # JSON output for CI
 clauditor run <skill-name> --args "…"  # Run skill, print output
+clauditor extract <skill.md>           # Layer 2 schema extraction
+clauditor extract <skill.md> --dry-run # Print extraction prompt only
 clauditor grade <skill.md>             # Layer 3 quality grading
 clauditor grade <skill.md> --compare   # A/B comparison
 clauditor grade <skill.md> --variance 3  # Variance measurement
+clauditor grade <skill.md> --save      # Persist results to .clauditor/
+clauditor grade <skill.md> --diff      # Compare against prior results
 clauditor triggers <skill.md>          # Trigger precision testing
 ```
 
@@ -350,12 +354,19 @@ A complete eval spec with all three layers:
     }
   ],
 
+  "output_file": "research/results.md",
+  "output_files": ["research/*.md", "research/*.json"],
+
   "grading_criteria": [
     "Are all venues within the specified distance?",
     "Are venues appropriate for the specified age range?",
     "Do cost tiers match the budget filter?"
   ],
   "grading_model": "claude-sonnet-4-6",
+  "grade_thresholds": {
+    "min_pass_rate": 0.7,
+    "min_mean_score": 0.5
+  },
 
   "trigger_tests": {
     "should_trigger": [
