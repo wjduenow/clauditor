@@ -13,6 +13,7 @@ importlib.reload(_schemas_mod)
 from clauditor.schemas import (  # noqa: E402
     EvalSpec,
     FieldRequirement,
+    GradeThresholds,
     SectionRequirement,
     TriggerTests,
     VarianceConfig,
@@ -454,3 +455,128 @@ class TestOptionalFields:
         assert spec.variance is not None
         assert spec.variance.n_runs == 5
         assert spec.variance.min_stability == 0.8
+
+
+class TestEvalSpecOutputFields:
+    """Tests for output_file and output_files fields on EvalSpec."""
+
+    def test_load_with_output_file(self, tmp_path):
+        """output_file is loaded from JSON when present."""
+        data = {"skill_name": "s", "output_file": "report.md"}
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+        assert spec.output_file == "report.md"
+
+    def test_load_with_output_files(self, tmp_path):
+        """output_files list is loaded from JSON when present."""
+        data = {"skill_name": "s", "output_files": ["out/*.md", "summary.txt"]}
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+        assert spec.output_files == ["out/*.md", "summary.txt"]
+
+    def test_to_dict_roundtrip(self, tmp_path):
+        """from_file -> to_dict preserves both output fields."""
+        data = {
+            "skill_name": "s",
+            "output_file": "result.json",
+            "output_files": ["a.txt", "b.txt"],
+        }
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+        d = spec.to_dict()
+        assert d["output_file"] == "result.json"
+        assert d["output_files"] == ["a.txt", "b.txt"]
+
+    def test_defaults_when_missing(self, tmp_path):
+        """output_file defaults to None, output_files to [] when absent."""
+        path = _write_json(tmp_path, {"skill_name": "bare"})
+        spec = EvalSpec.from_file(path)
+        assert spec.output_file is None
+        assert spec.output_files == []
+
+    def test_backward_compat_old_eval_json(self, tmp_path):
+        """Old eval.json without output fields loads without error."""
+        old_data = {
+            "skill_name": "legacy",
+            "description": "An old spec",
+            "assertions": [{"type": "contains", "value": "hello"}],
+        }
+        path = _write_json(tmp_path, old_data)
+        spec = EvalSpec.from_file(path)
+        assert spec.skill_name == "legacy"
+        assert spec.output_file is None
+        assert spec.output_files == []
+
+    def test_to_dict_omits_defaults(self):
+        """to_dict omits output_file and output_files when at defaults."""
+        spec = EvalSpec(skill_name="x")
+        d = spec.to_dict()
+        assert "output_file" not in d
+        assert "output_files" not in d
+
+
+class TestGradeThresholds:
+    """Tests for GradeThresholds loading, defaults, and round-trip."""
+
+    def test_defaults(self):
+        gt = GradeThresholds()
+        assert gt.min_pass_rate == 0.7
+        assert gt.min_mean_score == 0.5
+
+    def test_from_file_with_grade_thresholds(self, tmp_path):
+        """grade_thresholds section is correctly parsed from JSON."""
+        data = {
+            "skill_name": "gt-test",
+            "grade_thresholds": {
+                "min_pass_rate": 0.9,
+                "min_mean_score": 0.8,
+            },
+        }
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+
+        assert spec.grade_thresholds is not None
+        assert spec.grade_thresholds.min_pass_rate == 0.9
+        assert spec.grade_thresholds.min_mean_score == 0.8
+
+    def test_from_file_without_grade_thresholds(self, tmp_path):
+        """grade_thresholds is None when absent from JSON."""
+        path = _write_json(tmp_path, {"skill_name": "no-gt"})
+        spec = EvalSpec.from_file(path)
+        assert spec.grade_thresholds is None
+
+    def test_roundtrip(self, tmp_path):
+        """from_file -> to_dict -> from_file preserves grade_thresholds."""
+        data = {
+            "skill_name": "rt",
+            "grade_thresholds": {
+                "min_pass_rate": 0.85,
+                "min_mean_score": 0.6,
+            },
+        }
+        path1 = _write_json(tmp_path, data, name="first.json")
+        spec1 = EvalSpec.from_file(path1)
+        d = spec1.to_dict()
+        assert d["grade_thresholds"]["min_pass_rate"] == 0.85
+        assert d["grade_thresholds"]["min_mean_score"] == 0.6
+
+        path2 = _write_json(tmp_path, d, name="second.json")
+        spec2 = EvalSpec.from_file(path2)
+        assert spec2.grade_thresholds.min_pass_rate == 0.85
+        assert spec2.grade_thresholds.min_mean_score == 0.6
+
+    def test_to_dict_omits_when_none(self):
+        """grade_thresholds key absent from to_dict when field is None."""
+        spec = EvalSpec(skill_name="x")
+        d = spec.to_dict()
+        assert "grade_thresholds" not in d
+
+    def test_from_file_empty_dict_uses_defaults(self, tmp_path):
+        """grade_thresholds with empty dict gets default values."""
+        data = {"skill_name": "gt", "grade_thresholds": {}}
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+
+        assert spec.grade_thresholds is not None
+        assert spec.grade_thresholds.min_pass_rate == 0.7
+        assert spec.grade_thresholds.min_mean_score == 0.5

@@ -16,7 +16,7 @@ from clauditor.quality_grader import (
     measure_variance,
     parse_grading_response,
 )
-from clauditor.schemas import EvalSpec, VarianceConfig
+from clauditor.schemas import EvalSpec, GradeThresholds, VarianceConfig
 
 
 def _make_spec() -> EvalSpec:
@@ -124,6 +124,129 @@ class TestGradingReport:
         s = report.summary()
         assert "PASS: Output contains actionable" in s
         assert "FAIL: Tone is professional" in s
+
+
+class TestGradingReportSerialization:
+    def test_to_json_basic(self):
+        report = GradingReport(
+            skill_name="test-skill",
+            results=_make_results([True, False, True]),
+            model="claude-sonnet-4-6",
+            duration_seconds=1.5,
+        )
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert data["skill_name"] == "test-skill"
+        assert data["model"] == "claude-sonnet-4-6"
+        assert data["duration_seconds"] == 1.5
+        assert len(data["results"]) == 3
+        assert (
+            data["results"][0]["criterion"]
+            == "Output contains actionable recommendations"
+        )
+        assert data["results"][0]["passed"] is True
+        assert "timestamp" in data
+
+    def test_from_json_roundtrip(self):
+        original = GradingReport(
+            skill_name="roundtrip-skill",
+            results=_make_results([True, False, True]),
+            model="claude-sonnet-4-6",
+            duration_seconds=2.3,
+        )
+        raw = original.to_json()
+        restored = GradingReport.from_json(raw)
+        assert restored.skill_name == original.skill_name
+        assert restored.model == original.model
+        assert restored.duration_seconds == pytest.approx(original.duration_seconds)
+        assert len(restored.results) == len(original.results)
+        for orig_r, rest_r in zip(original.results, restored.results):
+            assert rest_r.criterion == orig_r.criterion
+            assert rest_r.passed == orig_r.passed
+            assert rest_r.score == pytest.approx(orig_r.score)
+            assert rest_r.evidence == orig_r.evidence
+            assert rest_r.reasoning == orig_r.reasoning
+
+    def test_from_json_preserves_floats(self):
+        report = GradingReport(
+            skill_name="float-test",
+            results=[
+                GradingResult(
+                    criterion="precision",
+                    passed=True,
+                    score=0.8765,
+                    evidence="e",
+                    reasoning="r",
+                )
+            ],
+            model="claude-sonnet-4-6",
+            duration_seconds=3.14159,
+        )
+        restored = GradingReport.from_json(report.to_json())
+        assert restored.results[0].score == pytest.approx(0.8765)
+        assert restored.duration_seconds == pytest.approx(3.14159)
+
+    def test_from_json_handles_missing_duration(self):
+        data = json.dumps({
+            "skill_name": "no-duration",
+            "model": "claude-sonnet-4-6",
+            "results": [
+                {
+                    "criterion": "c1",
+                    "passed": True,
+                    "score": 0.9,
+                    "evidence": "e",
+                    "reasoning": "r",
+                }
+            ],
+        })
+        restored = GradingReport.from_json(data)
+        assert restored.duration_seconds == 0.0
+
+    def test_to_json_includes_timestamp(self):
+        report = GradingReport(
+            skill_name="ts-test",
+            results=[],
+            model="claude-sonnet-4-6",
+        )
+        raw = report.to_json()
+        data = json.loads(raw)
+        # ISO 8601 timestamp should contain a 'T' separator
+        assert "T" in data["timestamp"]
+
+    def test_thresholds_roundtrip(self):
+        """Thresholds survive JSON round-trip."""
+        thresholds = GradeThresholds(min_pass_rate=0.8, min_mean_score=0.6)
+        original = GradingReport(
+            skill_name="threshold-test",
+            results=_make_results([True, False]),
+            model="claude-sonnet-4-6",
+            thresholds=thresholds,
+        )
+        raw = original.to_json()
+        data = json.loads(raw)
+        assert data["thresholds"]["min_pass_rate"] == 0.8
+        assert data["thresholds"]["min_mean_score"] == 0.6
+
+        restored = GradingReport.from_json(raw)
+        assert restored.thresholds is not None
+        assert restored.thresholds.min_pass_rate == pytest.approx(0.8)
+        assert restored.thresholds.min_mean_score == pytest.approx(0.6)
+        assert restored.passed == original.passed
+
+    def test_no_thresholds_roundtrip(self):
+        """Report without thresholds omits them from JSON."""
+        original = GradingReport(
+            skill_name="no-thresh",
+            results=_make_results([True]),
+            model="claude-sonnet-4-6",
+        )
+        raw = original.to_json()
+        data = json.loads(raw)
+        assert "thresholds" not in data
+
+        restored = GradingReport.from_json(raw)
+        assert restored.thresholds is None
 
 
 class TestParseGradingResponse:
@@ -640,3 +763,93 @@ class TestMeasureVariance:
 
         with pytest.raises(ValueError, match="No eval spec found"):
             await measure_variance(mock_spec, n_runs=3)
+
+
+class TestGradeThresholdsOnReport:
+    """Tests for GradeThresholds logic in GradingReport.passed."""
+
+    def _make_report(
+        self,
+        passed_flags: list[bool],
+        scores: list[float],
+        thresholds: GradeThresholds | None = None,
+    ) -> GradingReport:
+        results = [
+            GradingResult(
+                criterion=f"c{i}",
+                passed=p,
+                score=s,
+                evidence="e",
+                reasoning="r",
+            )
+            for i, (p, s) in enumerate(zip(passed_flags, scores))
+        ]
+        return GradingReport(
+            skill_name="test",
+            results=results,
+            model="claude-sonnet-4-6",
+            thresholds=thresholds,
+        )
+
+    def test_all_above_threshold_passes(self):
+        """All criteria pass and scores are above threshold -> passed=True."""
+        report = self._make_report(
+            [True, True, True], [0.8, 0.9, 0.7],
+            thresholds=GradeThresholds(min_pass_rate=0.7, min_mean_score=0.5),
+        )
+        assert report.pass_rate == pytest.approx(1.0)
+        assert report.mean_score == pytest.approx(0.8)
+        assert report.passed is True
+
+    def test_pass_rate_below_threshold_fails(self):
+        """pass_rate below min_pass_rate -> passed=False."""
+        # 1 of 3 pass -> pass_rate = 0.333
+        report = self._make_report(
+            [True, False, False], [0.9, 0.6, 0.6],
+            thresholds=GradeThresholds(min_pass_rate=0.7, min_mean_score=0.5),
+        )
+        assert report.pass_rate == pytest.approx(1 / 3)
+        assert report.mean_score == pytest.approx(0.7)
+        assert report.passed is False
+
+    def test_mean_score_below_threshold_fails(self):
+        """mean_score below min_mean_score -> passed=False."""
+        # All pass but scores are low
+        report = self._make_report(
+            [True, True, True], [0.3, 0.4, 0.2],
+            thresholds=GradeThresholds(min_pass_rate=0.7, min_mean_score=0.5),
+        )
+        assert report.pass_rate == pytest.approx(1.0)
+        assert report.mean_score == pytest.approx(0.3)
+        assert report.passed is False
+
+    def test_no_thresholds_uses_defaults(self):
+        """When thresholds is None, uses defaults (0.7/0.5)."""
+        # 3/4 pass -> pass_rate = 0.75 >= 0.7, mean_score = 0.6 >= 0.5
+        report = self._make_report(
+            [True, True, True, False], [0.7, 0.7, 0.6, 0.4],
+            thresholds=None,
+        )
+        assert report.pass_rate == pytest.approx(0.75)
+        assert report.mean_score == pytest.approx(0.6)
+        assert report.passed is True
+
+    def test_custom_thresholds_from_eval_spec(self):
+        """Custom strict thresholds cause failure even when defaults would pass."""
+        # pass_rate=0.75, mean_score=0.6 — passes with defaults, fails with strict
+        report = self._make_report(
+            [True, True, True, False], [0.7, 0.7, 0.6, 0.4],
+            thresholds=GradeThresholds(min_pass_rate=0.9, min_mean_score=0.8),
+        )
+        assert report.passed is False
+
+    def test_at_exact_threshold_boundary(self):
+        """Values exactly at thresholds should pass."""
+        report = self._make_report(
+            [True, True, True, False, False, False, True, True, True, True],
+            [0.5] * 10,
+            thresholds=GradeThresholds(min_pass_rate=0.7, min_mean_score=0.5),
+        )
+        assert report.pass_rate == pytest.approx(0.7)
+        assert report.mean_score == pytest.approx(0.5)
+        assert report.passed is True

@@ -132,6 +132,82 @@ class TestEvaluate:
         assert "boom" in result.results[0].message
 
 
+class TestFileBasedOutput:
+    """SkillSpec.run with file-based output (output_file / output_files)."""
+
+    def test_output_file_reads_file_content(self, tmp_skill_file, mock_runner):
+        eval_data = {
+            "skill_name": "file-skill",
+            "test_args": "",
+            "assertions": [],
+            "output_file": "results/output.txt",
+        }
+        skill_path, _ = tmp_skill_file("file-skill", eval_data=eval_data)
+        runner = mock_runner(output="stdout content")
+        # runner.project_dir must point to tmp_path so we can create the file
+        project_dir = skill_path.parent
+        runner.project_dir = project_dir
+        # Create the output file
+        (project_dir / "results").mkdir()
+        (project_dir / "results" / "output.txt").write_text("file content here")
+
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        result = spec.run()
+        assert result.output == "file content here"
+
+    def test_output_file_missing_keeps_stdout(self, tmp_skill_file, mock_runner):
+        eval_data = {
+            "skill_name": "file-skill",
+            "test_args": "",
+            "assertions": [],
+            "output_file": "nonexistent.txt",
+        }
+        skill_path, _ = tmp_skill_file("file-skill", eval_data=eval_data)
+        runner = mock_runner(output="stdout fallback")
+        runner.project_dir = skill_path.parent
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        result = spec.run()
+        assert result.output == "stdout fallback"
+
+    def test_output_files_glob_populates_outputs(self, tmp_skill_file, mock_runner):
+        eval_data = {
+            "skill_name": "glob-skill",
+            "test_args": "",
+            "assertions": [],
+            "output_files": ["out/*.txt"],
+        }
+        skill_path, _ = tmp_skill_file("glob-skill", eval_data=eval_data)
+        runner = mock_runner(output="stdout content")
+        project_dir = skill_path.parent
+        runner.project_dir = project_dir
+        # Create matching files
+        (project_dir / "out").mkdir()
+        (project_dir / "out" / "a.txt").write_text("alpha")
+        (project_dir / "out" / "b.txt").write_text("beta")
+
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        result = spec.run()
+        assert len(result.outputs) == 2
+        assert result.outputs["out/a.txt"] == "alpha"
+        assert result.outputs["out/b.txt"] == "beta"
+        # result.output should be set to the first file read
+        assert result.output == "alpha"
+
+    def test_no_output_file_fields_keeps_stdout(self, tmp_skill_file, mock_runner):
+        eval_data = {
+            "skill_name": "plain-skill",
+            "test_args": "",
+            "assertions": [],
+        }
+        skill_path, _ = tmp_skill_file("plain-skill", eval_data=eval_data)
+        runner = mock_runner(output="just stdout")
+        runner.project_dir = skill_path.parent
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        result = spec.run()
+        assert result.output == "just stdout"
+        assert result.outputs == {}
+
+
 class TestFailedRunResult:
     """_failed_run_result helper."""
 

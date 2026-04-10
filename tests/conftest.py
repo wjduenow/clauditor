@@ -171,6 +171,7 @@ def mock_runner():
         error: str | None = None,
     ) -> MagicMock:
         mock = MagicMock(spec=SkillRunner)
+        mock.project_dir = Path.cwd()
         result = SkillResult(
             output=output,
             exit_code=exit_code,

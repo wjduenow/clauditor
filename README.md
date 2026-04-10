@@ -179,17 +179,25 @@ Define rubric criteria in your eval spec:
     "Are all venues within the specified distance?",
     "Are events actually happening on the target date?",
     "Do cost tiers match the budget filter?"
-  ]
+  ],
+  "grade_thresholds": {
+    "min_pass_rate": 0.7,
+    "min_mean_score": 0.5
+  }
 }
 ```
+
+`grade_thresholds` controls when grading passes overall. `min_pass_rate` (default 0.7) is the fraction of criteria that must pass. `min_mean_score` (default 0.5) is the minimum average score across all criteria. Both must be met. This differs from `variance.min_stability`, which measures consistency across multiple runs rather than quality of a single run.
 
 ```bash
 clauditor grade .claude/commands/my-skill.md
 clauditor grade .claude/commands/my-skill.md --json
 clauditor grade .claude/commands/my-skill.md --dry-run   # Print prompt, no API call
+clauditor grade .claude/commands/my-skill.md --save       # Persist results to .clauditor/
+clauditor grade .claude/commands/my-skill.md --diff       # Compare against prior saved results
 ```
 
-Each criterion gets a pass/fail, score (0.0-1.0), evidence (quoted output), and reasoning.
+Each criterion gets a pass/fail, score (0.0-1.0), evidence (quoted output), and reasoning. Use `--save` to persist results for regression tracking, and `--diff` to compare against a prior run (flags regressions where a criterion's score drops by more than 0.1).
 
 #### A/B Comparison
 
@@ -285,9 +293,13 @@ clauditor init <skill.md>              # Generate starter eval.json
 clauditor validate <skill.md>          # Run Layer 1 assertions
 clauditor validate <skill.md> --json   # JSON output for CI
 clauditor run <skill-name> --args "…"  # Run skill, print output
+clauditor extract <skill.md>           # Layer 2 schema extraction
+clauditor extract <skill.md> --dry-run # Print extraction prompt only
 clauditor grade <skill.md>             # Layer 3 quality grading
 clauditor grade <skill.md> --compare   # A/B comparison
 clauditor grade <skill.md> --variance 3  # Variance measurement
+clauditor grade <skill.md> --save      # Persist results to .clauditor/
+clauditor grade <skill.md> --diff      # Compare against prior results
 clauditor triggers <skill.md>          # Trigger precision testing
 ```
 
@@ -322,6 +334,8 @@ Place `<skill-name>.eval.json` alongside your `.claude/commands/<skill-name>.md`
 └── find-restaurants.eval.json
 ```
 
+**File-based output:** Many skills save results to files instead of printing to stdout. Use `output_file` for skills that write to one known path (e.g., `research/results.md`). Use `output_files` with glob patterns for skills that produce multiple files (e.g., `["research/*.md"]`). If both are set, `output_file` takes precedence. When set, clauditor reads the file(s) after running the skill instead of capturing stdout.
+
 A complete eval spec with all three layers:
 
 ```json
@@ -350,12 +364,19 @@ A complete eval spec with all three layers:
     }
   ],
 
+  "output_file": "research/results.md",
+  "output_files": ["research/*.md", "research/*.json"],
+
   "grading_criteria": [
     "Are all venues within the specified distance?",
     "Are venues appropriate for the specified age range?",
     "Do cost tiers match the budget filter?"
   ],
   "grading_model": "claude-sonnet-4-6",
+  "grade_thresholds": {
+    "min_pass_rate": 0.7,
+    "min_mean_score": 0.5
+  },
 
   "trigger_tests": {
     "should_trigger": [

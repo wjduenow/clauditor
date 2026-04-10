@@ -123,7 +123,10 @@ def cmd_grade(args: argparse.Namespace) -> int:
     from clauditor.quality_grader import grade_quality
 
     async def _run_grade():
-        report = await grade_quality(output, spec.eval_spec, model)
+        report = await grade_quality(
+            output, spec.eval_spec, model,
+            thresholds=spec.eval_spec.grade_thresholds,
+        )
         ab_report = None
         if args.compare:
             from clauditor.comparator import compare_ab
@@ -193,6 +196,63 @@ def cmd_grade(args: argparse.Namespace) -> int:
             print(f"\n{ab_report.summary()}")
         if variance_report:
             print(f"\n{variance_report.summary()}")
+
+    # --diff: compare against prior results
+    # Use stderr for human output when --json is set to keep stdout valid JSON
+    save_dir = Path(".clauditor")
+    save_path = save_dir / f"{spec.skill_name}.grade.json"
+    diff_out = sys.stderr if args.json else sys.stdout
+
+    if args.diff:
+        if save_path.exists():
+            from clauditor.quality_grader import GradingReport
+
+            prior = GradingReport.from_json(save_path.read_text())
+            prior_by_name = {r.criterion: r for r in prior.results}
+            current_by_name = {r.criterion: r for r in report.results}
+            common = set(prior_by_name) & set(current_by_name)
+            regressions = []
+            print("\nDiff vs prior results:", file=diff_out)
+            print(
+                f"  {'Criterion':<40} {'Prior':>6} {'Current':>8} {'Delta':>6}",
+                file=diff_out,
+            )
+            print(
+                f"  {'-'*40} {'-'*6} {'-'*8} {'-'*6}", file=diff_out
+            )
+            for name in sorted(common):
+                p_score = prior_by_name[name].score
+                c_score = current_by_name[name].score
+                delta = c_score - p_score
+                is_regression = (
+                    delta < -0.1
+                    or (prior_by_name[name].passed and not current_by_name[name].passed)
+                )
+                marker = " REGRESSION" if is_regression else ""
+                line = (
+                    f"  {name:<40} {p_score:>6.2f}"
+                    f" {c_score:>8.2f} {delta:>+6.2f}{marker}"
+                )
+                print(line, file=diff_out)
+                if is_regression:
+                    regressions.append(name)
+            if regressions:
+                print(
+                    f"\n  {len(regressions)} regression(s) detected.", file=diff_out
+                )
+            else:
+                print("\n  No regressions detected.", file=diff_out)
+        else:
+            print(
+                f"\nWARNING: No prior results at {save_path}. "
+                "Run with --save first to establish a baseline.",
+                file=sys.stderr,
+            )
+
+    if args.save:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        save_path.write_text(report.to_json())
+        print(f"\nGrade report saved to {save_path}", file=diff_out)
 
     # Determine exit code
     passed = report.passed
@@ -265,6 +325,75 @@ def cmd_triggers(args: argparse.Namespace) -> int:
         print(report.summary())
 
     return 0 if report.passed else 1
+
+
+def cmd_extract(args: argparse.Namespace) -> int:
+    """Run Layer 2 schema extraction against a skill's output."""
+    import asyncio
+
+    spec = SkillSpec.from_file(args.skill, eval_path=args.eval)
+
+    if not spec.eval_spec:
+        print(f"ERROR: No eval spec found for {args.skill}", file=sys.stderr)
+        return 1
+
+    if not spec.eval_spec.sections:
+        print("ERROR: No sections defined in eval spec", file=sys.stderr)
+        return 1
+
+    model = args.model or "claude-haiku-4-5-20251001"
+
+    # --dry-run: print prompt and exit
+    if args.dry_run:
+        from clauditor.grader import build_extraction_prompt
+
+        prompt = build_extraction_prompt(spec.eval_spec)
+        print(f"Model: {model}")
+        print(f"Prompt:\n{prompt}")
+        return 0
+
+    # Get output
+    if args.output:
+        output = Path(args.output).read_text()
+    else:
+        print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
+        result = spec.run()
+        if not result.succeeded:
+            print(f"ERROR: Skill failed: {result.error}", file=sys.stderr)
+            return 1
+        output = result.output
+
+    # Extract and grade
+    from clauditor.grader import extract_and_grade
+
+    results = asyncio.run(extract_and_grade(output, spec.eval_spec, model))
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "skill": spec.skill_name,
+                    "model": model,
+                    "pass_rate": results.pass_rate,
+                    "passed": results.passed,
+                    "results": [
+                        {
+                            "name": r.name,
+                            "passed": r.passed,
+                            "message": r.message,
+                            **({"evidence": r.evidence} if r.evidence else {}),
+                        }
+                        for r in results.results
+                    ],
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(f"Schema Extraction: {spec.skill_name} ({model})")
+        print(results.summary())
+
+    return 0 if results.passed else 1
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -376,6 +505,12 @@ def main(argv: list[str] | None = None) -> int:
         metavar="N",
         help="Run N times with variance measurement",
     )
+    p_grade.add_argument(
+        "--save", action="store_true", help="Save grade report to .clauditor/"
+    )
+    p_grade.add_argument(
+        "--diff", action="store_true", help="Compare against prior grade results"
+    )
 
     # triggers
     p_triggers = subparsers.add_parser(
@@ -391,6 +526,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_triggers.add_argument(
         "--dry-run", action="store_true", help="Print sample trigger prompts"
+    )
+
+    # extract
+    p_extract = subparsers.add_parser(
+        "extract", help="Layer 2: LLM schema extraction"
+    )
+    p_extract.add_argument("skill", help="Path to skill .md file")
+    p_extract.add_argument(
+        "--eval", help="Path to eval.json (auto-discovered if omitted)"
+    )
+    p_extract.add_argument(
+        "--output", help="Path to pre-captured output file (skips running the skill)"
+    )
+    p_extract.add_argument("--model", help="Override extraction model")
+    p_extract.add_argument(
+        "--json", action="store_true", help="Output results as JSON"
+    )
+    p_extract.add_argument(
+        "--dry-run", action="store_true", help="Print prompt without making API calls"
     )
 
     # init
@@ -412,6 +566,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_grade(parsed)
     elif parsed.command == "triggers":
         return cmd_triggers(parsed)
+    elif parsed.command == "extract":
+        return cmd_extract(parsed)
     elif parsed.command == "init":
         return cmd_init(parsed)
 

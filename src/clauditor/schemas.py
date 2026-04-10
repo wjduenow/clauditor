@@ -37,6 +37,14 @@ class TriggerTests:
 
 
 @dataclass
+class GradeThresholds:
+    """Thresholds for pass/fail determination in quality grading."""
+
+    min_pass_rate: float = 0.7
+    min_mean_score: float = 0.5
+
+
+@dataclass
 class VarianceConfig:
     """Configuration for variance measurement."""
 
@@ -58,8 +66,11 @@ class EvalSpec:
     sections: list[SectionRequirement] = field(default_factory=list)  # Layer 2 schema
     grading_criteria: list[str] = field(default_factory=list)  # Layer 3 rubric
     grading_model: str = "claude-sonnet-4-6"
+    output_file: str | None = None  # Single output file path
+    output_files: list[str] = field(default_factory=list)  # Multiple file paths/globs
     trigger_tests: TriggerTests | None = None
     variance: VarianceConfig | None = None
+    grade_thresholds: GradeThresholds | None = None
 
     @classmethod
     def from_file(cls, path: str | Path) -> EvalSpec:
@@ -102,6 +113,14 @@ class EvalSpec:
                 min_stability=v.get("min_stability", 0.8),
             )
 
+        grade_thresholds = None
+        if "grade_thresholds" in data:
+            gt = data["grade_thresholds"]
+            grade_thresholds = GradeThresholds(
+                min_pass_rate=gt.get("min_pass_rate", 0.7),
+                min_mean_score=gt.get("min_mean_score", 0.5),
+            )
+
         return cls(
             skill_name=data.get("skill_name", path.stem),
             description=data.get("description", ""),
@@ -110,8 +129,11 @@ class EvalSpec:
             sections=sections,
             grading_criteria=data.get("grading_criteria", []),
             grading_model=data.get("grading_model", "claude-sonnet-4-6"),
+            output_file=data.get("output_file"),
+            output_files=data.get("output_files", []),
             trigger_tests=trigger_tests,
             variance=variance,
+            grade_thresholds=grade_thresholds,
         )
 
     def to_dict(self) -> dict:
@@ -139,6 +161,10 @@ class EvalSpec:
             "grading_criteria": self.grading_criteria,
             "grading_model": self.grading_model,
         }
+        if self.output_file is not None:
+            result["output_file"] = self.output_file
+        if self.output_files:
+            result["output_files"] = self.output_files
         if self.trigger_tests is not None:
             result["trigger_tests"] = {
                 "should_trigger": self.trigger_tests.should_trigger,
@@ -148,5 +174,10 @@ class EvalSpec:
             result["variance"] = {
                 "n_runs": self.variance.n_runs,
                 "min_stability": self.variance.min_stability,
+            }
+        if self.grade_thresholds is not None:
+            result["grade_thresholds"] = {
+                "min_pass_rate": self.grade_thresholds.min_pass_rate,
+                "min_mean_score": self.grade_thresholds.min_mean_score,
             }
         return result

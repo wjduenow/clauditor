@@ -6,13 +6,14 @@ eval spec. Each criterion is scored independently with evidence and reasoning.
 
 from __future__ import annotations
 
+import datetime
 import json
 import math
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from clauditor.schemas import EvalSpec
+from clauditor.schemas import EvalSpec, GradeThresholds
 
 if TYPE_CHECKING:
     from clauditor.spec import SkillSpec
@@ -37,11 +38,20 @@ class GradingReport:
     results: list[GradingResult]
     model: str
     duration_seconds: float = 0.0
+    thresholds: GradeThresholds | None = None
 
     @property
     def passed(self) -> bool:
-        """Whether all criteria passed."""
-        return all(r.passed for r in self.results)
+        """Whether grading meets threshold requirements.
+
+        Uses provided thresholds or defaults (min_pass_rate=0.7,
+        min_mean_score=0.5) when no thresholds are set.
+        """
+        t = self.thresholds if self.thresholds is not None else GradeThresholds()
+        return (
+            self.pass_rate >= t.min_pass_rate
+            and self.mean_score >= t.min_mean_score
+        )
 
     @property
     def pass_rate(self) -> float:
@@ -56,6 +66,60 @@ class GradingReport:
         if not self.results:
             return 0.0
         return sum(r.score for r in self.results) / len(self.results)
+
+    def to_json(self) -> str:
+        """Serialize the report to a JSON string."""
+        data = {
+            "skill_name": self.skill_name,
+            "model": self.model,
+            "duration_seconds": self.duration_seconds,
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+            "results": [
+                {
+                    "criterion": r.criterion,
+                    "passed": r.passed,
+                    "score": r.score,
+                    "evidence": r.evidence,
+                    "reasoning": r.reasoning,
+                }
+                for r in self.results
+            ],
+        }
+        if self.thresholds is not None:
+            data["thresholds"] = {
+                "min_pass_rate": self.thresholds.min_pass_rate,
+                "min_mean_score": self.thresholds.min_mean_score,
+            }
+        return json.dumps(data, indent=2)
+
+    @classmethod
+    def from_json(cls, data: str) -> GradingReport:
+        """Deserialize a GradingReport from a JSON string."""
+        parsed = json.loads(data)
+        results = [
+            GradingResult(
+                criterion=item.get("criterion", ""),
+                passed=bool(item.get("passed", False)),
+                score=float(item.get("score", 0.0)),
+                evidence=item.get("evidence") or "",
+                reasoning=item.get("reasoning") or "",
+            )
+            for item in parsed.get("results", [])
+        ]
+        thresholds = None
+        if "thresholds" in parsed:
+            t = parsed["thresholds"]
+            thresholds = GradeThresholds(
+                min_pass_rate=float(t.get("min_pass_rate", 0.7)),
+                min_mean_score=float(t.get("min_mean_score", 0.5)),
+            )
+        return cls(
+            skill_name=parsed.get("skill_name", ""),
+            results=results,
+            model=parsed.get("model", ""),
+            duration_seconds=float(parsed.get("duration_seconds", 0.0)),
+            thresholds=thresholds,
+        )
 
     def summary(self) -> str:
         """Format a human-readable summary of grading results."""
@@ -152,6 +216,7 @@ async def grade_quality(
     output: str,
     eval_spec: EvalSpec,
     model: str = "claude-sonnet-4-6",
+    thresholds: GradeThresholds | None = None,
 ) -> GradingReport:
     """Layer 3: Grade skill output against rubric criteria using an LLM.
 
@@ -197,6 +262,7 @@ async def grade_quality(
             ],
             model=model,
             duration_seconds=duration,
+            thresholds=thresholds,
         )
 
     response_text = response.content[0].text
@@ -219,6 +285,7 @@ async def grade_quality(
             ],
             model=model,
             duration_seconds=duration,
+            thresholds=thresholds,
         )
 
     return GradingReport(
@@ -226,6 +293,7 @@ async def grade_quality(
         results=results,
         model=model,
         duration_seconds=duration,
+        thresholds=thresholds,
     )
 
 
