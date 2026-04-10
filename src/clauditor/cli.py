@@ -123,7 +123,10 @@ def cmd_grade(args: argparse.Namespace) -> int:
     from clauditor.quality_grader import grade_quality
 
     async def _run_grade():
-        report = await grade_quality(output, spec.eval_spec, model)
+        report = await grade_quality(
+            output, spec.eval_spec, model,
+            thresholds=spec.eval_spec.grade_thresholds,
+        )
         ab_report = None
         if args.compare:
             from clauditor.comparator import compare_ab
