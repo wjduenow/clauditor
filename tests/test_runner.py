@@ -33,7 +33,6 @@ class TestRunRaw:
                 "claude",
                 "-p",
                 "find me activities in Seattle",
-                "--no-input",
             ]
             assert result.skill_name == "__baseline__"
             assert result.args == "find me activities in Seattle"
@@ -180,7 +179,7 @@ class TestSkillRunnerRun:
 
             mock_run.assert_called_once()
             cmd = mock_run.call_args[0][0]
-            assert cmd == ["claude", "-p", "/my-skill some args", "--no-input"]
+            assert cmd == ["claude", "-p", "/my-skill some args"]
             assert result.output == "skill output"
             assert result.exit_code == 0
             assert result.skill_name == "my-skill"
@@ -195,7 +194,7 @@ class TestSkillRunnerRun:
             )
             runner.run("my-skill")
             cmd = mock_run.call_args[0][0]
-            assert cmd == ["claude", "-p", "/my-skill", "--no-input"]
+            assert cmd == ["claude", "-p", "/my-skill"]
 
     def test_runner_run_timeout(self):
         runner = SkillRunner(project_dir="/tmp", timeout=5, claude_bin="claude")

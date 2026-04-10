@@ -115,7 +115,7 @@ class SkillRunner:
         start = time.monotonic()
         try:
             result = subprocess.run(
-                [self.claude_bin, "-p", prompt, "--no-input"],
+                [self.claude_bin, "-p", prompt],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
@@ -163,7 +163,7 @@ class SkillRunner:
         start = time.monotonic()
         try:
             result = subprocess.run(
-                [self.claude_bin, "-p", prompt, "--no-input"],
+                [self.claude_bin, "-p", prompt],
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
