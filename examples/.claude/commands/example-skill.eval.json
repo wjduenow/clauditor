@@ -39,61 +39,71 @@
   "sections": [
     {
       "name": "Venues",
-      "min_entries": 2,
-      "fields": [
+      "tiers": [
         {
-          "name": "name",
-          "required": true
-        },
-        {
-          "name": "address",
-          "required": true
-        },
-        {
-          "name": "hours",
-          "required": true
-        },
-        {
-          "name": "website",
-          "required": true
-        },
-        {
-          "name": "phone",
-          "required": false
-        },
-        {
-          "name": "cost",
-          "required": true
-        },
-        {
-          "name": "ages",
-          "required": true
+          "label": "default",
+          "min_entries": 2,
+          "fields": [
+            {
+              "name": "name",
+              "required": true
+            },
+            {
+              "name": "address",
+              "required": true
+            },
+            {
+              "name": "hours",
+              "required": true
+            },
+            {
+              "name": "website",
+              "required": true
+            },
+            {
+              "name": "phone",
+              "required": false
+            },
+            {
+              "name": "cost",
+              "required": true
+            },
+            {
+              "name": "ages",
+              "required": true
+            }
+          ]
         }
       ]
     },
     {
       "name": "Events",
-      "min_entries": 0,
-      "fields": [
+      "tiers": [
         {
-          "name": "name",
-          "required": true
-        },
-        {
-          "name": "date",
-          "required": true
-        },
-        {
-          "name": "time",
-          "required": true
-        },
-        {
-          "name": "event_url",
-          "required": true
-        },
-        {
-          "name": "ages",
-          "required": true
+          "label": "default",
+          "min_entries": 0,
+          "fields": [
+            {
+              "name": "name",
+              "required": true
+            },
+            {
+              "name": "date",
+              "required": true
+            },
+            {
+              "name": "time",
+              "required": true
+            },
+            {
+              "name": "event_url",
+              "required": true
+            },
+            {
+              "name": "ages",
+              "required": true
+            }
+          ]
         }
       ]
     }

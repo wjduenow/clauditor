@@ -13,6 +13,7 @@ from clauditor.schemas import (
     EvalSpec,
     FieldRequirement,
     SectionRequirement,
+    TierRequirement,
     TriggerTests,
 )
 from clauditor.spec import SkillSpec
@@ -589,10 +590,15 @@ def _make_sections():
     return [
         SectionRequirement(
             name="Results",
-            min_entries=2,
-            fields=[
-                FieldRequirement(name="name", required=True),
-                FieldRequirement(name="address", required=True),
+            tiers=[
+                TierRequirement(
+                    label="default",
+                    min_entries=2,
+                    fields=[
+                        FieldRequirement(name="name", required=True),
+                        FieldRequirement(name="address", required=True),
+                    ],
+                )
             ],
         )
     ]
