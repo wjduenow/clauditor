@@ -214,6 +214,40 @@ class TestGradingReportSerialization:
         # ISO 8601 timestamp should contain a 'T' separator
         assert "T" in data["timestamp"]
 
+    def test_thresholds_roundtrip(self):
+        """Thresholds survive JSON round-trip."""
+        thresholds = GradeThresholds(min_pass_rate=0.8, min_mean_score=0.6)
+        original = GradingReport(
+            skill_name="threshold-test",
+            results=_make_results([True, False]),
+            model="claude-sonnet-4-6",
+            thresholds=thresholds,
+        )
+        raw = original.to_json()
+        data = json.loads(raw)
+        assert data["thresholds"]["min_pass_rate"] == 0.8
+        assert data["thresholds"]["min_mean_score"] == 0.6
+
+        restored = GradingReport.from_json(raw)
+        assert restored.thresholds is not None
+        assert restored.thresholds.min_pass_rate == pytest.approx(0.8)
+        assert restored.thresholds.min_mean_score == pytest.approx(0.6)
+        assert restored.passed == original.passed
+
+    def test_no_thresholds_roundtrip(self):
+        """Report without thresholds omits them from JSON."""
+        original = GradingReport(
+            skill_name="no-thresh",
+            results=_make_results([True]),
+            model="claude-sonnet-4-6",
+        )
+        raw = original.to_json()
+        data = json.loads(raw)
+        assert "thresholds" not in data
+
+        restored = GradingReport.from_json(raw)
+        assert restored.thresholds is None
+
 
 class TestParseGradingResponse:
     def test_valid_json(self):

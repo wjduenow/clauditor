@@ -85,6 +85,11 @@ class GradingReport:
                 for r in self.results
             ],
         }
+        if self.thresholds is not None:
+            data["thresholds"] = {
+                "min_pass_rate": self.thresholds.min_pass_rate,
+                "min_mean_score": self.thresholds.min_mean_score,
+            }
         return json.dumps(data, indent=2)
 
     @classmethod
@@ -101,11 +106,19 @@ class GradingReport:
             )
             for item in parsed.get("results", [])
         ]
+        thresholds = None
+        if "thresholds" in parsed:
+            t = parsed["thresholds"]
+            thresholds = GradeThresholds(
+                min_pass_rate=float(t.get("min_pass_rate", 0.7)),
+                min_mean_score=float(t.get("min_mean_score", 0.5)),
+            )
         return cls(
             skill_name=parsed.get("skill_name", ""),
             results=results,
             model=parsed.get("model", ""),
             duration_seconds=float(parsed.get("duration_seconds", 0.0)),
+            thresholds=thresholds,
         )
 
     def summary(self) -> str:

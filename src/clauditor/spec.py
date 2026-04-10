@@ -86,12 +86,12 @@ class SkillSpec:
             elif self.eval_spec.output_files:
                 for pattern in self.eval_spec.output_files:
                     full_pattern = str(base_dir / pattern)
-                    for match in glob.glob(full_pattern):
+                    for match in sorted(glob.glob(full_pattern)):
                         match_path = Path(match)
                         if match_path.is_file():
                             result.outputs[match_path.name] = match_path.read_text()
                 if result.outputs:
-                    first_key = next(iter(result.outputs))
+                    first_key = sorted(result.outputs)[0]
                     result.output = result.outputs[first_key]
 
         return result
