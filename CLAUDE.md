@@ -62,7 +62,7 @@ uv run pytest --cov=clauditor --cov-report=term-missing  # Test with coverage (8
 
 Three-layer skill evaluation framework:
 - **Layer 1** (`assertions.py`): Deterministic checks (regex, string matching, counting)
-- **Layer 2** (`grader.py`): LLM-graded schema extraction via Haiku
+- **Layer 2** (`grader.py`): LLM-graded schema extraction via Haiku (supports tiered sections with per-tier field requirements)
 - **Layer 3** (`quality_grader.py`, `triggers.py`): LLM-graded quality and trigger precision via Sonnet
 
 Supporting modules: `runner.py` (subprocess execution), `spec.py` (orchestrator), `schemas.py` (data models), `cli.py` (CLI entry point), `comparator.py` (A/B testing), `pytest_plugin.py` (pytest integration).

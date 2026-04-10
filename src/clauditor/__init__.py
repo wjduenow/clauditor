@@ -6,6 +6,7 @@ from clauditor.schemas import (
     EvalSpec,
     FieldRequirement,
     SectionRequirement,
+    TierRequirement,
     TriggerTests,
     VarianceConfig,
 )
@@ -21,6 +22,7 @@ __all__ = [
     "GradingReport",
     "GradingResult",
     "SectionRequirement",
+    "TierRequirement",
     "SkillResult",
     "SkillRunner",
     "SkillSpec",

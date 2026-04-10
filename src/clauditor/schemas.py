@@ -20,12 +20,21 @@ class FieldRequirement:
 
 
 @dataclass
+class TierRequirement:
+    """A tier within a section, grouping fields with a label and threshold."""
+
+    label: str
+    description: str = ""
+    min_entries: int = 0
+    fields: list[FieldRequirement] = field(default_factory=list)
+
+
+@dataclass
 class SectionRequirement:
     """A required section in the output (e.g., 'Venues', 'Events')."""
 
     name: str
-    min_entries: int = 1
-    fields: list[FieldRequirement] = field(default_factory=list)
+    tiers: list[TierRequirement] = field(default_factory=list)
 
 
 @dataclass
@@ -81,19 +90,47 @@ class EvalSpec:
 
         sections = []
         for s in data.get("sections", []):
-            fields = [
-                FieldRequirement(
-                    name=f["name"],
-                    required=f.get("required", True),
-                    pattern=f.get("pattern"),
-                )
-                for f in s.get("fields", [])
-            ]
+            if "tiers" in s:
+                # New tiered format
+                tiers = []
+                for t in s["tiers"]:
+                    tier_fields = [
+                        FieldRequirement(
+                            name=f["name"],
+                            required=f.get("required", True),
+                            pattern=f.get("pattern"),
+                        )
+                        for f in t.get("fields", [])
+                    ]
+                    tiers.append(
+                        TierRequirement(
+                            label=t["label"],
+                            description=t.get("description", ""),
+                            min_entries=t.get("min_entries", 0),
+                            fields=tier_fields,
+                        )
+                    )
+            else:
+                # Legacy fields-style: normalize to single default tier
+                legacy_fields = [
+                    FieldRequirement(
+                        name=f["name"],
+                        required=f.get("required", True),
+                        pattern=f.get("pattern"),
+                    )
+                    for f in s.get("fields", [])
+                ]
+                tiers = [
+                    TierRequirement(
+                        label="default",
+                        min_entries=s.get("min_entries", 1),
+                        fields=legacy_fields,
+                    )
+                ]
             sections.append(
                 SectionRequirement(
                     name=s["name"],
-                    min_entries=s.get("min_entries", 1),
-                    fields=fields,
+                    tiers=tiers,
                 )
             )
 
@@ -146,14 +183,29 @@ class EvalSpec:
             "sections": [
                 {
                     "name": s.name,
-                    "min_entries": s.min_entries,
-                    "fields": [
+                    "tiers": [
                         {
-                            "name": f.name,
-                            "required": f.required,
-                            **({"pattern": f.pattern} if f.pattern else {}),
+                            "label": t.label,
+                            **(
+                                {"description": t.description}
+                                if t.description
+                                else {}
+                            ),
+                            "min_entries": t.min_entries,
+                            "fields": [
+                                {
+                                    "name": f.name,
+                                    "required": f.required,
+                                    **(
+                                        {"pattern": f.pattern}
+                                        if f.pattern
+                                        else {}
+                                    ),
+                                }
+                                for f in t.fields
+                            ],
                         }
-                        for f in s.fields
+                        for t in s.tiers
                     ],
                 }
                 for s in self.sections
