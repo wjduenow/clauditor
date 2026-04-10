@@ -184,6 +184,7 @@ async def extract_and_grade(
     # Convert raw JSON to ExtractedOutput
     extracted = ExtractedOutput(raw_json=raw)
     parse_errors: list[AssertionResult] = []
+    expected_sections = {s.name for s in eval_spec.sections}
 
     for section_name, section_data in raw.items():
         if isinstance(section_data, dict):
@@ -197,8 +198,11 @@ async def extract_and_grade(
                         if isinstance(e, dict)
                     ]
             extracted.sections[section_name] = tier_map
-        elif isinstance(section_data, list):
-            # Flat list = shape mismatch error
+        elif (
+            isinstance(section_data, list)
+            and section_name in expected_sections
+        ):
+            # Flat list for an expected section = shape mismatch error
             parse_errors.append(
                 AssertionResult(
                     name=f"grader:parse:{section_name}",

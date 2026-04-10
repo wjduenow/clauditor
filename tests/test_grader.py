@@ -534,7 +534,11 @@ class TestExtractAndGrade:
         """Flat list instead of tier-grouped dict = grader:parse:{Section} failure."""
         data = {
             "Venues": [
-                {"name": "CDM", "address": "180 Woz Way", "website": "https://cdm.org"},
+                {
+                    "name": "CDM",
+                    "address": "180 Woz Way",
+                    "website": "https://cdm.org",
+                },
                 {
                     "name": "Deer Hollow",
                     "address": "22500 Cristo Rey Dr",
@@ -551,6 +555,29 @@ class TestExtractAndGrade:
         assert not result.passed
         failed_names = [r.name for r in result.failed]
         assert "grader:parse:Venues" in failed_names
+
+    @pytest.mark.asyncio
+    async def test_extra_section_flat_list_ignored(self):
+        """Extra sections not in eval_spec with flat lists are ignored."""
+        data = {
+            "Venues": {
+                "default": [
+                    {"name": "A", "address": "B", "website": "C"},
+                    {"name": "D", "address": "E", "website": "F"},
+                ],
+            },
+            "ExtraStuff": [
+                {"note": "LLM added this unsolicited"},
+            ],
+        }
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=json.dumps(data))]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            result = await extract_and_grade("some output", _make_spec())
+        # Extra flat-list section is not in spec, so no parse error
+        assert result.passed
 
     @pytest.mark.asyncio
     async def test_unknown_tier_in_response_ignored(self):
