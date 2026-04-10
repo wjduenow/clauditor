@@ -27,7 +27,7 @@ class ExtractedEntry:
 class ExtractedOutput:
     """Structured data extracted from skill output."""
 
-    sections: dict[str, list[ExtractedEntry]] = field(default_factory=dict)
+    sections: dict[str, dict[str, list[ExtractedEntry]]] = field(default_factory=dict)
     raw_json: dict | None = None
 
 
@@ -35,17 +35,30 @@ def build_extraction_prompt(eval_spec: EvalSpec) -> str:
     """Build a prompt that asks the LLM to extract structured data."""
     sections_desc = []
     for section in eval_spec.sections:
-        field_names = [f.name for f in section.fields]
+        tier_descs = []
+        for tier in section.tiers:
+            field_names = [f.name for f in tier.fields]
+            desc_part = f' ({tier.description})' if tier.description else ''
+            tier_descs.append(
+                f'  - Tier "{tier.label}"{desc_part}: '
+                f'fields [{", ".join(field_names)}]'
+            )
         sections_desc.append(
-            f'- Section "{section.name}": extract fields [{", ".join(field_names)}] '
-            f"for each entry"
+            f'- Section "{section.name}":\n' + "\n".join(tier_descs)
         )
 
     # Build schema example lines
     schema_lines = []
     for s in eval_spec.sections:
-        field_pairs = ", ".join(f'"{f.name}": "value or null"' for f in s.fields)
-        schema_lines.append(f'  "{s.name}": [{{ {field_pairs} }}]')
+        tier_lines = []
+        for t in s.tiers:
+            field_pairs = ", ".join(
+                f'"{f.name}": "value or null"' for f in t.fields
+            )
+            tier_lines.append(f'    "{t.label}": [{{ {field_pairs} }}]')
+        schema_lines.append(
+            f'  "{s.name}": {{\n' + ",\n".join(tier_lines) + "\n  }"
+        )
     schema_block = ",\n".join(schema_lines)
     sections_block = "\n".join(sections_desc)
 
@@ -61,6 +74,7 @@ def build_extraction_prompt(eval_spec: EvalSpec) -> str:
         "- Return null for fields that are missing or unclear\n"
         "- Extract the raw value as a string, do not interpret or reformat\n"
         "- Include ALL entries found in each section\n"
+        "- Group entries by tier within each section\n"
     )
 
 
@@ -69,39 +83,45 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
     results = AssertionSet()
 
     for section_req in eval_spec.sections:
-        entries = extracted.sections.get(section_req.name, [])
+        section_data = extracted.sections.get(section_req.name, {})
 
-        # Check minimum entry count
-        results.results.append(
-            AssertionResult(
-                name=f"section:{section_req.name}:count",
-                passed=len(entries) >= section_req.min_entries,
-                message=(
-                    f"Section '{section_req.name}' has {len(entries)} entries "
-                    f"(need ≥{section_req.min_entries})"
-                ),
-            )
-        )
+        for tier in section_req.tiers:
+            entries = section_data.get(tier.label, [])
 
-        # Check required fields on each entry
-        for i, entry in enumerate(entries):
-            for field_req in section_req.fields:
-                if not field_req.required:
-                    continue
-                has_value = entry.has_field(field_req.name)
-                results.results.append(
-                    AssertionResult(
-                        name=f"section:{section_req.name}[{i}].{field_req.name}",
-                        passed=has_value,
-                        message=(
-                            "Field present"
-                            if has_value
-                            else f"Missing required field '{field_req.name}' "
-                            f"in {section_req.name} entry {i + 1}"
-                        ),
-                        evidence=entry.fields.get(field_req.name),
-                    )
+            # Check minimum entry count
+            results.results.append(
+                AssertionResult(
+                    name=f"section:{section_req.name}:count/{tier.label}",
+                    passed=len(entries) >= tier.min_entries,
+                    message=(
+                        f"Section '{section_req.name}' tier '{tier.label}' "
+                        f"has {len(entries)} entries "
+                        f"(need \u2265{tier.min_entries})"
+                    ),
                 )
+            )
+
+            # Check required fields on each entry
+            for i, entry in enumerate(entries):
+                for field_req in tier.fields:
+                    if not field_req.required:
+                        continue
+                    has_value = entry.has_field(field_req.name)
+                    results.results.append(
+                        AssertionResult(
+                            name=f"section:{section_req.name}/{tier.label}[{i}].{field_req.name}",
+                            passed=has_value,
+                            message=(
+                                "Field present"
+                                if has_value
+                                else f"Missing required field "
+                                f"'{field_req.name}' in "
+                                f"{section_req.name} tier "
+                                f"'{tier.label}' entry {i + 1}"
+                            ),
+                            evidence=entry.fields.get(field_req.name),
+                        )
+                    )
 
     return results
 
@@ -163,10 +183,34 @@ async def extract_and_grade(
 
     # Convert raw JSON to ExtractedOutput
     extracted = ExtractedOutput(raw_json=raw)
-    for section_name, entries_data in raw.items():
-        if isinstance(entries_data, list):
-            extracted.sections[section_name] = [
-                ExtractedEntry(fields=e) for e in entries_data if isinstance(e, dict)
-            ]
+    parse_errors: list[AssertionResult] = []
+
+    for section_name, section_data in raw.items():
+        if isinstance(section_data, dict):
+            # Tiered format: {"tier_label": [entries]}
+            tier_map: dict[str, list[ExtractedEntry]] = {}
+            for tier_label, entries_data in section_data.items():
+                if isinstance(entries_data, list):
+                    tier_map[tier_label] = [
+                        ExtractedEntry(fields=e)
+                        for e in entries_data
+                        if isinstance(e, dict)
+                    ]
+            extracted.sections[section_name] = tier_map
+        elif isinstance(section_data, list):
+            # Flat list = shape mismatch error
+            parse_errors.append(
+                AssertionResult(
+                    name=f"grader:parse:{section_name}",
+                    passed=False,
+                    message=(
+                        f"Section '{section_name}' returned flat list "
+                        f"instead of tier-grouped dict"
+                    ),
+                )
+            )
+
+    if parse_errors:
+        return AssertionSet(results=parse_errors)
 
     return grade_extraction(extracted, eval_spec)
