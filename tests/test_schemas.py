@@ -15,6 +15,7 @@ from clauditor.schemas import (  # noqa: E402
     FieldRequirement,
     GradeThresholds,
     SectionRequirement,
+    TierRequirement,
     TriggerTests,
     VarianceConfig,
 )
@@ -67,11 +68,15 @@ class TestEvalSpecFromFile:
         assert len(spec.assertions) == 2
         assert len(spec.sections) == 2
         assert spec.sections[0].name == "Venues"
-        assert spec.sections[0].min_entries == 3
-        assert len(spec.sections[0].fields) == 5
-        assert spec.sections[0].fields[0].name == "name"
-        assert spec.sections[0].fields[0].required is True
-        assert spec.sections[0].fields[4].required is False
+        # Legacy fields normalized to single default tier
+        assert len(spec.sections[0].tiers) == 1
+        tier = spec.sections[0].tiers[0]
+        assert tier.label == "default"
+        assert tier.min_entries == 3
+        assert len(tier.fields) == 5
+        assert tier.fields[0].name == "name"
+        assert tier.fields[0].required is True
+        assert tier.fields[4].required is False
 
     def test_missing_optional_fields(self):
         minimal = {"skill_name": "test"}
@@ -99,7 +104,7 @@ class TestEvalSpecFromFile:
         d = spec.to_dict()
         assert d["skill_name"] == "find-kid-activities"
         assert len(d["sections"]) == 2
-        assert d["sections"][0]["fields"][0]["name"] == "name"
+        assert d["sections"][0]["tiers"][0]["fields"][0]["name"] == "name"
 
 
 class TestFieldRequirement:
@@ -116,8 +121,7 @@ class TestFieldRequirement:
 class TestSectionRequirement:
     def test_defaults(self):
         s = SectionRequirement(name="Results")
-        assert s.min_entries == 1
-        assert s.fields == []
+        assert s.tiers == []
 
 
 class TestTriggerTests:
@@ -269,10 +273,12 @@ class TestFromFile:
         assert len(spec.assertions) == 2
         assert len(spec.sections) == 1
         assert spec.sections[0].name == "Places"
-        assert spec.sections[0].min_entries == 2
-        assert len(spec.sections[0].fields) == 3
-        assert spec.sections[0].fields[2].pattern == r"^\d{5}$"
-        assert spec.sections[0].fields[2].required is False
+        tier = spec.sections[0].tiers[0]
+        assert tier.label == "default"
+        assert tier.min_entries == 2
+        assert len(tier.fields) == 3
+        assert tier.fields[2].pattern == r"^\d{5}$"
+        assert tier.fields[2].required is False
         assert spec.grading_criteria == [
             "Are results relevant?",
             "Is formatting correct?",
@@ -326,7 +332,7 @@ class TestFromFile:
         }
         path = _write_json(tmp_path, data)
         spec = EvalSpec.from_file(path)
-        assert spec.sections[0].fields[0].pattern is None
+        assert spec.sections[0].tiers[0].fields[0].pattern is None
 
 
 class TestToDict:
@@ -344,14 +350,16 @@ class TestToDict:
         assert d["assertions"] == FULL_EVAL_DATA["assertions"]
         assert d["grading_criteria"] == FULL_EVAL_DATA["grading_criteria"]
         assert d["grading_model"] == FULL_EVAL_DATA["grading_model"]
-        # Sections structure matches
+        # Sections structure matches (legacy normalized to tiers)
         assert len(d["sections"]) == 1
         assert d["sections"][0]["name"] == "Places"
-        assert d["sections"][0]["min_entries"] == 2
-        assert len(d["sections"][0]["fields"]) == 3
+        tier = d["sections"][0]["tiers"][0]
+        assert tier["label"] == "default"
+        assert tier["min_entries"] == 2
+        assert len(tier["fields"]) == 3
         # Pattern included only where present
-        assert d["sections"][0]["fields"][2]["pattern"] == r"^\d{5}$"
-        assert "pattern" not in d["sections"][0]["fields"][0]
+        assert tier["fields"][2]["pattern"] == r"^\d{5}$"
+        assert "pattern" not in tier["fields"][0]
         # Trigger tests
         assert d["trigger_tests"] == FULL_EVAL_DATA["trigger_tests"]
         # Variance
@@ -580,3 +588,193 @@ class TestGradeThresholds:
         assert spec.grade_thresholds is not None
         assert spec.grade_thresholds.min_pass_rate == 0.7
         assert spec.grade_thresholds.min_mean_score == 0.5
+
+
+class TestTierRequirement:
+    """Tests for TierRequirement dataclass."""
+
+    def test_defaults(self):
+        t = TierRequirement(label="basic")
+        assert t.label == "basic"
+        assert t.description == ""
+        assert t.min_entries == 0
+        assert t.fields == []
+
+    def test_with_all_fields(self):
+        t = TierRequirement(
+            label="premium",
+            description="High quality entries",
+            min_entries=5,
+            fields=[FieldRequirement(name="url")],
+        )
+        assert t.label == "premium"
+        assert t.description == "High quality entries"
+        assert t.min_entries == 5
+        assert len(t.fields) == 1
+
+
+TIERED_SECTION_DATA = {
+    "skill_name": "tiered-skill",
+    "sections": [
+        {
+            "name": "Venues",
+            "tiers": [
+                {
+                    "label": "basic",
+                    "description": "Minimum viable info",
+                    "min_entries": 3,
+                    "fields": [
+                        {"name": "name", "required": True},
+                        {"name": "address", "required": True},
+                    ],
+                },
+                {
+                    "label": "detailed",
+                    "description": "Rich venue data",
+                    "min_entries": 1,
+                    "fields": [
+                        {"name": "name", "required": True},
+                        {"name": "address", "required": True},
+                        {"name": "hours", "required": True},
+                        {"name": "website", "required": False},
+                    ],
+                },
+            ],
+        }
+    ],
+}
+
+
+class TestTieredSections:
+    """Tests for tiered section loading, normalization, and roundtrip."""
+
+    def test_load_tiered_json(self, tmp_path):
+        """Load JSON with explicit tiers array."""
+        path = _write_json(tmp_path, TIERED_SECTION_DATA)
+        spec = EvalSpec.from_file(path)
+
+        assert len(spec.sections) == 1
+        section = spec.sections[0]
+        assert section.name == "Venues"
+        assert len(section.tiers) == 2
+
+        assert section.tiers[0].label == "basic"
+        assert section.tiers[0].description == "Minimum viable info"
+        assert section.tiers[0].min_entries == 3
+        assert len(section.tiers[0].fields) == 2
+
+        assert section.tiers[1].label == "detailed"
+        assert section.tiers[1].description == "Rich venue data"
+        assert section.tiers[1].min_entries == 1
+        assert len(section.tiers[1].fields) == 4
+
+    def test_legacy_fields_normalized_to_default_tier(self, tmp_path):
+        """Legacy fields-style JSON is normalized to a single default tier."""
+        legacy_data = {
+            "skill_name": "legacy",
+            "sections": [
+                {
+                    "name": "Results",
+                    "min_entries": 5,
+                    "fields": [
+                        {"name": "title", "required": True},
+                        {"name": "url", "required": False},
+                    ],
+                }
+            ],
+        }
+        path = _write_json(tmp_path, legacy_data)
+        spec = EvalSpec.from_file(path)
+
+        section = spec.sections[0]
+        assert len(section.tiers) == 1
+        tier = section.tiers[0]
+        assert tier.label == "default"
+        assert tier.description == ""
+        assert tier.min_entries == 5
+        assert len(tier.fields) == 2
+        assert tier.fields[0].name == "title"
+        assert tier.fields[1].required is False
+
+    def test_tiered_roundtrip(self, tmp_path):
+        """from_file -> to_dict -> from_file preserves tiered structure."""
+        path1 = _write_json(tmp_path, TIERED_SECTION_DATA, name="first.json")
+        spec1 = EvalSpec.from_file(path1)
+        d = spec1.to_dict()
+
+        # Verify dict structure
+        assert len(d["sections"]) == 1
+        assert len(d["sections"][0]["tiers"]) == 2
+        assert d["sections"][0]["tiers"][0]["label"] == "basic"
+        assert d["sections"][0]["tiers"][1]["label"] == "detailed"
+
+        # Reload and verify equality
+        path2 = _write_json(tmp_path, d, name="second.json")
+        spec2 = EvalSpec.from_file(path2)
+
+        assert len(spec2.sections[0].tiers) == 2
+        assert spec2.sections[0].tiers[0].label == "basic"
+        assert spec2.sections[0].tiers[0].min_entries == 3
+        assert spec2.sections[0].tiers[1].label == "detailed"
+        assert len(spec2.sections[0].tiers[1].fields) == 4
+
+    def test_legacy_roundtrip(self, tmp_path):
+        """Legacy format -> load -> to_dict -> reload produces consistent tiers."""
+        legacy_data = {
+            "skill_name": "legacy-rt",
+            "sections": [
+                {
+                    "name": "Items",
+                    "min_entries": 2,
+                    "fields": [{"name": "name", "required": True}],
+                }
+            ],
+        }
+        path1 = _write_json(tmp_path, legacy_data, name="first.json")
+        spec1 = EvalSpec.from_file(path1)
+        d = spec1.to_dict()
+
+        # Output always uses tiers form
+        assert "tiers" in d["sections"][0]
+        assert d["sections"][0]["tiers"][0]["label"] == "default"
+
+        # Reload produces same structure
+        path2 = _write_json(tmp_path, d, name="second.json")
+        spec2 = EvalSpec.from_file(path2)
+        assert spec2.sections[0].tiers[0].label == "default"
+        assert spec2.sections[0].tiers[0].min_entries == 2
+        assert len(spec2.sections[0].tiers[0].fields) == 1
+
+    def test_tier_description_preserved_through_roundtrip(self, tmp_path):
+        """Tier description field survives from_file -> to_dict -> from_file."""
+        path1 = _write_json(tmp_path, TIERED_SECTION_DATA, name="first.json")
+        spec1 = EvalSpec.from_file(path1)
+
+        d = spec1.to_dict()
+        assert d["sections"][0]["tiers"][0]["description"] == "Minimum viable info"
+        assert d["sections"][0]["tiers"][1]["description"] == "Rich venue data"
+
+        path2 = _write_json(tmp_path, d, name="second.json")
+        spec2 = EvalSpec.from_file(path2)
+        assert spec2.sections[0].tiers[0].description == "Minimum viable info"
+        assert spec2.sections[0].tiers[1].description == "Rich venue data"
+
+    def test_tier_defaults_for_optional_fields(self, tmp_path):
+        """Tiers with missing optional fields get defaults."""
+        data = {
+            "skill_name": "sparse",
+            "sections": [
+                {
+                    "name": "S",
+                    "tiers": [{"label": "minimal"}],
+                }
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+
+        tier = spec.sections[0].tiers[0]
+        assert tier.label == "minimal"
+        assert tier.description == ""
+        assert tier.min_entries == 0
+        assert tier.fields == []
