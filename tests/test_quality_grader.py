@@ -16,7 +16,7 @@ from clauditor.quality_grader import (
     measure_variance,
     parse_grading_response,
 )
-from clauditor.schemas import EvalSpec, VarianceConfig
+from clauditor.schemas import EvalSpec, GradeThresholds, VarianceConfig
 
 
 def _make_spec() -> EvalSpec:
@@ -640,3 +640,93 @@ class TestMeasureVariance:
 
         with pytest.raises(ValueError, match="No eval spec found"):
             await measure_variance(mock_spec, n_runs=3)
+
+
+class TestGradeThresholdsOnReport:
+    """Tests for GradeThresholds logic in GradingReport.passed."""
+
+    def _make_report(
+        self,
+        passed_flags: list[bool],
+        scores: list[float],
+        thresholds: GradeThresholds | None = None,
+    ) -> GradingReport:
+        results = [
+            GradingResult(
+                criterion=f"c{i}",
+                passed=p,
+                score=s,
+                evidence="e",
+                reasoning="r",
+            )
+            for i, (p, s) in enumerate(zip(passed_flags, scores))
+        ]
+        return GradingReport(
+            skill_name="test",
+            results=results,
+            model="claude-sonnet-4-6",
+            thresholds=thresholds,
+        )
+
+    def test_all_above_threshold_passes(self):
+        """All criteria pass and scores are above threshold -> passed=True."""
+        report = self._make_report(
+            [True, True, True], [0.8, 0.9, 0.7],
+            thresholds=GradeThresholds(min_pass_rate=0.7, min_mean_score=0.5),
+        )
+        assert report.pass_rate == pytest.approx(1.0)
+        assert report.mean_score == pytest.approx(0.8)
+        assert report.passed is True
+
+    def test_pass_rate_below_threshold_fails(self):
+        """pass_rate below min_pass_rate -> passed=False."""
+        # 1 of 3 pass -> pass_rate = 0.333
+        report = self._make_report(
+            [True, False, False], [0.9, 0.6, 0.6],
+            thresholds=GradeThresholds(min_pass_rate=0.7, min_mean_score=0.5),
+        )
+        assert report.pass_rate == pytest.approx(1 / 3)
+        assert report.mean_score == pytest.approx(0.7)
+        assert report.passed is False
+
+    def test_mean_score_below_threshold_fails(self):
+        """mean_score below min_mean_score -> passed=False."""
+        # All pass but scores are low
+        report = self._make_report(
+            [True, True, True], [0.3, 0.4, 0.2],
+            thresholds=GradeThresholds(min_pass_rate=0.7, min_mean_score=0.5),
+        )
+        assert report.pass_rate == pytest.approx(1.0)
+        assert report.mean_score == pytest.approx(0.3)
+        assert report.passed is False
+
+    def test_no_thresholds_uses_defaults(self):
+        """When thresholds is None, uses defaults (0.7/0.5)."""
+        # 3/4 pass -> pass_rate = 0.75 >= 0.7, mean_score = 0.6 >= 0.5
+        report = self._make_report(
+            [True, True, True, False], [0.7, 0.7, 0.6, 0.4],
+            thresholds=None,
+        )
+        assert report.pass_rate == pytest.approx(0.75)
+        assert report.mean_score == pytest.approx(0.6)
+        assert report.passed is True
+
+    def test_custom_thresholds_from_eval_spec(self):
+        """Custom strict thresholds cause failure even when defaults would pass."""
+        # pass_rate=0.75, mean_score=0.6 — passes with defaults, fails with strict
+        report = self._make_report(
+            [True, True, True, False], [0.7, 0.7, 0.6, 0.4],
+            thresholds=GradeThresholds(min_pass_rate=0.9, min_mean_score=0.8),
+        )
+        assert report.passed is False
+
+    def test_at_exact_threshold_boundary(self):
+        """Values exactly at thresholds should pass."""
+        report = self._make_report(
+            [True, True, True, False, False, False, True, True, True, True],
+            [0.5] * 10,
+            thresholds=GradeThresholds(min_pass_rate=0.7, min_mean_score=0.5),
+        )
+        assert report.pass_rate == pytest.approx(0.7)
+        assert report.mean_score == pytest.approx(0.5)
+        assert report.passed is True

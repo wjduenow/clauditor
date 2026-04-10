@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from clauditor.schemas import EvalSpec
+from clauditor.schemas import EvalSpec, GradeThresholds
 
 if TYPE_CHECKING:
     from clauditor.spec import SkillSpec
@@ -37,11 +37,20 @@ class GradingReport:
     results: list[GradingResult]
     model: str
     duration_seconds: float = 0.0
+    thresholds: GradeThresholds | None = None
 
     @property
     def passed(self) -> bool:
-        """Whether all criteria passed."""
-        return all(r.passed for r in self.results)
+        """Whether grading meets threshold requirements.
+
+        Uses provided thresholds or defaults (min_pass_rate=0.7,
+        min_mean_score=0.5) when no thresholds are set.
+        """
+        t = self.thresholds if self.thresholds is not None else GradeThresholds()
+        return (
+            self.pass_rate >= t.min_pass_rate
+            and self.mean_score >= t.min_mean_score
+        )
 
     @property
     def pass_rate(self) -> float:
@@ -152,6 +161,7 @@ async def grade_quality(
     output: str,
     eval_spec: EvalSpec,
     model: str = "claude-sonnet-4-6",
+    thresholds: GradeThresholds | None = None,
 ) -> GradingReport:
     """Layer 3: Grade skill output against rubric criteria using an LLM.
 
@@ -197,6 +207,7 @@ async def grade_quality(
             ],
             model=model,
             duration_seconds=duration,
+            thresholds=thresholds,
         )
 
     response_text = response.content[0].text
@@ -219,6 +230,7 @@ async def grade_quality(
             ],
             model=model,
             duration_seconds=duration,
+            thresholds=thresholds,
         )
 
     return GradingReport(
@@ -226,6 +238,7 @@ async def grade_quality(
         results=results,
         model=model,
         duration_seconds=duration,
+        thresholds=thresholds,
     )
 
 
