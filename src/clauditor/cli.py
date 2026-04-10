@@ -197,6 +197,54 @@ def cmd_grade(args: argparse.Namespace) -> int:
         if variance_report:
             print(f"\n{variance_report.summary()}")
 
+    # --diff: compare against prior results
+    save_dir = Path(".clauditor")
+    save_path = save_dir / f"{spec.skill_name}.grade.json"
+
+    if args.diff:
+        if save_path.exists():
+            from clauditor.quality_grader import GradingReport
+
+            prior = GradingReport.from_json(save_path.read_text())
+            prior_by_name = {r.criterion: r for r in prior.results}
+            current_by_name = {r.criterion: r for r in report.results}
+            common = set(prior_by_name) & set(current_by_name)
+            regressions = []
+            print("\nDiff vs prior results:")
+            print(f"  {'Criterion':<40} {'Prior':>6} {'Current':>8} {'Delta':>6}")
+            print(f"  {'-'*40} {'-'*6} {'-'*8} {'-'*6}")
+            for name in sorted(common):
+                p_score = prior_by_name[name].score
+                c_score = current_by_name[name].score
+                delta = c_score - p_score
+                is_regression = (
+                    delta < -0.1
+                    or (prior_by_name[name].passed and not current_by_name[name].passed)
+                )
+                marker = " REGRESSION" if is_regression else ""
+                line = (
+                    f"  {name:<40} {p_score:>6.2f}"
+                    f" {c_score:>8.2f} {delta:>+6.2f}{marker}"
+                )
+                print(line)
+                if is_regression:
+                    regressions.append(name)
+            if regressions:
+                print(f"\n  {len(regressions)} regression(s) detected.")
+            else:
+                print("\n  No regressions detected.")
+        else:
+            print(
+                f"\nWARNING: No prior results at {save_path}. "
+                "Run with --save first to establish a baseline.",
+                file=sys.stderr,
+            )
+
+    if args.save:
+        save_dir.mkdir(parents=True, exist_ok=True)
+        save_path.write_text(report.to_json())
+        print(f"\nGrade report saved to {save_path}")
+
     # Determine exit code
     passed = report.passed
     if ab_report:
@@ -447,6 +495,12 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         metavar="N",
         help="Run N times with variance measurement",
+    )
+    p_grade.add_argument(
+        "--save", action="store_true", help="Save grade report to .clauditor/"
+    )
+    p_grade.add_argument(
+        "--diff", action="store_true", help="Compare against prior grade results"
     )
 
     # triggers

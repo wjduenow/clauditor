@@ -260,6 +260,213 @@ class TestCmdGrade:
         assert rc == 1
 
 
+class TestCmdGradeSaveDiff:
+    """Tests for --save and --diff flags on the grade subcommand."""
+
+    def _make_grading_report(self, skill_name="test-skill", passed=True, score=0.9):
+        return GradingReport(
+            skill_name=skill_name,
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="Is the output relevant?",
+                    passed=passed,
+                    score=score,
+                    evidence="Found relevant content",
+                    reasoning="Output addresses the query",
+                )
+            ],
+            duration_seconds=1.0,
+        )
+
+    def test_save_creates_file(self, tmp_path):
+        """--save writes JSON to .clauditor/."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_grading_report()
+
+        import os
+
+        orig_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with (
+                patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+                patch(
+                    "clauditor.quality_grader.grade_quality",
+                    new_callable=AsyncMock,
+                    return_value=report,
+                ),
+            ):
+                rc = main(
+                    ["grade", "skill.md", "--output", str(output_file), "--save"]
+                )
+
+            assert rc == 0
+            save_path = tmp_path / ".clauditor" / "test-skill.grade.json"
+            assert save_path.exists()
+            data = json.loads(save_path.read_text())
+            assert data["skill_name"] == "test-skill"
+        finally:
+            os.chdir(orig_dir)
+
+    def test_save_creates_directory(self, tmp_path):
+        """.clauditor/ is created if missing."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_grading_report()
+
+        import os
+
+        orig_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            assert not (tmp_path / ".clauditor").exists()
+            with (
+                patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+                patch(
+                    "clauditor.quality_grader.grade_quality",
+                    new_callable=AsyncMock,
+                    return_value=report,
+                ),
+            ):
+                main(["grade", "skill.md", "--output", str(output_file), "--save"])
+
+            assert (tmp_path / ".clauditor").is_dir()
+        finally:
+            os.chdir(orig_dir)
+
+    def test_diff_shows_regressions(self, tmp_path, capsys):
+        """--diff with prior results shows regression table."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+
+        # Prior report: high score
+        prior_report = self._make_grading_report(score=0.9, passed=True)
+        # Current report: low score (regression)
+        current_report = self._make_grading_report(score=0.5, passed=False)
+
+        import os
+
+        orig_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            # Write prior results
+            save_dir = tmp_path / ".clauditor"
+            save_dir.mkdir()
+            (save_dir / "test-skill.grade.json").write_text(prior_report.to_json())
+
+            with (
+                patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+                patch(
+                    "clauditor.quality_grader.grade_quality",
+                    new_callable=AsyncMock,
+                    return_value=current_report,
+                ),
+            ):
+                main(["grade", "skill.md", "--output", str(output_file), "--diff"])
+
+            out = capsys.readouterr().out
+            assert "REGRESSION" in out
+            assert "1 regression(s) detected" in out
+        finally:
+            os.chdir(orig_dir)
+
+    def test_diff_no_prior_warns(self, tmp_path, capsys):
+        """--diff without prior results warns, doesn't error."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_grading_report()
+
+        import os
+
+        orig_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            with (
+                patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+                patch(
+                    "clauditor.quality_grader.grade_quality",
+                    new_callable=AsyncMock,
+                    return_value=report,
+                ),
+            ):
+                rc = main(
+                    ["grade", "skill.md", "--output", str(output_file), "--diff"]
+                )
+
+            assert rc == 0
+            err = capsys.readouterr().err
+            assert "WARNING" in err
+            assert "No prior results" in err
+        finally:
+            os.chdir(orig_dir)
+
+    def test_save_and_diff_together(self, tmp_path, capsys):
+        """Both --save and --diff work in sequence."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+
+        prior_report = self._make_grading_report(score=0.8, passed=True)
+        current_report = self._make_grading_report(score=0.85, passed=True)
+
+        import os
+
+        orig_dir = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            # Write prior results
+            save_dir = tmp_path / ".clauditor"
+            save_dir.mkdir()
+            (save_dir / "test-skill.grade.json").write_text(prior_report.to_json())
+
+            with (
+                patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+                patch(
+                    "clauditor.quality_grader.grade_quality",
+                    new_callable=AsyncMock,
+                    return_value=current_report,
+                ),
+            ):
+                rc = main(
+                    [
+                        "grade",
+                        "skill.md",
+                        "--output",
+                        str(output_file),
+                        "--diff",
+                        "--save",
+                    ]
+                )
+
+            assert rc == 0
+            out = capsys.readouterr().out
+            # Diff ran (no regressions since score improved)
+            assert "No regressions detected" in out
+            # Save ran — file updated with current results
+            saved = json.loads(
+                (save_dir / "test-skill.grade.json").read_text()
+            )
+            assert saved["results"][0]["score"] == 0.85
+        finally:
+            os.chdir(orig_dir)
+
+
 class TestCmdTriggers:
     """Tests for the triggers subcommand."""
 
