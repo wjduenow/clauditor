@@ -5,6 +5,7 @@ Combines the skill file, eval spec, and runner into a single interface.
 
 from __future__ import annotations
 
+import glob
 from pathlib import Path
 
 from clauditor.assertions import AssertionSet, run_assertions
@@ -73,7 +74,27 @@ class SkillSpec:
             if args is not None
             else (self.eval_spec.test_args if self.eval_spec else "")
         )
-        return self.runner.run(self.skill_name, run_args)
+        result = self.runner.run(self.skill_name, run_args)
+
+        # Read output from files if eval spec specifies file-based output
+        if self.eval_spec:
+            base_dir = self.runner.project_dir
+            if self.eval_spec.output_file:
+                file_path = base_dir / self.eval_spec.output_file
+                if file_path.exists():
+                    result.output = file_path.read_text()
+            elif self.eval_spec.output_files:
+                for pattern in self.eval_spec.output_files:
+                    full_pattern = str(base_dir / pattern)
+                    for match in glob.glob(full_pattern):
+                        match_path = Path(match)
+                        if match_path.is_file():
+                            result.outputs[match_path.name] = match_path.read_text()
+                if result.outputs:
+                    first_key = next(iter(result.outputs))
+                    result.output = result.outputs[first_key]
+
+        return result
 
     def evaluate(self, output: str | None = None) -> AssertionSet:
         """Run Layer 1 assertions from the eval spec against output.
