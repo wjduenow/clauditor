@@ -454,3 +454,61 @@ class TestOptionalFields:
         assert spec.variance is not None
         assert spec.variance.n_runs == 5
         assert spec.variance.min_stability == 0.8
+
+
+class TestEvalSpecOutputFields:
+    """Tests for output_file and output_files fields on EvalSpec."""
+
+    def test_load_with_output_file(self, tmp_path):
+        """output_file is loaded from JSON when present."""
+        data = {"skill_name": "s", "output_file": "report.md"}
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+        assert spec.output_file == "report.md"
+
+    def test_load_with_output_files(self, tmp_path):
+        """output_files list is loaded from JSON when present."""
+        data = {"skill_name": "s", "output_files": ["out/*.md", "summary.txt"]}
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+        assert spec.output_files == ["out/*.md", "summary.txt"]
+
+    def test_to_dict_roundtrip(self, tmp_path):
+        """from_file -> to_dict preserves both output fields."""
+        data = {
+            "skill_name": "s",
+            "output_file": "result.json",
+            "output_files": ["a.txt", "b.txt"],
+        }
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+        d = spec.to_dict()
+        assert d["output_file"] == "result.json"
+        assert d["output_files"] == ["a.txt", "b.txt"]
+
+    def test_defaults_when_missing(self, tmp_path):
+        """output_file defaults to None, output_files to [] when absent."""
+        path = _write_json(tmp_path, {"skill_name": "bare"})
+        spec = EvalSpec.from_file(path)
+        assert spec.output_file is None
+        assert spec.output_files == []
+
+    def test_backward_compat_old_eval_json(self, tmp_path):
+        """Old eval.json without output fields loads without error."""
+        old_data = {
+            "skill_name": "legacy",
+            "description": "An old spec",
+            "assertions": [{"type": "contains", "value": "hello"}],
+        }
+        path = _write_json(tmp_path, old_data)
+        spec = EvalSpec.from_file(path)
+        assert spec.skill_name == "legacy"
+        assert spec.output_file is None
+        assert spec.output_files == []
+
+    def test_to_dict_omits_defaults(self):
+        """to_dict omits output_file and output_files when at defaults."""
+        spec = EvalSpec(skill_name="x")
+        d = spec.to_dict()
+        assert "output_file" not in d
+        assert "output_files" not in d

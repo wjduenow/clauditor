@@ -58,6 +58,8 @@ class EvalSpec:
     sections: list[SectionRequirement] = field(default_factory=list)  # Layer 2 schema
     grading_criteria: list[str] = field(default_factory=list)  # Layer 3 rubric
     grading_model: str = "claude-sonnet-4-6"
+    output_file: str | None = None  # Single output file path
+    output_files: list[str] = field(default_factory=list)  # Multiple file paths/globs
     trigger_tests: TriggerTests | None = None
     variance: VarianceConfig | None = None
 
@@ -110,6 +112,8 @@ class EvalSpec:
             sections=sections,
             grading_criteria=data.get("grading_criteria", []),
             grading_model=data.get("grading_model", "claude-sonnet-4-6"),
+            output_file=data.get("output_file"),
+            output_files=data.get("output_files", []),
             trigger_tests=trigger_tests,
             variance=variance,
         )
@@ -139,6 +143,10 @@ class EvalSpec:
             "grading_criteria": self.grading_criteria,
             "grading_model": self.grading_model,
         }
+        if self.output_file is not None:
+            result["output_file"] = self.output_file
+        if self.output_files:
+            result["output_files"] = self.output_files
         if self.trigger_tests is not None:
             result["trigger_tests"] = {
                 "should_trigger": self.trigger_tests.should_trigger,
