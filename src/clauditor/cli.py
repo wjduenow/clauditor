@@ -421,10 +421,15 @@ def cmd_init(args: argparse.Namespace) -> int:
         "sections": [
             {
                 "name": "Results",
-                "min_entries": 3,
-                "fields": [
-                    {"name": "name", "required": True},
-                    {"name": "address", "required": True},
+                "tiers": [
+                    {
+                        "label": "default",
+                        "min_entries": 3,
+                        "fields": [
+                            {"name": "name", "required": True},
+                            {"name": "address", "required": True},
+                        ],
+                    }
                 ],
             }
         ],
