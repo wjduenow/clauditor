@@ -6,7 +6,7 @@
 |--------------|-------|
 | Ticket       | [#11](https://github.com/wjduenow/clauditor/issues/11) |
 | Branch       | `feature/11-first-pass-improvements` |
-| Phase        | `detailing` |
+| Phase        | `devolved` |
 | Sessions     | 1 |
 | Last session | 2026-04-09 |
 
