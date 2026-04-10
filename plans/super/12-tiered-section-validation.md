@@ -7,7 +7,7 @@
 | Ticket        | wjduenow/clauditor#12                      |
 | Branch        | `feature/12-tiered-section-validation`     |
 | Worktree      | TBD                                        |
-| Phase         | detailing                                  |
+| Phase         | devolved                                   |
 | Created       | 2026-04-10                                 |
 | Sessions      | 1                                          |
 
@@ -252,16 +252,16 @@ Each tier gets an optional `description` injected into the extraction prompt. Th
 
 ## Beads Manifest
 
-| Field       | Value |
-|-------------|-------|
-| Epic        | TBD   |
-| Worktree    | TBD   |
+| Field       | Value                                          |
+|-------------|------------------------------------------------|
+| Epic        | clauditor-cr1                                  |
+| Worktree    | feature/12-tiered-section-validation           |
 
-| Story  | Bead ID | Status |
-|--------|---------|--------|
-| US-001 | TBD     | —      |
-| US-002 | TBD     | —      |
-| US-003 | TBD     | —      |
-| US-004 | TBD     | —      |
-| US-005 | TBD     | —      |
+| Story  | Bead ID          | Status | Depends on       |
+|--------|------------------|--------|------------------|
+| US-001 | clauditor-cr1.1  | open   | none             |
+| US-002 | clauditor-cr1.2  | open   | cr1.1            |
+| US-003 | clauditor-cr1.3  | open   | cr1.1            |
+| US-004 | clauditor-cr1.4  | open   | cr1.1, cr1.2, cr1.3 |
+| US-005 | clauditor-cr1.5  | open   | cr1.4            |
 
