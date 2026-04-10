@@ -6,6 +6,7 @@ eval spec. Each criterion is scored independently with evidence and reasoning.
 
 from __future__ import annotations
 
+import datetime
 import json
 import math
 import time
@@ -56,6 +57,47 @@ class GradingReport:
         if not self.results:
             return 0.0
         return sum(r.score for r in self.results) / len(self.results)
+
+    def to_json(self) -> str:
+        """Serialize the report to a JSON string."""
+        data = {
+            "skill_name": self.skill_name,
+            "model": self.model,
+            "duration_seconds": self.duration_seconds,
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+            "results": [
+                {
+                    "criterion": r.criterion,
+                    "passed": r.passed,
+                    "score": r.score,
+                    "evidence": r.evidence,
+                    "reasoning": r.reasoning,
+                }
+                for r in self.results
+            ],
+        }
+        return json.dumps(data, indent=2)
+
+    @classmethod
+    def from_json(cls, data: str) -> GradingReport:
+        """Deserialize a GradingReport from a JSON string."""
+        parsed = json.loads(data)
+        results = [
+            GradingResult(
+                criterion=item.get("criterion", ""),
+                passed=bool(item.get("passed", False)),
+                score=float(item.get("score", 0.0)),
+                evidence=item.get("evidence", ""),
+                reasoning=item.get("reasoning", ""),
+            )
+            for item in parsed.get("results", [])
+        ]
+        return cls(
+            skill_name=parsed.get("skill_name", ""),
+            results=results,
+            model=parsed.get("model", ""),
+            duration_seconds=float(parsed.get("duration_seconds", 0.0)),
+        )
 
     def summary(self) -> str:
         """Format a human-readable summary of grading results."""
