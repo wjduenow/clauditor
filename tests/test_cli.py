@@ -5,10 +5,16 @@ from __future__ import annotations
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from clauditor.assertions import AssertionResult, AssertionSet
 from clauditor.cli import main
 from clauditor.quality_grader import GradingReport, GradingResult
 from clauditor.runner import SkillResult
-from clauditor.schemas import EvalSpec, TriggerTests
+from clauditor.schemas import (
+    EvalSpec,
+    FieldRequirement,
+    SectionRequirement,
+    TriggerTests,
+)
 from clauditor.spec import SkillSpec
 from clauditor.triggers import TriggerReport, TriggerResult
 
@@ -369,3 +375,148 @@ class TestCmdInit:
         assert rc == 0
         data = json.loads(eval_path.read_text())
         assert data["skill_name"] == "my-skill"
+
+
+def _make_sections():
+    """Create sample sections for Layer 2 testing."""
+    return [
+        SectionRequirement(
+            name="Results",
+            min_entries=2,
+            fields=[
+                FieldRequirement(name="name", required=True),
+                FieldRequirement(name="address", required=True),
+            ],
+        )
+    ]
+
+
+class TestCmdExtract:
+    """Tests for the extract subcommand."""
+
+    def _make_extraction_results(self, passed=True):
+        return AssertionSet(
+            results=[
+                AssertionResult(
+                    name="section:Results:count",
+                    passed=passed,
+                    message="Section 'Results' has 3 entries (need >=2)",
+                ),
+                AssertionResult(
+                    name="section:Results[0].name",
+                    passed=passed,
+                    message=(
+                        "Field present"
+                        if passed
+                        else "Missing required field 'name'"
+                    ),
+                    evidence="Test Place" if passed else None,
+                ),
+            ]
+        )
+
+    def test_extract_dry_run(self, capsys):
+        """--dry-run prints prompt and returns 0 without API calls."""
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["extract", "skill.md", "--dry-run"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Model:" in out
+        assert "Prompt:" in out
+        assert "Results" in out
+
+    def test_extract_no_sections_error(self, capsys):
+        """Returns 1 when no sections defined in eval spec."""
+        eval_spec = _make_eval_spec(sections=[])
+        spec = _make_spec(eval_spec=eval_spec)
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["extract", "skill.md"])
+
+        assert rc == 1
+        assert "No sections defined" in capsys.readouterr().err
+
+    def test_extract_no_eval_spec(self, capsys):
+        """Returns 1 when no eval spec is found."""
+        spec = _make_spec(eval_spec=None)
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["extract", "skill.md"])
+
+        assert rc == 1
+        assert "No eval spec" in capsys.readouterr().err
+
+    def test_extract_with_output_file(self, tmp_path):
+        """Reads output file, calls extract_and_grade, returns 0 on pass."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+        results = self._make_extraction_results(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+        ):
+            rc = main(["extract", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+
+    def test_extract_json_output(self, tmp_path, capsys):
+        """--json flag produces valid JSON output."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+        results = self._make_extraction_results(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+        ):
+            rc = main(
+                ["extract", "skill.md", "--output", str(output_file), "--json"]
+            )
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert data["skill"] == "test-skill"
+        assert data["passed"] is True
+        assert "results" in data
+        assert len(data["results"]) == 2
+
+    def test_extract_failed(self, tmp_path):
+        """Returns 1 when extraction grading fails."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("bad output")
+
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+        results = self._make_extraction_results(passed=False)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+        ):
+            rc = main(["extract", "skill.md", "--output", str(output_file)])
+
+        assert rc == 1

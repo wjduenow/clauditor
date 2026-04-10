@@ -270,6 +270,75 @@ def cmd_triggers(args: argparse.Namespace) -> int:
     return 0 if report.passed else 1
 
 
+def cmd_extract(args: argparse.Namespace) -> int:
+    """Run Layer 2 schema extraction against a skill's output."""
+    import asyncio
+
+    spec = SkillSpec.from_file(args.skill, eval_path=args.eval)
+
+    if not spec.eval_spec:
+        print(f"ERROR: No eval spec found for {args.skill}", file=sys.stderr)
+        return 1
+
+    if not spec.eval_spec.sections:
+        print("ERROR: No sections defined in eval spec", file=sys.stderr)
+        return 1
+
+    model = args.model or "claude-haiku-4-5-20251001"
+
+    # --dry-run: print prompt and exit
+    if args.dry_run:
+        from clauditor.grader import build_extraction_prompt
+
+        prompt = build_extraction_prompt(spec.eval_spec)
+        print(f"Model: {model}")
+        print(f"Prompt:\n{prompt}")
+        return 0
+
+    # Get output
+    if args.output:
+        output = Path(args.output).read_text()
+    else:
+        print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
+        result = spec.run()
+        if not result.succeeded:
+            print(f"ERROR: Skill failed: {result.error}", file=sys.stderr)
+            return 1
+        output = result.output
+
+    # Extract and grade
+    from clauditor.grader import extract_and_grade
+
+    results = asyncio.run(extract_and_grade(output, spec.eval_spec, model))
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "skill": spec.skill_name,
+                    "model": model,
+                    "pass_rate": results.pass_rate,
+                    "passed": results.passed,
+                    "results": [
+                        {
+                            "name": r.name,
+                            "passed": r.passed,
+                            "message": r.message,
+                            **({"evidence": r.evidence} if r.evidence else {}),
+                        }
+                        for r in results.results
+                    ],
+                },
+                indent=2,
+            )
+        )
+    else:
+        print(f"Schema Extraction: {spec.skill_name} ({model})")
+        print(results.summary())
+
+    return 0 if results.passed else 1
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     """Generate a starter eval.json for a skill."""
     skill_path = Path(args.skill)
@@ -396,6 +465,25 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run", action="store_true", help="Print sample trigger prompts"
     )
 
+    # extract
+    p_extract = subparsers.add_parser(
+        "extract", help="Layer 2: LLM schema extraction"
+    )
+    p_extract.add_argument("skill", help="Path to skill .md file")
+    p_extract.add_argument(
+        "--eval", help="Path to eval.json (auto-discovered if omitted)"
+    )
+    p_extract.add_argument(
+        "--output", help="Path to pre-captured output file (skips running the skill)"
+    )
+    p_extract.add_argument("--model", help="Override extraction model")
+    p_extract.add_argument(
+        "--json", action="store_true", help="Output results as JSON"
+    )
+    p_extract.add_argument(
+        "--dry-run", action="store_true", help="Print prompt without making API calls"
+    )
+
     # init
     p_init = subparsers.add_parser(
         "init", help="Generate a starter eval.json for a skill"
@@ -415,6 +503,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_grade(parsed)
     elif parsed.command == "triggers":
         return cmd_triggers(parsed)
+    elif parsed.command == "extract":
+        return cmd_extract(parsed)
     elif parsed.command == "init":
         return cmd_init(parsed)
 
