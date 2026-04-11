@@ -7,9 +7,11 @@ then validates the extracted data against the eval spec's schema.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 
 from clauditor.assertions import AssertionResult, AssertionSet
+from clauditor.formats import get_format
 from clauditor.schemas import EvalSpec
 
 
@@ -122,6 +124,72 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
                             evidence=entry.fields.get(field_req.name),
                         )
                     )
+
+                # Validate pattern/format on fields that have values
+                for field_req in tier.fields:
+                    value = entry.fields.get(field_req.name)
+                    if not value:
+                        continue
+
+                    base = (
+                        f"section:{section_req.name}"
+                        f"/{tier.label}[{i}].{field_req.name}"
+                    )
+
+                    if field_req.pattern:
+                        try:
+                            pat_match = re.fullmatch(field_req.pattern, value)
+                            results.results.append(
+                                AssertionResult(
+                                    name=f"{base}:pattern",
+                                    passed=pat_match is not None,
+                                    message=(
+                                        "Pattern matched"
+                                        if pat_match
+                                        else f"Value does not match "
+                                        f"pattern /{field_req.pattern}/"
+                                    ),
+                                    evidence=value,
+                                )
+                            )
+                        except re.error as e:
+                            results.results.append(
+                                AssertionResult(
+                                    name=f"{base}:pattern",
+                                    passed=False,
+                                    message=f"Invalid pattern: {e}",
+                                    evidence=field_req.pattern,
+                                )
+                            )
+
+                    if field_req.format:
+                        fmt = get_format(field_req.format)
+                        if fmt is None:
+                            results.results.append(
+                                AssertionResult(
+                                    name=f"{base}:format",
+                                    passed=False,
+                                    message=(
+                                        f"Unknown format: "
+                                        f"{field_req.format}"
+                                    ),
+                                )
+                            )
+                        else:
+                            fmt_match = fmt.pattern.fullmatch(value)
+                            results.results.append(
+                                AssertionResult(
+                                    name=f"{base}:format",
+                                    passed=fmt_match is not None,
+                                    message=(
+                                        f"Format '{field_req.format}' matched"
+                                        if fmt_match
+                                        else f"Value does not match "
+                                        f"format '{field_req.format}'"
+                                    ),
+                                    evidence=value,
+                                )
+                            )
 
     return results
 
