@@ -600,3 +600,329 @@ class TestExtractAndGrade:
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
             result = await extract_and_grade("some output", _make_spec())
         assert result.passed
+
+
+def _make_pattern_spec() -> EvalSpec:
+    """Spec with pattern and format validation on fields."""
+    return EvalSpec(
+        skill_name="test-skill",
+        sections=[
+            SectionRequirement(
+                name="Restaurants",
+                tiers=[
+                    TierRequirement(
+                        label="default",
+                        min_entries=1,
+                        fields=[
+                            FieldRequirement(
+                                name="name", required=True
+                            ),
+                            FieldRequirement(
+                                name="phone",
+                                required=True,
+                                pattern=r"\(\d{3}\) \d{3}-\d{4}",
+                            ),
+                            FieldRequirement(
+                                name="website",
+                                required=True,
+                                format="url",
+                            ),
+                            FieldRequirement(
+                                name="email",
+                                required=False,
+                                format="email",
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
+class TestPatternFormatEnforcement:
+    def test_pattern_match(self):
+        extracted = ExtractedOutput(
+            sections={
+                "Restaurants": {
+                    "default": [
+                        ExtractedEntry(
+                            fields={
+                                "name": "Paesano's",
+                                "phone": "(408) 298-5437",
+                                "website": "https://paesanos.com",
+                            }
+                        ),
+                    ]
+                }
+            }
+        )
+        results = grade_extraction(extracted, _make_pattern_spec())
+        pattern_results = [
+            r for r in results.results if ":pattern" in r.name
+        ]
+        assert all(r.passed for r in pattern_results)
+
+    def test_pattern_mismatch(self):
+        extracted = ExtractedOutput(
+            sections={
+                "Restaurants": {
+                    "default": [
+                        ExtractedEntry(
+                            fields={
+                                "name": "Paesano's",
+                                "phone": "call for hours",
+                                "website": "https://paesanos.com",
+                            }
+                        ),
+                    ]
+                }
+            }
+        )
+        results = grade_extraction(extracted, _make_pattern_spec())
+        pattern_results = [
+            r for r in results.results if ":pattern" in r.name
+        ]
+        assert len(pattern_results) == 1
+        assert not pattern_results[0].passed
+        assert pattern_results[0].evidence == "call for hours"
+
+    def test_format_match(self):
+        extracted = ExtractedOutput(
+            sections={
+                "Restaurants": {
+                    "default": [
+                        ExtractedEntry(
+                            fields={
+                                "name": "Paesano's",
+                                "phone": "(408) 298-5437",
+                                "website": "https://paesanos.com",
+                            }
+                        ),
+                    ]
+                }
+            }
+        )
+        results = grade_extraction(extracted, _make_pattern_spec())
+        format_results = [
+            r for r in results.results if ":format" in r.name
+        ]
+        assert all(r.passed for r in format_results)
+
+    def test_format_mismatch(self):
+        extracted = ExtractedOutput(
+            sections={
+                "Restaurants": {
+                    "default": [
+                        ExtractedEntry(
+                            fields={
+                                "name": "Paesano's",
+                                "phone": "(408) 298-5437",
+                                "website": "not-a-url",
+                            }
+                        ),
+                    ]
+                }
+            }
+        )
+        results = grade_extraction(extracted, _make_pattern_spec())
+        format_results = [
+            r for r in results.results if ":format" in r.name
+        ]
+        failed = [r for r in format_results if not r.passed]
+        assert len(failed) == 1
+        assert "website" in failed[0].name
+
+    def test_unknown_format_name(self):
+        spec = EvalSpec(
+            skill_name="test",
+            sections=[
+                SectionRequirement(
+                    name="Items",
+                    tiers=[
+                        TierRequirement(
+                            label="default",
+                            min_entries=1,
+                            fields=[
+                                FieldRequirement(
+                                    name="val",
+                                    required=True,
+                                    format="bogus_format",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        extracted = ExtractedOutput(
+            sections={
+                "Items": {
+                    "default": [
+                        ExtractedEntry(fields={"val": "anything"}),
+                    ]
+                }
+            }
+        )
+        results = grade_extraction(extracted, spec)
+        format_results = [
+            r for r in results.results if ":format" in r.name
+        ]
+        assert len(format_results) == 1
+        assert not format_results[0].passed
+        assert "Unknown format" in format_results[0].message
+
+    def test_invalid_pattern_regex(self):
+        spec = EvalSpec(
+            skill_name="test",
+            sections=[
+                SectionRequirement(
+                    name="Items",
+                    tiers=[
+                        TierRequirement(
+                            label="default",
+                            min_entries=1,
+                            fields=[
+                                FieldRequirement(
+                                    name="val",
+                                    required=True,
+                                    pattern="[invalid",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        extracted = ExtractedOutput(
+            sections={
+                "Items": {
+                    "default": [
+                        ExtractedEntry(fields={"val": "test"}),
+                    ]
+                }
+            }
+        )
+        results = grade_extraction(extracted, spec)
+        pattern_results = [
+            r for r in results.results if ":pattern" in r.name
+        ]
+        assert len(pattern_results) == 1
+        assert not pattern_results[0].passed
+        assert "Invalid pattern" in pattern_results[0].message
+
+    def test_optional_field_missing_skips_validation(self):
+        """If an optional field is missing, pattern/format are not checked."""
+        extracted = ExtractedOutput(
+            sections={
+                "Restaurants": {
+                    "default": [
+                        ExtractedEntry(
+                            fields={
+                                "name": "Paesano's",
+                                "phone": "(408) 298-5437",
+                                "website": "https://paesanos.com",
+                                # email is optional, not present
+                            }
+                        ),
+                    ]
+                }
+            }
+        )
+        results = grade_extraction(extracted, _make_pattern_spec())
+        # No format check on email since it's not present
+        email_format = [
+            r
+            for r in results.results
+            if "email" in r.name and ":format" in r.name
+        ]
+        assert len(email_format) == 0
+
+    def test_both_pattern_and_format(self):
+        """When both pattern and format are set, both must match."""
+        spec = EvalSpec(
+            skill_name="test",
+            sections=[
+                SectionRequirement(
+                    name="Items",
+                    tiers=[
+                        TierRequirement(
+                            label="default",
+                            min_entries=1,
+                            fields=[
+                                FieldRequirement(
+                                    name="phone",
+                                    required=True,
+                                    pattern=r"\(\d{3}\) \d{3}-\d{4}",
+                                    format="phone_us",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        extracted = ExtractedOutput(
+            sections={
+                "Items": {
+                    "default": [
+                        ExtractedEntry(
+                            fields={
+                                "phone": "(408) 298-5437"
+                            }
+                        ),
+                    ]
+                }
+            }
+        )
+        results = grade_extraction(extracted, spec)
+        pattern_r = [
+            r for r in results.results if ":pattern" in r.name
+        ]
+        format_r = [
+            r for r in results.results if ":format" in r.name
+        ]
+        assert len(pattern_r) == 1
+        assert pattern_r[0].passed
+        assert len(format_r) == 1
+        assert format_r[0].passed
+
+    def test_non_string_field_value_coerced(self):
+        """Non-string values (e.g. int from LLM) should be coerced to str."""
+        spec = EvalSpec(
+            skill_name="test",
+            sections=[
+                SectionRequirement(
+                    name="Items",
+                    tiers=[
+                        TierRequirement(
+                            label="default",
+                            min_entries=1,
+                            fields=[
+                                FieldRequirement(
+                                    name="count",
+                                    required=True,
+                                    pattern=r"\d+",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        extracted = ExtractedOutput(
+            sections={
+                "Items": {
+                    "default": [
+                        ExtractedEntry(fields={"count": 42}),
+                    ]
+                }
+            }
+        )
+        results = grade_extraction(extracted, spec)
+        pattern_r = [
+            r for r in results.results if ":pattern" in r.name
+        ]
+        assert len(pattern_r) == 1
+        assert pattern_r[0].passed
+        assert pattern_r[0].evidence == "42"

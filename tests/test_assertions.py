@@ -6,17 +6,24 @@ import clauditor.assertions as _assertions_mod
 
 importlib.reload(_assertions_mod)
 
+from unittest.mock import MagicMock, patch  # noqa: E402
+
 from clauditor.assertions import (  # noqa: E402
     AssertionResult,
     AssertionSet,
+    _check_url,
+    _is_private_ip,
+    _is_safe_url,
     assert_contains,
     assert_has_entries,
+    assert_has_format,
     assert_has_urls,
     assert_max_length,
     assert_min_count,
     assert_min_length,
     assert_not_contains,
     assert_regex,
+    assert_urls_reachable,
     run_assertions,
 )
 
@@ -285,4 +292,366 @@ class TestRunAssertionsEdgeCases:
             "**1. Item** **2. Item**",
             [{"type": "has_entries", "value": "2"}],
         )
+        assert result.passed
+
+    def test_urls_reachable_via_run(self):
+        with patch(
+            "clauditor.assertions._is_safe_url", return_value=True
+        ), patch(
+            "clauditor.assertions._check_url",
+            return_value=("https://example.com", 200),
+        ):
+            result = run_assertions(
+                "visit https://example.com",
+                [{"type": "urls_reachable", "value": "1"}],
+            )
+            assert result.passed
+
+    def test_has_format_via_run(self):
+        result = run_assertions(
+            "contact user@example.com or admin@test.org",
+            [{"type": "has_format", "format": "email", "value": "2"}],
+        )
+        assert result.passed
+
+
+class TestSsrfProtection:
+    """Tests for SSRF protection helpers."""
+
+    def test_private_ip_loopback(self):
+        with patch(
+            "clauditor.assertions.socket.getaddrinfo"
+        ) as mock_dns:
+            mock_dns.return_value = [
+                (2, 1, 6, "", ("127.0.0.1", 0))
+            ]
+            assert _is_private_ip("localhost")
+
+    def test_private_ip_rfc1918(self):
+        with patch(
+            "clauditor.assertions.socket.getaddrinfo"
+        ) as mock_dns:
+            mock_dns.return_value = [
+                (2, 1, 6, "", ("10.0.0.1", 0))
+            ]
+            assert _is_private_ip("internal.corp")
+
+    def test_private_ip_link_local(self):
+        with patch(
+            "clauditor.assertions.socket.getaddrinfo"
+        ) as mock_dns:
+            mock_dns.return_value = [
+                (2, 1, 6, "", ("169.254.169.254", 0))
+            ]
+            assert _is_private_ip("metadata.cloud")
+
+    def test_public_ip(self):
+        with patch(
+            "clauditor.assertions.socket.getaddrinfo"
+        ) as mock_dns:
+            mock_dns.return_value = [
+                (2, 1, 6, "", ("93.184.216.34", 0))
+            ]
+            assert not _is_private_ip("example.com")
+
+    def test_dns_failure_treated_as_unsafe(self):
+        import socket as _socket
+
+        with patch(
+            "clauditor.assertions.socket.getaddrinfo",
+            side_effect=_socket.gaierror("DNS failed"),
+        ):
+            assert _is_private_ip("nonexistent.invalid")
+
+    def test_safe_url_http(self):
+        with patch(
+            "clauditor.assertions._is_private_ip",
+            return_value=False,
+        ):
+            assert _is_safe_url("https://example.com/path")
+
+    def test_unsafe_url_file_scheme(self):
+        assert not _is_safe_url("file:///etc/passwd")
+
+    def test_unsafe_url_no_host(self):
+        assert not _is_safe_url("http://")
+
+    def test_unsafe_url_private_ip(self):
+        with patch(
+            "clauditor.assertions._is_private_ip",
+            return_value=True,
+        ):
+            assert not _is_safe_url("http://10.0.0.1/admin")
+
+
+class TestCheckUrl:
+    """Tests for _check_url with SSRF-safe redirect following."""
+
+    def test_urllib_success(self):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch.dict("sys.modules", {"httpx": None}), patch(
+            "clauditor.assertions.urllib.request.build_opener"
+        ) as mock_opener:
+            mock_opener.return_value.open.return_value = mock_resp
+            url, status = _check_url("https://example.com")
+            assert status == 200
+
+    def test_urllib_http_error_404(self):
+        import urllib.error
+
+        with patch.dict("sys.modules", {"httpx": None}), patch(
+            "clauditor.assertions.urllib.request.build_opener"
+        ) as mock_opener:
+            mock_opener.return_value.open.side_effect = (
+                urllib.error.HTTPError(
+                    "https://example.com", 404, "Not Found",
+                    {}, None,
+                )
+            )
+            url, status = _check_url("https://example.com")
+            assert status == 404
+
+    def test_urllib_redirect_to_private_blocked(self):
+        import urllib.error
+
+        headers = MagicMock()
+        headers.get.return_value = "http://127.0.0.1/evil"
+        with patch.dict("sys.modules", {"httpx": None}), patch(
+            "clauditor.assertions.urllib.request.build_opener"
+        ) as mock_opener:
+            mock_opener.return_value.open.side_effect = (
+                urllib.error.HTTPError(
+                    "https://example.com", 302, "Found",
+                    headers, None,
+                )
+            )
+            url, status = _check_url("https://example.com")
+            assert status == "blocked"
+
+    def test_urllib_redirect_no_location(self):
+        import urllib.error
+
+        headers = MagicMock()
+        headers.get.return_value = None
+        with patch.dict("sys.modules", {"httpx": None}), patch(
+            "clauditor.assertions.urllib.request.build_opener"
+        ) as mock_opener:
+            mock_opener.return_value.open.side_effect = (
+                urllib.error.HTTPError(
+                    "https://example.com", 301, "Moved",
+                    headers, None,
+                )
+            )
+            url, status = _check_url("https://example.com")
+            assert status == 301
+
+    def test_urllib_generic_exception(self):
+        with patch.dict("sys.modules", {"httpx": None}), patch(
+            "clauditor.assertions.urllib.request.build_opener"
+        ) as mock_opener:
+            mock_opener.return_value.open.side_effect = (
+                TimeoutError("timed out")
+            )
+            url, status = _check_url("https://example.com")
+            assert status == "TimeoutError"
+
+    def test_httpx_success(self):
+        mock_httpx = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_httpx.head.return_value = mock_resp
+        with patch.dict(
+            "sys.modules", {"httpx": mock_httpx}
+        ):
+            url, status = _check_url("https://example.com")
+            assert status == 200
+
+    def test_httpx_redirect_to_private_blocked(self):
+        mock_httpx = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 302
+        mock_resp.headers = {"location": "http://127.0.0.1/evil"}
+        mock_httpx.head.return_value = mock_resp
+        with patch.dict(
+            "sys.modules", {"httpx": mock_httpx}
+        ):
+            url, status = _check_url("https://example.com")
+            assert status == "blocked"
+
+    def test_httpx_redirect_no_location(self):
+        mock_httpx = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 301
+        mock_resp.headers = {}
+        mock_httpx.head.return_value = mock_resp
+        with patch.dict(
+            "sys.modules", {"httpx": mock_httpx}
+        ):
+            url, status = _check_url("https://example.com")
+            assert status == 301
+
+    def test_httpx_too_many_redirects(self):
+        mock_httpx = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 302
+        mock_resp.headers = {
+            "location": "https://example.com/loop"
+        }
+        mock_httpx.head.return_value = mock_resp
+        with patch.dict(
+            "sys.modules", {"httpx": mock_httpx}
+        ), patch(
+            "clauditor.assertions._is_safe_url",
+            return_value=True,
+        ):
+            url, status = _check_url("https://example.com")
+            assert status == "TooManyRedirects"
+
+    def test_httpx_exception(self):
+        mock_httpx = MagicMock()
+        mock_httpx.head.side_effect = ConnectionError("fail")
+        with patch.dict(
+            "sys.modules", {"httpx": mock_httpx}
+        ):
+            url, status = _check_url("https://example.com")
+            assert status == "ConnectionError"
+
+    def test_urllib_too_many_redirects(self):
+        import urllib.error
+
+        headers = MagicMock()
+        headers.get.return_value = "https://example.com/loop"
+        with patch.dict("sys.modules", {"httpx": None}), patch(
+            "clauditor.assertions.urllib.request.build_opener"
+        ) as mock_opener, patch(
+            "clauditor.assertions._is_safe_url",
+            return_value=True,
+        ):
+            mock_opener.return_value.open.side_effect = (
+                urllib.error.HTTPError(
+                    "https://example.com", 302, "Found",
+                    headers, None,
+                )
+            )
+            url, status = _check_url("https://example.com")
+            assert status == "TooManyRedirects"
+
+
+class TestUrlsReachable:
+    """Tests for urls_reachable assertion with mocked HTTP."""
+
+    def test_all_ok(self):
+        output = (
+            "Visit https://a.com and https://b.com"
+        )
+        with patch(
+            "clauditor.assertions._is_safe_url", return_value=True
+        ), patch(
+            "clauditor.assertions._check_url",
+            side_effect=[
+                ("https://a.com", 200),
+                ("https://b.com", 200),
+            ],
+        ):
+            result = assert_urls_reachable(output, minimum=2)
+            assert result.passed
+            assert "2/2" in result.message
+
+    def test_below_threshold(self):
+        output = "Visit https://a.com and https://b.com"
+        with patch(
+            "clauditor.assertions._is_safe_url", return_value=True
+        ), patch(
+            "clauditor.assertions._check_url",
+            side_effect=[
+                ("https://a.com", 200),
+                ("https://b.com", 404),
+            ],
+        ):
+            result = assert_urls_reachable(output, minimum=2)
+            assert not result.passed
+            assert "1/2" in result.message
+
+    def test_ssrf_blocked(self):
+        output = "Visit http://127.0.0.1/admin"
+        with patch(
+            "clauditor.assertions._is_safe_url", return_value=False
+        ):
+            result = assert_urls_reachable(output, minimum=1)
+            assert not result.passed
+            assert "blocked" in result.evidence
+
+    def test_timeout(self):
+        output = "Visit https://slow.example.com"
+        with patch(
+            "clauditor.assertions._is_safe_url", return_value=True
+        ), patch(
+            "clauditor.assertions._check_url",
+            return_value=(
+                "https://slow.example.com", "TimeoutError"
+            ),
+        ):
+            result = assert_urls_reachable(output, minimum=1)
+            assert not result.passed
+
+    def test_no_urls(self):
+        result = assert_urls_reachable(
+            "no urls here", minimum=1
+        )
+        assert not result.passed
+        assert "0 URLs" in result.message
+
+    def test_no_urls_zero_threshold(self):
+        result = assert_urls_reachable(
+            "no urls here", minimum=0
+        )
+        assert result.passed
+
+
+class TestHasFormat:
+    """Tests for has_format assertion."""
+
+    def test_found(self):
+        output = (
+            "Contact user@example.com, admin@test.org, "
+            "support@help.io"
+        )
+        result = assert_has_format(output, "email", minimum=3)
+        assert result.passed
+        assert "3" in result.message
+
+    def test_insufficient(self):
+        output = "Contact user@example.com"
+        result = assert_has_format(output, "email", minimum=3)
+        assert not result.passed
+
+    def test_unknown_format(self):
+        result = assert_has_format("text", "bogus_format")
+        assert not result.passed
+        assert "Unknown format" in result.message
+
+    def test_evidence_limited(self):
+        output = " ".join(
+            f"u{i}@example.com" for i in range(10)
+        )
+        result = assert_has_format(output, "email", minimum=1)
+        assert result.passed
+        # Evidence should show at most 5
+        assert result.evidence is not None
+        assert result.evidence.count("@") <= 5
+
+    def test_phone_us(self):
+        output = "Call (408) 298-5437 or (650) 123-4567"
+        result = assert_has_format(output, "phone_us", minimum=2)
+        assert result.passed
+
+    def test_url_format(self):
+        output = (
+            "See https://example.com and "
+            "http://test.org/page"
+        )
+        result = assert_has_format(output, "url", minimum=2)
         assert result.passed

@@ -5,7 +5,12 @@ No API calls, no LLM — just regex, string matching, and counting.
 
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 
 
@@ -136,6 +141,150 @@ def assert_has_entries(output: str, minimum: int = 1) -> AssertionResult:
     )
 
 
+def _is_private_ip(hostname: str) -> bool:
+    """Check if a hostname resolves to a non-global IP address."""
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC)
+        for info in infos:
+            addr = ipaddress.ip_address(info[4][0])
+            if not addr.is_global:
+                return True
+    except (socket.gaierror, ValueError):
+        return True  # Can't resolve = treat as unsafe
+    return False
+
+
+def _is_safe_url(url: str) -> bool:
+    """Check if a URL is safe to request (no SSRF risk)."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+    return not _is_private_ip(hostname)
+
+
+_MAX_REDIRECTS = 5
+
+
+def _check_url(url: str, timeout: int = 5) -> tuple[str, int | str]:
+    """Send HEAD request with SSRF-safe redirect following."""
+    try:
+        import httpx
+    except ImportError:
+        httpx = None  # type: ignore[assignment]
+
+    if httpx is not None:
+        current = url
+        try:
+            for _ in range(_MAX_REDIRECTS + 1):
+                resp = httpx.head(
+                    current, timeout=timeout, follow_redirects=False
+                )
+                if 300 <= resp.status_code < 400:
+                    location = resp.headers.get("location")
+                    if not location:
+                        return (url, resp.status_code)
+                    next_url = urllib.parse.urljoin(current, location)
+                    if not _is_safe_url(next_url):
+                        return (url, "blocked")
+                    current = next_url
+                    continue
+                return (url, resp.status_code)
+            return (url, "TooManyRedirects")
+        except Exception as e:
+            return (url, type(e).__name__)
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+            return None
+
+    opener = urllib.request.build_opener(_NoRedirect)
+    current = url
+    try:
+        for _ in range(_MAX_REDIRECTS + 1):
+            req = urllib.request.Request(current, method="HEAD")
+            try:
+                with opener.open(req, timeout=timeout) as resp:
+                    return (url, resp.status)
+            except urllib.error.HTTPError as e:
+                if 300 <= e.code < 400:
+                    location = e.headers.get("Location")
+                    if not location:
+                        return (url, e.code)
+                    next_url = urllib.parse.urljoin(
+                        current, location
+                    )
+                    if not _is_safe_url(next_url):
+                        return (url, "blocked")
+                    current = next_url
+                    continue
+                return (url, e.code)
+        return (url, "TooManyRedirects")
+    except Exception as e:
+        return (url, type(e).__name__)
+
+
+_MAX_URL_CHECKS = 20
+
+
+def assert_urls_reachable(output: str, minimum: int = 1) -> AssertionResult:
+    """Check that at least N URLs in the output are reachable (HTTP 2xx)."""
+    urls = list(dict.fromkeys(re.findall(r"https?://[^\s\)\"'>]+", output)))
+    if not urls:
+        return AssertionResult(
+            name=f"urls_reachable≥{minimum}",
+            passed=0 >= minimum,
+            message=f"Found 0 URLs to check (need ≥{minimum})",
+        )
+
+    statuses: list[str] = []
+    reachable = 0
+    check_urls = urls[:_MAX_URL_CHECKS]
+    for url in check_urls:
+        if not _is_safe_url(url):
+            statuses.append(f"{url}: blocked")
+            continue
+        url, status = _check_url(url)
+        if isinstance(status, int) and 200 <= status < 300:
+            reachable += 1
+            statuses.append(f"{url}: {status}")
+        else:
+            statuses.append(f"{url}: {status}")
+
+    return AssertionResult(
+        name=f"urls_reachable≥{minimum}",
+        passed=reachable >= minimum,
+        message=f"{reachable}/{len(urls)} URLs reachable (need ≥{minimum})",
+        evidence="; ".join(statuses[:5]),
+    )
+
+
+def assert_has_format(
+    output: str, format_name: str, minimum: int = 1,
+) -> AssertionResult:
+    """Check that output contains at least N matches of a named format."""
+    from clauditor.formats import get_format
+
+    fmt = get_format(format_name)
+    if fmt is None:
+        return AssertionResult(
+            name=f"has_format:{format_name}",
+            passed=False,
+            message=f"Unknown format: {format_name}",
+        )
+
+    matches = fmt.extract_pattern.findall(output)
+    count = len(matches)
+    return AssertionResult(
+        name=f"has_format:{format_name}≥{minimum}",
+        passed=count >= minimum,
+        message=f"Found {count} {format_name} matches (need ≥{minimum})",
+        evidence="; ".join(str(m) for m in matches[:5]) if matches else None,
+    )
+
+
 def run_assertions(output: str, assertions: list[dict]) -> AssertionSet:
     """Run a list of assertion dicts against output.
 
@@ -165,6 +314,16 @@ def run_assertions(output: str, assertions: list[dict]) -> AssertionSet:
         elif atype == "has_entries":
             results.results.append(
                 assert_has_entries(output, int(value) if value else 1)
+            )
+        elif atype == "urls_reachable":
+            results.results.append(
+                assert_urls_reachable(output, int(value) if value else 1)
+            )
+        elif atype == "has_format":
+            results.results.append(
+                assert_has_format(
+                    output, a.get("format", ""), int(value) if value else 1
+                )
             )
         else:
             results.results.append(

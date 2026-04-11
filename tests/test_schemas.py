@@ -112,10 +112,125 @@ class TestFieldRequirement:
         f = FieldRequirement(name="test")
         assert f.required is True
         assert f.pattern is None
+        assert f.format is None
 
     def test_with_pattern(self):
         f = FieldRequirement(name="phone", pattern=r"\(\d{3}\)\s\d{3}-\d{4}")
         assert f.pattern is not None
+
+    def test_with_format(self):
+        f = FieldRequirement(name="phone", format="phone_us")
+        assert f.format == "phone_us"
+
+    def test_with_both_pattern_and_format(self):
+        f = FieldRequirement(
+            name="phone",
+            pattern=r"\(\d{3}\)\s\d{3}-\d{4}",
+            format="phone_us",
+        )
+        assert f.pattern is not None
+        assert f.format == "phone_us"
+
+
+class TestFormatFieldRoundTrip:
+    def test_format_preserved_in_roundtrip(self):
+        data = {
+            "skill_name": "test",
+            "sections": [
+                {
+                    "name": "Items",
+                    "min_entries": 1,
+                    "fields": [
+                        {
+                            "name": "phone",
+                            "required": True,
+                            "format": "phone_us",
+                        },
+                        {
+                            "name": "email",
+                            "required": False,
+                            "format": "email",
+                            "pattern": r".+@.+",
+                        },
+                    ],
+                }
+            ],
+        }
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".eval.json", delete=False
+        ) as f:
+            json.dump(data, f)
+            f.flush()
+            spec = EvalSpec.from_file(f.name)
+
+        tier = spec.sections[0].tiers[0]
+        assert tier.fields[0].format == "phone_us"
+        assert tier.fields[1].format == "email"
+        assert tier.fields[1].pattern == r".+@.+"
+
+        d = spec.to_dict()
+        fields_out = d["sections"][0]["tiers"][0]["fields"]
+        assert fields_out[0]["format"] == "phone_us"
+        assert fields_out[1]["format"] == "email"
+        assert fields_out[1]["pattern"] == r".+@.+"
+
+    def test_format_absent_backward_compat(self):
+        data = {
+            "skill_name": "test",
+            "sections": [
+                {
+                    "name": "Items",
+                    "min_entries": 1,
+                    "fields": [
+                        {"name": "name", "required": True},
+                    ],
+                }
+            ],
+        }
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".eval.json", delete=False
+        ) as f:
+            json.dump(data, f)
+            f.flush()
+            spec = EvalSpec.from_file(f.name)
+
+        tier = spec.sections[0].tiers[0]
+        assert tier.fields[0].format is None
+
+        d = spec.to_dict()
+        fields_out = d["sections"][0]["tiers"][0]["fields"]
+        assert "format" not in fields_out[0]
+
+    def test_format_in_tiered_sections(self):
+        data = {
+            "skill_name": "test",
+            "sections": [
+                {
+                    "name": "Items",
+                    "tiers": [
+                        {
+                            "label": "main",
+                            "min_entries": 1,
+                            "fields": [
+                                {
+                                    "name": "url",
+                                    "required": True,
+                                    "format": "url",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".eval.json", delete=False
+        ) as f:
+            json.dump(data, f)
+            f.flush()
+            spec = EvalSpec.from_file(f.name)
+
+        assert spec.sections[0].tiers[0].fields[0].format == "url"
 
 
 class TestSectionRequirement:
