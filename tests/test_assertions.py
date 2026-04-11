@@ -6,7 +6,7 @@ import clauditor.assertions as _assertions_mod
 
 importlib.reload(_assertions_mod)
 
-from unittest.mock import MagicMock, patch  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 from clauditor.assertions import (  # noqa: E402
     AssertionResult,
@@ -295,21 +295,16 @@ class TestRunAssertionsEdgeCases:
 
     def test_urls_reachable_via_run(self):
         with patch(
-            "clauditor.assertions.urllib.request.urlopen"
-        ) as mock_urlopen:
-            mock_resp = MagicMock()
-            mock_resp.status = 200
-            mock_resp.__enter__ = lambda s: s
-            mock_resp.__exit__ = MagicMock(return_value=False)
-            mock_urlopen.return_value = mock_resp
-            with patch(
-                "clauditor.assertions._is_safe_url", return_value=True
-            ):
-                result = run_assertions(
-                    "visit https://example.com",
-                    [{"type": "urls_reachable", "value": "1"}],
-                )
-                assert result.passed
+            "clauditor.assertions._is_safe_url", return_value=True
+        ), patch(
+            "clauditor.assertions._check_url",
+            return_value=("https://example.com", 200),
+        ):
+            result = run_assertions(
+                "visit https://example.com",
+                [{"type": "urls_reachable", "value": "1"}],
+            )
+            assert result.passed
 
     def test_has_format_via_run(self):
         result = run_assertions(

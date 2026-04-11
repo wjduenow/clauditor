@@ -8,6 +8,7 @@ from __future__ import annotations
 import ipaddress
 import re
 import socket
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -168,13 +169,17 @@ def _check_url(url: str, timeout: int = 5) -> tuple[str, int | str]:
     """Send HEAD request, return (url, status_code_or_error_string)."""
     try:
         import httpx
-
-        resp = httpx.head(url, timeout=timeout, follow_redirects=True)
-        return (url, resp.status_code)
     except ImportError:
-        pass
-    except Exception:
-        pass  # Fall through to urllib
+        httpx = None  # type: ignore[assignment]
+
+    if httpx is not None:
+        try:
+            resp = httpx.head(
+                url, timeout=timeout, follow_redirects=True
+            )
+            return (url, resp.status_code)
+        except Exception as e:
+            return (url, type(e).__name__)
 
     try:
         req = urllib.request.Request(url, method="HEAD")
