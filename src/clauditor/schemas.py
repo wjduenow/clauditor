@@ -17,6 +17,7 @@ class FieldRequirement:
     name: str
     required: bool = True
     pattern: str | None = None  # Optional regex the field value must match
+    format: str | None = None  # Named format from formats registry
 
 
 @dataclass
@@ -99,6 +100,7 @@ class EvalSpec:
                             name=f["name"],
                             required=f.get("required", True),
                             pattern=f.get("pattern"),
+                            format=f.get("format"),
                         )
                         for f in t.get("fields", [])
                     ]
@@ -117,6 +119,7 @@ class EvalSpec:
                         name=f["name"],
                         required=f.get("required", True),
                         pattern=f.get("pattern"),
+                        format=f.get("format"),
                     )
                     for f in s.get("fields", [])
                 ]
@@ -199,6 +202,11 @@ class EvalSpec:
                                     **(
                                         {"pattern": f.pattern}
                                         if f.pattern
+                                        else {}
+                                    ),
+                                    **(
+                                        {"format": f.format}
+                                        if f.format
                                         else {}
                                     ),
                                 }
