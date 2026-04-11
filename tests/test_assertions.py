@@ -6,11 +6,12 @@ import clauditor.assertions as _assertions_mod
 
 importlib.reload(_assertions_mod)
 
-from unittest.mock import patch  # noqa: E402
+from unittest.mock import MagicMock, patch  # noqa: E402
 
 from clauditor.assertions import (  # noqa: E402
     AssertionResult,
     AssertionSet,
+    _check_url,
     _is_private_ip,
     _is_safe_url,
     assert_contains,
@@ -381,6 +382,67 @@ class TestSsrfProtection:
             return_value=True,
         ):
             assert not _is_safe_url("http://10.0.0.1/admin")
+
+
+class TestCheckUrl:
+    """Tests for _check_url covering httpx and urllib paths."""
+
+    def test_urllib_success(self):
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        with patch.dict("sys.modules", {"httpx": None}), patch(
+            "clauditor.assertions.urllib.request.build_opener"
+        ) as mock_opener:
+            mock_opener.return_value.open.return_value = mock_resp
+            url, status = _check_url("https://example.com")
+            assert status == 200
+
+    def test_urllib_http_error(self):
+        import urllib.error
+
+        with patch.dict("sys.modules", {"httpx": None}), patch(
+            "clauditor.assertions.urllib.request.build_opener"
+        ) as mock_opener:
+            mock_opener.return_value.open.side_effect = (
+                urllib.error.HTTPError(
+                    "https://example.com", 404, "Not Found",
+                    {}, None,
+                )
+            )
+            url, status = _check_url("https://example.com")
+            assert status == 404
+
+    def test_urllib_generic_exception(self):
+        with patch.dict("sys.modules", {"httpx": None}), patch(
+            "clauditor.assertions.urllib.request.build_opener"
+        ) as mock_opener:
+            mock_opener.return_value.open.side_effect = (
+                TimeoutError("timed out")
+            )
+            url, status = _check_url("https://example.com")
+            assert status == "TimeoutError"
+
+    def test_httpx_success(self):
+        mock_httpx = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_httpx.head.return_value = mock_resp
+        with patch.dict(
+            "sys.modules", {"httpx": mock_httpx}
+        ):
+            url, status = _check_url("https://example.com")
+            assert status == 200
+
+    def test_httpx_exception(self):
+        mock_httpx = MagicMock()
+        mock_httpx.head.side_effect = ConnectionError("fail")
+        with patch.dict(
+            "sys.modules", {"httpx": mock_httpx}
+        ):
+            url, status = _check_url("https://example.com")
+            assert status == "ConnectionError"
 
 
 class TestUrlsReachable:

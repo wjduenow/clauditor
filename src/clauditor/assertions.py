@@ -165,6 +165,20 @@ def _is_safe_url(url: str) -> bool:
     return not _is_private_ip(hostname)
 
 
+class _HeadRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirect handler that preserves HEAD method across redirects."""
+
+    def redirect_request(
+        self, req, fp, code, msg, headers, newurl,
+    ):
+        new_req = super().redirect_request(
+            req, fp, code, msg, headers, newurl,
+        )
+        if new_req is not None:
+            new_req.method = req.method
+        return new_req
+
+
 def _check_url(url: str, timeout: int = 5) -> tuple[str, int | str]:
     """Send HEAD request, return (url, status_code_or_error_string)."""
     try:
@@ -183,7 +197,8 @@ def _check_url(url: str, timeout: int = 5) -> tuple[str, int | str]:
 
     try:
         req = urllib.request.Request(url, method="HEAD")
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        opener = urllib.request.build_opener(_HeadRedirectHandler)
+        with opener.open(req, timeout=timeout) as resp:
             return (url, resp.status)
     except urllib.error.HTTPError as e:
         return (url, e.code)
