@@ -3,7 +3,7 @@
 ## Meta
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/13
 - **Branch:** `feature/13-field-validation`
-- **Phase:** `detailing`
+- **Phase:** `devolved`
 - **Sessions:** 1
 - **Last session:** 2026-04-10
 
@@ -393,4 +393,16 @@ Public API: `get_format(name) -> FormatDef | None`, `list_formats() -> list[str]
 
 ## Beads Manifest
 
-*Pending.*
+- **Epic:** `clauditor-6eh` — #13: Field-Level Validation Assertions
+- **Worktree:** `/home/wesd/Projects/worktrees/clauditor/13-field-validation`
+- **Branch:** `feature/13-field-validation`
+
+| Bead ID | Story | Depends on |
+|---------|-------|------------|
+| `clauditor-6eh.1` | US-001 — Format Registry Module | none |
+| `clauditor-6eh.2` | US-002 — format Field on FieldRequirement | none |
+| `clauditor-6eh.3` | US-005 — urls_reachable Layer 1 Assertion | none |
+| `clauditor-6eh.4` | US-003 — Field Pattern + Format Enforcement | 6eh.1, 6eh.2 |
+| `clauditor-6eh.5` | US-004 — has_format Layer 1 Assertion | 6eh.1 |
+| `clauditor-6eh.6` | US-006 — Quality Gate | 6eh.1–6eh.5 |
+| `clauditor-6eh.7` | US-007 — Patterns & Memory | 6eh.6 |
