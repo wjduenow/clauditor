@@ -385,7 +385,7 @@ class TestSsrfProtection:
 
 
 class TestCheckUrl:
-    """Tests for _check_url covering httpx and urllib paths."""
+    """Tests for _check_url with SSRF-safe redirect following."""
 
     def test_urllib_success(self):
         mock_resp = MagicMock()
@@ -399,7 +399,7 @@ class TestCheckUrl:
             url, status = _check_url("https://example.com")
             assert status == 200
 
-    def test_urllib_http_error(self):
+    def test_urllib_http_error_404(self):
         import urllib.error
 
         with patch.dict("sys.modules", {"httpx": None}), patch(
@@ -413,6 +413,40 @@ class TestCheckUrl:
             )
             url, status = _check_url("https://example.com")
             assert status == 404
+
+    def test_urllib_redirect_to_private_blocked(self):
+        import urllib.error
+
+        headers = MagicMock()
+        headers.get.return_value = "http://127.0.0.1/evil"
+        with patch.dict("sys.modules", {"httpx": None}), patch(
+            "clauditor.assertions.urllib.request.build_opener"
+        ) as mock_opener:
+            mock_opener.return_value.open.side_effect = (
+                urllib.error.HTTPError(
+                    "https://example.com", 302, "Found",
+                    headers, None,
+                )
+            )
+            url, status = _check_url("https://example.com")
+            assert status == "blocked"
+
+    def test_urllib_redirect_no_location(self):
+        import urllib.error
+
+        headers = MagicMock()
+        headers.get.return_value = None
+        with patch.dict("sys.modules", {"httpx": None}), patch(
+            "clauditor.assertions.urllib.request.build_opener"
+        ) as mock_opener:
+            mock_opener.return_value.open.side_effect = (
+                urllib.error.HTTPError(
+                    "https://example.com", 301, "Moved",
+                    headers, None,
+                )
+            )
+            url, status = _check_url("https://example.com")
+            assert status == 301
 
     def test_urllib_generic_exception(self):
         with patch.dict("sys.modules", {"httpx": None}), patch(
@@ -435,6 +469,47 @@ class TestCheckUrl:
             url, status = _check_url("https://example.com")
             assert status == 200
 
+    def test_httpx_redirect_to_private_blocked(self):
+        mock_httpx = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 302
+        mock_resp.headers = {"location": "http://127.0.0.1/evil"}
+        mock_httpx.head.return_value = mock_resp
+        with patch.dict(
+            "sys.modules", {"httpx": mock_httpx}
+        ):
+            url, status = _check_url("https://example.com")
+            assert status == "blocked"
+
+    def test_httpx_redirect_no_location(self):
+        mock_httpx = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 301
+        mock_resp.headers = {}
+        mock_httpx.head.return_value = mock_resp
+        with patch.dict(
+            "sys.modules", {"httpx": mock_httpx}
+        ):
+            url, status = _check_url("https://example.com")
+            assert status == 301
+
+    def test_httpx_too_many_redirects(self):
+        mock_httpx = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 302
+        mock_resp.headers = {
+            "location": "https://example.com/loop"
+        }
+        mock_httpx.head.return_value = mock_resp
+        with patch.dict(
+            "sys.modules", {"httpx": mock_httpx}
+        ), patch(
+            "clauditor.assertions._is_safe_url",
+            return_value=True,
+        ):
+            url, status = _check_url("https://example.com")
+            assert status == "TooManyRedirects"
+
     def test_httpx_exception(self):
         mock_httpx = MagicMock()
         mock_httpx.head.side_effect = ConnectionError("fail")
@@ -443,6 +518,26 @@ class TestCheckUrl:
         ):
             url, status = _check_url("https://example.com")
             assert status == "ConnectionError"
+
+    def test_urllib_too_many_redirects(self):
+        import urllib.error
+
+        headers = MagicMock()
+        headers.get.return_value = "https://example.com/loop"
+        with patch.dict("sys.modules", {"httpx": None}), patch(
+            "clauditor.assertions.urllib.request.build_opener"
+        ) as mock_opener, patch(
+            "clauditor.assertions._is_safe_url",
+            return_value=True,
+        ):
+            mock_opener.return_value.open.side_effect = (
+                urllib.error.HTTPError(
+                    "https://example.com", 302, "Found",
+                    headers, None,
+                )
+            )
+            url, status = _check_url("https://example.com")
+            assert status == "TooManyRedirects"
 
 
 class TestUrlsReachable:

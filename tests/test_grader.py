@@ -886,3 +886,43 @@ class TestPatternFormatEnforcement:
         assert pattern_r[0].passed
         assert len(format_r) == 1
         assert format_r[0].passed
+
+    def test_non_string_field_value_coerced(self):
+        """Non-string values (e.g. int from LLM) should be coerced to str."""
+        spec = EvalSpec(
+            skill_name="test",
+            sections=[
+                SectionRequirement(
+                    name="Items",
+                    tiers=[
+                        TierRequirement(
+                            label="default",
+                            min_entries=1,
+                            fields=[
+                                FieldRequirement(
+                                    name="count",
+                                    required=True,
+                                    pattern=r"\d+",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        extracted = ExtractedOutput(
+            sections={
+                "Items": {
+                    "default": [
+                        ExtractedEntry(fields={"count": 42}),
+                    ]
+                }
+            }
+        )
+        results = grade_extraction(extracted, spec)
+        pattern_r = [
+            r for r in results.results if ":pattern" in r.name
+        ]
+        assert len(pattern_r) == 1
+        assert pattern_r[0].passed
+        assert pattern_r[0].evidence == "42"

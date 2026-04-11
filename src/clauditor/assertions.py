@@ -142,12 +142,12 @@ def assert_has_entries(output: str, minimum: int = 1) -> AssertionResult:
 
 
 def _is_private_ip(hostname: str) -> bool:
-    """Check if a hostname resolves to a private/reserved IP address."""
+    """Check if a hostname resolves to a non-global IP address."""
     try:
         infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC)
         for info in infos:
             addr = ipaddress.ip_address(info[4][0])
-            if addr.is_private or addr.is_loopback or addr.is_link_local:
+            if not addr.is_global:
                 return True
     except (socket.gaierror, ValueError):
         return True  # Can't resolve = treat as unsafe
@@ -165,50 +165,73 @@ def _is_safe_url(url: str) -> bool:
     return not _is_private_ip(hostname)
 
 
-class _HeadRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Redirect handler that preserves HEAD method across redirects."""
-
-    def redirect_request(
-        self, req, fp, code, msg, headers, newurl,
-    ):
-        new_req = super().redirect_request(
-            req, fp, code, msg, headers, newurl,
-        )
-        if new_req is not None:
-            new_req.method = req.method
-        return new_req
+_MAX_REDIRECTS = 5
 
 
 def _check_url(url: str, timeout: int = 5) -> tuple[str, int | str]:
-    """Send HEAD request, return (url, status_code_or_error_string)."""
+    """Send HEAD request with SSRF-safe redirect following."""
     try:
         import httpx
     except ImportError:
         httpx = None  # type: ignore[assignment]
 
     if httpx is not None:
+        current = url
         try:
-            resp = httpx.head(
-                url, timeout=timeout, follow_redirects=True
-            )
-            return (url, resp.status_code)
+            for _ in range(_MAX_REDIRECTS + 1):
+                resp = httpx.head(
+                    current, timeout=timeout, follow_redirects=False
+                )
+                if 300 <= resp.status_code < 400:
+                    location = resp.headers.get("location")
+                    if not location:
+                        return (url, resp.status_code)
+                    next_url = urllib.parse.urljoin(current, location)
+                    if not _is_safe_url(next_url):
+                        return (url, "blocked")
+                    current = next_url
+                    continue
+                return (url, resp.status_code)
+            return (url, "TooManyRedirects")
         except Exception as e:
             return (url, type(e).__name__)
 
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+            return None
+
+    opener = urllib.request.build_opener(_NoRedirect)
+    current = url
     try:
-        req = urllib.request.Request(url, method="HEAD")
-        opener = urllib.request.build_opener(_HeadRedirectHandler)
-        with opener.open(req, timeout=timeout) as resp:
-            return (url, resp.status)
-    except urllib.error.HTTPError as e:
-        return (url, e.code)
+        for _ in range(_MAX_REDIRECTS + 1):
+            req = urllib.request.Request(current, method="HEAD")
+            try:
+                with opener.open(req, timeout=timeout) as resp:
+                    return (url, resp.status)
+            except urllib.error.HTTPError as e:
+                if 300 <= e.code < 400:
+                    location = e.headers.get("Location")
+                    if not location:
+                        return (url, e.code)
+                    next_url = urllib.parse.urljoin(
+                        current, location
+                    )
+                    if not _is_safe_url(next_url):
+                        return (url, "blocked")
+                    current = next_url
+                    continue
+                return (url, e.code)
+        return (url, "TooManyRedirects")
     except Exception as e:
         return (url, type(e).__name__)
 
 
+_MAX_URL_CHECKS = 20
+
+
 def assert_urls_reachable(output: str, minimum: int = 1) -> AssertionResult:
     """Check that at least N URLs in the output are reachable (HTTP 2xx)."""
-    urls = re.findall(r"https?://[^\s\)\"'>]+", output)
+    urls = list(dict.fromkeys(re.findall(r"https?://[^\s\)\"'>]+", output)))
     if not urls:
         return AssertionResult(
             name=f"urls_reachable≥{minimum}",
@@ -218,7 +241,8 @@ def assert_urls_reachable(output: str, minimum: int = 1) -> AssertionResult:
 
     statuses: list[str] = []
     reachable = 0
-    for url in urls:
+    check_urls = urls[:_MAX_URL_CHECKS]
+    for url in check_urls:
         if not _is_safe_url(url):
             statuses.append(f"{url}: blocked")
             continue

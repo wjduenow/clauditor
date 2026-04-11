@@ -127,9 +127,10 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
 
                 # Validate pattern/format on fields that have values
                 for field_req in tier.fields:
-                    value = entry.fields.get(field_req.name)
-                    if not value:
+                    raw_value = entry.fields.get(field_req.name)
+                    if not raw_value:
                         continue
+                    value = str(raw_value)
 
                     base = (
                         f"section:{section_req.name}"
