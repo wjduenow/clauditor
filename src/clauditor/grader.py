@@ -98,7 +98,7 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
                     message=(
                         f"Section '{section_req.name}' tier '{tier.label}' "
                         f"has {len(entries)} entries "
-                        f"(need \u2265{tier.min_entries})"
+                        f"(need >={tier.min_entries})"
                     ),
                     kind="count",
                 )
@@ -113,7 +113,7 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
                         message=(
                             f"Section '{section_req.name}' tier '{tier.label}' "
                             f"has {len(entries)} entries "
-                            f"(need \u2264{tier.max_entries})"
+                            f"(need <={tier.max_entries})"
                         ),
                         kind="count_max",
                     )

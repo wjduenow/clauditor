@@ -24,12 +24,16 @@ def append_record(
     pass_rate: float,
     mean_score: float | None,
     metrics: dict,
-    path: Path = _DEFAULT_PATH,
+    path: Path | None = None,
 ) -> None:
     """Append one history record for a grade run.
 
     Creates the parent directory if it does not already exist.
+    ``path`` defaults to :data:`_DEFAULT_PATH` resolved at call time, so
+    tests can monkeypatch the module attribute.
     """
+    if path is None:
+        path = _DEFAULT_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "ts": datetime.now(UTC).isoformat(),
@@ -44,13 +48,16 @@ def append_record(
 
 def read_records(
     skill: str | None = None,
-    path: Path = _DEFAULT_PATH,
+    path: Path | None = None,
 ) -> list[dict]:
     """Read all history records, optionally filtered by skill.
 
     Missing file -> empty list. Corrupt lines are skipped with a warning to
-    stderr.
+    stderr. ``path`` defaults to :data:`_DEFAULT_PATH` resolved at call
+    time so tests can monkeypatch the module attribute.
     """
+    if path is None:
+        path = _DEFAULT_PATH
     if not path.exists():
         return []
 

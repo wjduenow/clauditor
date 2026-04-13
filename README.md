@@ -219,15 +219,17 @@ clauditor grade .claude/commands/my-skill.md --diff       # Compare against prio
 
 Each criterion gets a pass/fail, score (0.0-1.0), evidence (quoted output), and reasoning. Use `--save` to persist results for regression tracking, and `--diff` to compare against a prior run (flags regressions where a criterion's score drops by more than 0.1).
 
-#### A/B Comparison
+#### Regression Comparison
 
-Runs your skill and raw Claude side-by-side against the same rubric. Flags regressions where the baseline passes but your skill fails.
+Diffs two saved grade reports (from `--save`) or two captured outputs, printing `[REGRESSION]` for pass→fail flips and `[IMPROVEMENT]` for fail→pass. Exits 1 on any regression.
 
 ```bash
 clauditor compare before.grade.json after.grade.json
+# Or re-grade two raw captures against a spec:
+clauditor compare before.txt after.txt --spec <skill.md>
 ```
 
-Diffs two saved grade reports (from `--save`) or two captured outputs (with `--spec`), printing `[REGRESSION]` for pass→fail flips and `[IMPROVEMENT]` for fail→pass. Exits 1 on any regression.
+For a true baseline A/B run (skill vs raw Claude against the same rubric), use the Python API `clauditor.comparator.compare_ab()` directly — the `grade --compare` CLI flag was removed in favor of the file-diff workflow above.
 
 #### Variance Measurement
 
@@ -321,7 +323,7 @@ clauditor grade <skill.md> --only-criterion clarity  # Run a subset (repeatable,
 clauditor grade <skill.md> --save      # Persist results to .clauditor/
 clauditor grade <skill.md> --diff      # Compare against prior results
 clauditor compare before.grade.json after.grade.json  # Diff two saved grade reports
-clauditor compare before.txt after.txt --spec eval.json  # Re-grade two captures
+clauditor compare before.txt after.txt --spec <skill.md>  # Re-grade two captures
 clauditor trend <skill> --metric pass_rate       # Tab-separated history + ASCII sparkline
 clauditor triggers <skill.md>          # Trigger precision testing
 clauditor capture <skill> -- "args"    # Run skill, save stdout to tests/eval/captured/

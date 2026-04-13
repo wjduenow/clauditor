@@ -381,7 +381,7 @@ class TestMaxEntries:
         )
         assert not count_max.passed
         assert "6 entries" in count_max.message
-        assert "\u22643" in count_max.message
+        assert "<=3" in count_max.message
 
     def test_over_max_still_grades_all_entry_fields(self):
         """DEC-003: field checks still run for all extracted entries."""

@@ -776,11 +776,12 @@ def cmd_trend(args: argparse.Namespace) -> int:
             v = rec.get("metrics", {}).get(metric)
         if v is None:
             continue
-        timestamps.append(str(rec.get("ts", "")))
         try:
-            values.append(float(v))
+            value = float(v)
         except (TypeError, ValueError):
             continue
+        timestamps.append(str(rec.get("ts", "")))
+        values.append(value)
 
     if not values:
         print(
