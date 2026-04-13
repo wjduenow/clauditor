@@ -55,7 +55,21 @@ FORMAT_REGISTRY: dict[str, FormatDef] = {f.name: f for f in [
     _def(
         "url",
         r"https?://[^\s\)\"'>]+",
-        "HTTP(S) URL",
+        (
+            "HTTP(S) URL with scheme. Note: LLMs often emit bare domains "
+            "when pulling display text from markdown links "
+            "(e.g. '[paesanosj.com](https://paesanosj.com/)' → "
+            "'paesanosj.com'). Use the 'domain' format if you want to "
+            "accept those too."
+        ),
+    ),
+    _def(
+        "domain",
+        # Two or more labels; final label must be alphabetic and ≥2 chars
+        # so numeric/IP-like strings (e.g. 192.168.1.1) don't validate.
+        r"(?i)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+        r"(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}",
+        "Bare domain (no scheme), e.g. example.com or sub.example.co.uk",
     ),
     _def(
         "date_iso",

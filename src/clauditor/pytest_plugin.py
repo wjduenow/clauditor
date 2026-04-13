@@ -62,6 +62,14 @@ def pytest_configure(config: pytest.Config) -> None:
         "clauditor_grade: mark test as requiring Layer 3 LLM grading "
         "(skipped without --clauditor-grade)",
     )
+    config.addinivalue_line(
+        "markers",
+        "network: real HTTP; deselect with -m 'not network'",
+    )
+    config.addinivalue_line(
+        "markers",
+        "slow: slow-running tests; deselect with -m 'not slow'",
+    )
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:

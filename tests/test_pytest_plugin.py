@@ -100,13 +100,26 @@ class TestPluginFunctionsDirect:
         assert "--clauditor-model" in option_names
 
     def test_pytest_configure_adds_marker(self):
-        """pytest_configure registers the clauditor_grade marker."""
+        """pytest_configure registers the clauditor_grade, network, and slow markers."""
         config = MagicMock()
         pytest_configure(config)
-        config.addinivalue_line.assert_called_once()
-        args = config.addinivalue_line.call_args
-        assert args[0][0] == "markers"
-        assert "clauditor_grade" in args[0][1]
+        assert config.addinivalue_line.call_count == 3
+        registered = [
+            call.args[1] for call in config.addinivalue_line.call_args_list
+        ]
+        assert all(
+            call.args[0] == "markers"
+            for call in config.addinivalue_line.call_args_list
+        )
+        assert any("clauditor_grade" in line for line in registered)
+        # Pin the exact marker description strings so a typo in the
+        # registration (empty description, wrong suffix, etc.) fails loud.
+        assert (
+            "network: real HTTP; deselect with -m 'not network'" in registered
+        )
+        assert (
+            "slow: slow-running tests; deselect with -m 'not slow'" in registered
+        )
 
     def test_collection_modifyitems_skips_grade_tests(self):
         """Grade-marked items are skipped when flag is not set."""

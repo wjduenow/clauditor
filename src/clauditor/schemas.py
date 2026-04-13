@@ -6,18 +6,44 @@ Loads eval.json files that define what a skill's output should look like.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 
 @dataclass
 class FieldRequirement:
-    """A required field in a structured entry (venue, event, etc.)."""
+    """A required field in a structured entry (venue, event, etc.).
+
+    The ``format`` field does double duty (DEC-007): it accepts either a
+    registered format name (e.g. ``"phone_us"``, ``"domain"``) or an inline
+    regex. Registry lookup wins when both could apply. Invalid values raise
+    ``ValueError`` at construction time.
+    """
 
     name: str
     required: bool = True
-    pattern: str | None = None  # Optional regex the field value must match
-    format: str | None = None  # Named format from formats registry
+    format: str | None = None  # Registry key or inline regex (DEC-007)
+
+    def __post_init__(self) -> None:
+        if self.format is None:
+            return
+        if self.format == "":
+            raise ValueError(
+                f"FieldRequirement(name={self.name!r}): format may not be "
+                f"an empty string (use None to disable format validation)."
+            )
+        from clauditor.formats import FORMAT_REGISTRY
+        if self.format in FORMAT_REGISTRY:
+            return
+        try:
+            re.compile(self.format)
+        except re.error as e:
+            raise ValueError(
+                f"FieldRequirement(name={self.name!r}): format "
+                f"{self.format!r} is neither a registered format name "
+                f"({sorted(FORMAT_REGISTRY)}) nor a valid regex: {e}"
+            ) from e
 
 
 @dataclass
@@ -27,6 +53,7 @@ class TierRequirement:
     label: str
     description: str = ""
     min_entries: int = 0
+    max_entries: int | None = None
     fields: list[FieldRequirement] = field(default_factory=list)
 
 
@@ -60,6 +87,22 @@ class VarianceConfig:
 
     n_runs: int = 5
     min_stability: float = 0.8
+
+
+def _resolve_field_format(field_dict: dict) -> str | None:
+    """Resolve the ``format`` value for a field entry during spec load.
+
+    Rejects the legacy ``pattern`` key with a clear migration message
+    (DEC-006/DEC-007): eval specs should use ``format`` which now accepts
+    either a registered format name or an inline regex.
+    """
+    if "pattern" in field_dict:
+        raise ValueError(
+            f"Field {field_dict.get('name')!r}: the 'pattern' key is no "
+            f"longer supported. Use 'format' instead — it accepts either "
+            f"a registered format name (e.g. 'phone_us') or an inline regex."
+        )
+    return field_dict.get("format")
 
 
 @dataclass
@@ -99,8 +142,7 @@ class EvalSpec:
                         FieldRequirement(
                             name=f["name"],
                             required=f.get("required", True),
-                            pattern=f.get("pattern"),
-                            format=f.get("format"),
+                            format=_resolve_field_format(f),
                         )
                         for f in t.get("fields", [])
                     ]
@@ -109,6 +151,7 @@ class EvalSpec:
                             label=t["label"],
                             description=t.get("description", ""),
                             min_entries=t.get("min_entries", 0),
+                            max_entries=t.get("max_entries"),
                             fields=tier_fields,
                         )
                     )
@@ -118,8 +161,7 @@ class EvalSpec:
                     FieldRequirement(
                         name=f["name"],
                         required=f.get("required", True),
-                        pattern=f.get("pattern"),
-                        format=f.get("format"),
+                        format=_resolve_field_format(f),
                     )
                     for f in s.get("fields", [])
                 ]
@@ -127,6 +169,7 @@ class EvalSpec:
                     TierRequirement(
                         label="default",
                         min_entries=s.get("min_entries", 1),
+                        max_entries=s.get("max_entries"),
                         fields=legacy_fields,
                     )
                 ]
@@ -195,15 +238,15 @@ class EvalSpec:
                                 else {}
                             ),
                             "min_entries": t.min_entries,
+                            **(
+                                {"max_entries": t.max_entries}
+                                if t.max_entries is not None
+                                else {}
+                            ),
                             "fields": [
                                 {
                                     "name": f.name,
                                     "required": f.required,
-                                    **(
-                                        {"pattern": f.pattern}
-                                        if f.pattern
-                                        else {}
-                                    ),
                                     **(
                                         {"format": f.format}
                                         if f.format

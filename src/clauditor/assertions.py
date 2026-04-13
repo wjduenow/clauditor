@@ -55,6 +55,56 @@ class AssertionSet:
             lines.append(f"  FAIL: {r.name} — {r.message}")
         return "\n".join(lines)
 
+    def grouped_summary(self) -> list[str]:
+        """Collapse repeated field/suffix failures into one line per group.
+
+        Structured assertion names of form
+        ``section:{Section}/{tier}[{i}].{field}[:{suffix}]`` are grouped by
+        ``(section, tier, field, suffix_or_"presence")`` so that N identical
+        failures across entries surface as a single summary line. Non-structured
+        names pass through unchanged.
+        """
+        structured_re = re.compile(
+            r"section:([^/]+)/([^\[]+)\[(\d+)\]\.([^:]+?)(?::(.+))?$"
+        )
+        groups: dict[tuple, dict] = {}
+        order: list[tuple] = []
+        passthrough: list[AssertionResult] = []
+
+        for r in self.results:
+            m = structured_re.fullmatch(r.name)
+            if not m:
+                passthrough.append(r)
+                continue
+            section, tier, _idx, fld, suffix = m.groups()
+            key = (section, tier, fld, suffix or "presence")
+            if key not in groups:
+                groups[key] = {"total": 0, "failed": 0, "first_fail": None}
+                order.append(key)
+            g = groups[key]
+            g["total"] += 1
+            if not r.passed:
+                g["failed"] += 1
+                if g["first_fail"] is None:
+                    g["first_fail"] = r
+
+        lines: list[str] = []
+        for key in order:
+            g = groups[key]
+            if g["failed"] == 0:
+                continue
+            r = g["first_fail"]
+            detail = r.evidence if r.evidence else r.message
+            section, tier, fld, suffix = key
+            lines.append(
+                f"{g['failed']}/{g['total']} {section}/{tier}[*].{fld}:{suffix} "
+                f"failed: {detail}"
+            )
+        for r in passthrough:
+            if not r.passed:
+                lines.append(f"FAIL: {r.name} — {r.message}")
+        return lines
+
 
 def assert_contains(output: str, value: str) -> AssertionResult:
     """Check that output contains a substring."""

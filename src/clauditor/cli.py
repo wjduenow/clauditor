@@ -396,6 +396,145 @@ def cmd_extract(args: argparse.Namespace) -> int:
     return 0 if results.passed else 1
 
 
+def cmd_capture(args: argparse.Namespace) -> int:
+    """Run a skill via ``claude -p`` and write stdout to a captured file.
+
+    DEC-001/002/010/013: default path is ``tests/eval/captured/<skill>.txt``;
+    ``--out`` overrides; ``--versioned`` appends ``-YYYY-MM-DD`` to the stem
+    (combines with ``--out``). Skill name accepts an optional leading ``/``.
+    """
+    from datetime import date
+
+    skill_name = args.skill.lstrip("/")
+    skill_args = " ".join(args.skill_args) if args.skill_args else ""
+
+    default_out = Path("tests/eval/captured") / f"{skill_name}.txt"
+    out_path = Path(args.out) if args.out else default_out
+
+    if args.versioned:
+        stamp = date.today().isoformat()
+        out_path = out_path.with_name(
+            f"{out_path.stem}-{stamp}{out_path.suffix}"
+        )
+
+    runner = SkillRunner(claude_bin=args.claude_bin or "claude")
+    print(f"Running /{skill_name} {skill_args}...", file=sys.stderr)
+    result = runner.run(skill_name, skill_args)
+
+    if not result.succeeded:
+        print(
+            f"ERROR: Skill run failed (exit {result.exit_code}): {result.error}",
+            file=sys.stderr,
+        )
+        return 1
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(result.output, encoding="utf-8")
+    print(f"Captured {len(result.output)} chars to {out_path}", file=sys.stderr)
+    return 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Read-only environment diagnostics (DEC-005/008/014).
+
+    Always exits 0 — this is a reporting tool, not a CI gate.
+    """
+    import importlib.metadata
+    import importlib.util
+    import shutil
+
+    checks: list[tuple[str, str, str]] = []
+
+    py_version = sys.version_info
+    if py_version >= (3, 11):
+        checks.append(
+            (
+                "python",
+                "ok",
+                f"Python {py_version.major}.{py_version.minor}.{py_version.micro}",
+            )
+        )
+    else:
+        checks.append(
+            (
+                "python",
+                "fail",
+                f"Python {py_version.major}.{py_version.minor} < 3.11 (required)",
+            )
+        )
+
+    if importlib.util.find_spec("anthropic") is not None:
+        checks.append(("anthropic", "ok", "SDK importable"))
+    else:
+        checks.append(
+            (
+                "anthropic",
+                "warn",
+                "SDK not installed (required only for Layer 2/3 grading)",
+            )
+        )
+
+    claude_path = shutil.which("claude")
+    if claude_path:
+        checks.append(("claude-cli", "ok", claude_path))
+    else:
+        checks.append(
+            ("claude-cli", "fail", "`claude` not found on PATH")
+        )
+
+    try:
+        # Version-agnostic lookup: `entry_points(group=...)` is 3.10+, but
+        # `doctor` must keep working even when the Python-version check
+        # itself is about to fail, so fall back to filtering manually.
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            eps = eps.select(group="pytest11")
+        else:
+            eps = [
+                ep for ep in eps
+                if getattr(ep, "group", None) == "pytest11"
+            ]
+        names = [ep.name for ep in eps]
+        if "clauditor" in names:
+            checks.append(
+                ("pytest-plugin", "ok", "clauditor registered under pytest11")
+            )
+        else:
+            checks.append(
+                (
+                    "pytest-plugin",
+                    "fail",
+                    f"clauditor not registered (found: {names})",
+                )
+            )
+    except Exception as e:  # pragma: no cover - defensive
+        checks.append(("pytest-plugin", "fail", f"entry_points lookup failed: {e}"))
+
+    spec = importlib.util.find_spec("clauditor")
+    if spec is not None and spec.origin is not None:
+        origin = Path(spec.origin).resolve()
+        if "site-packages" in origin.parts and not origin.is_symlink():
+            checks.append(
+                (
+                    "editable-install",
+                    "warn",
+                    f"clauditor installed non-editable at {origin.parent} "
+                    f"— source edits will not propagate",
+                )
+            )
+        else:
+            checks.append(("editable-install", "ok", str(origin.parent)))
+    else:
+        checks.append(("editable-install", "fail", "clauditor package not importable"))
+
+    width = max(len(name) for name, _, _ in checks)
+    for name, status, detail in checks:
+        tag = f"[{status}]"
+        print(f"{tag:<7} {name:<{width}}  {detail}")
+
+    return 0
+
+
 def cmd_init(args: argparse.Namespace) -> int:
     """Generate a starter eval.json for a skill."""
     skill_path = Path(args.skill)
@@ -561,7 +700,60 @@ def main(argv: list[str] | None = None) -> int:
         "--force", action="store_true", help="Overwrite existing eval.json"
     )
 
-    parsed = parser.parse_args(argv)
+    # capture
+    p_capture = subparsers.add_parser(
+        "capture",
+        help="Run a skill via `claude -p` and save stdout to a captured file",
+    )
+    p_capture.add_argument(
+        "skill",
+        help="Skill name (leading slash optional, e.g. find-restaurants)",
+    )
+    p_capture.add_argument(
+        "--out",
+        default=None,
+        help="Output file path (default: tests/eval/captured/<skill>.txt)",
+    )
+    p_capture.add_argument(
+        "--versioned",
+        action="store_true",
+        help="Append -YYYY-MM-DD to the output file stem",
+    )
+    p_capture.add_argument(
+        "--claude-bin",
+        default=None,
+        help="Path to the `claude` CLI (default: `claude` on PATH)",
+    )
+    p_capture.add_argument(
+        "skill_args",
+        nargs="*",
+        help="Arguments to pass to the skill (put after `--`)",
+    )
+
+    # doctor
+    subparsers.add_parser(
+        "doctor",
+        help=(
+            "Report environment diagnostics "
+            "(Python, SDK, claude CLI, plugin, install)"
+        ),
+    )
+
+    # Split argv on a literal `--` *only* when the capture subcommand is in
+    # play, so other subcommands (validate/grade/...) keep argparse's native
+    # `--` handling instead of having their trailing args silently stripped.
+    if argv is None:
+        argv = sys.argv[1:]
+    trailing: list[str] = []
+    if argv and argv[0] == "capture" and "--" in argv:
+        sep = argv.index("--")
+        main_argv = argv[:sep]
+        trailing = argv[sep + 1:]
+    else:
+        main_argv = argv
+    parsed = parser.parse_args(main_argv)
+    if trailing and getattr(parsed, "command", None) == "capture":
+        parsed.skill_args = (parsed.skill_args or []) + trailing
 
     if parsed.command == "validate":
         return cmd_validate(parsed)
@@ -575,6 +767,10 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_extract(parsed)
     elif parsed.command == "init":
         return cmd_init(parsed)
+    elif parsed.command == "capture":
+        return cmd_capture(parsed)
+    elif parsed.command == "doctor":
+        return cmd_doctor(parsed)
 
     return 1
 

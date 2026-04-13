@@ -111,25 +111,26 @@ class TestFieldRequirement:
     def test_defaults(self):
         f = FieldRequirement(name="test")
         assert f.required is True
-        assert f.pattern is None
         assert f.format is None
 
-    def test_with_pattern(self):
-        f = FieldRequirement(name="phone", pattern=r"\(\d{3}\)\s\d{3}-\d{4}")
-        assert f.pattern is not None
-
-    def test_with_format(self):
+    def test_with_registry_format(self):
         f = FieldRequirement(name="phone", format="phone_us")
         assert f.format == "phone_us"
 
-    def test_with_both_pattern_and_format(self):
-        f = FieldRequirement(
-            name="phone",
-            pattern=r"\(\d{3}\)\s\d{3}-\d{4}",
-            format="phone_us",
-        )
-        assert f.pattern is not None
-        assert f.format == "phone_us"
+    def test_with_inline_regex_format(self):
+        """DEC-007: format accepts an inline regex when no registry match."""
+        f = FieldRequirement(name="phone", format=r"\(\d{3}\)\s\d{3}-\d{4}")
+        assert f.format == r"\(\d{3}\)\s\d{3}-\d{4}"
+
+    def test_invalid_format_raises_value_error(self):
+        """DEC-011: bad format (not registry, not compilable regex) fails loud."""
+        with pytest.raises(ValueError, match="nor a valid regex"):
+            FieldRequirement(name="phone", format="[invalid")
+
+    def test_empty_string_format_raises(self):
+        """Empty string is neither a registry key nor meaningful regex."""
+        with pytest.raises(ValueError, match="may not be an empty string"):
+            FieldRequirement(name="phone", format="")
 
 
 class TestFormatFieldRoundTrip:
@@ -150,7 +151,6 @@ class TestFormatFieldRoundTrip:
                             "name": "email",
                             "required": False,
                             "format": "email",
-                            "pattern": r".+@.+",
                         },
                     ],
                 }
@@ -166,13 +166,11 @@ class TestFormatFieldRoundTrip:
         tier = spec.sections[0].tiers[0]
         assert tier.fields[0].format == "phone_us"
         assert tier.fields[1].format == "email"
-        assert tier.fields[1].pattern == r".+@.+"
 
         d = spec.to_dict()
         fields_out = d["sections"][0]["tiers"][0]["fields"]
         assert fields_out[0]["format"] == "phone_us"
         assert fields_out[1]["format"] == "email"
-        assert fields_out[1]["pattern"] == r".+@.+"
 
     def test_format_absent_backward_compat(self):
         data = {
@@ -353,7 +351,7 @@ FULL_EVAL_DATA = {
             "fields": [
                 {"name": "name", "required": True},
                 {"name": "address", "required": True},
-                {"name": "zip", "required": False, "pattern": r"^\d{5}$"},
+                {"name": "zip", "required": False, "format": r"^\d{5}$"},
             ],
         },
     ],
@@ -392,7 +390,7 @@ class TestFromFile:
         assert tier.label == "default"
         assert tier.min_entries == 2
         assert len(tier.fields) == 3
-        assert tier.fields[2].pattern == r"^\d{5}$"
+        assert tier.fields[2].format == r"^\d{5}$"
         assert tier.fields[2].required is False
         assert spec.grading_criteria == [
             "Are results relevant?",
@@ -437,8 +435,8 @@ class TestFromFile:
         with pytest.raises(json.JSONDecodeError):
             EvalSpec.from_file(bad)
 
-    def test_from_file_field_pattern_none_when_absent(self, tmp_path):
-        """Fields without a pattern key have pattern=None."""
+    def test_from_file_field_format_none_when_absent(self, tmp_path):
+        """Fields without a format key have format=None."""
         data = {
             "skill_name": "test",
             "sections": [
@@ -447,7 +445,24 @@ class TestFromFile:
         }
         path = _write_json(tmp_path, data)
         spec = EvalSpec.from_file(path)
-        assert spec.sections[0].tiers[0].fields[0].pattern is None
+        assert spec.sections[0].tiers[0].fields[0].format is None
+
+    def test_from_file_legacy_pattern_key_rejected(self, tmp_path):
+        """DEC-006: legacy 'pattern' key is rejected with a migration message."""
+        data = {
+            "skill_name": "test",
+            "sections": [
+                {
+                    "name": "S",
+                    "fields": [
+                        {"name": "f1", "required": True, "pattern": r"\d+"},
+                    ],
+                }
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(ValueError, match="no longer supported"):
+            EvalSpec.from_file(path)
 
 
 class TestToDict:
@@ -472,9 +487,10 @@ class TestToDict:
         assert tier["label"] == "default"
         assert tier["min_entries"] == 2
         assert len(tier["fields"]) == 3
-        # Pattern included only where present
-        assert tier["fields"][2]["pattern"] == r"^\d{5}$"
-        assert "pattern" not in tier["fields"][0]
+        # Format included only where present (pattern field removed)
+        assert tier["fields"][2]["format"] == r"^\d{5}$"
+        assert "format" not in tier["fields"][0]
+        assert "pattern" not in tier["fields"][2]
         # Trigger tests
         assert d["trigger_tests"] == FULL_EVAL_DATA["trigger_tests"]
         # Variance
@@ -726,6 +742,85 @@ class TestTierRequirement:
         assert t.description == "High quality entries"
         assert t.min_entries == 5
         assert len(t.fields) == 1
+
+    def test_max_entries_default_none(self):
+        t = TierRequirement(label="basic")
+        assert t.max_entries is None
+
+    def test_max_entries_roundtrip(self, tmp_path):
+        """max_entries parses from JSON and serializes back via to_dict."""
+        data = {
+            "skill_name": "max-entries-skill",
+            "sections": [
+                {
+                    "name": "Venues",
+                    "tiers": [
+                        {
+                            "label": "default",
+                            "min_entries": 1,
+                            "max_entries": 3,
+                            "fields": [{"name": "name", "required": True}],
+                        }
+                    ],
+                }
+            ],
+        }
+        path = tmp_path / "spec.eval.json"
+        path.write_text(json.dumps(data))
+        spec = EvalSpec.from_file(path)
+        assert spec.sections[0].tiers[0].max_entries == 3
+
+        out = spec.to_dict()
+        tier_out = out["sections"][0]["tiers"][0]
+        assert tier_out["max_entries"] == 3
+
+    def test_max_entries_propagates_through_legacy_section_shape(self, tmp_path):
+        """Legacy (no-tiers) section shape must propagate max_entries into
+        the synthesized default tier — otherwise the cap is silently ignored."""
+        data = {
+            "skill_name": "legacy-skill",
+            "sections": [
+                {
+                    "name": "Venues",
+                    "min_entries": 1,
+                    "max_entries": 3,
+                    "fields": [{"name": "name", "required": True}],
+                }
+            ],
+        }
+        path = tmp_path / "spec.eval.json"
+        path.write_text(json.dumps(data))
+        spec = EvalSpec.from_file(path)
+        default_tier = spec.sections[0].tiers[0]
+        assert default_tier.label == "default"
+        assert default_tier.min_entries == 1
+        assert default_tier.max_entries == 3
+
+    def test_max_entries_none_omitted_from_dict(self, tmp_path):
+        """When max_entries is None, it is omitted from serialized output."""
+        data = {
+            "skill_name": "default-skill",
+            "sections": [
+                {
+                    "name": "Venues",
+                    "tiers": [
+                        {
+                            "label": "default",
+                            "min_entries": 1,
+                            "fields": [{"name": "name", "required": True}],
+                        }
+                    ],
+                }
+            ],
+        }
+        path = tmp_path / "spec.eval.json"
+        path.write_text(json.dumps(data))
+        spec = EvalSpec.from_file(path)
+        assert spec.sections[0].tiers[0].max_entries is None
+
+        out = spec.to_dict()
+        tier_out = out["sections"][0]["tiers"][0]
+        assert "max_entries" not in tier_out
 
 
 TIERED_SECTION_DATA = {
