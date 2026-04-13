@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import clauditor.pytest_plugin as _plugin_mod
 from clauditor.pytest_plugin import (
+    clauditor_capture,
     clauditor_runner,
     clauditor_spec,
     pytest_addoption,
@@ -174,6 +175,50 @@ class TestPluginFunctionsDirect:
         )
         factory = clauditor_spec.__wrapped__(request)
         assert callable(factory)
+
+    def test_capture_fixture_returns_path(self, tmp_path):
+        """clauditor_capture factory returns a pathlib.Path."""
+        from pathlib import Path
+
+        request = MagicMock()
+        request.config.rootdir = str(tmp_path)
+        factory = clauditor_capture.__wrapped__(request)
+        result = factory("find-restaurants")
+        assert isinstance(result, Path)
+
+    def test_capture_default_path(self, tmp_path):
+        """Default base_dir is tests/eval/captured relative to rootdir."""
+        request = MagicMock()
+        request.config.rootdir = str(tmp_path)
+        factory = clauditor_capture.__wrapped__(request)
+        result = factory("find-restaurants")
+        expected = (
+            tmp_path / "tests" / "eval" / "captured" / "find-restaurants.txt"
+        )
+        assert result == expected
+        assert result.name == "find-restaurants.txt"
+
+    def test_capture_custom_base_dir(self, tmp_path):
+        """Custom base_dir is respected."""
+        request = MagicMock()
+        request.config.rootdir = str(tmp_path)
+        factory = clauditor_capture.__wrapped__(request)
+        custom = tmp_path / "custom"
+        result = factory("my-skill", base_dir=custom)
+        assert result == custom / "my-skill.txt"
+
+    def test_capture_missing_file_lazy(self, tmp_path):
+        """Missing file does not raise at fixture call; only on read_text()."""
+        import pytest as _pytest
+
+        request = MagicMock()
+        request.config.rootdir = str(tmp_path)
+        factory = clauditor_capture.__wrapped__(request)
+        # Does not raise:
+        path = factory("nonexistent")
+        # But reading it does:
+        with _pytest.raises(FileNotFoundError):
+            path.read_text()
 
     def test_spec_factory_calls_from_file(self):
         """clauditor_spec factory delegates to SkillSpec.from_file."""

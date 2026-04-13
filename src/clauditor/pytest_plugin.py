@@ -137,6 +137,34 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
     return _factory
 
 
+@pytest.fixture(scope="session")
+def clauditor_capture(request: pytest.FixtureRequest):
+    """Fixture factory returning a Path to a captured skill output file.
+
+    Usage:
+        def test_my_skill(clauditor_capture):
+            path = clauditor_capture("find-restaurants")
+            output = path.read_text()  # raises FileNotFoundError if missing
+
+    Default location: ``tests/eval/captured/<skill_name>.txt`` resolved
+    relative to the pytest rootdir. Pass ``base_dir`` to override.
+    The fixture does NOT run capture or skip on missing files — a missing
+    file is the test's problem (DEC-006).
+    """
+    rootdir = Path(str(request.config.rootdir))
+
+    def _factory(
+        skill_name: str, base_dir: str | Path | None = None
+    ) -> Path:
+        if base_dir is None:
+            base = rootdir / "tests" / "eval" / "captured"
+        else:
+            base = Path(base_dir)
+        return base / f"{skill_name}.txt"
+
+    return _factory
+
+
 @pytest.fixture
 def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
     """Fixture factory for trigger precision testing."""
