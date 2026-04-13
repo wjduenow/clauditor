@@ -41,6 +41,7 @@ class GradingReport:
     thresholds: GradeThresholds | None = None
     input_tokens: int = 0
     output_tokens: int = 0
+    metrics: dict | None = None
 
     @property
     def passed(self) -> bool:
@@ -94,6 +95,8 @@ class GradingReport:
                 "min_pass_rate": self.thresholds.min_pass_rate,
                 "min_mean_score": self.thresholds.min_mean_score,
             }
+        if self.metrics is not None:
+            data["metrics"] = self.metrics
         return json.dumps(data, indent=2)
 
     @classmethod
@@ -125,6 +128,7 @@ class GradingReport:
             thresholds=thresholds,
             input_tokens=int(parsed.get("input_tokens", 0)),
             output_tokens=int(parsed.get("output_tokens", 0)),
+            metrics=parsed.get("metrics"),
         )
 
     def summary(self) -> str:

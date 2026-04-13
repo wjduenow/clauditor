@@ -5,6 +5,20 @@ Appends a JSON line per grade run to ``.clauditor/history.jsonl`` so the
 
 ASCII-only (DEC-014): the sparkline uses ``"_.-=#"`` glyphs — no Unicode
 block characters.
+
+Schema v2 (US-004): each record is a JSON object with the following
+top-level keys:
+
+- ``schema_version``: int, always ``2``
+- ``command``: one of ``"grade"``, ``"extract"``, ``"validate"``
+- ``ts``: ISO-8601 UTC timestamp
+- ``skill``: skill name
+- ``pass_rate``: float or None
+- ``mean_score``: float or None
+- ``metrics``: dict (canonical bucketed metrics from ``clauditor.metrics``)
+
+v1 records (no ``schema_version``, no ``command``) may still exist on disk
+and are returned as-is by :func:`read_records`.
 """
 
 from __future__ import annotations
@@ -14,9 +28,11 @@ import math
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 _DEFAULT_PATH = Path(".clauditor/history.jsonl")
 SPARK_GLYPHS = "_.-=#"
+SCHEMA_VERSION = 2
 
 
 def append_record(
@@ -24,6 +40,8 @@ def append_record(
     pass_rate: float,
     mean_score: float | None,
     metrics: dict,
+    *,
+    command: Literal["grade", "extract", "validate"],
     path: Path | None = None,
 ) -> None:
     """Append one history record for a grade run.
@@ -31,11 +49,17 @@ def append_record(
     Creates the parent directory if it does not already exist.
     ``path`` defaults to :data:`_DEFAULT_PATH` resolved at call time, so
     tests can monkeypatch the module attribute.
+
+    ``command`` is required (keyword-only) and identifies which clauditor
+    subcommand produced the record. Every written record includes
+    ``schema_version: 2`` at the top level.
     """
     if path is None:
         path = _DEFAULT_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
+        "schema_version": SCHEMA_VERSION,
+        "command": command,
         "ts": datetime.now(UTC).isoformat(),
         "skill": skill,
         "pass_rate": pass_rate,

@@ -153,15 +153,18 @@ def cmd_grade(args: argparse.Namespace) -> int:
         return 0
 
     # Get output
+    skill_result = None
     if args.output:
         output = Path(args.output).read_text()
     else:
         print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
-        result = spec.run()
-        if not result.succeeded:
-            print(f"ERROR: Skill failed: {result.error}", file=sys.stderr)
+        skill_result = spec.run()
+        if not skill_result.succeeded:
+            print(
+                f"ERROR: Skill failed: {skill_result.error}", file=sys.stderr
+            )
             return 1
-        output = result.output
+        output = skill_result.output
 
     # Grade (and optionally measure variance in a single event loop)
     from clauditor.quality_grader import grade_quality
@@ -271,6 +274,26 @@ def cmd_grade(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
+    # Build the canonical bucketed metrics dict (US-004). For --output
+    # runs there's no skill subprocess, so skill tokens/duration are zero.
+    from clauditor.metrics import TokenUsage, build_metrics
+
+    skill_tokens = TokenUsage(
+        input_tokens=getattr(skill_result, "input_tokens", 0) or 0,
+        output_tokens=getattr(skill_result, "output_tokens", 0) or 0,
+    )
+    skill_duration = getattr(skill_result, "duration_seconds", 0.0) or 0.0
+    quality_tokens = TokenUsage(
+        input_tokens=report.input_tokens,
+        output_tokens=report.output_tokens,
+    )
+    metrics_dict = build_metrics(
+        skill=skill_tokens,
+        duration_seconds=skill_duration,
+        quality=quality_tokens,
+    )
+    report.metrics = metrics_dict
+
     if args.save:
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path.write_text(report.to_json())
@@ -285,7 +308,8 @@ def cmd_grade(args: argparse.Namespace) -> int:
                 skill=spec.skill_name,
                 pass_rate=report.pass_rate,
                 mean_score=report.mean_score,
-                metrics={},
+                metrics=metrics_dict,
+                command="grade",
             )
         except Exception as e:  # pragma: no cover - defensive
             print(f"WARNING: failed to append history: {e}", file=sys.stderr)

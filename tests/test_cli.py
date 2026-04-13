@@ -1214,6 +1214,7 @@ class TestCmdTrend:
                 pass_rate=0.5 + i * 0.1,
                 mean_score=0.6 + i * 0.05,
                 metrics={"count": i + 1},
+                command="grade",
                 path=path,
             )
 
@@ -1316,3 +1317,163 @@ class TestCmdGradeHistory:
         assert record["skill"] == "test-skill"
         assert record["pass_rate"] == 1.0
         assert record["mean_score"] == 0.9
+        assert record["schema_version"] == 2
+        assert record["command"] == "grade"
+
+    def test_grade_history_records_metrics(self, tmp_path, monkeypatch):
+        """cmd_grade records real bucketed metrics in history.jsonl."""
+        monkeypatch.chdir(tmp_path)
+
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c",
+                    passed=True,
+                    score=1.0,
+                    evidence="",
+                    reasoning="",
+                )
+            ],
+            duration_seconds=1.0,
+            input_tokens=500,
+            output_tokens=200,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+        history_path = tmp_path / ".clauditor" / "history.jsonl"
+        record = json.loads(history_path.read_text().splitlines()[0])
+        metrics = record["metrics"]
+        # --output path -> no skill run -> skill tokens 0
+        assert metrics["skill"]["input_tokens"] == 0
+        assert metrics["skill"]["output_tokens"] == 0
+        assert metrics["quality"]["input_tokens"] == 500
+        assert metrics["quality"]["output_tokens"] == 200
+        assert metrics["total"]["total"] == 700
+        assert "grader" not in metrics
+        assert "triggers" not in metrics
+
+    def test_grade_save_writes_metrics_to_grade_json(
+        self, tmp_path, monkeypatch
+    ):
+        """--save writes metrics into the .grade.json report."""
+        monkeypatch.chdir(tmp_path)
+
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some output")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c",
+                    passed=True,
+                    score=1.0,
+                    evidence="",
+                    reasoning="",
+                )
+            ],
+            duration_seconds=1.0,
+            input_tokens=300,
+            output_tokens=100,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--save",
+                ]
+            )
+
+        assert rc == 0
+        save_path = tmp_path / ".clauditor" / "test-skill.grade.json"
+        assert save_path.exists()
+        data = json.loads(save_path.read_text())
+        assert "metrics" in data
+        assert data["metrics"]["quality"]["input_tokens"] == 300
+        assert data["metrics"]["quality"]["output_tokens"] == 100
+        assert data["metrics"]["total"]["total"] == 400
+
+        # Round-trip through GradingReport.from_json
+        rt = GradingReport.from_json(save_path.read_text())
+        assert rt.metrics is not None
+        assert rt.metrics["quality"]["input_tokens"] == 300
+
+    def test_grade_only_criterion_still_skips_history(
+        self, tmp_path, monkeypatch
+    ):
+        """--only-criterion must not write a history record (regression #18)."""
+        monkeypatch.chdir(tmp_path)
+
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some output")
+
+        eval_spec = _make_eval_spec(grading_criteria=["foo bar", "baz"])
+        spec = _make_spec(eval_spec=eval_spec)
+        report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="foo bar",
+                    passed=True,
+                    score=1.0,
+                    evidence="",
+                    reasoning="",
+                )
+            ],
+            duration_seconds=1.0,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--only-criterion",
+                    "foo",
+                ]
+            )
+
+        assert rc == 0
+        history_path = tmp_path / ".clauditor" / "history.jsonl"
+        assert not history_path.exists()
