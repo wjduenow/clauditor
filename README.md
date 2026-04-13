@@ -165,6 +165,26 @@ The eval spec defines what fields each section should have:
 }
 ```
 
+#### Field validation (`format`)
+
+Each field can declare a `format` that validates the extracted value. The `format` key accepts **either** a registered format name **or** an inline regex — clauditor looks up the string in `FORMAT_REGISTRY` first and falls back to compiling it as a regex if there's no match.
+
+Decision tree:
+
+- Is there a registered name in `FORMAT_REGISTRY` that fits? Use it (e.g. `"format": "phone_us"`).
+- Need something custom? Put a regex string directly in `format` (e.g. `"format": "^[a-z0-9-]+$"`).
+- Lookup is **registry-first, regex-fallback**. Invalid regexes raise `ValueError` at spec construction time, so typos fail fast.
+
+```json
+{"name": "phone", "format": "phone_us"}
+```
+
+```json
+{"name": "slug", "format": "^[a-z0-9-]+$"}
+```
+
+See [`FORMAT_REGISTRY` in `src/clauditor/formats.py`](src/clauditor/formats.py) for the full list of registered names (common entries: `phone_us`, `phone_intl`, `email`, `url`, `domain`, `date_iso`, `zip_us`, `uuid`).
+
 ### Layer 3: Quality Grading (expensive, release-only)
 
 Uses Sonnet to grade skill output against a rubric you define. Requires `ANTHROPIC_API_KEY` and `pip install clauditor[grader]`.
