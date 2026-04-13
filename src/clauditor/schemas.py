@@ -28,6 +28,11 @@ class FieldRequirement:
     def __post_init__(self) -> None:
         if self.format is None:
             return
+        if self.format == "":
+            raise ValueError(
+                f"FieldRequirement(name={self.name!r}): format may not be "
+                f"an empty string (use None to disable format validation)."
+            )
         from clauditor.formats import FORMAT_REGISTRY
         if self.format in FORMAT_REGISTRY:
             return

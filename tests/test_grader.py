@@ -425,6 +425,68 @@ class TestMaxEntries:
         names = [r.name for r in results.results]
         assert not any("count_max" in n for n in names)
 
+    def test_both_min_and_max_fail_when_extraction_exceeds_max(self):
+        """min_entries and max_entries produce independent assertions."""
+        spec = EvalSpec(
+            skill_name="test-skill",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="default",
+                            min_entries=3,
+                            max_entries=3,
+                            fields=[FieldRequirement(name="name", required=True)],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        # Exactly 3 entries → both min and max pass
+        ok = grade_extraction(
+            ExtractedOutput(sections={"Venues": {"default": self._entries(3)}}),
+            spec,
+        )
+        count_min = next(
+            r for r in ok.results
+            if r.name == "section:Venues:count/default"
+        )
+        count_max = next(
+            r for r in ok.results
+            if r.name == "section:Venues:count_max/default"
+        )
+        assert count_min.passed
+        assert count_max.passed
+
+        # 5 entries → min passes, max fails
+        over = grade_extraction(
+            ExtractedOutput(sections={"Venues": {"default": self._entries(5)}}),
+            spec,
+        )
+        assert next(
+            r for r in over.results
+            if r.name == "section:Venues:count/default"
+        ).passed
+        assert not next(
+            r for r in over.results
+            if r.name == "section:Venues:count_max/default"
+        ).passed
+
+        # 1 entry → min fails, max passes
+        under = grade_extraction(
+            ExtractedOutput(sections={"Venues": {"default": self._entries(1)}}),
+            spec,
+        )
+        assert not next(
+            r for r in under.results
+            if r.name == "section:Venues:count/default"
+        ).passed
+        assert next(
+            r for r in under.results
+            if r.name == "section:Venues:count_max/default"
+        ).passed
+
 
 class TestBuildExtractionPrompt:
     def test_contains_section_and_fields(self):

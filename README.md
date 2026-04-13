@@ -301,6 +301,8 @@ clauditor grade <skill.md> --variance 3  # Variance measurement
 clauditor grade <skill.md> --save      # Persist results to .clauditor/
 clauditor grade <skill.md> --diff      # Compare against prior results
 clauditor triggers <skill.md>          # Trigger precision testing
+clauditor capture <skill> -- "args"    # Run skill, save stdout to tests/eval/captured/
+clauditor doctor                       # Report environment diagnostics
 ```
 
 ## Pytest Integration
@@ -397,6 +399,54 @@ A complete eval spec with all three layers:
 ```
 
 See [`examples/`](examples/.claude/commands/example-skill.eval.json) for a complete working eval spec.
+
+### Field validation with `format`
+
+Each `FieldRequirement` accepts a single `format` key that validates the
+extracted value. `format` does double duty:
+
+1. **Registered format name** — a shorthand for a built-in regex in the
+   format registry. Run `python -c "from clauditor.formats import list_formats; print(list_formats())"`
+   to see the full list. Common entries: `phone_us`, `phone_intl`,
+   `email`, `url`, `domain`, `date_iso`, `date_us`, `currency_usd`,
+   `zip_us`, `percentage`, `ipv4`, `uuid`.
+2. **Inline regex** — any string that isn't a registered name is
+   compiled with `re.compile` and used as an anchored `fullmatch` against
+   the value. Invalid regexes raise `ValueError` at spec load time.
+
+```json
+{
+  "sections": [
+    {
+      "name": "Restaurants",
+      "min_entries": 1,
+      "max_entries": 3,
+      "fields": [
+        {"name": "name",    "required": true},
+        {"name": "phone",   "required": true,  "format": "phone_us"},
+        {"name": "website", "required": true,  "format": "domain"},
+        {"name": "zip",     "required": false, "format": "^\\d{5}$"}
+      ]
+    }
+  ]
+}
+```
+
+**`url` vs `domain`:** LLMs commonly extract the display text of markdown
+links (`[paesanosj.com](https://paesanosj.com/)` → `paesanosj.com`),
+which are valid domains but not URLs with a scheme. Use `format: "url"`
+only when you really need `https://…`; use `format: "domain"` to accept
+bare hostnames too.
+
+**`max_entries`:** A precision signal — when set, clauditor emits a
+`count_max` assertion if extraction returns more entries than the cap.
+Field-level checks still run over all extracted entries so you see both
+the count failure and any per-entry failures.
+
+> **Migration note (April 2026):** The legacy `"pattern"` key on
+> `FieldRequirement` has been removed. Migrate by renaming `pattern` to
+> `format` — inline regexes work as before; registered names are now the
+> preferred ergonomics.
 
 ## License
 

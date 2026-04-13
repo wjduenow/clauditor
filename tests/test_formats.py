@@ -273,6 +273,9 @@ class TestValidateValue:
         ".com",
         "example..com",
         "example.com/path",
+        "192.168.1.1",  # numeric TLD — ipv4-shaped input must not match
+        "example.1",  # single-char, digit-only TLD
+        "example.a",  # single-char TLD (too short)
     ])
     def test_domain_invalid(self, value):
         assert not validate_value(value, "domain")

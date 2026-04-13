@@ -880,8 +880,13 @@ class TestCmdDoctor:
             rc = main(["doctor"])
         assert rc == 0
         out = capsys.readouterr().out
-        assert "[warn]" in out
-        assert "anthropic" in out
+        # Pin [warn] to the same line as the anthropic check, not just
+        # anywhere in the output (editable-install also emits [warn]).
+        anthropic_lines = [
+            line for line in out.splitlines() if "anthropic" in line
+        ]
+        assert len(anthropic_lines) == 1
+        assert anthropic_lines[0].startswith("[warn]")
 
     def test_doctor_missing_claude_binary(self, capsys):
         with patch("shutil.which", return_value=None):

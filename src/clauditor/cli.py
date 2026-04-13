@@ -429,7 +429,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
         return 1
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(result.output)
+    out_path.write_text(result.output, encoding="utf-8")
     print(f"Captured {len(result.output)} chars to {out_path}", file=sys.stderr)
     return 0
 
@@ -729,17 +729,18 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
 
-    # Split argv on a literal `--` so the `capture` subcommand can pass
-    # arbitrary trailing args (which may start with `-`) to the skill.
+    # Split argv on a literal `--` *only* when the capture subcommand is in
+    # play, so other subcommands (validate/grade/...) keep argparse's native
+    # `--` handling instead of having their trailing args silently stripped.
     if argv is None:
         argv = sys.argv[1:]
-    if "--" in argv:
+    trailing: list[str] = []
+    if argv and argv[0] == "capture" and "--" in argv:
         sep = argv.index("--")
         main_argv = argv[:sep]
         trailing = argv[sep + 1:]
     else:
         main_argv = argv
-        trailing = []
     parsed = parser.parse_args(main_argv)
     if trailing and getattr(parsed, "command", None) == "capture":
         parsed.skill_args = (parsed.skill_args or []) + trailing

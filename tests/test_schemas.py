@@ -127,6 +127,11 @@ class TestFieldRequirement:
         with pytest.raises(ValueError, match="nor a valid regex"):
             FieldRequirement(name="phone", format="[invalid")
 
+    def test_empty_string_format_raises(self):
+        """Empty string is neither a registry key nor meaningful regex."""
+        with pytest.raises(ValueError, match="may not be an empty string"):
+            FieldRequirement(name="phone", format="")
+
 
 class TestFormatFieldRoundTrip:
     def test_format_preserved_in_roundtrip(self):
