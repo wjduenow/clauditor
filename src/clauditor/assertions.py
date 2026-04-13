@@ -12,6 +12,17 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from typing import Literal
+
+AssertionKind = Literal[
+    "presence",
+    "format",
+    "pattern",
+    "count",
+    "count_max",
+    "reachability",
+    "custom",
+]
 
 
 @dataclass
@@ -21,7 +32,9 @@ class AssertionResult:
     name: str
     passed: bool
     message: str
+    kind: AssertionKind
     evidence: str | None = None
+    raw_data: dict | None = None
 
     def __bool__(self) -> bool:
         return self.passed
@@ -113,6 +126,7 @@ def assert_contains(output: str, value: str) -> AssertionResult:
         name=f"contains:{value[:40]}",
         passed=found,
         message=f"Found '{value[:40]}'" if found else f"Missing '{value[:40]}'",
+        kind="presence",
     )
 
 
@@ -123,6 +137,7 @@ def assert_not_contains(output: str, value: str) -> AssertionResult:
         name=f"not_contains:{value[:40]}",
         passed=not found,
         message="Correctly absent" if not found else f"Unexpected '{value[:40]}' found",
+        kind="presence",
     )
 
 
@@ -133,6 +148,7 @@ def assert_regex(output: str, pattern: str) -> AssertionResult:
         name=f"regex:{pattern[:40]}",
         passed=match is not None,
         message="Pattern matched" if match else f"Pattern not found: {pattern[:40]}",
+        kind="pattern",
         evidence=match.group(0)[:100] if match else None,
     )
 
@@ -142,9 +158,10 @@ def assert_min_count(output: str, pattern: str, minimum: int) -> AssertionResult
     matches = re.findall(pattern, output)
     count = len(matches)
     return AssertionResult(
-        name=f"min_count:{pattern[:30]}≥{minimum}",
+        name=f"min_count:{pattern[:30]}>={minimum}",
         passed=count >= minimum,
-        message=f"Found {count} matches (need ≥{minimum})",
+        message=f"Found {count} matches (need >={minimum})",
+        kind="count",
     )
 
 
@@ -152,9 +169,10 @@ def assert_min_length(output: str, minimum: int) -> AssertionResult:
     """Check that output is at least N characters."""
     length = len(output)
     return AssertionResult(
-        name=f"min_length≥{minimum}",
+        name=f"min_length>={minimum}",
         passed=length >= minimum,
-        message=f"Length {length} (need ≥{minimum})",
+        message=f"Length {length} (need >={minimum})",
+        kind="count",
     )
 
 
@@ -162,9 +180,10 @@ def assert_max_length(output: str, maximum: int) -> AssertionResult:
     """Check that output is at most N characters."""
     length = len(output)
     return AssertionResult(
-        name=f"max_length≤{maximum}",
+        name=f"max_length<={maximum}",
         passed=length <= maximum,
-        message=f"Length {length} (need ≤{maximum})",
+        message=f"Length {length} (need <={maximum})",
+        kind="count",
     )
 
 
@@ -173,9 +192,10 @@ def assert_has_urls(output: str, minimum: int = 1) -> AssertionResult:
     urls = re.findall(r"https?://[^\s\)\"'>]+", output)
     count = len(urls)
     return AssertionResult(
-        name=f"has_urls≥{minimum}",
+        name=f"has_urls>={minimum}",
         passed=count >= minimum,
-        message=f"Found {count} URLs (need ≥{minimum})",
+        message=f"Found {count} URLs (need >={minimum})",
+        kind="count",
         evidence="; ".join(urls[:5]) if urls else None,
     )
 
@@ -185,9 +205,10 @@ def assert_has_entries(output: str, minimum: int = 1) -> AssertionResult:
     entries = re.findall(r"\*\*\d+\.\s+", output)
     count = len(entries)
     return AssertionResult(
-        name=f"has_entries≥{minimum}",
+        name=f"has_entries>={minimum}",
         passed=count >= minimum,
-        message=f"Found {count} numbered entries (need ≥{minimum})",
+        message=f"Found {count} numbered entries (need >={minimum})",
+        kind="count",
     )
 
 
@@ -284,9 +305,10 @@ def assert_urls_reachable(output: str, minimum: int = 1) -> AssertionResult:
     urls = list(dict.fromkeys(re.findall(r"https?://[^\s\)\"'>]+", output)))
     if not urls:
         return AssertionResult(
-            name=f"urls_reachable≥{minimum}",
+            name=f"urls_reachable>={minimum}",
             passed=0 >= minimum,
-            message=f"Found 0 URLs to check (need ≥{minimum})",
+            message=f"Found 0 URLs to check (need >={minimum})",
+            kind="reachability",
         )
 
     statuses: list[str] = []
@@ -304,9 +326,10 @@ def assert_urls_reachable(output: str, minimum: int = 1) -> AssertionResult:
             statuses.append(f"{url}: {status}")
 
     return AssertionResult(
-        name=f"urls_reachable≥{minimum}",
+        name=f"urls_reachable>={minimum}",
         passed=reachable >= minimum,
-        message=f"{reachable}/{len(urls)} URLs reachable (need ≥{minimum})",
+        message=f"{reachable}/{len(urls)} URLs reachable (need >={minimum})",
+        kind="reachability",
         evidence="; ".join(statuses[:5]),
     )
 
@@ -323,14 +346,16 @@ def assert_has_format(
             name=f"has_format:{format_name}",
             passed=False,
             message=f"Unknown format: {format_name}",
+            kind="format",
         )
 
     matches = fmt.extract_pattern.findall(output)
     count = len(matches)
     return AssertionResult(
-        name=f"has_format:{format_name}≥{minimum}",
+        name=f"has_format:{format_name}>={minimum}",
         passed=count >= minimum,
-        message=f"Found {count} {format_name} matches (need ≥{minimum})",
+        message=f"Found {count} {format_name} matches (need >={minimum})",
+        kind="count",
         evidence="; ".join(str(m) for m in matches[:5]) if matches else None,
     )
 
@@ -381,6 +406,7 @@ def run_assertions(output: str, assertions: list[dict]) -> AssertionSet:
                     name=f"unknown:{atype}",
                     passed=False,
                     message=f"Unknown assertion type: {atype}",
+                    kind="custom",
                 )
             )
 

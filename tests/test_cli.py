@@ -262,6 +262,113 @@ class TestCmdGrade:
         assert rc == 1
 
 
+class TestOnlyCriterion:
+    """Tests for --only-criterion filter on the grade subcommand."""
+
+    def _report(self):
+        return GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="x",
+                    passed=True,
+                    score=1.0,
+                    evidence="",
+                    reasoning="",
+                )
+            ],
+            duration_seconds=1.0,
+        )
+
+    def _run(self, tmp_path, criteria, extra_args):
+        output_file = tmp_path / "o.txt"
+        output_file.write_text("out")
+        eval_spec = _make_eval_spec(grading_criteria=list(criteria))
+        spec = _make_spec(eval_spec=eval_spec)
+        mock_grade = AsyncMock(return_value=self._report())
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch("clauditor.quality_grader.grade_quality", mock_grade),
+        ):
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)] + extra_args
+            )
+        return rc, mock_grade, spec
+
+    def test_single_substring_filters(self, tmp_path):
+        """--only-criterion foo keeps only matching criteria."""
+        rc, mock_grade, spec = self._run(
+            tmp_path,
+            ["foo bar", "baz qux", "other foo"],
+            ["--only-criterion", "foo"],
+        )
+        assert rc == 0
+        assert spec.eval_spec.grading_criteria == ["foo bar", "other foo"]
+        # Grader called with filtered spec
+        mock_grade.assert_called_once()
+        passed_spec = mock_grade.call_args.args[1]
+        assert passed_spec.grading_criteria == ["foo bar", "other foo"]
+
+    def test_multiple_substrings_union(self, tmp_path):
+        """Multiple --only-criterion flags use OR semantics."""
+        rc, mock_grade, spec = self._run(
+            tmp_path,
+            ["alpha", "beta", "gamma", "alphabeta"],
+            ["--only-criterion", "alpha", "--only-criterion", "gamma"],
+        )
+        assert rc == 0
+        assert spec.eval_spec.grading_criteria == ["alpha", "gamma", "alphabeta"]
+
+    def test_no_match_exits_2(self, tmp_path, capsys):
+        """No match prints Available and returns exit code 2."""
+        output_file = tmp_path / "o.txt"
+        output_file.write_text("out")
+        eval_spec = _make_eval_spec(
+            grading_criteria=["clarity", "accuracy"]
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        mock_grade = AsyncMock(return_value=self._report())
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch("clauditor.quality_grader.grade_quality", mock_grade),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--only-criterion",
+                    "nonexistent",
+                ]
+            )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "No grading criteria match filter" in err
+        assert "Available:" in err
+        assert "clarity" in err
+        assert "accuracy" in err
+        # Grader must NOT have been called
+        mock_grade.assert_not_called()
+
+    def test_no_flag_passes_all(self, tmp_path):
+        """Without --only-criterion, all criteria are passed through."""
+        rc, mock_grade, spec = self._run(
+            tmp_path, ["one", "two", "three"], []
+        )
+        assert rc == 0
+        assert spec.eval_spec.grading_criteria == ["one", "two", "three"]
+
+    def test_case_insensitive(self, tmp_path):
+        """--only-criterion FOO matches criterion 'foo'."""
+        rc, _mock, spec = self._run(
+            tmp_path, ["foo", "bar"], ["--only-criterion", "FOO"]
+        )
+        assert rc == 0
+        assert spec.eval_spec.grading_criteria == ["foo"]
+
+
 class TestCmdGradeSaveDiff:
     """Tests for --save and --diff flags on the grade subcommand."""
 
@@ -469,6 +576,137 @@ class TestCmdGradeSaveDiff:
             os.chdir(orig_dir)
 
 
+class TestCmdCompare:
+    """Tests for the compare subcommand (US-003)."""
+
+    def _make_saved_grade_json(
+        self, tmp_path, name: str, *, criterion_passes: dict[str, bool]
+    ):
+        """Write a GradingReport to a .grade.json file and return the path."""
+        results = [
+            GradingResult(
+                criterion=c,
+                passed=p,
+                score=0.9 if p else 0.3,
+                evidence="",
+                reasoning="",
+            )
+            for c, p in criterion_passes.items()
+        ]
+        report = GradingReport(
+            skill_name=name,
+            model="test-model",
+            results=results,
+            duration_seconds=0.0,
+        )
+        path = tmp_path / f"{name}.grade.json"
+        path.write_text(report.to_json())
+        return path
+
+    def test_compare_two_grade_json_no_flips(self, tmp_path, capsys):
+        """Two identical .grade.json files produce no flips and exit 0."""
+        before = self._make_saved_grade_json(
+            tmp_path, "before", criterion_passes={"c1": True, "c2": True}
+        )
+        after = self._make_saved_grade_json(
+            tmp_path, "after", criterion_passes={"c1": True, "c2": True}
+        )
+        rc = main(["compare", str(before), str(after)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "no flips" in out
+
+    def test_compare_two_grade_json_regression(self, tmp_path, capsys):
+        """A flipped-to-fail criterion yields [REGRESSION] and exit 1."""
+        before = self._make_saved_grade_json(
+            tmp_path, "before", criterion_passes={"c1": True, "c2": True}
+        )
+        after = self._make_saved_grade_json(
+            tmp_path, "after", criterion_passes={"c1": True, "c2": False}
+        )
+        rc = main(["compare", str(before), str(after)])
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "[REGRESSION]" in out
+        assert "c2" in out
+
+    def test_compare_two_grade_json_improvement(self, tmp_path, capsys):
+        """A flipped-to-pass criterion yields [IMPROVEMENT] and exit 0."""
+        before = self._make_saved_grade_json(
+            tmp_path, "before", criterion_passes={"c1": True, "c2": False}
+        )
+        after = self._make_saved_grade_json(
+            tmp_path, "after", criterion_passes={"c1": True, "c2": True}
+        )
+        rc = main(["compare", str(before), str(after)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "[IMPROVEMENT]" in out
+        assert "c2" in out
+
+    def test_compare_two_txt_with_spec(self, tmp_path, capsys):
+        """Two .txt files plus --spec re-grade both and diff Layer 1 results."""
+        before_txt = tmp_path / "before.txt"
+        after_txt = tmp_path / "after.txt"
+        before_txt.write_text("nothing matching")
+        after_txt.write_text("hello world")
+
+        eval_spec = _make_eval_spec(
+            assertions=[{"type": "contains", "value": "hello"}]
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(
+                [
+                    "compare",
+                    str(before_txt),
+                    str(after_txt),
+                    "--spec",
+                    "skill.md",
+                ]
+            )
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "[IMPROVEMENT]" in out
+
+    def test_compare_txt_without_spec_errors(self, tmp_path, capsys):
+        """.txt diff without --spec errors with a clear message."""
+        before_txt = tmp_path / "before.txt"
+        after_txt = tmp_path / "after.txt"
+        before_txt.write_text("a")
+        after_txt.write_text("b")
+        rc = main(["compare", str(before_txt), str(after_txt)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--spec" in err
+
+    def test_compare_mixed_extensions_errors(self, tmp_path, capsys):
+        """Mixed .txt + .grade.json inputs error before loading."""
+        before_txt = tmp_path / "before.txt"
+        before_txt.write_text("something")
+        after = self._make_saved_grade_json(
+            tmp_path, "after", criterion_passes={"c1": True}
+        )
+        rc = main(["compare", str(before_txt), str(after)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mismatched" in err
+
+
+class TestCmdGradeCompareFlagRemoved:
+    """US-003: the legacy --compare flag on grade is gone."""
+
+    def test_grade_compare_flag_rejected(self, capsys):
+        import pytest as _pytest
+
+        with _pytest.raises(SystemExit):
+            main(["grade", "skill.md", "--compare"])
+        err = capsys.readouterr().err
+        assert "--compare" in err or "unrecognized" in err
+
+
 class TestCmdTriggers:
     """Tests for the triggers subcommand."""
 
@@ -615,6 +853,7 @@ class TestCmdExtract:
                     name="section:Results:count",
                     passed=passed,
                     message="Section 'Results' has 3 entries (need >=2)",
+                    kind="count",
                 ),
                 AssertionResult(
                     name="section:Results[0].name",
@@ -624,6 +863,7 @@ class TestCmdExtract:
                         if passed
                         else "Missing required field 'name'"
                     ),
+                    kind="presence",
                     evidence="Test Place" if passed else None,
                 ),
             ]
@@ -734,6 +974,69 @@ class TestCmdExtract:
             rc = main(["extract", "skill.md", "--output", str(output_file)])
 
         assert rc == 1
+
+    def _make_raw_data_results(self):
+        raw = {"Venues": [{"name": "A"}]}
+        return AssertionSet(
+            results=[
+                AssertionResult(
+                    name="grader:parse:Venues",
+                    passed=False,
+                    message="shape wrong",
+                    kind="custom",
+                    raw_data=raw,
+                ),
+            ]
+        ), raw
+
+    def test_extract_verbose_prints_raw_data(self, tmp_path, capsys):
+        """US-005: -v prints raw_data for failing assertion that has it."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("output")
+
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+        results, raw = self._make_raw_data_results()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+        ):
+            rc = main(
+                ["extract", "skill.md", "--output", str(output_file), "-v"]
+            )
+
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "Raw data for grader:parse:Venues" in out
+        assert json.dumps(raw, indent=2) in out
+
+    def test_extract_without_verbose_omits_raw_data(self, tmp_path, capsys):
+        """US-005: without -v, raw_data is not printed even when present."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("output")
+
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+        results, _ = self._make_raw_data_results()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+        ):
+            rc = main(["extract", "skill.md", "--output", str(output_file)])
+
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "Raw data for" not in out
 
 
 class TestCmdCapture:
@@ -897,3 +1200,119 @@ class TestCmdDoctor:
         # Expect fail marker for missing claude CLI
         lines = [line for line in out.splitlines() if "claude-cli" in line]
         assert any("[fail]" in line for line in lines)
+
+
+class TestCmdTrend:
+    """Tests for the trend subcommand (US-006)."""
+
+    def _seed(self, path, skill="test-skill", n=3):
+        from clauditor import history
+
+        for i in range(n):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6 + i * 0.05,
+                metrics={"count": i + 1},
+                path=path,
+            )
+
+    def test_happy_path(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "0.5" in out
+        assert "0.7" in out
+        # Sparkline line present (non-empty last line)
+        lines = [ln for ln in out.splitlines() if ln]
+        assert lines
+        # Sparkline should use only glyphs from SPARK_GLYPHS
+        from clauditor.history import SPARK_GLYPHS
+
+        spark = lines[-1]
+        assert all(c in SPARK_GLYPHS for c in spark)
+
+    def test_metric_in_metrics_dict(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "count"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "1" in out and "3" in out
+
+    def test_missing_metric_exits_1(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "nonexistent"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "nonexistent" in err
+
+    def test_no_history_file(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "no history" in err.lower() or "no records" in err.lower()
+
+    def test_last_n_truncates(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed(tmp_path / ".clauditor" / "history.jsonl", n=10)
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate", "--last", "5"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        assert len(data_lines) == 5
+
+
+class TestCmdGradeHistory:
+    """cmd_grade appends a history record (US-006)."""
+
+    def test_grade_appends_history(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="Is the output relevant?",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                )
+            ],
+            duration_seconds=1.0,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+        history_path = tmp_path / ".clauditor" / "history.jsonl"
+        assert history_path.exists()
+        lines = [ln for ln in history_path.read_text().splitlines() if ln]
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["skill"] == "test-skill"
+        assert record["pass_rate"] == 1.0
+        assert record["mean_score"] == 0.9

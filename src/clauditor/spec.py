@@ -134,4 +134,5 @@ def _failed_run_result(skill_name: str, error: str):
         name="skill_execution",
         passed=False,
         message=f"Skill '{skill_name}' failed to run: {error}",
+        kind="custom",
     )

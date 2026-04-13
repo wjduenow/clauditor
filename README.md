@@ -165,6 +165,26 @@ The eval spec defines what fields each section should have:
 }
 ```
 
+#### Field validation (`format`)
+
+Each field can declare a `format` that validates the extracted value. The `format` key accepts **either** a registered format name **or** an inline regex — clauditor looks up the string in `FORMAT_REGISTRY` first and falls back to compiling it as a regex if there's no match.
+
+Decision tree:
+
+- Is there a registered name in `FORMAT_REGISTRY` that fits? Use it (e.g. `"format": "phone_us"`).
+- Need something custom? Put a regex string directly in `format` (e.g. `"format": "^[a-z0-9-]+$"`).
+- Lookup is **registry-first, regex-fallback**. Invalid regexes raise `ValueError` at spec construction time, so typos fail fast.
+
+```json
+{"name": "phone", "format": "phone_us"}
+```
+
+```json
+{"name": "slug", "format": "^[a-z0-9-]+$"}
+```
+
+See [`FORMAT_REGISTRY` in `src/clauditor/formats.py`](src/clauditor/formats.py) for the full list of registered names (common entries: `phone_us`, `phone_intl`, `email`, `url`, `domain`, `date_iso`, `zip_us`, `uuid`).
+
 ### Layer 3: Quality Grading (expensive, release-only)
 
 Uses Sonnet to grade skill output against a rubric you define. Requires `ANTHROPIC_API_KEY` and `pip install clauditor[grader]`.
@@ -199,15 +219,17 @@ clauditor grade .claude/commands/my-skill.md --diff       # Compare against prio
 
 Each criterion gets a pass/fail, score (0.0-1.0), evidence (quoted output), and reasoning. Use `--save` to persist results for regression tracking, and `--diff` to compare against a prior run (flags regressions where a criterion's score drops by more than 0.1).
 
-#### A/B Comparison
+#### Regression Comparison
 
-Runs your skill and raw Claude side-by-side against the same rubric. Flags regressions where the baseline passes but your skill fails.
+Diffs two saved grade reports (from `--save`) or two captured outputs, printing `[REGRESSION]` for pass→fail flips and `[IMPROVEMENT]` for fail→pass. Exits 1 on any regression.
 
 ```bash
-clauditor grade .claude/commands/my-skill.md --compare
+clauditor compare before.grade.json after.grade.json
+# Or re-grade two raw captures against a spec:
+clauditor compare before.txt after.txt --spec <skill.md>
 ```
 
-Requires `test_args` in the eval spec — these become the baseline prompt.
+For a true baseline A/B run (skill vs raw Claude against the same rubric), use the Python API `clauditor.comparator.compare_ab()` directly — the `grade --compare` CLI flag was removed in favor of the file-diff workflow above.
 
 #### Variance Measurement
 
@@ -296,14 +318,27 @@ clauditor run <skill-name> --args "…"  # Run skill, print output
 clauditor extract <skill.md>           # Layer 2 schema extraction
 clauditor extract <skill.md> --dry-run # Print extraction prompt only
 clauditor grade <skill.md>             # Layer 3 quality grading
-clauditor grade <skill.md> --compare   # A/B comparison
 clauditor grade <skill.md> --variance 3  # Variance measurement
+clauditor grade <skill.md> --only-criterion clarity  # Run a subset (repeatable, substring match)
 clauditor grade <skill.md> --save      # Persist results to .clauditor/
 clauditor grade <skill.md> --diff      # Compare against prior results
+clauditor compare before.grade.json after.grade.json  # Diff two saved grade reports
+clauditor compare before.txt after.txt --spec <skill.md>  # Re-grade two captures
+clauditor trend <skill> --metric pass_rate       # Tab-separated history + ASCII sparkline
 clauditor triggers <skill.md>          # Trigger precision testing
 clauditor capture <skill> -- "args"    # Run skill, save stdout to tests/eval/captured/
 clauditor doctor                       # Report environment diagnostics
 ```
+
+### Persistent metric history
+
+Every `clauditor grade` run appends a JSON line to `.clauditor/history.jsonl`:
+
+```json
+{"ts": "2026-04-13T15:00:00+00:00", "skill": "find-restaurants", "pass_rate": 0.83, "mean_score": 0.75, "metrics": {}}
+```
+
+Use `clauditor trend <skill> --metric pass_rate --last 20` to view the last N values with an ASCII sparkline (`_.-=#` glyph set). Runs with `--only-criterion` skip the history append to keep longitudinal data comparable.
 
 ## Pytest Integration
 
@@ -313,6 +348,7 @@ clauditor registers as a pytest plugin automatically. Available fixtures:
 - `clauditor_spec` — factory for loading `SkillSpec` from skill files
 - `clauditor_grader` — factory for Layer 3 quality grading
 - `clauditor_triggers` — factory for trigger precision testing
+- `clauditor_capture` — factory returning a `Path` to `tests/eval/captured/<skill>.txt` for captured-output tests
 
 Options:
 

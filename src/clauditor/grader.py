@@ -98,8 +98,9 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
                     message=(
                         f"Section '{section_req.name}' tier '{tier.label}' "
                         f"has {len(entries)} entries "
-                        f"(need \u2265{tier.min_entries})"
+                        f"(need >={tier.min_entries})"
                     ),
+                    kind="count",
                 )
             )
 
@@ -112,8 +113,9 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
                         message=(
                             f"Section '{section_req.name}' tier '{tier.label}' "
                             f"has {len(entries)} entries "
-                            f"(need \u2264{tier.max_entries})"
+                            f"(need <={tier.max_entries})"
                         ),
+                        kind="count_max",
                     )
                 )
 
@@ -135,6 +137,7 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
                                 f"{section_req.name} tier "
                                 f"'{tier.label}' entry {i + 1}"
                             ),
+                            kind="presence",
                             evidence=entry.fields.get(field_req.name),
                         )
                     )
@@ -173,6 +176,7 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
                                     if matched
                                     else f"Value does not match {label}"
                                 ),
+                                kind="format",
                                 evidence=value,
                             )
                         )
@@ -230,6 +234,7 @@ async def extract_and_grade(
                     name="grader:parse",
                     passed=False,
                     message="Failed to parse grader response as JSON",
+                    kind="custom",
                     evidence=response_text[:200],
                 )
             ]
@@ -265,6 +270,8 @@ async def extract_and_grade(
                         f"Section '{section_name}' returned flat list "
                         f"instead of tier-grouped dict"
                     ),
+                    kind="custom",
+                    raw_data=dict(raw),
                 )
             )
 

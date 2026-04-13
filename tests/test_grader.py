@@ -381,7 +381,7 @@ class TestMaxEntries:
         )
         assert not count_max.passed
         assert "6 entries" in count_max.message
-        assert "\u22643" in count_max.message
+        assert "<=3" in count_max.message
 
     def test_over_max_still_grades_all_entry_fields(self):
         """DEC-003: field checks still run for all extracted entries."""
@@ -747,6 +747,59 @@ class TestExtractAndGrade:
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
             result = await extract_and_grade("some output", _make_spec())
         assert result.passed
+
+    @pytest.mark.asyncio
+    async def test_shape_failure_attaches_raw_data(self):
+        """US-005: parseable-but-wrong-shape response attaches raw_data."""
+        data = {
+            "Venues": [
+                {"name": "CDM", "address": "X", "website": "Y"},
+            ],
+        }
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=json.dumps(data))]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            result = await extract_and_grade("some output", _make_spec())
+        failed = [r for r in result.results if r.name == "grader:parse:Venues"]
+        assert len(failed) == 1
+        assert failed[0].raw_data == data
+
+    @pytest.mark.asyncio
+    async def test_json_parse_failure_leaves_raw_data_none(self):
+        """US-005: unparseable response keeps raw_data=None and evidence."""
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text="not valid json at all")]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            result = await extract_and_grade("some output", _make_spec())
+        parse_failures = [r for r in result.results if r.name == "grader:parse"]
+        assert len(parse_failures) == 1
+        assert parse_failures[0].raw_data is None
+        assert parse_failures[0].evidence == "not valid json at all"
+
+    @pytest.mark.asyncio
+    async def test_non_failure_result_has_no_raw_data(self):
+        """US-005 negative regression: passing assertions never carry raw_data."""
+        data = {
+            "Venues": {
+                "default": [
+                    {"name": "A", "address": "B", "website": "C"},
+                    {"name": "D", "address": "E", "website": "F"},
+                ]
+            }
+        }
+        mock_response = MagicMock()
+        mock_response.content = [MagicMock(text=json.dumps(data))]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            result = await extract_and_grade("some output", _make_spec())
+        assert result.passed
+        for r in result.results:
+            assert r.raw_data is None
 
 
 def _make_format_spec() -> EvalSpec:

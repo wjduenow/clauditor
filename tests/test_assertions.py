@@ -229,11 +229,13 @@ class TestAssertionSet:
 
 
 def _fail(name: str, msg: str = "nope", evidence: str | None = None) -> AssertionResult:
-    return AssertionResult(name=name, passed=False, message=msg, evidence=evidence)
+    return AssertionResult(
+        name=name, passed=False, message=msg, kind="presence", evidence=evidence
+    )
 
 
 def _pass(name: str) -> AssertionResult:
-    return AssertionResult(name=name, passed=True, message="ok")
+    return AssertionResult(name=name, passed=True, message="ok", kind="presence")
 
 
 class TestGroupedSummary:
@@ -367,11 +369,11 @@ class TestMaxLength:
 
 class TestAssertionResultBool:
     def test_bool_true(self):
-        r = AssertionResult(name="test", passed=True, message="ok")
+        r = AssertionResult(name="test", passed=True, message="ok", kind="custom")
         assert bool(r) is True
 
     def test_bool_false(self):
-        r = AssertionResult(name="test", passed=False, message="fail")
+        r = AssertionResult(name="test", passed=False, message="fail", kind="custom")
         assert bool(r) is False
 
 
@@ -777,3 +779,109 @@ class TestHasFormat:
         )
         result = assert_has_format(output, "url", minimum=2)
         assert result.passed
+
+
+class TestAssertionKind:
+    """US-001: AssertionResult.kind is required and enumerated."""
+
+    def test_kind_required_typeerror(self):
+        import pytest
+
+        with pytest.raises(TypeError):
+            AssertionResult(name="x", passed=True, message="m")  # type: ignore[call-arg]
+
+    def test_contains_kind_presence(self):
+        assert assert_contains("hello world", "hello").kind == "presence"
+
+    def test_not_contains_kind_presence(self):
+        assert assert_not_contains("abc", "zz").kind == "presence"
+
+    def test_regex_kind_pattern(self):
+        assert assert_regex("abc123", r"\d+").kind == "pattern"
+
+    def test_min_count_kind_count(self):
+        assert assert_min_count("a a a", r"a", 1).kind == "count"
+
+    def test_min_length_kind_count(self):
+        assert assert_min_length("hello", 1).kind == "count"
+
+    def test_max_length_kind_count(self):
+        assert assert_max_length("hi", 100).kind == "count"
+
+    def test_has_urls_kind_count(self):
+        assert assert_has_urls("https://example.com", 1).kind == "count"
+
+    def test_has_entries_kind_count(self):
+        assert assert_has_entries("**1. Foo**", 1).kind == "count"
+
+    def test_urls_reachable_no_urls_kind_reachability(self):
+        # Short-circuit branch when no URLs present still reports the
+        # reachability kind — both code paths describe the same check.
+        r = assert_urls_reachable("no urls here", 0)
+        assert r.kind == "reachability"
+
+    def test_urls_reachable_with_urls_kind_reachability(self):
+        with patch(
+            "clauditor.assertions._check_url",
+            return_value=("https://example.com", 200),
+        ):
+            r = assert_urls_reachable("see https://example.com", 1)
+        assert r.kind == "reachability"
+
+    def test_has_format_unknown_kind_format(self):
+        r = assert_has_format("x", "this_format_does_not_exist_xyz")
+        assert r.kind == "format"
+
+    def test_has_format_known_kind_count(self):
+        r = assert_has_format("(408) 298-5437", "phone_us", minimum=1)
+        assert r.kind == "count"
+
+    def test_unknown_run_assertions_kind_custom(self):
+        rs = run_assertions("t", [{"type": "nope"}])
+        assert rs.results[0].kind == "custom"
+
+    def test_all_enum_values_constructable(self):
+        for k in (
+            "presence",
+            "format",
+            "pattern",
+            "count",
+            "count_max",
+            "reachability",
+            "custom",
+        ):
+            r = AssertionResult(name="n", passed=True, message="m", kind=k)
+            assert r.kind == k
+
+    def test_grouped_summary_still_groups_by_name(self):
+        """Regression: kind is supplementary; grouping key continues to use name."""
+        s = AssertionSet(
+            results=[
+                AssertionResult(
+                    name=f"section:S/default[{i}].website:format",
+                    passed=False,
+                    message="bad",
+                    kind="format",
+                    evidence="x",
+                )
+                for i in range(3)
+            ]
+        )
+        lines = s.grouped_summary()
+        assert len(lines) == 1
+        assert "3/3" in lines[0]
+
+    def test_summary_output_unchanged_regression(self):
+        s = AssertionSet(
+            results=[
+                AssertionResult(
+                    name="a", passed=True, message="ok", kind="presence"
+                ),
+                AssertionResult(
+                    name="b", passed=False, message="no", kind="presence"
+                ),
+            ]
+        )
+        out = s.summary()
+        assert "1/2" in out
+        assert "FAIL: b" in out

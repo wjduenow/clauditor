@@ -7,9 +7,21 @@ import json
 import sys
 from pathlib import Path
 
-from clauditor.assertions import run_assertions
+from clauditor import history
+from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.runner import SkillRunner
 from clauditor.spec import SkillSpec
+
+
+def _positive_int(value: str) -> int:
+    """argparse type: accept integers >= 1."""
+    try:
+        ivalue = int(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from e
+    if ivalue < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {ivalue}")
+    return ivalue
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -53,6 +65,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
                             "passed": r.passed,
                             "message": r.message,
                             **({"evidence": r.evidence} if r.evidence else {}),
+                            **(
+                                {"raw_data": r.raw_data}
+                                if r.raw_data is not None
+                                else {}
+                            ),
                         }
                         for r in results.results
                     ],
@@ -97,6 +114,33 @@ def cmd_grade(args: argparse.Namespace) -> int:
         print("ERROR: No grading_criteria defined in eval spec", file=sys.stderr)
         return 1
 
+    # --only-criterion: filter criteria before LLM call (token savings)
+    only = getattr(args, "only_criterion", None)
+    if only:
+        needles = [s.lower() for s in only]
+        original = list(spec.eval_spec.grading_criteria)
+
+        def _match(item: object) -> bool:
+            name = getattr(item, "name", None) or ""
+            desc = getattr(item, "description", None) or ""
+            if not name and not desc:
+                # list-of-strings case
+                name = str(item)
+            hay = f"{name}\n{desc}".lower()
+            return any(n in hay for n in needles)
+
+        filtered = [c for c in original if _match(c)]
+        if not filtered:
+            available = ", ".join(
+                (getattr(c, "name", None) or str(c)) for c in original
+            )
+            print(
+                f"No grading criteria match filter. Available: {available}",
+                file=sys.stderr,
+            )
+            return 2
+        spec.eval_spec.grading_criteria = filtered
+
     model = args.model or spec.eval_spec.grading_model
 
     # --dry-run: print prompt and exit
@@ -119,7 +163,7 @@ def cmd_grade(args: argparse.Namespace) -> int:
             return 1
         output = result.output
 
-    # Grade (and optionally compare / measure variance in a single event loop)
+    # Grade (and optionally measure variance in a single event loop)
     from clauditor.quality_grader import grade_quality
 
     async def _run_grade():
@@ -127,11 +171,6 @@ def cmd_grade(args: argparse.Namespace) -> int:
             output, spec.eval_spec, model,
             thresholds=spec.eval_spec.grade_thresholds,
         )
-        ab_report = None
-        if args.compare:
-            from clauditor.comparator import compare_ab
-
-            ab_report = await compare_ab(spec, model)
         variance_report = None
         if args.variance:
             from clauditor.quality_grader import measure_variance
@@ -139,9 +178,9 @@ def cmd_grade(args: argparse.Namespace) -> int:
             variance_report = await measure_variance(
                 spec, args.variance, model
             )
-        return report, ab_report, variance_report
+        return report, variance_report
 
-    report, ab_report, variance_report = asyncio.run(_run_grade())
+    report, variance_report = asyncio.run(_run_grade())
 
     if args.json:
         data: dict = {
@@ -162,23 +201,8 @@ def cmd_grade(args: argparse.Namespace) -> int:
                     for r in report.results
                 ],
             },
-            "comparison": None,
             "variance": None,
         }
-        if ab_report:
-            data["comparison"] = {
-                "passed": ab_report.passed,
-                "regressions": len(ab_report.regressions),
-                "results": [
-                    {
-                        "criterion": r.criterion,
-                        "skill_passed": r.skill_grade.passed,
-                        "baseline_passed": r.baseline_grade.passed,
-                        "regression": r.regression,
-                    }
-                    for r in ab_report.results
-                ],
-            }
         if variance_report:
             data["variance"] = {
                 "passed": variance_report.passed,
@@ -192,8 +216,6 @@ def cmd_grade(args: argparse.Namespace) -> int:
     else:
         print(f"Quality Grade: {spec.skill_name} ({model})")
         print(report.summary())
-        if ab_report:
-            print(f"\n{ab_report.summary()}")
         if variance_report:
             print(f"\n{variance_report.summary()}")
 
@@ -254,13 +276,139 @@ def cmd_grade(args: argparse.Namespace) -> int:
         save_path.write_text(report.to_json())
         print(f"\nGrade report saved to {save_path}", file=diff_out)
 
+    # Append a history record for trendability (US-006). Skip when
+    # --only-criterion is set: partial-criterion runs would silently
+    # corrupt longitudinal pass_rate/mean_score trends.
+    if not getattr(args, "only_criterion", None):
+        try:
+            history.append_record(
+                skill=spec.skill_name,
+                pass_rate=report.pass_rate,
+                mean_score=report.mean_score,
+                metrics={},
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            print(f"WARNING: failed to append history: {e}", file=sys.stderr)
+
     # Determine exit code
     passed = report.passed
-    if ab_report:
-        passed = passed and ab_report.passed
     if variance_report:
         passed = passed and variance_report.passed
     return 0 if passed else 1
+
+
+def _load_assertion_set(
+    path: Path, spec_path: str | None, eval_path: str | None
+) -> AssertionSet:
+    """Load an AssertionSet from either a ``.txt`` or ``.grade.json`` file.
+
+    For ``.txt`` files, a skill spec is required and Layer 1 assertions are
+    run against the file's contents. For ``.grade.json`` files, the saved
+    GradingReport is deserialized and each GradingResult is adapted into an
+    AssertionResult so the two formats can be diffed uniformly.
+    """
+    from clauditor.assertions import AssertionResult
+    from clauditor.quality_grader import GradingReport
+
+    suffix = "".join(path.suffixes)
+    if path.suffix == ".txt":
+        if not spec_path:
+            raise ValueError(
+                f"--spec is required when diffing .txt files ({path})"
+            )
+        spec = SkillSpec.from_file(spec_path, eval_path=eval_path)
+        if not spec.eval_spec:
+            raise ValueError(f"No eval spec found for {spec_path}")
+        output = path.read_text()
+        return run_assertions(output, spec.eval_spec.assertions)
+    if suffix.endswith(".grade.json") or path.name.endswith(".grade.json"):
+        report = GradingReport.from_json(path.read_text())
+        results = [
+            AssertionResult(
+                name=r.criterion,
+                passed=r.passed,
+                message=r.reasoning or ("pass" if r.passed else "fail"),
+                kind="custom",
+                evidence=r.evidence or None,
+            )
+            for r in report.results
+        ]
+        return AssertionSet(results=results)
+    raise ValueError(
+        f"Unsupported file type for {path}: expected .txt or .grade.json"
+    )
+
+
+def _file_kind(path: Path) -> str:
+    """Return a coarse file-kind label for mismatch detection."""
+    if path.name.endswith(".grade.json"):
+        return "grade.json"
+    if path.suffix == ".txt":
+        return "txt"
+    return path.suffix or path.name
+
+
+def cmd_compare(args: argparse.Namespace) -> int:
+    """Diff assertion results between two captured runs or saved grade reports.
+
+    Accepts two positional files of matching type (both ``.txt`` or both
+    ``.grade.json``). Prints flipped assertions (regressions + improvements)
+    and exits non-zero if any regressions are detected.
+    """
+    from clauditor.comparator import diff_assertion_sets
+
+    before_path = Path(args.before)
+    after_path = Path(args.after)
+
+    before_kind = _file_kind(before_path)
+    after_kind = _file_kind(after_path)
+    if before_kind != after_kind:
+        print(
+            f"ERROR: Mismatched file types: {before_path} ({before_kind}) "
+            f"vs {after_path} ({after_kind})",
+            file=sys.stderr,
+        )
+        return 2
+    if before_kind not in ("txt", "grade.json"):
+        print(
+            f"ERROR: Unsupported file type '{before_kind}'. "
+            "Expected .txt or .grade.json.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        before_set = _load_assertion_set(before_path, args.spec, args.eval)
+        after_set = _load_assertion_set(after_path, args.spec, args.eval)
+    except ValueError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 2
+
+    flips = diff_assertion_sets(before_set, after_set)
+
+    regressions = [f for f in flips if f.kind == "regression"]
+    improvements = [f for f in flips if f.kind == "improvement"]
+
+    if not flips:
+        print("no flips: assertion results match")
+        return 0
+
+    for f in flips:
+        if f.kind == "regression":
+            print(f"[REGRESSION] {f.name}: pass -> fail")
+        elif f.kind == "improvement":
+            print(f"[IMPROVEMENT] {f.name}: fail -> pass")
+        elif f.kind == "new":
+            tag = "pass" if f.after_passed else "fail"
+            print(f"[NEW] {f.name}: {tag}")
+        elif f.kind == "removed":
+            tag = "pass" if f.before_passed else "fail"
+            print(f"[REMOVED] {f.name}: was {tag}")
+
+    print(
+        f"\n{len(regressions)} regression(s), {len(improvements)} improvement(s)"
+    )
+    return 1 if regressions else 0
 
 
 def cmd_triggers(args: argparse.Namespace) -> int:
@@ -382,6 +530,11 @@ def cmd_extract(args: argparse.Namespace) -> int:
                             "passed": r.passed,
                             "message": r.message,
                             **({"evidence": r.evidence} if r.evidence else {}),
+                            **(
+                                {"raw_data": r.raw_data}
+                                if r.raw_data is not None
+                                else {}
+                            ),
                         }
                         for r in results.results
                     ],
@@ -392,6 +545,11 @@ def cmd_extract(args: argparse.Namespace) -> int:
     else:
         print(f"Schema Extraction: {spec.skill_name} ({model})")
         print(results.summary())
+        if getattr(args, "verbose", False):
+            for r in results.results:
+                if not r.passed and r.raw_data is not None:
+                    print(f"\nRaw data for {r.name}:")
+                    print(json.dumps(r.raw_data, indent=2))
 
     return 0 if results.passed else 1
 
@@ -593,6 +751,52 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trend(args: argparse.Namespace) -> int:
+    """Render a trend line (TSV + ASCII sparkline) for a skill metric."""
+    records = history.read_records(skill=args.skill_name)
+    if not records:
+        print(
+            f"ERROR: no history records for skill '{args.skill_name}'. "
+            "Run `clauditor grade` first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    last_n = args.last
+    if last_n is not None and last_n > 0:
+        records = records[-last_n:]
+
+    metric = args.metric
+    timestamps: list[str] = []
+    values: list[float] = []
+    for rec in records:
+        if metric in ("pass_rate", "mean_score"):
+            v = rec.get(metric)
+        else:
+            v = rec.get("metrics", {}).get(metric)
+        if v is None:
+            continue
+        try:
+            value = float(v)
+        except (TypeError, ValueError):
+            continue
+        timestamps.append(str(rec.get("ts", "")))
+        values.append(value)
+
+    if not values:
+        print(
+            f"ERROR: no records with metric '{metric}' for skill "
+            f"'{args.skill_name}'.",
+            file=sys.stderr,
+        )
+        return 1
+
+    for ts, v in zip(timestamps, values):
+        print(f"{ts}\t{v}")
+    print(history.sparkline(values))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="clauditor",
@@ -641,9 +845,6 @@ def main(argv: list[str] | None = None) -> int:
         "--dry-run", action="store_true", help="Print prompt without making API calls"
     )
     p_grade.add_argument(
-        "--compare", action="store_true", help="Also run A/B comparison"
-    )
-    p_grade.add_argument(
         "--variance",
         type=int,
         metavar="N",
@@ -654,6 +855,37 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_grade.add_argument(
         "--diff", action="store_true", help="Compare against prior grade results"
+    )
+    p_grade.add_argument(
+        "--only-criterion",
+        action="append",
+        default=None,
+        metavar="SUBSTRING",
+        help=(
+            "Run only criteria whose name/description contains SUBSTRING"
+            " (case-insensitive, repeatable)"
+        ),
+    )
+
+    # compare
+    p_compare = subparsers.add_parser(
+        "compare",
+        help=(
+            "Diff assertion results between two captured outputs "
+            "(.txt) or saved grade reports (.grade.json)"
+        ),
+    )
+    p_compare.add_argument("before", help="Baseline file (.txt or .grade.json)")
+    p_compare.add_argument("after", help="Candidate file (.txt or .grade.json)")
+    p_compare.add_argument(
+        "--spec",
+        default=None,
+        help="Path to skill .md (required when diffing .txt files)",
+    )
+    p_compare.add_argument(
+        "--eval",
+        default=None,
+        help="Path to eval.json (auto-discovered if omitted)",
     )
 
     # triggers
@@ -689,6 +921,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_extract.add_argument(
         "--dry-run", action="store_true", help="Print prompt without making API calls"
+    )
+    p_extract.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Print raw Haiku JSON under failing assertions when available",
     )
 
     # init
@@ -730,6 +968,24 @@ def main(argv: list[str] | None = None) -> int:
         help="Arguments to pass to the skill (put after `--`)",
     )
 
+    # trend
+    p_trend = subparsers.add_parser(
+        "trend",
+        help="Print a trend line (TSV + ASCII sparkline) from grade history",
+    )
+    p_trend.add_argument("skill_name", help="Skill name to trend")
+    p_trend.add_argument(
+        "--metric",
+        required=True,
+        help="Metric to trend (pass_rate, mean_score, or a metrics.<name>)",
+    )
+    p_trend.add_argument(
+        "--last",
+        type=_positive_int,
+        default=20,
+        help="Show last N records (default 20; must be >= 1)",
+    )
+
     # doctor
     subparsers.add_parser(
         "doctor",
@@ -761,6 +1017,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_run(parsed)
     elif parsed.command == "grade":
         return cmd_grade(parsed)
+    elif parsed.command == "compare":
+        return cmd_compare(parsed)
     elif parsed.command == "triggers":
         return cmd_triggers(parsed)
     elif parsed.command == "extract":
@@ -771,6 +1029,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_capture(parsed)
     elif parsed.command == "doctor":
         return cmd_doctor(parsed)
+    elif parsed.command == "trend":
+        return cmd_trend(parsed)
 
     return 1
 
