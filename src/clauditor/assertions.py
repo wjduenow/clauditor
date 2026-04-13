@@ -34,6 +34,7 @@ class AssertionResult:
     message: str
     kind: AssertionKind
     evidence: str | None = None
+    raw_data: dict | None = None
 
     def __bool__(self) -> bool:
         return self.passed

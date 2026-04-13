@@ -271,6 +271,7 @@ async def extract_and_grade(
                         f"instead of tier-grouped dict"
                     ),
                     kind="custom",
+                    raw_data=raw,
                 )
             )
 

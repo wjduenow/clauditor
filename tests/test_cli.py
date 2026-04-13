@@ -978,6 +978,69 @@ class TestCmdExtract:
 
         assert rc == 1
 
+    def _make_raw_data_results(self):
+        raw = {"Venues": [{"name": "A"}]}
+        return AssertionSet(
+            results=[
+                AssertionResult(
+                    name="grader:parse:Venues",
+                    passed=False,
+                    message="shape wrong",
+                    kind="custom",
+                    raw_data=raw,
+                ),
+            ]
+        ), raw
+
+    def test_extract_verbose_prints_raw_data(self, tmp_path, capsys):
+        """US-005: -v prints raw_data for failing assertion that has it."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("output")
+
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+        results, raw = self._make_raw_data_results()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+        ):
+            rc = main(
+                ["extract", "skill.md", "--output", str(output_file), "-v"]
+            )
+
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "Raw data for grader:parse:Venues" in out
+        assert json.dumps(raw, indent=2) in out
+
+    def test_extract_without_verbose_omits_raw_data(self, tmp_path, capsys):
+        """US-005: without -v, raw_data is not printed even when present."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("output")
+
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+        results, _ = self._make_raw_data_results()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+        ):
+            rc = main(["extract", "skill.md", "--output", str(output_file)])
+
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "Raw data for" not in out
+
 
 class TestCmdCapture:
     """Tests for the capture subcommand (US-006)."""

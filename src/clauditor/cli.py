@@ -509,6 +509,11 @@ def cmd_extract(args: argparse.Namespace) -> int:
     else:
         print(f"Schema Extraction: {spec.skill_name} ({model})")
         print(results.summary())
+        if getattr(args, "verbose", False):
+            for r in results.results:
+                if not r.passed and r.raw_data is not None:
+                    print(f"\nRaw data for {r.name}:")
+                    print(json.dumps(r.raw_data, indent=2))
 
     return 0 if results.passed else 1
 
@@ -834,6 +839,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_extract.add_argument(
         "--dry-run", action="store_true", help="Print prompt without making API calls"
+    )
+    p_extract.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Print raw Haiku JSON under failing assertions when available",
     )
 
     # init
