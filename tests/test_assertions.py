@@ -228,6 +228,128 @@ class TestAssertionSet:
         assert "nope" in summary
 
 
+def _fail(name: str, msg: str = "nope", evidence: str | None = None) -> AssertionResult:
+    return AssertionResult(name=name, passed=False, message=msg, evidence=evidence)
+
+
+def _pass(name: str) -> AssertionResult:
+    return AssertionResult(name=name, passed=True, message="ok")
+
+
+class TestGroupedSummary:
+    """DEC-004, DEC-012: grouped_summary collapses field:suffix failures."""
+
+    def test_empty_set_returns_empty_list(self):
+        assert AssertionSet().grouped_summary() == []
+
+    def test_all_passing_returns_empty_list(self):
+        s = AssertionSet(
+            results=[
+                _pass(f"section:Restaurants/default[{i}].website:format")
+                for i in range(3)
+            ]
+        )
+        assert s.grouped_summary() == []
+
+    def test_six_website_format_failures_collapse_to_one_line(self):
+        s = AssertionSet(
+            results=[
+                _fail(
+                    f"section:Restaurants/default[{i}].website:format",
+                    evidence="paesanosj.com",
+                )
+                for i in range(6)
+            ]
+        )
+        lines = s.grouped_summary()
+        assert len(lines) == 1
+        assert "6/6" in lines[0]
+        assert "Restaurants/default[*].website:format" in lines[0]
+        assert "paesanosj.com" in lines[0]
+
+    def test_presence_failures_use_synthetic_suffix(self):
+        s = AssertionSet(
+            results=[
+                _fail(f"section:Restaurants/default[{i}].name", msg="missing name")
+                for i in range(3)
+            ]
+        )
+        lines = s.grouped_summary()
+        assert len(lines) == 1
+        assert "3/3" in lines[0]
+        assert ".name:presence" in lines[0]
+
+    def test_mixed_groups_one_line_each(self):
+        results = []
+        for i in range(3):
+            results.append(
+                _fail(
+                    f"section:Restaurants/default[{i}].website:format",
+                    evidence="x.com",
+                )
+            )
+        for i in range(2):
+            results.append(
+                _fail(
+                    f"section:Restaurants/default[{i}].phone:pattern",
+                    evidence="bad",
+                )
+            )
+        results.append(
+            _fail("section:Restaurants/default[0].name", msg="missing")
+        )
+        lines = AssertionSet(results=results).grouped_summary()
+        assert len(lines) == 3
+        joined = "\n".join(lines)
+        assert "3/3 Restaurants/default[*].website:format" in joined
+        assert "2/2 Restaurants/default[*].phone:pattern" in joined
+        assert "1/1 Restaurants/default[*].name:presence" in joined
+
+    def test_partial_group_shows_failed_over_total(self):
+        results = [
+            _pass("section:Restaurants/default[0].website:format"),
+            _fail(
+                "section:Restaurants/default[1].website:format",
+                evidence="bad.com",
+            ),
+            _fail(
+                "section:Restaurants/default[2].website:format",
+                evidence="also.bad",
+            ),
+        ]
+        lines = AssertionSet(results=results).grouped_summary()
+        assert len(lines) == 1
+        assert "2/3" in lines[0]
+
+    def test_non_structured_names_passthrough(self):
+        s = AssertionSet(
+            results=[
+                _fail("has_urls", msg="Found 0 URLs"),
+                _fail(
+                    "section:Venues/default[0].name:presence",
+                    msg="missing",
+                ),
+            ]
+        )
+        lines = s.grouped_summary()
+        assert len(lines) == 2
+        # structured group first (preserves insertion order of groups seen)
+        # passthroughs appended after
+        assert any("has_urls" in line for line in lines)
+
+    def test_summary_unchanged_regression(self):
+        """Existing summary() output is untouched by grouped_summary addition."""
+        s = AssertionSet(
+            results=[
+                _fail("section:Restaurants/default[0].website:format", msg="bad"),
+                _fail("section:Restaurants/default[1].website:format", msg="bad"),
+            ]
+        )
+        out = s.summary()
+        assert "0/2" in out
+        assert out.count("FAIL:") == 2
+
+
 class TestMaxLength:
     def test_pass(self):
         result = assert_max_length("short", 100)
