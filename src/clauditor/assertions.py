@@ -308,7 +308,7 @@ def assert_urls_reachable(output: str, minimum: int = 1) -> AssertionResult:
             name=f"urls_reachable>={minimum}",
             passed=0 >= minimum,
             message=f"Found 0 URLs to check (need >={minimum})",
-            kind="count",
+            kind="reachability",
         )
 
     statuses: list[str] = []

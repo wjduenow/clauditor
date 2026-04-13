@@ -814,10 +814,11 @@ class TestAssertionKind:
     def test_has_entries_kind_count(self):
         assert assert_has_entries("**1. Foo**", 1).kind == "count"
 
-    def test_urls_reachable_no_urls_kind_count(self):
-        # Short-circuit branch when no URLs present
+    def test_urls_reachable_no_urls_kind_reachability(self):
+        # Short-circuit branch when no URLs present still reports the
+        # reachability kind — both code paths describe the same check.
         r = assert_urls_reachable("no urls here", 0)
-        assert r.kind == "count"
+        assert r.kind == "reachability"
 
     def test_urls_reachable_with_urls_kind_reachability(self):
         with patch(

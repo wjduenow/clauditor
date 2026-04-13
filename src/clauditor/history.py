@@ -69,6 +69,13 @@ def read_records(
                     file=sys.stderr,
                 )
                 continue
+            if not isinstance(record, dict):
+                print(
+                    f"WARNING: skipping non-object history line {lineno} "
+                    f"in {path}",
+                    file=sys.stderr,
+                )
+                continue
             if skill is not None and record.get("skill") != skill:
                 continue
             records.append(record)

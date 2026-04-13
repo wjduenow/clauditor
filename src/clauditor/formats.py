@@ -114,18 +114,20 @@ FORMAT_REGISTRY: dict[str, FormatDef] = {f.name: f for f in [
         r"\d{1,2}:\d{2}\s?[AaPp][Mm]",
         "12-hour time, e.g. 2:30 PM or 2:30pm",
     ),
-    # strict === extract: leading '$' sigil makes the token
-    # self-delimiting in prose.
+    # strict === extract: leading '$' sigil + lookahead requiring at
+    # least one digit makes the token self-delimiting in prose and
+    # rejects nonsense like "$,,,".
     _def(
         "currency_usd",
-        r"\$[\d,]+(?:\.\d{2})?",
+        r"\$(?=[\d,]*\d)[\d,]+(?:\.\d{2})?",
         "US dollar amount, e.g. $1,234.56 or $50",
     ),
-    # strict === extract: leading '€' sigil makes the token
-    # self-delimiting in prose.
+    # strict === extract: leading '€' sigil + lookahead requiring at
+    # least one digit makes the token self-delimiting in prose and
+    # rejects nonsense like "€...".
     _def(
         "currency_eur",
-        r"€[\d.,]+",
+        r"€(?=[\d.,]*\d)[\d.,]+",
         "Euro amount, e.g. €1.234,56",
     ),
     # strict === extract: 5 digits (optional -4) is a self-delimiting
