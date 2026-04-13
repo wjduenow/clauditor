@@ -97,6 +97,33 @@ def cmd_grade(args: argparse.Namespace) -> int:
         print("ERROR: No grading_criteria defined in eval spec", file=sys.stderr)
         return 1
 
+    # --only-criterion: filter criteria before LLM call (token savings)
+    only = getattr(args, "only_criterion", None)
+    if only:
+        needles = [s.lower() for s in only]
+        original = list(spec.eval_spec.grading_criteria)
+
+        def _match(item: object) -> bool:
+            name = getattr(item, "name", None) or ""
+            desc = getattr(item, "description", None) or ""
+            if not name and not desc:
+                # list-of-strings case
+                name = str(item)
+            hay = f"{name}\n{desc}".lower()
+            return any(n in hay for n in needles)
+
+        filtered = [c for c in original if _match(c)]
+        if not filtered:
+            available = ", ".join(
+                (getattr(c, "name", None) or str(c)) for c in original
+            )
+            print(
+                f"No grading criteria match filter. Available: {available}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        spec.eval_spec.grading_criteria = filtered
+
     model = args.model or spec.eval_spec.grading_model
 
     # --dry-run: print prompt and exit
@@ -741,6 +768,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_grade.add_argument(
         "--diff", action="store_true", help="Compare against prior grade results"
+    )
+    p_grade.add_argument(
+        "--only-criterion",
+        action="append",
+        default=None,
+        metavar="SUBSTRING",
+        help=(
+            "Run only criteria whose name/description contains SUBSTRING"
+            " (case-insensitive, repeatable)"
+        ),
     )
 
     # compare

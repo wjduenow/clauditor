@@ -262,6 +262,116 @@ class TestCmdGrade:
         assert rc == 1
 
 
+class TestOnlyCriterion:
+    """Tests for --only-criterion filter on the grade subcommand."""
+
+    def _report(self):
+        return GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="x",
+                    passed=True,
+                    score=1.0,
+                    evidence="",
+                    reasoning="",
+                )
+            ],
+            duration_seconds=1.0,
+        )
+
+    def _run(self, tmp_path, criteria, extra_args):
+        output_file = tmp_path / "o.txt"
+        output_file.write_text("out")
+        eval_spec = _make_eval_spec(grading_criteria=list(criteria))
+        spec = _make_spec(eval_spec=eval_spec)
+        mock_grade = AsyncMock(return_value=self._report())
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch("clauditor.quality_grader.grade_quality", mock_grade),
+        ):
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)] + extra_args
+            )
+        return rc, mock_grade, spec
+
+    def test_single_substring_filters(self, tmp_path):
+        """--only-criterion foo keeps only matching criteria."""
+        rc, mock_grade, spec = self._run(
+            tmp_path,
+            ["foo bar", "baz qux", "other foo"],
+            ["--only-criterion", "foo"],
+        )
+        assert rc == 0
+        assert spec.eval_spec.grading_criteria == ["foo bar", "other foo"]
+        # Grader called with filtered spec
+        mock_grade.assert_called_once()
+        passed_spec = mock_grade.call_args.args[1]
+        assert passed_spec.grading_criteria == ["foo bar", "other foo"]
+
+    def test_multiple_substrings_union(self, tmp_path):
+        """Multiple --only-criterion flags use OR semantics."""
+        rc, mock_grade, spec = self._run(
+            tmp_path,
+            ["alpha", "beta", "gamma", "alphabeta"],
+            ["--only-criterion", "alpha", "--only-criterion", "gamma"],
+        )
+        assert rc == 0
+        assert spec.eval_spec.grading_criteria == ["alpha", "gamma", "alphabeta"]
+
+    def test_no_match_exits_2(self, tmp_path, capsys):
+        """No match prints Available and exits 2."""
+        import pytest
+
+        output_file = tmp_path / "o.txt"
+        output_file.write_text("out")
+        eval_spec = _make_eval_spec(
+            grading_criteria=["clarity", "accuracy"]
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        mock_grade = AsyncMock(return_value=self._report())
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch("clauditor.quality_grader.grade_quality", mock_grade),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--only-criterion",
+                    "nonexistent",
+                ]
+            )
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "No grading criteria match filter" in err
+        assert "Available:" in err
+        assert "clarity" in err
+        assert "accuracy" in err
+        # Grader must NOT have been called
+        mock_grade.assert_not_called()
+
+    def test_no_flag_passes_all(self, tmp_path):
+        """Without --only-criterion, all criteria are passed through."""
+        rc, mock_grade, spec = self._run(
+            tmp_path, ["one", "two", "three"], []
+        )
+        assert rc == 0
+        assert spec.eval_spec.grading_criteria == ["one", "two", "three"]
+
+    def test_case_insensitive(self, tmp_path):
+        """--only-criterion FOO matches criterion 'foo'."""
+        rc, _mock, spec = self._run(
+            tmp_path, ["foo", "bar"], ["--only-criterion", "FOO"]
+        )
+        assert rc == 0
+        assert spec.eval_spec.grading_criteria == ["foo"]
+
+
 class TestCmdGradeSaveDiff:
     """Tests for --save and --diff flags on the grade subcommand."""
 
