@@ -4,7 +4,7 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/21
 - **Branch:** `feature/21-timing-tokens`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/21-timing-tokens`
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **PR:** https://github.com/wjduenow/clauditor/pull/30
 - **Sessions:** 1
 - **Last session:** 2026-04-13
@@ -399,4 +399,15 @@ Stories are ordered by dependency. Each is sized for a single Ralph context wind
 
 ## Beads Manifest
 
-_pending_
+- **Worktree:** `/home/wesd/Projects/worktrees/clauditor/21-timing-tokens`
+- **Epic:** `clauditor-ar2` — #21: Capture timing + token usage per skill run
+- **Tasks:**
+  - US-001 → `clauditor-ar2.1` — Stream-json runner foundation
+  - US-002 → `clauditor-ar2.2` — Token capture at Anthropic SDK call sites
+  - US-003 → `clauditor-ar2.3` — build_metrics aggregation helper
+  - US-004 → `clauditor-ar2.4` — cmd_grade metrics wiring
+  - US-005 → `clauditor-ar2.5` — cmd_extract + cmd_validate history recording
+  - US-006 → `clauditor-ar2.6` — cmd_trend dotted-path + --command + --list-metrics
+  - US-007 → `clauditor-ar2.7` — Quality Gate
+  - US-008 → `clauditor-ar2.8` — Patterns & Memory
+- **Dependencies:** US-003←{001,002}; US-004←{001,002,003}; US-005←{003,004}; US-006←{005}; US-007←{001..006}; US-008←{007}.
