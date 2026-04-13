@@ -4,7 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/21
 - **Branch:** `feature/21-timing-tokens`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/21-timing-tokens`
-- **Phase:** `detailing`
+- **Phase:** `published`
+- **PR:** https://github.com/wjduenow/clauditor/pull/30
 - **Sessions:** 1
 - **Last session:** 2026-04-13
 
