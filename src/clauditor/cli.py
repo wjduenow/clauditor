@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from clauditor import history
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.runner import SkillRunner
 from clauditor.spec import SkillSpec
@@ -258,6 +259,17 @@ def cmd_grade(args: argparse.Namespace) -> int:
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path.write_text(report.to_json())
         print(f"\nGrade report saved to {save_path}", file=diff_out)
+
+    # Append a history record for trendability (US-006)
+    try:
+        history.append_record(
+            skill=spec.skill_name,
+            pass_rate=report.pass_rate,
+            mean_score=report.mean_score,
+            metrics={},
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"WARNING: failed to append history: {e}", file=sys.stderr)
 
     # Determine exit code
     passed = report.passed
@@ -715,6 +727,51 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_trend(args: argparse.Namespace) -> int:
+    """Render a trend line (TSV + ASCII sparkline) for a skill metric."""
+    records = history.read_records(skill=args.skill_name)
+    if not records:
+        print(
+            f"ERROR: no history records for skill '{args.skill_name}'. "
+            "Run `clauditor grade` first.",
+            file=sys.stderr,
+        )
+        return 1
+
+    last_n = args.last
+    if last_n is not None and last_n > 0:
+        records = records[-last_n:]
+
+    metric = args.metric
+    timestamps: list[str] = []
+    values: list[float] = []
+    for rec in records:
+        if metric in ("pass_rate", "mean_score"):
+            v = rec.get(metric)
+        else:
+            v = rec.get("metrics", {}).get(metric)
+        if v is None:
+            continue
+        timestamps.append(str(rec.get("ts", "")))
+        try:
+            values.append(float(v))
+        except (TypeError, ValueError):
+            continue
+
+    if not values:
+        print(
+            f"ERROR: no records with metric '{metric}' for skill "
+            f"'{args.skill_name}'.",
+            file=sys.stderr,
+        )
+        return 1
+
+    for ts, v in zip(timestamps, values):
+        print(f"{ts}\t{v}")
+    print(history.sparkline(values))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="clauditor",
@@ -886,6 +943,21 @@ def main(argv: list[str] | None = None) -> int:
         help="Arguments to pass to the skill (put after `--`)",
     )
 
+    # trend
+    p_trend = subparsers.add_parser(
+        "trend",
+        help="Print a trend line (TSV + ASCII sparkline) from grade history",
+    )
+    p_trend.add_argument("skill_name", help="Skill name to trend")
+    p_trend.add_argument(
+        "--metric",
+        required=True,
+        help="Metric to trend (pass_rate, mean_score, or a metrics.<name>)",
+    )
+    p_trend.add_argument(
+        "--last", type=int, default=20, help="Show last N records (default 20)"
+    )
+
     # doctor
     subparsers.add_parser(
         "doctor",
@@ -929,6 +1001,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_capture(parsed)
     elif parsed.command == "doctor":
         return cmd_doctor(parsed)
+    elif parsed.command == "trend":
+        return cmd_trend(parsed)
 
     return 1
 

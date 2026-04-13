@@ -1203,3 +1203,119 @@ class TestCmdDoctor:
         # Expect fail marker for missing claude CLI
         lines = [line for line in out.splitlines() if "claude-cli" in line]
         assert any("[fail]" in line for line in lines)
+
+
+class TestCmdTrend:
+    """Tests for the trend subcommand (US-006)."""
+
+    def _seed(self, path, skill="test-skill", n=3):
+        from clauditor import history
+
+        for i in range(n):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6 + i * 0.05,
+                metrics={"count": i + 1},
+                path=path,
+            )
+
+    def test_happy_path(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "0.5" in out
+        assert "0.7" in out
+        # Sparkline line present (non-empty last line)
+        lines = [ln for ln in out.splitlines() if ln]
+        assert lines
+        # Sparkline should use only glyphs from SPARK_GLYPHS
+        from clauditor.history import SPARK_GLYPHS
+
+        spark = lines[-1]
+        assert all(c in SPARK_GLYPHS for c in spark)
+
+    def test_metric_in_metrics_dict(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "count"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "1" in out and "3" in out
+
+    def test_missing_metric_exits_1(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "nonexistent"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "nonexistent" in err
+
+    def test_no_history_file(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "no history" in err.lower() or "no records" in err.lower()
+
+    def test_last_n_truncates(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed(tmp_path / ".clauditor" / "history.jsonl", n=10)
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate", "--last", "5"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        assert len(data_lines) == 5
+
+
+class TestCmdGradeHistory:
+    """cmd_grade appends a history record (US-006)."""
+
+    def test_grade_appends_history(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="Is the output relevant?",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                )
+            ],
+            duration_seconds=1.0,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+        history_path = tmp_path / ".clauditor" / "history.jsonl"
+        assert history_path.exists()
+        lines = [ln for ln in history_path.read_text().splitlines() if ln]
+        assert len(lines) == 1
+        record = json.loads(lines[0])
+        assert record["skill"] == "test-skill"
+        assert record["pass_rate"] == 1.0
+        assert record["mean_score"] == 0.9
