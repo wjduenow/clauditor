@@ -42,7 +42,7 @@ class TestListFormats:
             "phone_us", "phone_intl", "email", "url", "date_iso", "date_us",
             "time_24h", "time_12h", "currency_usd", "currency_eur",
             "zip_us", "zip_uk", "percentage", "ipv4", "uuid", "hex_color",
-            "latitude", "longitude", "star_rating",
+            "latitude", "longitude", "star_rating", "domain",
         ]
         for name in expected:
             assert name in names, f"Missing format: {name}"
@@ -259,5 +259,31 @@ class TestValidateValue:
     def test_star_rating_invalid(self):
         assert not validate_value("excellent", "star_rating")
 
+    @pytest.mark.parametrize("value", [
+        "paesanosj.com",
+        "sub.example.co.uk",
+        "a-b.io",
+    ])
+    def test_domain_valid(self, value):
+        assert validate_value(value, "domain")
+
+    @pytest.mark.parametrize("value", [
+        "https://paesanosj.com",
+        "paesanosj",
+        ".com",
+        "example..com",
+        "example.com/path",
+    ])
+    def test_domain_invalid(self, value):
+        assert not validate_value(value, "domain")
+
     def test_unknown_format(self):
         assert not validate_value("anything", "nonexistent")
+
+
+class TestDomainFieldRequirement:
+    def test_field_requirement_with_domain_format(self):
+        from clauditor.schemas import FieldRequirement
+        fr = FieldRequirement(name="website", format="domain")
+        assert fr.format == "domain"
+        assert FORMAT_REGISTRY["domain"].pattern is not None
