@@ -469,6 +469,137 @@ class TestCmdGradeSaveDiff:
             os.chdir(orig_dir)
 
 
+class TestCmdCompare:
+    """Tests for the compare subcommand (US-003)."""
+
+    def _make_saved_grade_json(
+        self, tmp_path, name: str, *, criterion_passes: dict[str, bool]
+    ):
+        """Write a GradingReport to a .grade.json file and return the path."""
+        results = [
+            GradingResult(
+                criterion=c,
+                passed=p,
+                score=0.9 if p else 0.3,
+                evidence="",
+                reasoning="",
+            )
+            for c, p in criterion_passes.items()
+        ]
+        report = GradingReport(
+            skill_name=name,
+            model="test-model",
+            results=results,
+            duration_seconds=0.0,
+        )
+        path = tmp_path / f"{name}.grade.json"
+        path.write_text(report.to_json())
+        return path
+
+    def test_compare_two_grade_json_no_flips(self, tmp_path, capsys):
+        """Two identical .grade.json files produce no flips and exit 0."""
+        before = self._make_saved_grade_json(
+            tmp_path, "before", criterion_passes={"c1": True, "c2": True}
+        )
+        after = self._make_saved_grade_json(
+            tmp_path, "after", criterion_passes={"c1": True, "c2": True}
+        )
+        rc = main(["compare", str(before), str(after)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "no flips" in out
+
+    def test_compare_two_grade_json_regression(self, tmp_path, capsys):
+        """A flipped-to-fail criterion yields [REGRESSION] and exit 1."""
+        before = self._make_saved_grade_json(
+            tmp_path, "before", criterion_passes={"c1": True, "c2": True}
+        )
+        after = self._make_saved_grade_json(
+            tmp_path, "after", criterion_passes={"c1": True, "c2": False}
+        )
+        rc = main(["compare", str(before), str(after)])
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "[REGRESSION]" in out
+        assert "c2" in out
+
+    def test_compare_two_grade_json_improvement(self, tmp_path, capsys):
+        """A flipped-to-pass criterion yields [IMPROVEMENT] and exit 0."""
+        before = self._make_saved_grade_json(
+            tmp_path, "before", criterion_passes={"c1": True, "c2": False}
+        )
+        after = self._make_saved_grade_json(
+            tmp_path, "after", criterion_passes={"c1": True, "c2": True}
+        )
+        rc = main(["compare", str(before), str(after)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "[IMPROVEMENT]" in out
+        assert "c2" in out
+
+    def test_compare_two_txt_with_spec(self, tmp_path, capsys):
+        """Two .txt files plus --spec re-grade both and diff Layer 1 results."""
+        before_txt = tmp_path / "before.txt"
+        after_txt = tmp_path / "after.txt"
+        before_txt.write_text("nothing matching")
+        after_txt.write_text("hello world")
+
+        eval_spec = _make_eval_spec(
+            assertions=[{"type": "contains", "value": "hello"}]
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(
+                [
+                    "compare",
+                    str(before_txt),
+                    str(after_txt),
+                    "--spec",
+                    "skill.md",
+                ]
+            )
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "[IMPROVEMENT]" in out
+
+    def test_compare_txt_without_spec_errors(self, tmp_path, capsys):
+        """.txt diff without --spec errors with a clear message."""
+        before_txt = tmp_path / "before.txt"
+        after_txt = tmp_path / "after.txt"
+        before_txt.write_text("a")
+        after_txt.write_text("b")
+        rc = main(["compare", str(before_txt), str(after_txt)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--spec" in err
+
+    def test_compare_mixed_extensions_errors(self, tmp_path, capsys):
+        """Mixed .txt + .grade.json inputs error before loading."""
+        before_txt = tmp_path / "before.txt"
+        before_txt.write_text("something")
+        after = self._make_saved_grade_json(
+            tmp_path, "after", criterion_passes={"c1": True}
+        )
+        rc = main(["compare", str(before_txt), str(after)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mismatched" in err
+
+
+class TestCmdGradeCompareFlagRemoved:
+    """US-003: the legacy --compare flag on grade is gone."""
+
+    def test_grade_compare_flag_rejected(self, capsys):
+        import pytest as _pytest
+
+        with _pytest.raises(SystemExit):
+            main(["grade", "skill.md", "--compare"])
+        err = capsys.readouterr().err
+        assert "--compare" in err or "unrecognized" in err
+
+
 class TestCmdTriggers:
     """Tests for the triggers subcommand."""
 
