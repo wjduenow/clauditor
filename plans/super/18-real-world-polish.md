@@ -4,7 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/18
 - **Branch:** `feature/18-real-world-polish`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/18-real-world-polish`
-- **Phase:** `detailing`
+- **Phase:** `published`
+- **PR:** https://github.com/wjduenow/clauditor/pull/20
 - **Sessions:** 1
 - **Last session:** 2026-04-13
 
