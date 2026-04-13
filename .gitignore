@@ -30,6 +30,9 @@ coverage.xml
 .claude/agents/code-reviewer.md
 .claude/agents/planner.md
 
+# Clauditor local state (history, saved grade reports)
+.clauditor/
+
 # Beads / Dolt files (added by bd init)
 .dolt/
 *.db
