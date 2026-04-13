@@ -317,13 +317,26 @@ clauditor extract <skill.md>           # Layer 2 schema extraction
 clauditor extract <skill.md> --dry-run # Print extraction prompt only
 clauditor grade <skill.md>             # Layer 3 quality grading
 clauditor grade <skill.md> --variance 3  # Variance measurement
-clauditor compare before.grade.json after.grade.json  # Diff two saved grade reports
+clauditor grade <skill.md> --only-criterion clarity  # Run a subset (repeatable, substring match)
 clauditor grade <skill.md> --save      # Persist results to .clauditor/
 clauditor grade <skill.md> --diff      # Compare against prior results
+clauditor compare before.grade.json after.grade.json  # Diff two saved grade reports
+clauditor compare before.txt after.txt --spec eval.json  # Re-grade two captures
+clauditor trend <skill> --metric pass_rate       # Tab-separated history + ASCII sparkline
 clauditor triggers <skill.md>          # Trigger precision testing
 clauditor capture <skill> -- "args"    # Run skill, save stdout to tests/eval/captured/
 clauditor doctor                       # Report environment diagnostics
 ```
+
+### Persistent metric history
+
+Every `clauditor grade` run appends a JSON line to `.clauditor/history.jsonl`:
+
+```json
+{"ts": "2026-04-13T15:00:00+00:00", "skill": "find-restaurants", "pass_rate": 0.83, "mean_score": 0.75, "metrics": {}}
+```
+
+Use `clauditor trend <skill> --metric pass_rate --last 20` to view the last N values with an ASCII sparkline (`_.-=#` glyph set). Runs with `--only-criterion` skip the history append to keep longitudinal data comparable.
 
 ## Pytest Integration
 
