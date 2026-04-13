@@ -4,7 +4,7 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/18
 - **Branch:** `feature/18-real-world-polish`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/18-real-world-polish`
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **PR:** https://github.com/wjduenow/clauditor/pull/20
 - **Sessions:** 1
 - **Last session:** 2026-04-13
@@ -473,4 +473,18 @@ Stories ordered by commit sequence (DEC-016). Each is sized for a single Ralph c
 
 ## Beads Manifest
 
-_pending_
+- **Worktree:** `/home/wesd/Projects/worktrees/clauditor/18-real-world-polish`
+- **Epic:** `clauditor-98s` — #18: Real-world P2/P3 polish
+- **Tasks:**
+  - US-001 → `clauditor-98s.1` — AssertionResult.kind field
+  - US-002 → `clauditor-98s.2` — FORMAT_REGISTRY strict/extract audit
+  - US-003 → `clauditor-98s.3` — clauditor compare subcommand
+  - US-004 → `clauditor-98s.4` — README format dual-mode docs
+  - US-005 → `clauditor-98s.5` — raw_data field + -v surfacing
+  - US-006 → `clauditor-98s.6` — history.jsonl + trend command
+  - US-007 → `clauditor-98s.7` — clauditor_capture fixture
+  - US-008 → `clauditor-98s.8` — ASCII >=/<= replacement
+  - US-009 → `clauditor-98s.9` — --only-criterion flag
+  - US-010 → `clauditor-98s.10` — Quality Gate
+  - US-011 → `clauditor-98s.11` — Patterns & Memory
+- **Dependencies:** US-003, US-005, US-008 → US-001; US-010 → US-001..US-009; US-011 → US-010.
