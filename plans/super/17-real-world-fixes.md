@@ -120,7 +120,7 @@ The ticket lists 6 items but observation #7 (FieldRequirement pattern vs format 
 - **DEC-003 — `max_entries` behavior:** Hard-fail with a `count_max` assertion; field-level checks still run over all extracted entries so users see both the count failure and the per-entry failures. *(Q3=A)*
 - **DEC-004 — `grouped_summary()` shape:** Flat `summary()` stays as-is; `grouped_summary()` is a new opt-in method that groups by `{field}:{suffix}` across all entries in a section/tier. *(Q4=D)*
 - **DEC-005 — `doctor` v1 scope:** Python version + `anthropic` importable + `claude` CLI on PATH + pytest plugin entry_point registered + editable-install detection. *(Q5=B)*
-- **DEC-006 — Deprecate `FieldRequirement.pattern`:** Keep `format` only. Custom regex capability is preserved via inline regex on `format` (registry-lookup-then-regex-fallback) — details in refinement. *(Q6 user choice)*
+- **DEC-006 — Deprecate `FieldRequirement.pattern`:** Keep `format` only. Custom regex capability is preserved via inline regex on `format` (registry-lookup-then-regex-fallback) — details in refinement. *(User chose "deprecate pattern and keep format" in response to Q6 — Q6 originally asked about observation #7 pattern-vs-format docs, and the user's answer went further and asked to remove `pattern` entirely.)*
 
 ## Architecture Review
 
@@ -395,7 +395,5 @@ Stories are ordered by dependency. Each is sized for a single Ralph context wind
 **Depends on:** US-008
 
 ---
-
-## Beads Manifest (see section above)
 
 ## Beads Manifest (see section above)

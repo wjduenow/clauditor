@@ -112,8 +112,14 @@ class TestPluginFunctionsDirect:
             for call in config.addinivalue_line.call_args_list
         )
         assert any("clauditor_grade" in line for line in registered)
-        assert any(line.startswith("network:") for line in registered)
-        assert any(line.startswith("slow:") for line in registered)
+        # Pin the exact marker description strings so a typo in the
+        # registration (empty description, wrong suffix, etc.) fails loud.
+        assert (
+            "network: real HTTP; deselect with -m 'not network'" in registered
+        )
+        assert (
+            "slow: slow-running tests; deselect with -m 'not slow'" in registered
+        )
 
     def test_collection_modifyitems_skips_grade_tests(self):
         """Grade-marked items are skipped when flag is not set."""
