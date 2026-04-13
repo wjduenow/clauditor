@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from clauditor.assertions import AssertionResult, AssertionSet
@@ -733,3 +734,161 @@ class TestCmdExtract:
             rc = main(["extract", "skill.md", "--output", str(output_file)])
 
         assert rc == 1
+
+
+class TestCmdCapture:
+    """Tests for the capture subcommand (US-006)."""
+
+    def _mock_result(self, output: str = "captured stdout") -> SkillResult:
+        return SkillResult(
+            output=output,
+            exit_code=0,
+            skill_name="find-restaurants",
+            args="",
+            duration_seconds=1.0,
+        )
+
+    def test_capture_default_path(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "find-restaurants"])
+        assert rc == 0
+        out_path = tmp_path / "tests/eval/captured/find-restaurants.txt"
+        assert out_path.exists()
+        assert out_path.read_text() == "captured stdout"
+        mock_runner.run.assert_called_once_with("find-restaurants", "")
+
+    def test_capture_custom_out(self, tmp_path):
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result("abc")
+        target = tmp_path / "sub" / "custom.txt"
+        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "find-restaurants", "--out", str(target)])
+        assert rc == 0
+        assert target.read_text() == "abc"
+
+    def test_capture_versioned_appends_date(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "find-restaurants", "--versioned"])
+        assert rc == 0
+        captured_dir = tmp_path / "tests/eval/captured"
+        files = list(captured_dir.glob("find-restaurants-*.txt"))
+        assert len(files) == 1
+        # Stem matches find-restaurants-YYYY-MM-DD
+        import re as _re
+        assert _re.fullmatch(
+            r"find-restaurants-\d{4}-\d{2}-\d{2}", files[0].stem
+        )
+
+    def test_capture_out_plus_versioned(self, tmp_path):
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+        target = tmp_path / "snap.txt"
+        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+            rc = main([
+                "capture", "find-restaurants",
+                "--out", str(target), "--versioned",
+            ])
+        assert rc == 0
+        files = list(tmp_path.glob("snap-*.txt"))
+        assert len(files) == 1
+
+    def test_capture_strips_leading_slash(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "/find-restaurants"])
+        assert rc == 0
+        mock_runner.run.assert_called_once_with("find-restaurants", "")
+        assert (tmp_path / "tests/eval/captured/find-restaurants.txt").exists()
+
+    def test_capture_passes_trailing_args(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "find-restaurants", "--", "near", "San Jose"])
+        assert rc == 0
+        mock_runner.run.assert_called_once_with("find-restaurants", "near San Jose")
+
+    def test_capture_runner_failure_returns_nonzero(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = SkillResult(
+            output="",
+            exit_code=2,
+            skill_name="find-restaurants",
+            args="",
+            duration_seconds=0.1,
+            error="boom",
+        )
+        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "find-restaurants"])
+        assert rc == 1
+        assert "boom" in capsys.readouterr().err
+
+
+class TestCmdDoctor:
+    """Tests for the doctor subcommand (US-007)."""
+
+    def test_doctor_always_exits_zero(self, capsys):
+        rc = main(["doctor"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        # At least one check per category reported
+        assert "python" in out
+        assert "anthropic" in out
+        assert "claude-cli" in out
+        assert "pytest-plugin" in out
+        assert "editable-install" in out
+
+    def test_doctor_python_too_old(self, capsys):
+        # Mimic sys.version_info shape enough for the doctor's usage.
+        class _FakeVersion(tuple):
+            major = 3
+            minor = 10
+            micro = 0
+
+        fake_version = _FakeVersion((3, 10, 0))
+        with patch.object(sys, "version_info", fake_version):
+            rc = main(["doctor"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if line.startswith("[fail]") and "python" in line
+        ]
+        assert lines
+
+    def test_doctor_missing_anthropic(self, capsys):
+        real_find_spec = __import__("importlib").util.find_spec
+
+        def fake_find_spec(name):
+            if name == "anthropic":
+                return None
+            return real_find_spec(name)
+
+        with patch("importlib.util.find_spec", side_effect=fake_find_spec):
+            rc = main(["doctor"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "[warn]" in out
+        assert "anthropic" in out
+
+    def test_doctor_missing_claude_binary(self, capsys):
+        with patch("shutil.which", return_value=None):
+            rc = main(["doctor"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "claude-cli" in out
+        # Expect fail marker for missing claude CLI
+        lines = [line for line in out.splitlines() if "claude-cli" in line]
+        assert any("[fail]" in line for line in lines)
