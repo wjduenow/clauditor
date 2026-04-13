@@ -321,9 +321,7 @@ class TestOnlyCriterion:
         assert spec.eval_spec.grading_criteria == ["alpha", "gamma", "alphabeta"]
 
     def test_no_match_exits_2(self, tmp_path, capsys):
-        """No match prints Available and exits 2."""
-        import pytest
-
+        """No match prints Available and returns exit code 2."""
         output_file = tmp_path / "o.txt"
         output_file.write_text("out")
         eval_spec = _make_eval_spec(
@@ -334,9 +332,8 @@ class TestOnlyCriterion:
         with (
             patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
             patch("clauditor.quality_grader.grade_quality", mock_grade),
-            pytest.raises(SystemExit) as exc_info,
         ):
-            main(
+            rc = main(
                 [
                     "grade",
                     "skill.md",
@@ -346,7 +343,7 @@ class TestOnlyCriterion:
                     "nonexistent",
                 ]
             )
-        assert exc_info.value.code == 2
+        assert rc == 2
         err = capsys.readouterr().err
         assert "No grading criteria match filter" in err
         assert "Available:" in err

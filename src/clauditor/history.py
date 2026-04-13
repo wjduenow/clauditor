@@ -10,6 +10,7 @@ block characters.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -83,16 +84,25 @@ def sparkline(values: list[float]) -> str:
     if not values:
         return ""
     n = len(SPARK_GLYPHS)
-    if len(values) == 1:
-        return SPARK_GLYPHS[n // 2]
+    mid = SPARK_GLYPHS[n // 2]
+    # Replace non-finite (nan/inf) with the midpoint glyph so bad data
+    # never crashes the renderer.
+    finite = [v for v in values if math.isfinite(v)]
+    if not finite:
+        return mid * len(values)
+    if len(finite) == 1 and len(values) == 1:
+        return mid
 
-    lo = min(values)
-    hi = max(values)
+    lo = min(finite)
+    hi = max(finite)
     if hi == lo:
-        return SPARK_GLYPHS[n // 2] * len(values)
+        return mid * len(values)
 
     out = []
     for v in values:
+        if not math.isfinite(v):
+            out.append(mid)
+            continue
         norm = (v - lo) / (hi - lo)
         idx = round(norm * (n - 1))
         idx = max(0, min(n - 1, idx))

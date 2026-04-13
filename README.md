@@ -224,10 +224,10 @@ Each criterion gets a pass/fail, score (0.0-1.0), evidence (quoted output), and 
 Runs your skill and raw Claude side-by-side against the same rubric. Flags regressions where the baseline passes but your skill fails.
 
 ```bash
-clauditor grade .claude/commands/my-skill.md --compare
+clauditor compare before.grade.json after.grade.json
 ```
 
-Requires `test_args` in the eval spec — these become the baseline prompt.
+Diffs two saved grade reports (from `--save`) or two captured outputs (with `--spec`), printing `[REGRESSION]` for pass→fail flips and `[IMPROVEMENT]` for fail→pass. Exits 1 on any regression.
 
 #### Variance Measurement
 
@@ -316,8 +316,8 @@ clauditor run <skill-name> --args "…"  # Run skill, print output
 clauditor extract <skill.md>           # Layer 2 schema extraction
 clauditor extract <skill.md> --dry-run # Print extraction prompt only
 clauditor grade <skill.md>             # Layer 3 quality grading
-clauditor grade <skill.md> --compare   # A/B comparison
 clauditor grade <skill.md> --variance 3  # Variance measurement
+clauditor compare before.grade.json after.grade.json  # Diff two saved grade reports
 clauditor grade <skill.md> --save      # Persist results to .clauditor/
 clauditor grade <skill.md> --diff      # Compare against prior results
 clauditor triggers <skill.md>          # Trigger precision testing

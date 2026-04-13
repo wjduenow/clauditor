@@ -13,6 +13,17 @@ from clauditor.runner import SkillRunner
 from clauditor.spec import SkillSpec
 
 
+def _positive_int(value: str) -> int:
+    """argparse type: accept integers >= 1."""
+    try:
+        ivalue = int(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"{value!r} is not an integer") from e
+    if ivalue < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {ivalue}")
+    return ivalue
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     """Validate a skill's output against its eval spec (Layer 1 only)."""
     spec = SkillSpec.from_file(args.skill, eval_path=args.eval)
@@ -54,6 +65,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
                             "passed": r.passed,
                             "message": r.message,
                             **({"evidence": r.evidence} if r.evidence else {}),
+                            **(
+                                {"raw_data": r.raw_data}
+                                if r.raw_data is not None
+                                else {}
+                            ),
                         }
                         for r in results.results
                     ],
@@ -122,7 +138,7 @@ def cmd_grade(args: argparse.Namespace) -> int:
                 f"No grading criteria match filter. Available: {available}",
                 file=sys.stderr,
             )
-            sys.exit(2)
+            return 2
         spec.eval_spec.grading_criteria = filtered
 
     model = args.model or spec.eval_spec.grading_model
@@ -260,16 +276,19 @@ def cmd_grade(args: argparse.Namespace) -> int:
         save_path.write_text(report.to_json())
         print(f"\nGrade report saved to {save_path}", file=diff_out)
 
-    # Append a history record for trendability (US-006)
-    try:
-        history.append_record(
-            skill=spec.skill_name,
-            pass_rate=report.pass_rate,
-            mean_score=report.mean_score,
-            metrics={},
-        )
-    except Exception as e:  # pragma: no cover - defensive
-        print(f"WARNING: failed to append history: {e}", file=sys.stderr)
+    # Append a history record for trendability (US-006). Skip when
+    # --only-criterion is set: partial-criterion runs would silently
+    # corrupt longitudinal pass_rate/mean_score trends.
+    if not getattr(args, "only_criterion", None):
+        try:
+            history.append_record(
+                skill=spec.skill_name,
+                pass_rate=report.pass_rate,
+                mean_score=report.mean_score,
+                metrics={},
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            print(f"WARNING: failed to append history: {e}", file=sys.stderr)
 
     # Determine exit code
     passed = report.passed
@@ -511,6 +530,11 @@ def cmd_extract(args: argparse.Namespace) -> int:
                             "passed": r.passed,
                             "message": r.message,
                             **({"evidence": r.evidence} if r.evidence else {}),
+                            **(
+                                {"raw_data": r.raw_data}
+                                if r.raw_data is not None
+                                else {}
+                            ),
                         }
                         for r in results.results
                     ],
@@ -955,7 +979,10 @@ def main(argv: list[str] | None = None) -> int:
         help="Metric to trend (pass_rate, mean_score, or a metrics.<name>)",
     )
     p_trend.add_argument(
-        "--last", type=int, default=20, help="Show last N records (default 20)"
+        "--last",
+        type=_positive_int,
+        default=20,
+        help="Show last N records (default 20; must be >= 1)",
     )
 
     # doctor

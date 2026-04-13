@@ -21,6 +21,39 @@ from clauditor.schemas import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_clauditor_history(tmp_path, monkeypatch):
+    """Redirect history.jsonl writes to a per-test tmp dir so running the
+    suite never writes ``.clauditor/history.jsonl`` in the real cwd.
+
+    ``history.append_record`` uses a default-arg ``path=_DEFAULT_PATH`` that
+    is frozen at import time, so monkeypatching ``_DEFAULT_PATH`` alone is a
+    no-op. Replace the module function with a thin wrapper that injects a
+    tmp path whenever callers omit one.
+    """
+    from clauditor import history as _history
+
+    real_append = _history.append_record
+    real_read = _history.read_records
+    tmp_default = tmp_path / ".clauditor" / "history.jsonl"
+
+    def _append(skill, pass_rate, mean_score, metrics, path=None):
+        return real_append(
+            skill,
+            pass_rate,
+            mean_score,
+            metrics,
+            path=tmp_default if path is None else path,
+        )
+
+    def _read(skill=None, path=None):
+        return real_read(skill=skill, path=tmp_default if path is None else path)
+
+    monkeypatch.setattr(_history, "append_record", _append)
+    monkeypatch.setattr(_history, "read_records", _read)
+    monkeypatch.setattr(_history, "_DEFAULT_PATH", tmp_default)
+
+
 @pytest.fixture
 def sample_eval_data() -> dict:
     """Return a dict matching eval.json format with all fields populated."""
