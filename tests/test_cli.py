@@ -6,6 +6,8 @@ import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from clauditor.assertions import AssertionResult, AssertionSet
 from clauditor.cli import main
 from clauditor.quality_grader import GradingReport, GradingResult
@@ -1270,6 +1272,225 @@ class TestCmdTrend:
         out = capsys.readouterr().out
         data_lines = [ln for ln in out.splitlines() if "\t" in ln]
         assert len(data_lines) == 5
+
+
+class TestCmdTrendCommandFilter:
+    """cmd_trend --command filter (US-006)."""
+
+    def _seed(self, path, skill="test-skill"):
+        from clauditor import history
+
+        for i in range(3):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                path=path,
+            )
+        for i in range(2):
+            history.append_record(
+                skill=skill,
+                pass_rate=None,
+                mean_score=None,
+                metrics={"skill": {"input_tokens": 100 + i}},
+                command="extract",
+                path=path,
+            )
+
+    def test_default_is_grade(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed(tmp_path / ".clauditor" / "history.jsonl")
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        assert len(data_lines) == 3
+
+    def test_command_all_unions(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed(tmp_path / ".clauditor" / "history.jsonl")
+        rc = main(
+            ["trend", "test-skill", "--metric", "pass_rate", "--command", "all"]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        # extract records have pass_rate=None so resolve_path returns None;
+        # only the 3 grade records land in the output.
+        assert len(data_lines) == 3
+
+    def test_command_extract_none_values(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed(tmp_path / ".clauditor" / "history.jsonl")
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--command",
+                "extract",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "pass_rate" in err
+
+
+class TestCmdTrendDottedPath:
+    """cmd_trend dotted-path resolution (US-006)."""
+
+    def test_dotted_nested_metric(self, tmp_path, monkeypatch, capsys):
+        from clauditor import history
+
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".clauditor" / "history.jsonl"
+        for tok in (500, 600, 700):
+            history.append_record(
+                skill="test-skill",
+                pass_rate=0.8,
+                mean_score=0.7,
+                metrics={"grader": {"input_tokens": tok}},
+                command="grade",
+                path=path,
+            )
+        rc = main(["trend", "test-skill", "--metric", "grader.input_tokens"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        assert len(data_lines) == 3
+        assert "500" in out
+        assert "600" in out
+        assert "700" in out
+        # Sparkline line present
+        from clauditor.history import SPARK_GLYPHS
+
+        spark = out.splitlines()[-1]
+        assert spark
+        assert all(c in SPARK_GLYPHS for c in spark)
+
+
+class TestCmdTrendListMetrics:
+    """cmd_trend --list-metrics (US-006)."""
+
+    def _seed_full(self, path, skill="test-skill"):
+        from clauditor import history
+
+        history.append_record(
+            skill=skill,
+            pass_rate=0.8,
+            mean_score=0.7,
+            metrics={
+                "skill": {"input_tokens": 100, "output_tokens": 50},
+                "grader": {"input_tokens": 500, "output_tokens": 200},
+                "total": {
+                    "input_tokens": 900,
+                    "output_tokens": 400,
+                    "total": 1300,
+                },
+                "duration_seconds": 2.5,
+            },
+            command="grade",
+            path=path,
+        )
+        history.append_record(
+            skill=skill,
+            pass_rate=None,
+            mean_score=None,
+            metrics={
+                "skill": {"input_tokens": 80, "output_tokens": 30},
+                "duration_seconds": 1.2,
+            },
+            command="extract",
+            path=path,
+        )
+
+    def test_list_metrics_default_grade(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed_full(tmp_path / ".clauditor" / "history.jsonl")
+        rc = main(["trend", "test-skill", "--list-metrics"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [ln for ln in out.splitlines() if ln]
+        assert lines == sorted(lines)
+        assert "pass_rate" in lines
+        assert "mean_score" in lines
+        assert "skill.input_tokens" in lines
+        assert "grader.input_tokens" in lines
+        assert "total.total" in lines
+        assert "duration_seconds" in lines
+
+    def test_list_metrics_command_extract(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed_full(tmp_path / ".clauditor" / "history.jsonl")
+        rc = main(
+            ["trend", "test-skill", "--list-metrics", "--command", "extract"]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [ln for ln in out.splitlines() if ln]
+        # Extract record had null pass_rate/mean_score, so those are absent
+        assert "pass_rate" not in lines
+        assert "mean_score" not in lines
+        assert "skill.input_tokens" in lines
+        assert "duration_seconds" in lines
+        # And no grader bucket in extract seed
+        assert "grader.input_tokens" not in lines
+
+    def test_list_metrics_command_all(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.chdir(tmp_path)
+        self._seed_full(tmp_path / ".clauditor" / "history.jsonl")
+        rc = main(
+            ["trend", "test-skill", "--list-metrics", "--command", "all"]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [ln for ln in out.splitlines() if ln]
+        # Union includes grade-only grader plus extract fields
+        assert "pass_rate" in lines
+        assert "grader.input_tokens" in lines
+        assert "skill.input_tokens" in lines
+        assert "duration_seconds" in lines
+
+    def test_list_metrics_empty_exits_1(self, tmp_path, monkeypatch, capsys):
+        from clauditor import history
+
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".clauditor" / "history.jsonl"
+        history.append_record(
+            skill="test-skill",
+            pass_rate=None,
+            mean_score=None,
+            metrics={},
+            command="grade",
+            path=path,
+        )
+        rc = main(["trend", "test-skill", "--list-metrics"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "no metric paths" in err
+
+
+class TestCmdTrendMutuallyExclusive:
+    def test_metric_and_list_metrics_conflict(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            main(
+                [
+                    "trend",
+                    "test-skill",
+                    "--metric",
+                    "pass_rate",
+                    "--list-metrics",
+                ]
+            )
+
+    def test_neither_required(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            main(["trend", "test-skill"])
 
 
 class TestCmdGradeHistory:

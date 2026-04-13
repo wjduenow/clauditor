@@ -8,9 +8,103 @@ from clauditor.history import (
     SCHEMA_VERSION,
     SPARK_GLYPHS,
     append_record,
+    collect_metric_paths,
     read_records,
+    resolve_path,
     sparkline,
 )
+
+
+class TestResolvePath:
+    def test_top_level_pass_rate(self):
+        assert resolve_path({"pass_rate": 0.5, "metrics": {}}, "pass_rate") == 0.5
+
+    def test_top_level_mean_score(self):
+        assert (
+            resolve_path({"mean_score": 0.75, "metrics": {}}, "mean_score")
+            == 0.75
+        )
+
+    def test_nested_grader_input_tokens(self):
+        rec = {"metrics": {"grader": {"input_tokens": 500}}}
+        assert resolve_path(rec, "grader.input_tokens") == 500
+
+    def test_nested_total_total(self):
+        rec = {"metrics": {"total": {"total": 1300}}}
+        assert resolve_path(rec, "total.total") == 1300
+
+    def test_duration_seconds_nested(self):
+        rec = {"metrics": {"duration_seconds": 2.5}}
+        assert resolve_path(rec, "duration_seconds") == 2.5
+
+    def test_missing_path_returns_none(self):
+        assert resolve_path({"metrics": {}}, "nonexistent.path") is None
+
+    def test_non_numeric_returns_none(self):
+        rec = {"metrics": {"grader": {"input_tokens": "oops"}}}
+        assert resolve_path(rec, "grader.input_tokens") is None
+
+    def test_missing_intermediate_returns_none(self):
+        rec = {"metrics": {"grader": {}}}
+        assert resolve_path(rec, "grader.input_tokens") is None
+
+    def test_empty_record_pass_rate_none(self):
+        assert resolve_path({}, "pass_rate") is None
+
+    def test_pass_rate_none_value(self):
+        assert resolve_path({"pass_rate": None, "metrics": {}}, "pass_rate") is None
+
+    def test_dict_leaf_returns_none(self):
+        rec = {"metrics": {"grader": {"input_tokens": 5}}}
+        assert resolve_path(rec, "grader") is None
+
+    def test_non_dict_record(self):
+        assert resolve_path("not a dict", "pass_rate") is None  # type: ignore[arg-type]
+
+    def test_bool_not_numeric(self):
+        rec = {"metrics": {"flag": True}}
+        assert resolve_path(rec, "flag") is None
+
+
+class TestCollectMetricPaths:
+    def test_v1_flat_record(self):
+        rec = {"pass_rate": 0.8, "mean_score": 0.7, "metrics": {}}
+        assert collect_metric_paths(rec) == {"pass_rate", "mean_score"}
+
+    def test_v1_flat_record_only_pass_rate(self):
+        rec = {"pass_rate": 0.8, "mean_score": None, "metrics": {}}
+        assert collect_metric_paths(rec) == {"pass_rate"}
+
+    def test_v2_nested_record(self):
+        rec = {
+            "pass_rate": 0.8,
+            "mean_score": 0.7,
+            "metrics": {
+                "skill": {"input_tokens": 100, "output_tokens": 50},
+                "grader": {"input_tokens": 500, "output_tokens": 200},
+                "total": {
+                    "input_tokens": 900,
+                    "output_tokens": 400,
+                    "total": 1300,
+                },
+                "duration_seconds": 2.5,
+            },
+        }
+        paths = collect_metric_paths(rec)
+        assert "pass_rate" in paths
+        assert "mean_score" in paths
+        assert "skill.input_tokens" in paths
+        assert "skill.output_tokens" in paths
+        assert "grader.input_tokens" in paths
+        assert "total.total" in paths
+        assert "total.input_tokens" in paths
+        assert "duration_seconds" in paths
+
+    def test_empty_record(self):
+        assert collect_metric_paths({}) == set()
+
+    def test_non_dict(self):
+        assert collect_metric_paths("nope") == set()  # type: ignore[arg-type]
 
 
 class TestAppendAndRead:

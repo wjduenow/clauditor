@@ -113,6 +113,84 @@ def read_records(
     return records
 
 
+_TOP_LEVEL_KEYS = ("pass_rate", "mean_score")
+
+
+def resolve_path(record: dict, path: str) -> float | int | None:
+    """Resolve a dotted metric path against a history record.
+
+    Rules:
+
+    - ``pass_rate`` and ``mean_score`` resolve at the top level of the
+      record (not inside ``metrics``).
+    - Any other path (including ``duration_seconds``) is walked as dotted
+      keys inside ``record["metrics"]``.
+
+    Returns the numeric value or ``None`` if any intermediate key is
+    missing or the final value is not int/float. Never raises.
+    """
+    if not isinstance(record, dict):
+        return None
+
+    if path in _TOP_LEVEL_KEYS:
+        value = record.get(path)
+    else:
+        node: object = record.get("metrics")
+        if not isinstance(node, dict):
+            return None
+        for part in path.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return None
+            node = node[part]
+        value = node
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    return None
+
+
+def collect_metric_paths(record: dict) -> set[str]:
+    """Return every dotted metric path in ``record`` that resolves numeric.
+
+    Top-level ``pass_rate``/``mean_score`` are included when numeric.
+    Every numeric leaf inside ``record["metrics"]`` is emitted with its
+    dotted path (e.g. ``grader.input_tokens``, ``total.total``,
+    ``duration_seconds``).
+    """
+    paths: set[str] = set()
+    if not isinstance(record, dict):
+        return paths
+
+    for key in _TOP_LEVEL_KEYS:
+        value = record.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            paths.add(key)
+
+    metrics = record.get("metrics")
+    if isinstance(metrics, dict):
+        _walk_numeric(metrics, (), paths)
+    return paths
+
+
+def _walk_numeric(
+    node: dict, prefix: tuple[str, ...], out: set[str]
+) -> None:
+    for key, value in node.items():
+        if not isinstance(key, str):
+            continue
+        next_prefix = prefix + (key,)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            out.add(".".join(next_prefix))
+        elif isinstance(value, dict):
+            _walk_numeric(value, next_prefix, out)
+
+
 def sparkline(values: list[float]) -> str:
     """Render a list of values as an ASCII sparkline.
 
