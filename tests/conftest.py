@@ -7,6 +7,7 @@ clauditor_grader, or clauditor_triggers -- those are defined by the pytest plugi
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -19,6 +20,70 @@ from clauditor.schemas import (
     FieldRequirement,
     SectionRequirement,
 )
+
+
+class _FakePopen:
+    """Minimal ``subprocess.Popen`` stand-in for stream-json runner tests.
+
+    Exposes a ``stdout`` that yields the provided NDJSON lines (each
+    terminated by ``\\n``), a ``stderr`` mock with ``.read() == ""``, and
+    ``wait``/``kill`` methods. The ``returncode`` is set on construction
+    and returned from ``wait``.
+    """
+
+    def __init__(self, lines: list[str], returncode: int = 0):
+        body = "\n".join(lines)
+        if body and not body.endswith("\n"):
+            body += "\n"
+        self.stdout = io.StringIO(body)
+        self.stderr = MagicMock()
+        self.stderr.read.return_value = ""
+        self.returncode = returncode
+        self.kill_called = False
+
+    def wait(self, timeout=None):  # noqa: ARG002 — timeout ignored for fake
+        return self.returncode
+
+    def kill(self):
+        self.kill_called = True
+
+
+def make_fake_skill_stream(
+    text: str,
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+    extra_messages: list[dict] | None = None,
+) -> _FakePopen:
+    """Build a ``_FakePopen`` emitting a realistic stream-json sequence.
+
+    Produces:
+      1. one assistant message with a single ``text`` block containing ``text``
+      2. any ``extra_messages`` verbatim, in order
+      3. a final ``result`` message carrying token usage
+    """
+    messages: list[dict] = [
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": text}],
+            },
+        }
+    ]
+    if extra_messages:
+        messages.extend(extra_messages)
+    messages.append(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            },
+        }
+    )
+    return _FakePopen([json.dumps(m) for m in messages])
 
 
 @pytest.fixture(autouse=True)
