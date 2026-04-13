@@ -615,6 +615,7 @@ class TestCmdExtract:
                     name="section:Results:count",
                     passed=passed,
                     message="Section 'Results' has 3 entries (need >=2)",
+                    kind="count",
                 ),
                 AssertionResult(
                     name="section:Results[0].name",
@@ -624,6 +625,7 @@ class TestCmdExtract:
                         if passed
                         else "Missing required field 'name'"
                     ),
+                    kind="presence",
                     evidence="Test Place" if passed else None,
                 ),
             ]
