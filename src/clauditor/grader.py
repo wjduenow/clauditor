@@ -103,6 +103,20 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
                 )
             )
 
+            # Check maximum entry count (precision signal — DEC-003)
+            if tier.max_entries is not None:
+                results.results.append(
+                    AssertionResult(
+                        name=f"section:{section_req.name}:count_max/{tier.label}",
+                        passed=len(entries) <= tier.max_entries,
+                        message=(
+                            f"Section '{section_req.name}' tier '{tier.label}' "
+                            f"has {len(entries)} entries "
+                            f"(need \u2264{tier.max_entries})"
+                        ),
+                    )
+                )
+
             # Check required fields on each entry
             for i, entry in enumerate(entries):
                 for field_req in tier.fields:

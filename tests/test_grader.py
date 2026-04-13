@@ -341,6 +341,91 @@ class TestGradeExtraction:
         assert "section:Venues/default[1].address" in names
 
 
+def _make_max_entries_spec(max_entries: int | None = 3) -> EvalSpec:
+    return EvalSpec(
+        skill_name="test-skill",
+        sections=[
+            SectionRequirement(
+                name="Venues",
+                tiers=[
+                    TierRequirement(
+                        label="default",
+                        min_entries=1,
+                        max_entries=max_entries,
+                        fields=[
+                            FieldRequirement(name="name", required=True),
+                        ],
+                    ),
+                ],
+            ),
+        ],
+    )
+
+
+class TestMaxEntries:
+    """DEC-003: TierRequirement.max_entries as a precision signal."""
+
+    def _entries(self, n: int) -> list[ExtractedEntry]:
+        return [ExtractedEntry(fields={"name": f"V{i}"}) for i in range(n)]
+
+    def test_over_max_emits_count_max_failure(self):
+        extracted = ExtractedOutput(
+            sections={"Venues": {"default": self._entries(6)}}
+        )
+        results = grade_extraction(extracted, _make_max_entries_spec(max_entries=3))
+        names = [r.name for r in results.results]
+        assert "section:Venues:count_max/default" in names
+        count_max = next(
+            r for r in results.results
+            if r.name == "section:Venues:count_max/default"
+        )
+        assert not count_max.passed
+        assert "6 entries" in count_max.message
+        assert "\u22643" in count_max.message
+
+    def test_over_max_still_grades_all_entry_fields(self):
+        """DEC-003: field checks still run for all extracted entries."""
+        extracted = ExtractedOutput(
+            sections={"Venues": {"default": self._entries(6)}}
+        )
+        results = grade_extraction(extracted, _make_max_entries_spec(max_entries=3))
+        presence_names = [
+            r.name for r in results.results
+            if r.name.startswith("section:Venues/default[") and r.name.endswith(".name")
+        ]
+        assert len(presence_names) == 6
+
+    def test_equal_to_max_passes(self):
+        extracted = ExtractedOutput(
+            sections={"Venues": {"default": self._entries(3)}}
+        )
+        results = grade_extraction(extracted, _make_max_entries_spec(max_entries=3))
+        count_max = next(
+            r for r in results.results
+            if r.name == "section:Venues:count_max/default"
+        )
+        assert count_max.passed
+
+    def test_under_max_passes(self):
+        extracted = ExtractedOutput(
+            sections={"Venues": {"default": self._entries(2)}}
+        )
+        results = grade_extraction(extracted, _make_max_entries_spec(max_entries=3))
+        count_max = next(
+            r for r in results.results
+            if r.name == "section:Venues:count_max/default"
+        )
+        assert count_max.passed
+
+    def test_none_max_emits_no_assertion(self):
+        extracted = ExtractedOutput(
+            sections={"Venues": {"default": self._entries(100)}}
+        )
+        results = grade_extraction(extracted, _make_max_entries_spec(max_entries=None))
+        names = [r.name for r in results.results]
+        assert not any("count_max" in n for n in names)
+
+
 class TestBuildExtractionPrompt:
     def test_contains_section_and_fields(self):
         spec = _make_spec()

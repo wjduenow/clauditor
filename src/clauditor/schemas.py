@@ -27,6 +27,7 @@ class TierRequirement:
     label: str
     description: str = ""
     min_entries: int = 0
+    max_entries: int | None = None
     fields: list[FieldRequirement] = field(default_factory=list)
 
 
@@ -109,6 +110,7 @@ class EvalSpec:
                             label=t["label"],
                             description=t.get("description", ""),
                             min_entries=t.get("min_entries", 0),
+                            max_entries=t.get("max_entries"),
                             fields=tier_fields,
                         )
                     )
@@ -195,6 +197,11 @@ class EvalSpec:
                                 else {}
                             ),
                             "min_entries": t.min_entries,
+                            **(
+                                {"max_entries": t.max_entries}
+                                if t.max_entries is not None
+                                else {}
+                            ),
                             "fields": [
                                 {
                                     "name": f.name,

@@ -727,6 +727,63 @@ class TestTierRequirement:
         assert t.min_entries == 5
         assert len(t.fields) == 1
 
+    def test_max_entries_default_none(self):
+        t = TierRequirement(label="basic")
+        assert t.max_entries is None
+
+    def test_max_entries_roundtrip(self, tmp_path):
+        """max_entries parses from JSON and serializes back via to_dict."""
+        data = {
+            "skill_name": "max-entries-skill",
+            "sections": [
+                {
+                    "name": "Venues",
+                    "tiers": [
+                        {
+                            "label": "default",
+                            "min_entries": 1,
+                            "max_entries": 3,
+                            "fields": [{"name": "name", "required": True}],
+                        }
+                    ],
+                }
+            ],
+        }
+        path = tmp_path / "spec.eval.json"
+        path.write_text(json.dumps(data))
+        spec = EvalSpec.from_file(path)
+        assert spec.sections[0].tiers[0].max_entries == 3
+
+        out = spec.to_dict()
+        tier_out = out["sections"][0]["tiers"][0]
+        assert tier_out["max_entries"] == 3
+
+    def test_max_entries_none_omitted_from_dict(self, tmp_path):
+        """When max_entries is None, it is omitted from serialized output."""
+        data = {
+            "skill_name": "default-skill",
+            "sections": [
+                {
+                    "name": "Venues",
+                    "tiers": [
+                        {
+                            "label": "default",
+                            "min_entries": 1,
+                            "fields": [{"name": "name", "required": True}],
+                        }
+                    ],
+                }
+            ],
+        }
+        path = tmp_path / "spec.eval.json"
+        path.write_text(json.dumps(data))
+        spec = EvalSpec.from_file(path)
+        assert spec.sections[0].tiers[0].max_entries is None
+
+        out = spec.to_dict()
+        tier_out = out["sections"][0]["tiers"][0]
+        assert "max_entries" not in tier_out
+
 
 TIERED_SECTION_DATA = {
     "skill_name": "tiered-skill",
