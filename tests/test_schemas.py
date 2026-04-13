@@ -774,6 +774,28 @@ class TestTierRequirement:
         tier_out = out["sections"][0]["tiers"][0]
         assert tier_out["max_entries"] == 3
 
+    def test_max_entries_propagates_through_legacy_section_shape(self, tmp_path):
+        """Legacy (no-tiers) section shape must propagate max_entries into
+        the synthesized default tier — otherwise the cap is silently ignored."""
+        data = {
+            "skill_name": "legacy-skill",
+            "sections": [
+                {
+                    "name": "Venues",
+                    "min_entries": 1,
+                    "max_entries": 3,
+                    "fields": [{"name": "name", "required": True}],
+                }
+            ],
+        }
+        path = tmp_path / "spec.eval.json"
+        path.write_text(json.dumps(data))
+        spec = EvalSpec.from_file(path)
+        default_tier = spec.sections[0].tiers[0]
+        assert default_tier.label == "default"
+        assert default_tier.min_entries == 1
+        assert default_tier.max_entries == 3
+
     def test_max_entries_none_omitted_from_dict(self, tmp_path):
         """When max_entries is None, it is omitted from serialized output."""
         data = {

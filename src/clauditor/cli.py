@@ -483,7 +483,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         )
 
     try:
-        eps = importlib.metadata.entry_points(group="pytest11")
+        # Version-agnostic lookup: `entry_points(group=...)` is 3.10+, but
+        # `doctor` must keep working even when the Python-version check
+        # itself is about to fail, so fall back to filtering manually.
+        eps = importlib.metadata.entry_points()
+        if hasattr(eps, "select"):
+            eps = eps.select(group="pytest11")
+        else:
+            eps = [
+                ep for ep in eps
+                if getattr(ep, "group", None) == "pytest11"
+            ]
         names = [ep.name for ep in eps]
         if "clauditor" in names:
             checks.append(

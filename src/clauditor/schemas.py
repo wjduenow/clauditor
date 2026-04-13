@@ -169,6 +169,7 @@ class EvalSpec:
                     TierRequirement(
                         label="default",
                         min_entries=s.get("min_entries", 1),
+                        max_entries=s.get("max_entries"),
                         fields=legacy_fields,
                     )
                 ]
