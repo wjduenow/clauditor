@@ -36,21 +36,48 @@ def cmd_validate(args: argparse.Namespace) -> int:
         )
         return 1
 
+    skill_result = None
     if args.output:
         # Validate against provided output file
         output = Path(args.output).read_text()
     else:
         # Run the skill to get output
         print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
-        result = spec.run()
-        if not result.succeeded:
-            print(f"ERROR: Skill failed to run: {result.error}", file=sys.stderr)
+        skill_result = spec.run()
+        if not skill_result.succeeded:
+            print(
+                f"ERROR: Skill failed to run: {skill_result.error}",
+                file=sys.stderr,
+            )
             return 1
-        output = result.output
-        print(f"Skill completed in {result.duration_seconds:.1f}s")
+        output = skill_result.output
+        print(f"Skill completed in {skill_result.duration_seconds:.1f}s")
 
     # Run Layer 1 assertions
     results = run_assertions(output, spec.eval_spec.assertions)
+
+    # Record history (US-005). Layer 1 only — no grader/quality/triggers.
+    from clauditor.metrics import TokenUsage, build_metrics
+
+    skill_tokens = TokenUsage(
+        input_tokens=getattr(skill_result, "input_tokens", 0) or 0,
+        output_tokens=getattr(skill_result, "output_tokens", 0) or 0,
+    )
+    skill_duration = getattr(skill_result, "duration_seconds", 0.0) or 0.0
+    metrics_dict = build_metrics(
+        skill=skill_tokens,
+        duration_seconds=skill_duration,
+    )
+    try:
+        history.append_record(
+            skill=spec.skill_name,
+            pass_rate=results.pass_rate,
+            mean_score=None,
+            metrics=metrics_dict,
+            command="validate",
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"WARNING: failed to append history: {e}", file=sys.stderr)
 
     if args.json:
         print(
@@ -525,20 +552,50 @@ def cmd_extract(args: argparse.Namespace) -> int:
         return 0
 
     # Get output
+    skill_result = None
     if args.output:
         output = Path(args.output).read_text()
     else:
         print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
-        result = spec.run()
-        if not result.succeeded:
-            print(f"ERROR: Skill failed: {result.error}", file=sys.stderr)
+        skill_result = spec.run()
+        if not skill_result.succeeded:
+            print(f"ERROR: Skill failed: {skill_result.error}", file=sys.stderr)
             return 1
-        output = result.output
+        output = skill_result.output
 
     # Extract and grade
     from clauditor.grader import extract_and_grade
 
     results = asyncio.run(extract_and_grade(output, spec.eval_spec, model))
+
+    # Record history (US-005). Extract does not compute Layer 3
+    # pass_rate/mean_score, so those are None (DEC-013).
+    from clauditor.metrics import TokenUsage, build_metrics
+
+    skill_tokens = TokenUsage(
+        input_tokens=getattr(skill_result, "input_tokens", 0) or 0,
+        output_tokens=getattr(skill_result, "output_tokens", 0) or 0,
+    )
+    skill_duration = getattr(skill_result, "duration_seconds", 0.0) or 0.0
+    grader_tokens = TokenUsage(
+        input_tokens=getattr(results, "input_tokens", 0) or 0,
+        output_tokens=getattr(results, "output_tokens", 0) or 0,
+    )
+    metrics_dict = build_metrics(
+        skill=skill_tokens,
+        duration_seconds=skill_duration,
+        grader=grader_tokens,
+    )
+    try:
+        history.append_record(
+            skill=spec.skill_name,
+            pass_rate=None,
+            mean_score=None,
+            metrics=metrics_dict,
+            command="extract",
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"WARNING: failed to append history: {e}", file=sys.stderr)
 
     if args.json:
         print(

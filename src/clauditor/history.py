@@ -37,7 +37,7 @@ SCHEMA_VERSION = 2
 
 def append_record(
     skill: str,
-    pass_rate: float,
+    pass_rate: float | None,
     mean_score: float | None,
     metrics: dict,
     *,
