@@ -139,7 +139,7 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
                         )
                     )
 
-                # Validate pattern/format on fields that have values
+                # Validate format on fields that have values (DEC-007)
                 for field_req in tier.fields:
                     raw_value = entry.fields.get(field_req.name)
                     if not raw_value:
@@ -151,60 +151,31 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
                         f"/{tier.label}[{i}].{field_req.name}"
                     )
 
-                    if field_req.pattern:
-                        try:
-                            pat_match = re.fullmatch(field_req.pattern, value)
-                            results.results.append(
-                                AssertionResult(
-                                    name=f"{base}:pattern",
-                                    passed=pat_match is not None,
-                                    message=(
-                                        "Pattern matched"
-                                        if pat_match
-                                        else f"Value does not match "
-                                        f"pattern /{field_req.pattern}/"
-                                    ),
-                                    evidence=value,
-                                )
-                            )
-                        except re.error as e:
-                            results.results.append(
-                                AssertionResult(
-                                    name=f"{base}:pattern",
-                                    passed=False,
-                                    message=f"Invalid pattern: {e}",
-                                    evidence=field_req.pattern,
-                                )
-                            )
-
                     if field_req.format:
                         fmt = get_format(field_req.format)
-                        if fmt is None:
-                            results.results.append(
-                                AssertionResult(
-                                    name=f"{base}:format",
-                                    passed=False,
-                                    message=(
-                                        f"Unknown format: "
-                                        f"{field_req.format}"
-                                    ),
-                                )
-                            )
+                        if fmt is not None:
+                            matched = fmt.pattern.fullmatch(value) is not None
+                            label = f"format '{field_req.format}'"
                         else:
-                            fmt_match = fmt.pattern.fullmatch(value)
-                            results.results.append(
-                                AssertionResult(
-                                    name=f"{base}:format",
-                                    passed=fmt_match is not None,
-                                    message=(
-                                        f"Format '{field_req.format}' matched"
-                                        if fmt_match
-                                        else f"Value does not match "
-                                        f"format '{field_req.format}'"
-                                    ),
-                                    evidence=value,
-                                )
+                            # DEC-007: format fell through to inline regex.
+                            # FieldRequirement validated compilability at
+                            # construction, so this compile always succeeds.
+                            matched = (
+                                re.fullmatch(field_req.format, value) is not None
                             )
+                            label = f"regex /{field_req.format}/"
+                        results.results.append(
+                            AssertionResult(
+                                name=f"{base}:format",
+                                passed=matched,
+                                message=(
+                                    f"{label.capitalize()} matched"
+                                    if matched
+                                    else f"Value does not match {label}"
+                                ),
+                                evidence=value,
+                            )
+                        )
 
     return results
 
