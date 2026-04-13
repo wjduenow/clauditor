@@ -4,7 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/17
 - **Branch:** `feature/17-real-world-fixes`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/17-real-world-fixes`
-- **Phase:** `detailing`
+- **Phase:** `devolved`
+- **PR:** https://github.com/wjduenow/clauditor/pull/19
 - **Sessions:** 1
 - **Last session:** 2026-04-12
 
@@ -395,8 +396,6 @@ Stories are ordered by dependency. Each is sized for a single Ralph context wind
 
 ---
 
-## Beads Manifest
-*(pending — Phase 7)*
+## Beads Manifest (see section above)
 
-## Beads Manifest
-*(pending — Phase 7)*
+## Beads Manifest (see section above)
