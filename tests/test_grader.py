@@ -579,7 +579,7 @@ class TestExtractAndGrade:
                 ]
             }
         }
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [MagicMock(text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
@@ -598,7 +598,7 @@ class TestExtractAndGrade:
             }
         }
         wrapped = f"```json\n{json.dumps(data)}\n```"
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [MagicMock(text=wrapped)]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
@@ -617,7 +617,7 @@ class TestExtractAndGrade:
             }
         }
         wrapped = f"```\n{json.dumps(data)}\n```"
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [MagicMock(text=wrapped)]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
@@ -627,7 +627,7 @@ class TestExtractAndGrade:
 
     @pytest.mark.asyncio
     async def test_json_parse_failure(self):
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [MagicMock(text="not valid json at all")]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
@@ -654,7 +654,7 @@ class TestExtractAndGrade:
                 ]
             }
         }
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [MagicMock(text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
@@ -693,7 +693,7 @@ class TestExtractAndGrade:
                 },
             ]
         }
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [MagicMock(text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
@@ -717,7 +717,7 @@ class TestExtractAndGrade:
                 {"note": "LLM added this unsolicited"},
             ],
         }
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [MagicMock(text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
@@ -740,7 +740,7 @@ class TestExtractAndGrade:
                 ],
             }
         }
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [MagicMock(text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
@@ -756,7 +756,7 @@ class TestExtractAndGrade:
                 {"name": "CDM", "address": "X", "website": "Y"},
             ],
         }
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [MagicMock(text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
@@ -769,7 +769,7 @@ class TestExtractAndGrade:
     @pytest.mark.asyncio
     async def test_json_parse_failure_leaves_raw_data_none(self):
         """US-005: unparseable response keeps raw_data=None and evidence."""
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [MagicMock(text="not valid json at all")]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
@@ -779,6 +779,28 @@ class TestExtractAndGrade:
         assert len(parse_failures) == 1
         assert parse_failures[0].raw_data is None
         assert parse_failures[0].evidence == "not valid json at all"
+
+    @pytest.mark.asyncio
+    async def test_captures_token_usage(self):
+        """extract_and_grade propagates SDK usage into the AssertionSet."""
+        data = {
+            "Venues": {
+                "default": [
+                    {"name": "A", "address": "B", "website": "C"},
+                    {"name": "D", "address": "E", "website": "F"},
+                ]
+            }
+        }
+        mock_response = MagicMock(
+            usage=MagicMock(input_tokens=500, output_tokens=200)
+        )
+        mock_response.content = [MagicMock(text=json.dumps(data))]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            result = await extract_and_grade("some output", _make_spec())
+        assert result.input_tokens == 500
+        assert result.output_tokens == 200
 
     @pytest.mark.asyncio
     async def test_non_failure_result_has_no_raw_data(self):
@@ -791,7 +813,7 @@ class TestExtractAndGrade:
                 ]
             }
         }
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [MagicMock(text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)

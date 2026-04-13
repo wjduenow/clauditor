@@ -39,6 +39,8 @@ class GradingReport:
     model: str
     duration_seconds: float = 0.0
     thresholds: GradeThresholds | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
 
     @property
     def passed(self) -> bool:
@@ -73,6 +75,8 @@ class GradingReport:
             "skill_name": self.skill_name,
             "model": self.model,
             "duration_seconds": self.duration_seconds,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
             "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
             "results": [
                 {
@@ -119,6 +123,8 @@ class GradingReport:
             model=parsed.get("model", ""),
             duration_seconds=float(parsed.get("duration_seconds", 0.0)),
             thresholds=thresholds,
+            input_tokens=int(parsed.get("input_tokens", 0)),
+            output_tokens=int(parsed.get("output_tokens", 0)),
         )
 
     def summary(self) -> str:
@@ -247,6 +253,8 @@ async def grade_quality(
         ],
     )
     duration = time.monotonic() - start
+    input_tokens = getattr(response.usage, "input_tokens", 0)
+    output_tokens = getattr(response.usage, "output_tokens", 0)
 
     if not response.content or not hasattr(response.content[0], "text"):
         return GradingReport(
@@ -263,6 +271,8 @@ async def grade_quality(
             model=model,
             duration_seconds=duration,
             thresholds=thresholds,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
     response_text = response.content[0].text
@@ -286,6 +296,8 @@ async def grade_quality(
             model=model,
             duration_seconds=duration,
             thresholds=thresholds,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
     return GradingReport(
@@ -294,6 +306,8 @@ async def grade_quality(
         model=model,
         duration_seconds=duration,
         thresholds=thresholds,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
 
 
@@ -310,6 +324,8 @@ class VarianceReport:
     stability: float  # Fraction of runs where ALL criteria passed
     min_stability: float = 0.8
     model: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
 
     @property
     def passed(self) -> bool:
@@ -384,4 +400,6 @@ async def measure_variance(
         stability=stability,
         min_stability=min_stability,
         model=model,
+        input_tokens=sum(r.input_tokens for r in reports),
+        output_tokens=sum(r.output_tokens for r in reports),
     )
