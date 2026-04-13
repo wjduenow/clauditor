@@ -58,6 +58,11 @@ FORMAT_REGISTRY: dict[str, FormatDef] = {f.name: f for f in [
         "HTTP(S) URL",
     ),
     _def(
+        "domain",
+        r"(?i)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+",
+        "Bare domain (no scheme), e.g. example.com",
+    ),
+    _def(
         "date_iso",
         r"\d{4}-\d{2}-\d{2}",
         "ISO 8601 date, e.g. 2026-04-10",
