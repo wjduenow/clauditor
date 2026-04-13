@@ -290,3 +290,636 @@ class TestDomainFieldRequirement:
         fr = FieldRequirement(name="website", format="domain")
         assert fr.format == "domain"
         assert FORMAT_REGISTRY["domain"].pattern is not None
+
+
+# ---------------------------------------------------------------------------
+# Per-entry strict/extract invariant tests (one class per FORMAT_REGISTRY
+# entry). Each class verifies:
+#   1. strict pattern fullmatches canonical values
+#   2. strict pattern rejects malformed values
+#   3. extract pattern finds the value inside surrounding prose
+#   4. extract pattern rejects pure noise
+#   5. invariant: validate_value(X) True → extract_pattern.findall finds X
+# ---------------------------------------------------------------------------
+
+
+def _assert_extract_contains(fmt_name: str, value: str) -> None:
+    """Helper asserting the extract pattern finds `value` inside prose."""
+    fmt = FORMAT_REGISTRY[fmt_name]
+    prose = f"prefix blah {value} suffix blah"
+    matches = fmt.extract_pattern.findall(prose)
+    # findall returns full matches (we only use non-capturing groups).
+    assert any(value == m or value in m for m in matches), (
+        f"{fmt_name}: extract_pattern did not find {value!r} in prose; "
+        f"got matches={matches!r}"
+    )
+
+
+class TestPhoneUsFormat:
+    name = "phone_us"
+    canonical = ["(408) 298-5437", "408-298-5437", "408.298.5437", "4082985437"]
+    malformed = ["call for hours", "123", "abcdefghij"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("call me at 408-298-5437 today")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("just some harmless words here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestPhoneIntlFormat:
+    name = "phone_intl"
+    canonical = ["+1 4082985437", "+44 7911123456", "+353 861234567"]
+    malformed = ["4082985437", "+", "not a phone"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("call +44 7911123456 please")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no numbers at all here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestEmailFormat:
+    name = "email"
+    canonical = ["user@example.com", "first.last@company.co.uk", "test+tag@gmail.com"]
+    malformed = ["not-an-email", "@missing.com", "no-at-sign.com"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("write to user@example.com today")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no email address in here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestUrlFormat:
+    name = "url"
+    canonical = [
+        "https://example.com",
+        "http://example.com/path?q=1",
+        "https://sub.domain.co.uk/page",
+    ]
+    malformed = ["ftp://example.com", "example.com", "not a url"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        matches = fmt.extract_pattern.findall("see https://example.com for more")
+        assert any("https://example.com" in m for m in matches)
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("plain text with no link")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestDomainFormat:
+    name = "domain"
+    canonical = ["paesanosj.com", "sub.example.co.uk", "a-b.io"]
+    malformed = ["https://paesanosj.com", "paesanosj", ".com", "192.168.1.1"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        matches = fmt.extract_pattern.findall("visit paesanosj.com today")
+        assert any("paesanosj.com" in m for m in matches)
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("plain words without a host")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestDateIsoFormat:
+    name = "date_iso"
+    canonical = ["2026-04-10", "2000-01-01"]
+    malformed = ["04/10/2026", "2026/04/10", "not a date"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("due on 2026-04-10 please")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no date in this sentence")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestDateUsFormat:
+    name = "date_us"
+    canonical = ["4/10/2026", "04/10/26", "12/31/2025"]
+    malformed = ["2026-04-10", "not a date"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("due 4/10/2026 ok")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no date here at all")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestTime24hFormat:
+    name = "time_24h"
+    canonical = ["14:30", "14:30:00", "0:00"]
+    malformed = ["2:30 PM", "not a time"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("meet at 14:30 sharp")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no clock reading in here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestTime12hFormat:
+    name = "time_12h"
+    canonical = ["2:30 PM", "2:30pm", "12:00 AM"]
+    malformed = ["14:30", "not a time"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("meet at 2:30 PM please")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no clock reading in here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestCurrencyUsdFormat:
+    name = "currency_usd"
+    canonical = ["$50", "$1,234.56", "$0.99"]
+    malformed = ["50 dollars", "€50", "USD 50"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("costs $1,234.56 total")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no price mentioned here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestCurrencyEurFormat:
+    name = "currency_eur"
+    canonical = ["€50", "€1.234,56"]
+    malformed = ["$50", "50 EUR"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("price is €50 total")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no price mentioned here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestZipUsFormat:
+    name = "zip_us"
+    canonical = ["95110", "95110-1234"]
+    malformed = ["ABCDE", "9511", "notazip"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("ship to 95110 today")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no zip code in here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestZipUkFormat:
+    name = "zip_uk"
+    canonical = ["SW1A 1AA", "EC1A 1BB", "W1A 0AX"]
+    malformed = ["95110", "not a postcode"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("ship to SW1A 1AA please")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no postcode in here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestPercentageFormat:
+    name = "percentage"
+    canonical = ["95%", "99.9%", "0%"]
+    malformed = ["ninety-five percent", "95", "percent"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("reached 99.9% uptime today")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("plain words only here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestIpv4Format:
+    name = "ipv4"
+    canonical = ["192.168.1.1", "10.0.0.1", "255.255.255.0"]
+    malformed = ["not.an.ip", "1.2.3", "abcd"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("reach 192.168.1.1 now")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no address here at all")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestUuidFormat:
+    name = "uuid"
+    canonical = ["550e8400-e29b-41d4-a716-446655440000"]
+    malformed = ["not-a-uuid", "550e8400", "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall(
+            "id=550e8400-e29b-41d4-a716-446655440000 foo"
+        )
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no identifier mentioned here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestHexColorFormat:
+    name = "hex_color"
+    canonical = ["#FF5733", "#aabbcc"]
+    malformed = ["#FFF", "red", "FF5733"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("use #FF5733 for the header")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no color mentioned here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestLatitudeFormat:
+    name = "latitude"
+    canonical = ["37.3382", "-33.8688"]
+    malformed = ["north", "37", "abc"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("at lat 37.3382 approximately")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no coordinates in here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestLongitudeFormat:
+    name = "longitude"
+    canonical = ["-121.8863", "151.2093"]
+    malformed = ["west", "121", "abc"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("at lon -121.8863 approximately")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no coordinates in here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestStarRatingFormat:
+    name = "star_rating"
+    canonical = ["4.5 stars", "3 ★", "5 star"]
+    malformed = ["excellent", "five stars", "rating"]
+
+    def test_strict_accepts_canonical(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.canonical:
+            assert fmt.pattern.fullmatch(v)
+
+    def test_strict_rejects_malformed(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        for v in self.malformed:
+            assert fmt.pattern.fullmatch(v) is None
+
+    def test_extract_finds_in_prose(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert fmt.extract_pattern.findall("earned 4.5 stars overall")
+
+    def test_extract_rejects_pure_noise(self):
+        fmt = FORMAT_REGISTRY[self.name]
+        assert not fmt.extract_pattern.findall("no rating mentioned here")
+
+    def test_invariant_validate_implies_extract(self):
+        for v in self.canonical:
+            assert validate_value(v, self.name)
+            _assert_extract_contains(self.name, v)
+
+
+class TestEveryRegistryEntryHasATestClass:
+    """Meta-test: make sure we didn't forget any entry."""
+
+    def test_one_class_per_entry(self):
+        import sys
+        mod = sys.modules[__name__]
+        covered = set()
+        for attr in dir(mod):
+            obj = getattr(mod, attr)
+            name = getattr(obj, "name", None)
+            if (
+                isinstance(obj, type)
+                and attr.startswith("Test")
+                and attr.endswith("Format")
+                and isinstance(name, str)
+                and name in FORMAT_REGISTRY
+            ):
+                covered.add(name)
+        missing = set(FORMAT_REGISTRY) - covered
+        assert not missing, f"Missing per-entry test classes for: {missing}"
