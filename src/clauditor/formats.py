@@ -76,12 +76,12 @@ FORMAT_REGISTRY: dict[str, FormatDef] = {f.name: f for f in [
             "accept those too."
         ),
     ),
-    # strict === extract: labels plus a ≥2-char alphabetic TLD make the
+    # strict === extract: labels plus a >=2-char alphabetic TLD make the
     # shape self-delimiting. Fullmatch correctly rejects values with a
     # scheme or path, and findall locates bare domains inside prose.
     _def(
         "domain",
-        # Two or more labels; final label must be alphabetic and ≥2 chars
+        # Two or more labels; final label must be alphabetic and >=2 chars
         # so numeric/IP-like strings (e.g. 192.168.1.1) don't validate.
         r"(?i)[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
         r"(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}",
