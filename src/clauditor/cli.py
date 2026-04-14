@@ -703,6 +703,111 @@ def _file_kind(path: Path) -> str:
     return path.suffix or path.name
 
 
+def _print_blind_report(report, before_path: Path, after_path: Path) -> None:
+    """Format a :class:`BlindReport` into the human-readable verdict block.
+
+    DEC-011 layout: model line, two score lines, preference, position
+    agreement, reasoning. Filenames are reduced to basenames so the output
+    stays terse regardless of the caller's invocation style.
+    """
+    mapping = {"a": "BEFORE", "b": "AFTER", "tie": "TIE"}
+    preference = mapping.get(report.preference, report.preference.upper())
+    agreement = "yes" if report.position_agreement else "no"
+    before_name = before_path.name
+    after_name = after_path.name
+
+    print(f"Blind A/B comparison (model: {report.model})")
+    print(f"  {before_name}: score {report.score_a:.2f}")
+    print(f"  {after_name}:  score {report.score_b:.2f}")
+    print(
+        f"  preference: {preference} "
+        f"(confidence {report.confidence:.2f})"
+    )
+    print(f"  position agreement: {agreement}")
+    print(f"  reasoning: {report.reasoning}")
+
+
+def _run_blind_compare(
+    before_path: Path, after_path: Path, spec_path: str, eval_path: str | None
+) -> int:
+    """Dispatch blind A/B comparison for a pair of ``.txt`` outputs.
+
+    Resolves the user-prompt context from ``EvalSpec.test_args`` and the
+    rubric hint from ``EvalSpec.grading_criteria``. Both files are read as
+    plain UTF-8. Returns 0 regardless of which side wins — blind compare is
+    informational, not a pass/fail gate.
+    """
+    import asyncio
+
+    from clauditor.quality_grader import blind_compare
+
+    skill_spec = SkillSpec.from_file(spec_path, eval_path=eval_path)
+    if not skill_spec.eval_spec:
+        print(
+            f"ERROR: No eval spec found for {spec_path}",
+            file=sys.stderr,
+        )
+        return 2
+
+    user_prompt = skill_spec.eval_spec.test_args or ""
+    if not user_prompt.strip():
+        print(
+            "ERROR: --blind requires the eval spec's test_args field to be "
+            "set (used as the user prompt context for the judge)",
+            file=sys.stderr,
+        )
+        return 2
+
+    rubric_hint: str | None = None
+    criteria = skill_spec.eval_spec.grading_criteria
+    if criteria:
+        rubric_hint = "\n".join(f"- {c}" for c in criteria)
+
+    for path in (before_path, after_path):
+        if not path.is_file():
+            print(
+                f"ERROR: {path} does not exist or is not a regular file",
+                file=sys.stderr,
+            )
+            return 2
+
+    try:
+        output_a = before_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        print(
+            f"ERROR: {before_path} is not valid UTF-8 — blind compare "
+            "requires plain text files",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        output_b = after_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        print(
+            f"ERROR: {after_path} is not valid UTF-8 — blind compare "
+            "requires plain text files",
+            file=sys.stderr,
+        )
+        return 2
+
+    model = skill_spec.eval_spec.grading_model
+    print(
+        f"Running blind A/B judge ({model}) — 2 API calls...",
+        file=sys.stderr,
+    )
+    report = asyncio.run(
+        blind_compare(
+            user_prompt,
+            output_a,
+            output_b,
+            rubric_hint,
+            model=model,
+        )
+    )
+    _print_blind_report(report, before_path, after_path)
+    return 0
+
+
 def cmd_compare(args: argparse.Namespace) -> int:
     """Diff assertion results between two captured runs or saved grade reports.
 
@@ -715,8 +820,47 @@ def cmd_compare(args: argparse.Namespace) -> int:
     skill = getattr(args, "skill", None)
     from_iter = getattr(args, "from_iter", None)
     to_iter = getattr(args, "to_iter", None)
+    blind = getattr(args, "blind", False)
     numeric_form = any(v is not None for v in (skill, from_iter, to_iter))
     positional_form = args.before is not None or args.after is not None
+
+    if blind:
+        if numeric_form:
+            print(
+                "ERROR: --blind currently only supports file-pair form "
+                "(before.txt after.txt)",
+                file=sys.stderr,
+            )
+            return 2
+        if not positional_form or args.before is None or args.after is None:
+            print(
+                "ERROR: --blind currently only supports file-pair form "
+                "(before.txt after.txt)",
+                file=sys.stderr,
+            )
+            return 2
+        before_path = Path(args.before)
+        after_path = Path(args.after)
+        if (
+            _file_kind(before_path) != "txt"
+            or _file_kind(after_path) != "txt"
+        ):
+            print(
+                "ERROR: --blind currently only supports file-pair form "
+                "(before.txt after.txt)",
+                file=sys.stderr,
+            )
+            return 2
+        if not args.spec:
+            print(
+                "ERROR: --blind requires --spec to provide the user prompt "
+                "context",
+                file=sys.stderr,
+            )
+            return 2
+        return _run_blind_compare(
+            before_path, after_path, args.spec, args.eval
+        )
 
     if numeric_form and positional_form:
         print(
@@ -1387,6 +1531,14 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         type=_positive_int,
         help="Candidate iteration number >= 1 (requires --skill)",
+    )
+    p_compare.add_argument(
+        "--blind",
+        action="store_true",
+        help=(
+            "Run a blind A/B LLM judge over two .txt outputs "
+            "(requires --spec). Prints a preference verdict."
+        ),
     )
 
     # triggers
