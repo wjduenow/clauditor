@@ -6,26 +6,39 @@ Appends a JSON line per grade run to ``.clauditor/history.jsonl`` so the
 ASCII-only (DEC-014): the sparkline uses ``"_.-=#"`` glyphs — no Unicode
 block characters.
 
-Schema v2 (US-004): each record is a JSON object with the following
+Schema v3 (US-005): each record is a JSON object with the following
 top-level keys:
 
-- ``schema_version``: int, always ``2``
+- ``schema_version``: int, always ``3``
 - ``command``: one of ``"grade"``, ``"extract"``, ``"validate"``
 - ``ts``: ISO-8601 UTC timestamp
 - ``skill``: skill name
 - ``pass_rate``: float or None
 - ``mean_score``: float or None
 - ``metrics``: dict (canonical bucketed metrics from ``clauditor.metrics``)
+- ``iteration``: int or None — Ralph iteration number, when known
+- ``workspace_path``: str or None — workspace dir for this run, when known
 
-v1 records (no ``schema_version``, no ``command``) may still exist on disk
-and are returned as-is by :func:`read_records`.
+The two new v3 fields (``iteration``, ``workspace_path``) are always
+written, even when ``None``, so the on-disk record shape is predictable.
+
+v2 records (``schema_version: 2``, no iteration/workspace_path) and v1
+records (no ``schema_version``, no ``command``) may still exist on disk
+and are returned as-is by :func:`read_records`. Callers must use
+``record.get("iteration")``-style access to tolerate missing keys.
+
+Concurrent appends from multiple processes are serialized via a
+``fcntl.flock`` exclusive lock on ``<history_dir>/.lock``.
 """
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import math
 import sys
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -43,7 +56,26 @@ def _default_path() -> Path:
         return _DEFAULT_PATH
     return resolve_clauditor_dir() / "history.jsonl"
 SPARK_GLYPHS = "_.-=#"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+
+@contextlib.contextmanager
+def _file_lock(lock_path: Path) -> Iterator[None]:
+    """Acquire an exclusive ``fcntl.flock`` on ``lock_path``.
+
+    Creates the lockfile (and its parent dir) if missing. The lock is
+    released when the context exits. Use this only to serialize the
+    short ``history.jsonl`` append — do not hold it across other work.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    # ``open(..., "a")`` creates the file if missing without truncating
+    # an existing one and gives us a writable fd flock can lock.
+    with lock_path.open("a") as lock_fd:
+        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
 
 
 def append_record(
@@ -54,6 +86,8 @@ def append_record(
     *,
     command: Literal["grade", "extract", "validate"],
     path: Path | None = None,
+    iteration: int | None = None,
+    workspace_path: str | None = None,
 ) -> None:
     """Append one history record for a grade run.
 
@@ -63,7 +97,13 @@ def append_record(
 
     ``command`` is required (keyword-only) and identifies which clauditor
     subcommand produced the record. Every written record includes
-    ``schema_version: 2`` at the top level.
+    ``schema_version: 3`` at the top level along with the v3 fields
+    ``iteration`` and ``workspace_path`` (always present, possibly
+    ``None``).
+
+    Concurrent appends from multiple processes are serialized via an
+    ``fcntl.flock`` exclusive lock on ``<history_parent>/.lock`` so each
+    JSONL line is written atomically without interleaving.
     """
     if command not in ("grade", "extract", "validate"):
         raise ValueError(
@@ -80,9 +120,14 @@ def append_record(
         "pass_rate": pass_rate,
         "mean_score": mean_score,
         "metrics": metrics,
+        "iteration": iteration,
+        "workspace_path": workspace_path,
     }
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record) + "\n")
+    line = json.dumps(record) + "\n"
+    lock_path = path.parent / ".lock"
+    with _file_lock(lock_path):
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line)
 
 
 def read_records(

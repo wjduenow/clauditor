@@ -1273,6 +1273,48 @@ class TestCmdTrend:
         data_lines = [ln for ln in out.splitlines() if "\t" in ln]
         assert len(data_lines) == 5
 
+    def test_trend_over_mixed_schema(self, tmp_path, monkeypatch, capsys):
+        """cmd_trend renders cleanly over mixed v2 and v3 history (US-005)."""
+        import json as _json
+
+        from clauditor import history
+
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".clauditor" / "history.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # One v2 record (no iteration/workspace_path).
+        v2_rec = {
+            "schema_version": 2,
+            "command": "grade",
+            "ts": "2026-01-01T00:00:00+00:00",
+            "skill": "test-skill",
+            "pass_rate": 0.4,
+            "mean_score": 0.5,
+            "metrics": {},
+        }
+        with path.open("w", encoding="utf-8") as f:
+            f.write(_json.dumps(v2_rec) + "\n")
+
+        # One v3 record via the API.
+        history.append_record(
+            "test-skill",
+            0.9,
+            0.8,
+            {},
+            command="grade",
+            path=path,
+            iteration=1,
+            workspace_path="ws/1",
+        )
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        # Both records should appear in the trend output.
+        assert "0.4" in out
+        assert "0.9" in out
+
 
 class TestCmdTrendCommandFilter:
     """cmd_trend --command filter (US-006)."""
@@ -1538,7 +1580,7 @@ class TestCmdGradeHistory:
         assert record["skill"] == "test-skill"
         assert record["pass_rate"] == 1.0
         assert record["mean_score"] == 0.9
-        assert record["schema_version"] == 2
+        assert record["schema_version"] == 3
         assert record["command"] == "grade"
 
     def test_grade_history_records_metrics(self, tmp_path, monkeypatch):
@@ -1843,7 +1885,7 @@ class TestCmdExtractHistory:
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["skill"] == "test-skill"
-        assert record["schema_version"] == 2
+        assert record["schema_version"] == 3
         assert record["command"] == "extract"
         assert record["pass_rate"] is None
         assert record["mean_score"] is None
@@ -1941,7 +1983,7 @@ class TestCmdValidateHistory:
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["skill"] == "test-skill"
-        assert record["schema_version"] == 2
+        assert record["schema_version"] == 3
         assert record["command"] == "validate"
         # Layer 1 pass_rate is 1.0 (the "contains hello" assertion passes)
         assert record["pass_rate"] == 1.0
