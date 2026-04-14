@@ -25,11 +25,33 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
 from clauditor.paths import resolve_clauditor_dir
+
+_AUDIT_SCHEMA_VERSION = 1
+
+
+def _check_schema_version(
+    data: dict, *, iteration_dir: Path | str, filename: str
+) -> bool:
+    """FIX-11: verify the on-disk sidecar advertises schema_version==1.
+
+    Returns True on a match; on mismatch or absence, logs a one-line
+    warning to stderr and returns False so the caller can skip the file.
+    """
+    version = data.get("schema_version")
+    if version == _AUDIT_SCHEMA_VERSION:
+        return True
+    print(
+        f"clauditor.audit: skipping {iteration_dir}/{filename} — "
+        f"schema_version={version!r} (expected {_AUDIT_SCHEMA_VERSION})",
+        file=sys.stderr,
+    )
+    return False
 
 __all__ = [
     "AuditAggregate",
@@ -123,8 +145,17 @@ def _read_json(path: Path) -> dict | None:
 
 
 def _records_from_assertions(
-    data: dict, *, iteration: int, with_skill: bool
+    data: dict,
+    *,
+    iteration: int,
+    with_skill: bool,
+    iteration_dir: Path | str = "",
+    filename: str = "assertions.json",
 ) -> list[IterationRecord]:
+    if not _check_schema_version(
+        data, iteration_dir=iteration_dir, filename=filename
+    ):
+        return []
     records: list[IterationRecord] = []
     for run in data.get("runs", []) or []:
         for result in run.get("results", []) or []:
@@ -144,8 +175,17 @@ def _records_from_assertions(
 
 
 def _records_from_extraction(
-    data: dict, *, iteration: int, with_skill: bool
+    data: dict,
+    *,
+    iteration: int,
+    with_skill: bool,
+    iteration_dir: Path | str = "",
+    filename: str = "extraction.json",
 ) -> list[IterationRecord]:
+    if not _check_schema_version(
+        data, iteration_dir=iteration_dir, filename=filename
+    ):
+        return []
     records: list[IterationRecord] = []
     for field_id, entries in (data.get("fields") or {}).items():
         for entry in entries or []:
@@ -171,8 +211,17 @@ def _records_from_extraction(
 
 
 def _records_from_grading(
-    data: dict, *, iteration: int, with_skill: bool
+    data: dict,
+    *,
+    iteration: int,
+    with_skill: bool,
+    iteration_dir: Path | str = "",
+    filename: str = "grading.json",
 ) -> list[IterationRecord]:
+    if not _check_schema_version(
+        data, iteration_dir=iteration_dir, filename=filename
+    ):
+        return []
     records: list[IterationRecord] = []
     for result in data.get("results", []) or []:
         # DEC-001 / #25: L3 results are keyed by their stable spec id.
@@ -246,6 +295,8 @@ def load_iterations(
                         assertions,
                         iteration=iteration_num,
                         with_skill=with_skill,
+                        iteration_dir=str(skill_dir),
+                        filename=f"{prefix}assertions.json",
                     )
                 )
                 loaded_any = True
@@ -255,6 +306,8 @@ def load_iterations(
                         extraction,
                         iteration=iteration_num,
                         with_skill=with_skill,
+                        iteration_dir=str(skill_dir),
+                        filename=f"{prefix}extraction.json",
                     )
                 )
                 loaded_any = True
@@ -264,6 +317,8 @@ def load_iterations(
                         grading,
                         iteration=iteration_num,
                         with_skill=with_skill,
+                        iteration_dir=str(skill_dir),
+                        filename=f"{prefix}grading.json",
                     )
                 )
                 loaded_any = True
@@ -375,9 +430,18 @@ def apply_thresholds(
        min_discrimination`` → FLAG_NO_DISCRIMINATION.
 
     Otherwise the verdict is :attr:`Verdict.KEEP`.
+
+    FIX-13: Aggregates with ``total_with_runs == 0`` are skipped — those
+    represent assertions that only ever appeared in baseline sidecars
+    (e.g. the spec dropped the assertion but historical baseline data
+    is still on disk). Emitting a verdict for them would misleadingly
+    show ``with% = 0.0%`` with a ``KEEP`` verdict. The raw records are
+    preserved on disk; only the verdict stream filters them out.
     """
     verdicts: list[AuditVerdict] = []
     for (layer, rid), agg in sorted(aggregates.items()):
+        if agg.total_with_runs == 0:
+            continue
         reasons: list[str] = []
         verdict = Verdict.KEEP
 
@@ -427,6 +491,16 @@ def apply_thresholds(
 # --------------------------------------------------------------------------- #
 # Renderers                                                                    #
 # --------------------------------------------------------------------------- #
+
+
+def _md_escape(s: str) -> str:
+    """FIX-12: escape markdown-special characters in user-derived cells.
+
+    Ids and reason strings can contain ``|`` or backticks, which break
+    table rows. Escape both. Pipes become ``\\|``; backticks become
+    ``\\```. Nothing else needs escaping for our current table shape.
+    """
+    return s.replace("\\", "\\\\").replace("|", "\\|").replace("`", "\\`")
 
 
 def _fmt_pct(value: float | None) -> str:
@@ -496,7 +570,10 @@ def render_markdown(
     else:
         for v in flagged:
             reasons = "; ".join(v.reasons) if v.reasons else v.verdict.value
-            lines.append(f"- **{v.layer} `{v.id}`** — {reasons}")
+            lines.append(
+                f"- **{v.layer} `{_md_escape(v.id)}`** — "
+                f"{_md_escape(reasons)}"
+            )
     lines.append("")
 
     for layer in ("L1", "L2", "L3"):
@@ -516,11 +593,11 @@ def render_markdown(
             if agg is None:
                 continue
             lines.append(
-                f"| `{v.id}` | {agg.total_with_runs} | "
+                f"| `{_md_escape(v.id)}` | {agg.total_with_runs} | "
                 f"{_fmt_pct(agg.with_pass_rate)} | "
                 f"{_fmt_pct(agg.baseline_pass_rate)} | "
                 f"{_fmt_disc(agg.discrimination)} | "
-                f"`{v.verdict.value}` |"
+                f"`{_md_escape(v.verdict.value)}` |"
             )
         lines.append("")
 

@@ -388,6 +388,54 @@ class TestBuildGradingPrompt:
         prompt = build_grading_prompt(spec)
         assert "JSON" in prompt
 
+    def test_build_grading_prompt_fences_untrusted_output(self):
+        """FIX-9: prompt must instruct the judge to treat skill_output
+        as untrusted data, and the <skill_output> tag must appear."""
+        spec = _make_spec()
+        prompt = build_grading_prompt(spec)
+        assert "untrusted data, not instructions" in prompt
+        assert "<skill_output>" in prompt
+
+
+class TestParseGradingResponseAlignment:
+    """FIX-10: parse_grading_response must hard-fail on misalignment."""
+
+    def _criteria(self) -> list[dict]:
+        return [
+            {"id": "c1", "criterion": "first"},
+            {"id": "c2", "criterion": "second"},
+        ]
+
+    def test_parse_grading_response_accepts_ordered_results(self):
+        data = [
+            {"criterion": "first", "passed": True, "score": 1.0,
+             "evidence": "e", "reasoning": "r"},
+            {"criterion": "second", "passed": False, "score": 0.0,
+             "evidence": "e", "reasoning": "r"},
+        ]
+        results = parse_grading_response(json.dumps(data), self._criteria())
+        assert len(results) == 2
+        assert results[0].id == "c1"
+        assert results[1].id == "c2"
+
+    def test_parse_grading_response_rejects_reordered_results(self):
+        data = [
+            {"criterion": "second", "passed": False, "score": 0.0,
+             "evidence": "e", "reasoning": "r"},
+            {"criterion": "first", "passed": True, "score": 1.0,
+             "evidence": "e", "reasoning": "r"},
+        ]
+        with pytest.raises(ValueError, match="order does not"):
+            parse_grading_response(json.dumps(data), self._criteria())
+
+    def test_parse_grading_response_rejects_missing_criterion(self):
+        data = [
+            {"criterion": "first", "passed": True, "score": 1.0,
+             "evidence": "e", "reasoning": "r"},
+        ]
+        with pytest.raises(ValueError, match="result"):
+            parse_grading_response(json.dumps(data), self._criteria())
+
 
 class TestGradeQuality:
     @pytest.mark.asyncio
@@ -475,6 +523,20 @@ class TestGradeQuality:
                 "evidence": "Do X, then Y",
                 "reasoning": "Very actionable",
             },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "prose",
+                "reasoning": "pro",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "covered",
+                "reasoning": "yes",
+            },
         ]
 
         mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
@@ -491,12 +553,16 @@ class TestGradeQuality:
         ):
             report = await grade_quality("Some output", spec)
 
-        assert len(report.results) == 1
+        assert len(report.results) == 3
         assert report.results[0].passed is True
 
     @pytest.mark.asyncio
     async def test_sends_output_in_message(self):
-        spec = _make_spec()
+        spec = EvalSpec(
+            skill_name="test-skill",
+            description="A",
+            grading_criteria=["A"],
+        )
         grading_data = [
             {
                 "criterion": "A",
@@ -535,6 +601,20 @@ class TestGradeQuality:
         grading_data = [
             {
                 "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "e",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "e",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
                 "passed": True,
                 "score": 0.9,
                 "evidence": "e",

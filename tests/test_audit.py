@@ -90,6 +90,7 @@ def _write_sidecars(
                 for r_idx, run in enumerate(runs)
             ],
         }
+        assertions_payload = {"schema_version": 1, **assertions_payload}
         (skill_dir / f"{prefix}assertions.json").write_text(
             json.dumps(assertions_payload, indent=2) + "\n"
         )
@@ -111,6 +112,7 @@ def _write_sidecars(
                 }
             )
         extraction_payload = {
+            "schema_version": 1,
             "skill_name": skill,
             "model": "test",
             "input_tokens": 0,
@@ -124,6 +126,7 @@ def _write_sidecars(
 
     if l3_key in payload:
         grading_payload = {
+            "schema_version": 1,
             "skill_name": skill,
             "model": "test",
             "duration_seconds": 0.0,
@@ -332,6 +335,33 @@ class TestCmdAudit:
         out = capsys.readouterr().out
         assert "has_header" in out
         assert "L1" in out
+
+    def test_cmd_audit_returns_2_on_unwritable_output_dir(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """FIX-14: IO errors on report write yield exit code 2."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".git").mkdir()
+        _make_iteration_fixture(
+            project,
+            "my_skill",
+            {
+                1: {"l1": [{"id": "has_header", "passed": True}]},
+            },
+        )
+        monkeypatch.chdir(project)
+        # Point output-dir at a path whose parent is an existing file —
+        # mkdir(parents=True) will raise NotADirectoryError.
+        blocker = tmp_path / "not-a-dir"
+        blocker.write_text("x")
+        bad = blocker / "nested" / "audit"
+        rc = cli_main(
+            ["audit", "my_skill", "--output-dir", str(bad)]
+        )
+        assert rc == 2
 
 
 def _agg(
@@ -738,6 +768,40 @@ class TestAuditL3StableId:
         # One pass, one fail → 0.5 with_pass_rate.
         assert agg[("L3", "quality")].with_pass_rate == pytest.approx(0.5)
 
+    def test_loader_skips_unknown_schema_version(
+        self, tmp_path: Path
+    ) -> None:
+        """FIX-11: loaders must skip sidecars with unknown schema_version."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "assertions.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "runs": [
+                        {
+                            "results": [
+                                {
+                                    "id": "x",
+                                    "name": "x",
+                                    "passed": True,
+                                    "message": "",
+                                    "kind": "custom",
+                                    "evidence": None,
+                                    "raw_data": None,
+                                }
+                            ]
+                        }
+                    ],
+                }
+            )
+        )
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert records == []
+
     def test_audit_drops_l3_result_without_id(
         self, tmp_path: Path
     ) -> None:
@@ -761,6 +825,68 @@ class TestAuditL3StableId:
         )
         records, _ = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
         assert [r for r in records if r.layer == "L3"] == []
+
+
+class TestFix12Fix13:
+    def test_render_markdown_escapes_pipe_in_id(self) -> None:
+        """FIX-12: ids containing ``|`` must be escaped in md tables."""
+        agg = AuditAggregate(
+            layer="L1",
+            id="a|b",
+            total_with_runs=3,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+        )
+        verdicts = apply_thresholds(
+            {("L1", "a|b"): agg},
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+        md = render_markdown(
+            verdicts,
+            skill="s",
+            iterations_analyzed=1,
+            thresholds={},
+            timestamp="t",
+        )
+        assert "a\\|b" in md
+        assert "| a|b " not in md  # raw pipe never leaks into table cell
+
+    def test_apply_thresholds_skips_baseline_only_aggregates(self) -> None:
+        """FIX-13: aggregates with no primary runs must not yield a verdict."""
+        primary_only = AuditAggregate(
+            layer="L1",
+            id="live",
+            total_with_runs=3,
+            with_fails=1,
+            with_pass_rate=2 / 3,
+            total_baseline_runs=3,
+            baseline_fails=3,
+            baseline_pass_rate=0.0,
+        )
+        baseline_only = AuditAggregate(
+            layer="L1",
+            id="stale",
+            total_with_runs=0,
+            with_fails=0,
+            with_pass_rate=0.0,
+            total_baseline_runs=3,
+            baseline_fails=0,
+            baseline_pass_rate=1.0,
+        )
+        verdicts = apply_thresholds(
+            {
+                ("L1", "live"): primary_only,
+                ("L1", "stale"): baseline_only,
+            },
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+        ids = {v.id for v in verdicts}
+        assert ids == {"live"}
 
 
 class TestAuditAggregateDataclass:

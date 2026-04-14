@@ -318,10 +318,20 @@ def _run_baseline_phase(
 
     from clauditor.grader import extract_and_report
     from clauditor.quality_grader import grade_quality
+    from clauditor.workspace import stage_inputs
 
     test_args = spec.eval_spec.test_args or ""
+    # FIX-15: mirror the primary run's staging so baseline finds input
+    # files in the same relative layout. Without this, a spec with
+    # ``input_files`` would run the baseline against an empty CWD.
+    effective_cwd: Path | None = None
+    if spec.eval_spec.input_files:
+        baseline_run_dir = skill_dir / "baseline-run"
+        sources = [Path(p) for p in spec.eval_spec.input_files]
+        stage_inputs(baseline_run_dir, sources)
+        effective_cwd = baseline_run_dir / "inputs"
     print(f"Running baseline (no skill prefix) {test_args}...")
-    baseline_result = spec.runner.run_raw(test_args)
+    baseline_result = spec.runner.run_raw(test_args, cwd=effective_cwd)
 
     baseline_text = baseline_result.output
 
@@ -1627,40 +1637,57 @@ def cmd_audit(args: argparse.Namespace) -> int:
         "min_discrimination": min_discrimination,
     }
 
-    if args.json:
-        payload = render_json(
-            verdicts,
-            skill=args.skill,
-            iterations_analyzed=iterations_analyzed,
-            thresholds=thresholds,
-            timestamp=timestamp,
-        )
-        print(json.dumps(payload, indent=2))
-    else:
-        if not aggregates:
-            print(
-                f"No audit data for skill {args.skill!r} under {clauditor_dir}"
+    try:
+        if args.json:
+            payload = render_json(
+                verdicts,
+                skill=args.skill,
+                iterations_analyzed=iterations_analyzed,
+                thresholds=thresholds,
+                timestamp=timestamp,
             )
+            print(json.dumps(payload, indent=2))
         else:
-            output_dir = (
-                args.output_dir
-                if args.output_dir is not None
-                else clauditor_dir / "audit"
-            )
-            output_dir.mkdir(parents=True, exist_ok=True)
-            report_path = output_dir / f"{args.skill}-{timestamp}.md"
-            report_path.write_text(
-                render_markdown(
-                    verdicts,
-                    skill=args.skill,
-                    iterations_analyzed=iterations_analyzed,
-                    thresholds=thresholds,
-                    timestamp=timestamp,
-                ),
-                encoding="utf-8",
-            )
-            print(render_stdout_table(verdicts))
-            print(f"\nReport written to {report_path}")
+            if not aggregates:
+                print(
+                    f"No audit data for skill {args.skill!r} under "
+                    f"{clauditor_dir}"
+                )
+            else:
+                output_dir = (
+                    args.output_dir
+                    if args.output_dir is not None
+                    else clauditor_dir / "audit"
+                )
+                try:
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    report_path = (
+                        output_dir / f"{args.skill}-{timestamp}.md"
+                    )
+                    report_path.write_text(
+                        render_markdown(
+                            verdicts,
+                            skill=args.skill,
+                            iterations_analyzed=iterations_analyzed,
+                            thresholds=thresholds,
+                            timestamp=timestamp,
+                        ),
+                        encoding="utf-8",
+                    )
+                except OSError as exc:
+                    # FIX-14: exit 1 is reserved for "flagged assertions";
+                    # IO errors surface as exit 2 so CI can distinguish.
+                    print(
+                        f"clauditor audit: failed to write report under "
+                        f"{output_dir}: {exc}",
+                        file=sys.stderr,
+                    )
+                    return 2
+                print(render_stdout_table(verdicts))
+                print(f"\nReport written to {report_path}")
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"clauditor audit: error rendering report: {exc}", file=sys.stderr)
+        return 2
 
     return 1 if any(v.is_flagged for v in verdicts) else 0
 
@@ -1938,6 +1965,11 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Aggregate per-assertion pass rates across the last N "
             "iteration workspaces for a skill"
+        ),
+        description=(
+            "Aggregate per-assertion pass rates across the last N "
+            "iteration workspaces for a skill. Exit codes: "
+            "0 (clean), 1 (flagged assertions), 2 (error)."
         ),
     )
     p_audit.add_argument("skill", help="Skill name to audit")

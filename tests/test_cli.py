@@ -1794,6 +1794,45 @@ class TestBaselineFlag:
         assert (skill_dir / "baseline_grading.json").exists()
         assert not (skill_dir / "baseline_extraction.json").exists()
 
+    def test_run_baseline_phase_threads_cwd_to_run_raw(
+        self, tmp_path, monkeypatch
+    ):
+        """FIX-15: _run_baseline_phase must stage inputs and pass cwd."""
+        from clauditor.cli import _run_baseline_phase
+
+        monkeypatch.chdir(tmp_path)
+        # Real input file in cwd so schemas validation accepts it.
+        (tmp_path / "fixture.txt").write_text("seed")
+        eval_spec = _make_eval_spec(
+            input_files=["fixture.txt"],
+            sections=[],
+        )
+        spec = self._prepare_spec(eval_spec)
+        grading_report = self._make_grading_report()
+        skill_dir = tmp_path / "skill-dir"
+        skill_dir.mkdir()
+
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new_callable=AsyncMock,
+            return_value=grading_report,
+        ):
+            _run_baseline_phase(
+                spec=spec,
+                skill_dir=skill_dir,
+                iteration=1,
+                model="claude-sonnet-4-6",
+            )
+
+        spec.runner.run_raw.assert_called_once()
+        call_kwargs = spec.runner.run_raw.call_args.kwargs
+        assert "cwd" in call_kwargs
+        assert call_kwargs["cwd"] == skill_dir / "baseline-run" / "inputs"
+        # The staged input file exists at the expected path.
+        assert (
+            skill_dir / "baseline-run" / "inputs" / "fixture.txt"
+        ).is_file()
+
 
 class TestCmdCompare:
     """Tests for the compare subcommand (US-003)."""
