@@ -1988,6 +1988,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip writing per-run stream-json transcripts",
     )
+    p_validate.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="On assertion failure, print the last 5 assistant text blocks to stderr",
+    )
 
     # run
     p_run = subparsers.add_parser("run", help="Run a skill and print output")

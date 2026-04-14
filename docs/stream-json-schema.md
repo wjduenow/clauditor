@@ -107,7 +107,7 @@ to stderr and still returns a `SkillResult` with `input_tokens = 0` and
 
 Every exit path is wrapped in `try/finally` so that
 `SkillResult.duration_seconds` is populated for success, timeout, missing
-binary, and any other error path (DEC-005).
+binary, and any other error path.
 
 ## Canonical parser
 
