@@ -300,13 +300,21 @@ def _cmd_grade_with_workspace(
     # Run 0: primary. Honors --output (no subprocess) when provided.
     primary_skill_result: SkillResult | None = None
     if args.output:
+        if spec.eval_spec is not None and spec.eval_spec.input_files:
+            print(
+                "WARNING: --output bypasses the runner; "
+                "input_files declaration is ignored.",
+                file=sys.stderr,
+            )
         primary_text = Path(args.output).read_text()
         run_outputs.append((primary_text, []))
     else:
         print(
             f"Running /{spec.skill_name} {spec.eval_spec.test_args}..."
         )
-        primary_skill_result = spec.run()
+        primary_skill_result = spec.run(
+            run_dir=workspace.tmp_path / "run-0",
+        )
         if not primary_skill_result.succeeded:
             print(
                 f"ERROR: Skill failed: {primary_skill_result.error}",
@@ -323,8 +331,15 @@ def _cmd_grade_with_workspace(
 
     # Variance runs: always invoke the skill subprocess (variance against
     # a fixed --output file would be meaningless).
-    for _ in range(n_variance):
-        variance_result = spec.run()
+    for variance_idx in range(n_variance):
+        # In captured-output mode, skip run_dir threading so input_files
+        # staging is suppressed (warning already printed above).
+        variance_run_dir = (
+            None
+            if args.output
+            else workspace.tmp_path / f"run-{variance_idx + 1}"
+        )
+        variance_result = spec.run(run_dir=variance_run_dir)
         if not variance_result.succeeded:
             print(
                 f"ERROR: Variance skill run failed: {variance_result.error}",
