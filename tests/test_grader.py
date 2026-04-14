@@ -1400,6 +1400,41 @@ class TestExtractAndReportHappyPath:
         assert any(r.field_id == "v1" for r in report.results)
 
     @pytest.mark.asyncio
+    async def test_extract_and_report_handles_generic_fence(self):
+        """Covers the ``elif ``` in json_str:`` generic-fence branch of
+        the JSON extractor inside ``extract_and_report``."""
+        from clauditor.grader import extract_and_report
+
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[FieldRequirement(name="n", id="v1")],
+                        )
+                    ],
+                )
+            ],
+        )
+        data = {"Venues": {"primary": [{"n": "CDM"}]}}
+        wrapped = f"```\n{json.dumps(data)}\n```"
+        fake_response = MagicMock(
+            usage=MagicMock(input_tokens=1, output_tokens=1)
+        )
+        fake_response.content = [MagicMock(type="text", text=wrapped)]
+        fake_client = MagicMock()
+        fake_client.messages.create = AsyncMock(return_value=fake_response)
+
+        with patch("anthropic.AsyncAnthropic", return_value=fake_client):
+            report = await extract_and_report("out", spec, skill_name="s")
+
+        assert report.parse_errors == []
+        assert any(r.field_id == "v1" for r in report.results)
+
+    @pytest.mark.asyncio
     async def test_extract_and_report_flags_flat_list_sections(self):
         from clauditor.grader import extract_and_report
 
