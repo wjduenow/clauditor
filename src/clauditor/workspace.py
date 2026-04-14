@@ -13,6 +13,7 @@ See ``plans/super/22-iteration-workspace.md``.
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import shutil
@@ -44,10 +45,16 @@ def validate_skill_name(skill: str) -> str:
     """Reject skill names that could escape the clauditor directory.
 
     Accepts alphanumerics plus ``_ . -``. Rejects empty strings, path
-    separators, parent references (``..``), and leading dots that could
-    otherwise collide with hidden dirs. Returns the validated name.
+    separators, parent references (``..``), and any name beginning with
+    a dot (to avoid collisions with hidden directories like ``.lock``
+    or ``.git`` siblings under ``.clauditor/``). Returns the validated
+    name.
     """
-    if not skill or skill in {".", ".."} or not _SKILL_NAME_RE.match(skill):
+    if (
+        not skill
+        or skill.startswith(".")
+        or not _SKILL_NAME_RE.match(skill)
+    ):
         raise InvalidSkillNameError(
             f"invalid skill name for workspace path: {skill!r}"
         )
@@ -95,6 +102,12 @@ class IterationWorkspace:
         try:
             os.rename(self._tmp_parent, self._final_parent)
         except OSError as exc:
+            # Only a concurrent-peer race produces ENOTEMPTY / EEXIST
+            # (the target directory was populated by another writer).
+            # Surface permission, disk-full, and read-only-fs errors
+            # unchanged so the caller sees the real failure.
+            if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                raise
             self.abort()
             raise IterationExistsError(
                 f"iteration-{self.iteration} was finalized by a concurrent "

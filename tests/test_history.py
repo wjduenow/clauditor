@@ -287,6 +287,12 @@ class TestConcurrentAppend:
         path.parent.mkdir(parents=True, exist_ok=True)
 
         n = 8
+        # Use fork: it's reliable under pytest+coverage, cheap, and this
+        # test is Linux-only (pyproject.toml pins clauditor to Linux).
+        # spawn hangs under pytest-cov due to the child needing to
+        # re-import coverage machinery before any user code runs.
+        if not hasattr(__import__("os"), "fork"):
+            pytest.skip("fork multiprocessing required for this test")
         ctx = multiprocessing.get_context("fork")
         with ctx.Pool(4) as pool:
             pool.map(

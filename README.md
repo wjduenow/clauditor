@@ -568,7 +568,7 @@ the count failure and any per-entry failures.
 ## Migration notes
 
 - **`clauditor grade --save` has been removed.** Every `grade` run is now persisted to `.clauditor/iteration-N/<skill>/` automatically. Drop `--save` from scripts and CI; use `--iteration N` / `--force` if you need to target a specific slot.
-- **Legacy `.clauditor/<skill>.grade.json` files are ignored.** The canonical grade report is `.clauditor/iteration-N/<skill>/grading.json`. Old files on disk are left alone but no longer read by `compare` or `trend`.
+- **Legacy `.clauditor/<skill>.grade.json` files are ignored by auto-discovery.** The canonical grade report is `.clauditor/iteration-N/<skill>/grading.json`, and `grade --diff` / `cmd_trend` only look at the new layout. You can still pass a legacy `.grade.json` explicitly to `clauditor compare` (e.g. `compare old.grade.json new.grade.json`), but clauditor no longer writes that format.
 - **`history.jsonl` is now schema v3** with `iteration` and `workspace_path` fields on `grade` records. Mixed v2/v3 files continue to load.
 - **`.clauditor/` is anchored at the repo root** (walking up for `.git/` or `.claude/`), so running `grade` from a subdirectory writes to the same workspace as running it from the top.
 

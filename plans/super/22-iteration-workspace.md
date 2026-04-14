@@ -9,8 +9,8 @@ sessions: 1
 
 ## Meta
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/22
-- **Phase:** discovery (complete) → architecture (next)
-- **Branch:** dev (no worktree yet — pre-PR planning on dev)
+- **Phase:** devolved (all stories merged; Quality Gate + Patterns & Memory complete)
+- **Branch:** feature/22-iteration-workspace
 
 ## Context
 
