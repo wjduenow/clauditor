@@ -9,6 +9,7 @@ from pathlib import Path
 
 from clauditor import history
 from clauditor.assertions import AssertionSet, run_assertions
+from clauditor.paths import resolve_clauditor_dir
 from clauditor.runner import SkillRunner
 from clauditor.spec import SkillSpec
 
@@ -251,7 +252,7 @@ def cmd_grade(args: argparse.Namespace) -> int:
 
     # --diff: compare against prior results
     # Use stderr for human output when --json is set to keep stdout valid JSON
-    save_dir = Path(".clauditor")
+    save_dir = resolve_clauditor_dir()
     save_path = save_dir / f"{spec.skill_name}.grade.json"
     diff_out = sys.stderr if args.json else sys.stdout
 
