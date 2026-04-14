@@ -2,6 +2,9 @@
   "skill_name": "find-kid-activities",
   "description": "Validates /find-kid-activities produces venues and events with required fields",
   "test_args": "\"Cupertino, CA\" --dates today --distance 15mi --ages 4-6 --cost \"Free, $\" --type both --category any --count 5 --depth quick",
+  "input_files": [
+    "sample-input.txt"
+  ],
   "assertions": [
     {
       "type": "contains",

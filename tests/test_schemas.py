@@ -988,3 +988,145 @@ class TestTieredSections:
         assert tier.description == ""
         assert tier.min_entries == 0
         assert tier.fields == []
+
+
+class TestEvalSpecInputFiles:
+    def _write_spec(self, tmp_path, extra):
+        data = {"skill_name": "test-skill", **extra}
+        spec_path = tmp_path / "test.eval.json"
+        spec_path.write_text(json.dumps(data))
+        return spec_path
+
+    def test_input_files_defaults_to_empty_list(self, tmp_path):
+        spec_path = self._write_spec(tmp_path, {})
+        spec = EvalSpec.from_file(spec_path)
+        assert spec.input_files == []
+
+    def test_relative_paths_resolved_against_spec_dir(self, tmp_path):
+        sibling = tmp_path / "sales.csv"
+        sibling.write_text("a,b\n")
+        spec_path = self._write_spec(tmp_path, {"input_files": ["sales.csv"]})
+        spec = EvalSpec.from_file(spec_path)
+        assert len(spec.input_files) == 1
+        assert spec.input_files[0] == str(sibling.resolve())
+        from pathlib import Path
+        assert Path(spec.input_files[0]).is_absolute()
+
+    def test_multiple_entries_resolved(self, tmp_path):
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        f1 = tmp_path / "a" / "one.csv"
+        f2 = tmp_path / "b" / "two.csv"
+        f1.write_text("x")
+        f2.write_text("y")
+        spec_path = self._write_spec(
+            tmp_path, {"input_files": ["a/one.csv", "b/two.csv"]}
+        )
+        spec = EvalSpec.from_file(spec_path)
+        assert spec.input_files == [str(f1.resolve()), str(f2.resolve())]
+
+    def test_absolute_path_rejected(self, tmp_path):
+        spec_path = self._write_spec(
+            tmp_path, {"input_files": ["/etc/passwd"]}
+        )
+        with pytest.raises(ValueError, match="absolute"):
+            EvalSpec.from_file(spec_path)
+
+    def test_path_traversal_rejected(self, tmp_path):
+        subdir = tmp_path / "spec"
+        subdir.mkdir()
+        outside = tmp_path / "outside.csv"
+        outside.write_text("x")
+        spec_path = subdir / "test.eval.json"
+        spec_path.write_text(
+            json.dumps(
+                {"skill_name": "t", "input_files": ["../outside.csv"]}
+            )
+        )
+        with pytest.raises(ValueError, match="escapes"):
+            EvalSpec.from_file(spec_path)
+
+    def test_missing_input_file_raises_valueerror(self, tmp_path):
+        spec_path = self._write_spec(
+            tmp_path, {"input_files": ["nope.csv"]}
+        )
+        with pytest.raises(ValueError, match="not found"):
+            EvalSpec.from_file(spec_path)
+
+    def test_symlink_target_inside_spec_dir_accepted(self, tmp_path):
+        real = tmp_path / "real.csv"
+        real.write_text("data")
+        link = tmp_path / "link.csv"
+        link.symlink_to(real)
+        spec_path = self._write_spec(tmp_path, {"input_files": ["link.csv"]})
+        spec = EvalSpec.from_file(spec_path)
+        assert spec.input_files == [str(real.resolve())]
+
+    def test_symlink_target_outside_spec_dir_rejected(self, tmp_path):
+        spec_dir = tmp_path / "spec"
+        spec_dir.mkdir()
+        escape = tmp_path / "escape.csv"
+        escape.write_text("x")
+        link = spec_dir / "link.csv"
+        link.symlink_to(escape)
+        spec_path = spec_dir / "test.eval.json"
+        spec_path.write_text(
+            json.dumps({"skill_name": "t", "input_files": ["link.csv"]})
+        )
+        with pytest.raises(ValueError, match="escapes"):
+            EvalSpec.from_file(spec_path)
+
+    def test_duplicate_basenames_across_entries_rejected(self, tmp_path):
+        (tmp_path / "a").mkdir()
+        (tmp_path / "b").mkdir()
+        (tmp_path / "a" / "sales.csv").write_text("x")
+        (tmp_path / "b" / "sales.csv").write_text("y")
+        spec_path = self._write_spec(
+            tmp_path, {"input_files": ["a/sales.csv", "b/sales.csv"]}
+        )
+        with pytest.raises(ValueError, match="basename"):
+            EvalSpec.from_file(spec_path)
+
+    def test_output_files_collision_guard_rejects_overlap(self, tmp_path):
+        (tmp_path / "data").mkdir()
+        (tmp_path / "data" / "sales.csv").write_text("x")
+        spec_path = self._write_spec(
+            tmp_path,
+            {
+                "input_files": ["data/sales.csv"],
+                "output_files": ["sales.csv"],
+            },
+        )
+        with pytest.raises(ValueError, match="collides"):
+            EvalSpec.from_file(spec_path)
+
+    def test_to_dict_roundtrip_preserves_input_files(self, tmp_path):
+        f = tmp_path / "data.csv"
+        f.write_text("x")
+        spec_path = self._write_spec(tmp_path, {"input_files": ["data.csv"]})
+        spec = EvalSpec.from_file(spec_path)
+        d = spec.to_dict()
+        assert "input_files" in d
+        assert d["input_files"] == [str(f.resolve())]
+        # Loading the same spec twice yields the same in-memory state.
+        # (to_dict emits absolute paths for inspection, not as a re-loadable
+        # authoring format — by design, since from_file rejects absolute paths.)
+        reloaded = EvalSpec.from_file(spec_path)
+        assert reloaded.input_files == spec.input_files
+
+    @pytest.mark.parametrize("bad_entry", [None, 42, ["nested"], ""])
+    def test_non_string_or_empty_entry_rejected(self, tmp_path, bad_entry):
+        spec_path = self._write_spec(tmp_path, {"input_files": [bad_entry]})
+        with pytest.raises(ValueError, match="non-empty string"):
+            EvalSpec.from_file(spec_path)
+
+    def test_directory_entry_rejected(self, tmp_path):
+        (tmp_path / "subdir").mkdir()
+        spec_path = self._write_spec(tmp_path, {"input_files": ["subdir"]})
+        with pytest.raises(ValueError, match="not a regular file"):
+            EvalSpec.from_file(spec_path)
+
+    def test_dot_entry_rejected_as_directory(self, tmp_path):
+        spec_path = self._write_spec(tmp_path, {"input_files": ["."]})
+        with pytest.raises(ValueError, match="not a regular file"):
+            EvalSpec.from_file(spec_path)

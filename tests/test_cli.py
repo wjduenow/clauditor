@@ -266,6 +266,181 @@ class TestCmdGrade:
         assert rc == 1
 
 
+class TestCmdGradeInputFilesStaging:
+    """Tests for US-004: CLI threads run_dir to spec.run so eval input_files
+    are staged per-run, and captured-output mode warns + skips staging."""
+
+    def _make_grading_report(self, passed=True):
+        return GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="Is the output relevant?",
+                    passed=passed,
+                    score=0.9,
+                    evidence="e",
+                    reasoning="r",
+                )
+            ],
+            duration_seconds=1.0,
+        )
+
+    def _staging_spec(self, eval_spec, outputs):
+        """Build a MagicMock SkillSpec whose .run() mirrors the real
+        SkillSpec.run: when run_dir is passed and eval_spec.input_files
+        is non-empty, call stage_inputs(run_dir, [...]). Returns
+        ``outputs`` popped per-call as SkillResults."""
+        from pathlib import Path as _Path
+
+        from clauditor.workspace import stage_inputs
+
+        spec = _make_spec(eval_spec=eval_spec)
+        outputs_iter = iter(outputs)
+
+        def _run(args=None, *, run_dir=None):
+            if run_dir is not None and eval_spec.input_files:
+                stage_inputs(
+                    run_dir, [_Path(p) for p in eval_spec.input_files]
+                )
+            return next(outputs_iter)
+
+        spec.run = MagicMock(side_effect=_run)
+        return spec
+
+    def _ok_result(self, text="ok"):
+        return SkillResult(
+            output=text,
+            exit_code=0,
+            skill_name="test-skill",
+            args="",
+            duration_seconds=0.1,
+            input_tokens=1,
+            output_tokens=1,
+            stream_events=[{"type": "assistant", "text": text}],
+        )
+
+    def test_grade_stages_input_files_into_iteration_run_dir_on_finalize(
+        self, tmp_path, monkeypatch
+    ):
+        """Primary (non --output) grade threads run_dir so input_files
+        are staged under iteration-1/<skill>/run-0/inputs/."""
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "sales.csv"
+        source.write_bytes(b"date,amount\n2024-01-01,100\n")
+
+        eval_spec = _make_eval_spec(input_files=[str(source)])
+        spec = self._staging_spec(eval_spec, [self._ok_result("primary")])
+        report = self._make_grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        staged = (
+            tmp_path
+            / ".clauditor"
+            / "iteration-1"
+            / "test-skill"
+            / "run-0"
+            / "inputs"
+            / "sales.csv"
+        )
+        assert staged.is_file()
+        assert staged.read_bytes() == source.read_bytes()
+
+    def test_grade_variance_stages_inputs_per_run(
+        self, tmp_path, monkeypatch
+    ):
+        """--variance 2 stages input_files into every run-K dir."""
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "sales.csv"
+        source.write_bytes(b"k,v\na,1\n")
+
+        eval_spec = _make_eval_spec(input_files=[str(source)])
+        spec = self._staging_spec(
+            eval_spec,
+            [
+                self._ok_result("primary"),
+                self._ok_result("variance 1"),
+                self._ok_result("variance 2"),
+            ],
+        )
+        report = self._make_grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--variance", "2"])
+
+        assert rc == 0
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        staged_paths = []
+        for k in (0, 1, 2):
+            staged = skill_dir / f"run-{k}" / "inputs" / "sales.csv"
+            assert staged.is_file(), f"run-{k} missing staged input"
+            assert staged.read_bytes() == source.read_bytes()
+            staged_paths.append(staged)
+        # Independence: mutating run-0's copy must not affect run-1 / run-2.
+        staged_paths[0].write_bytes(b"tampered")
+        assert staged_paths[1].read_bytes() == source.read_bytes()
+        assert staged_paths[2].read_bytes() == source.read_bytes()
+
+    def test_grade_captured_output_mode_with_input_files_warns(  # noqa: E501
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--output <file> + non-empty input_files prints a stderr warning
+        and does NOT create any inputs/ dir under the iteration workspace."""
+        monkeypatch.chdir(tmp_path)
+        source = tmp_path / "sales.csv"
+        source.write_bytes(b"k,v\na,1\n")
+        captured = tmp_path / "captured.txt"
+        captured.write_text("pre-captured skill output")
+
+        eval_spec = _make_eval_spec(input_files=[str(source)])
+        # Captured-output mode does not invoke spec.run for the primary.
+        spec = self._staging_spec(eval_spec, [])
+        report = self._make_grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                ["grade", "skill.md", "--output", str(captured)]
+            )
+
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert (
+            "WARNING: --output bypasses the runner; "
+            "input_files declaration is ignored." in err
+        )
+        spec.run.assert_not_called()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assert skill_dir.is_dir()
+        # No inputs/ dir should exist under any run-K
+        assert not any(
+            p.name == "inputs" for p in skill_dir.rglob("inputs")
+        )
+
+
 class TestOnlyCriterion:
     """Tests for --only-criterion filter on the grade subcommand."""
 

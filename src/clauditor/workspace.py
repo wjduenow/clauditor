@@ -25,6 +25,7 @@ __all__ = [
     "IterationExistsError",
     "IterationWorkspace",
     "allocate_iteration",
+    "stage_inputs",
     "validate_skill_name",
 ]
 
@@ -237,3 +238,37 @@ def _allocate_auto(clauditor_dir: Path, skill: str) -> IterationWorkspace:
         f"allocate_iteration: exceeded {_MAX_AUTO_RETRIES} retries scanning "
         f"for a free iteration slot under {clauditor_dir}"
     )
+
+
+def stage_inputs(run_dir: Path, sources: list[Path]) -> list[Path]:
+    """Copy input files into ``run_dir / "inputs"`` and return destinations.
+
+    Pure helper: trusts its inputs. Path parsing, containment checks, and
+    symlink resolution are performed upstream at spec load time (US-001);
+    this function does no validation of its own.
+
+    Contract:
+        - If ``sources`` is empty, returns ``[]`` and does **not** create
+          the ``inputs/`` subdirectory (no-op).
+        - Otherwise creates ``run_dir / "inputs"`` if needed and copies
+          each source to ``<run_dir>/inputs/<source.name>`` via
+          :func:`shutil.copy2` (preserving mtime).
+        - Returns destination paths in the same order as ``sources``.
+
+    Raises:
+        FileNotFoundError: If any source path does not exist.
+    """
+    if not sources:
+        return []
+    inputs_dir = run_dir / "inputs"
+    inputs_dir.mkdir(parents=True, exist_ok=True)
+    destinations: list[Path] = []
+    for src in sources:
+        if not src.exists():
+            raise FileNotFoundError(
+                f"stage_inputs: source file not found: {src}"
+            )
+        dest = inputs_dir / src.name
+        shutil.copy2(src, dest)
+        destinations.append(dest)
+    return destinations
