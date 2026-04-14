@@ -900,6 +900,57 @@ class TestCmdGradeSaveDiff:
         # Every result carries an id (no position-keyed fallback).
         assert all(r["id"] is not None for r in run0["results"])
         assert all(r["passed"] for r in run0["results"])
+        # US-004: captured-text mode (--output) has no subprocess run,
+        # so transcript_path must be None for every result.
+        assert all(
+            r["transcript_path"] is None for r in run0["results"]
+        )
+
+    def test_cmd_grade_threads_transcript_path_on_assertions(
+        self, tmp_path, monkeypatch
+    ):
+        """US-004: in subprocess mode, every AssertionResult in
+        assertions.json carries a repo-relative transcript_path
+        pointing at run-K/output.jsonl."""
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec(
+            assertions=[
+                {"id": "has-primary", "type": "contains", "value": "primary"},
+                {"id": "min-len", "type": "min_length", "value": "3"},
+            ]
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="primary output here",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[
+                    {"type": "assistant", "text": "primary output here"}
+                ],
+                input_tokens=10,
+                output_tokens=5,
+                duration_seconds=0.5,
+            )
+        )
+        report = self._make_grading_report()
+        s, g = self._patch_grade(spec, report)
+        with s, g:
+            rc = main(["grade", "skill.md"])
+        assert rc == 0
+
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        payload = json.loads(
+            (skill_dir / "assertions.json").read_text()
+        )
+        run0 = payload["runs"][0]
+        assert len(run0["results"]) == 2
+        expected = ".clauditor/iteration-1/test-skill/run-0/output.jsonl"
+        for r in run0["results"]:
+            assert r["transcript_path"] == expected
+        # And the file that path names actually exists on disk.
+        assert (skill_dir / "run-0" / "output.jsonl").is_file()
 
     def test_cmd_grade_variance_runs_each_have_assertions_json_entry(
         self, tmp_path, monkeypatch
