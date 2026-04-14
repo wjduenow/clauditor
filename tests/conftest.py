@@ -26,9 +26,10 @@ class _FakePopen:
     """Minimal ``subprocess.Popen`` stand-in for stream-json runner tests.
 
     Exposes a ``stdout`` that yields the provided NDJSON lines (each
-    terminated by ``\\n``), a ``stderr`` mock with ``.read() == ""``, and
-    ``wait``/``kill`` methods. The ``returncode`` is set on construction
-    and returned from ``wait``.
+    terminated by ``\\n``), a ``stderr`` that is an empty iterator (so the
+    runner's background ``for chunk in proc.stderr`` drain loop is a
+    no-op), plus ``wait``/``kill``/``poll`` methods. The ``returncode`` is
+    set on construction and returned from ``wait``.
     """
 
     def __init__(self, lines: list[str], returncode: int = 0):

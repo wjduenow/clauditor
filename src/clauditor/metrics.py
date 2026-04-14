@@ -33,8 +33,10 @@ def build_metrics(
 
     Bucket keys (``grader``, ``quality``, ``triggers``) are absent from the
     returned dict when their source arg is ``None``. ``skill`` is always
-    present because every command runs the skill. ``total`` and
-    ``duration_seconds`` are always present.
+    present — callers that didn't run a skill subprocess (e.g. ``--output``
+    runs that read a captured file) pass ``TokenUsage(0, 0)``, so the
+    ``skill`` bucket appears with zero tokens/duration in that case.
+    ``total`` and ``duration_seconds`` are always present.
 
     ``None`` is the absence signal: passing ``TokenUsage(0, 0)`` explicitly
     still causes the bucket to appear (with zero values). Only ``None``

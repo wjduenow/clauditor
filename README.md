@@ -345,7 +345,7 @@ clauditor compare before.grade.json after.grade.json  # Diff two saved grade rep
 clauditor compare before.txt after.txt --spec <skill.md>  # Re-grade two captures
 clauditor trend <skill> --metric total.total     # Tab-separated history + ASCII sparkline
 clauditor trend <skill> --list-metrics           # List available metric paths
-clauditor trend <skill> --metric pass_rate --command extract  # Filter by subcommand
+clauditor trend <skill> --metric grader.input_tokens --command extract  # Filter by subcommand
 clauditor triggers <skill.md>          # Trigger precision testing
 clauditor capture <skill> -- "args"    # Run skill, save stdout to tests/eval/captured/
 clauditor doctor                       # Report environment diagnostics

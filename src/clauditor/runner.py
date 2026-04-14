@@ -274,12 +274,20 @@ class SkillRunner:
                             saw_result = True
                             usage = msg.get("usage") or {}
                             if isinstance(usage, dict):
-                                input_tokens = int(
-                                    usage.get("input_tokens", 0) or 0
-                                )
-                                output_tokens = int(
-                                    usage.get("output_tokens", 0) or 0
-                                )
+                                # Defensive int() casts — if the CLI ever
+                                # emits None/str/float, don't abort the run.
+                                try:
+                                    input_tokens = int(
+                                        usage.get("input_tokens", 0) or 0
+                                    )
+                                except (TypeError, ValueError):
+                                    input_tokens = 0
+                                try:
+                                    output_tokens = int(
+                                        usage.get("output_tokens", 0) or 0
+                                    )
+                                except (TypeError, ValueError):
+                                    output_tokens = 0
 
                 returncode = proc.wait()
             finally:
