@@ -594,6 +594,28 @@ def _cmd_grade_with_workspace(
             primary_report.to_json(), encoding="utf-8"
         )
 
+        # US-004: thread transcript_path onto every assertion result so
+        # the auditor can jump from a failing row to the stream-json that
+        # produced it. Captured-text mode (--output) has no run subprocess,
+        # so no transcript file exists — transcript_path stays None.
+        def _assertions_with_transcript(
+            text: str, run_idx: int
+        ) -> AssertionSet:
+            result = run_assertions(text, spec.eval_spec.assertions)
+            if args.output:
+                return result
+            # Path is computed against workspace.final_path (the post-
+            # finalize iteration-N/<skill>/ dir), NOT the staging dir,
+            # so readers of assertions.json see a stable repo-relative
+            # path after the atomic rename.
+            transcript_rel = _relative_to_repo(
+                clauditor_dir,
+                workspace.final_path / f"run-{run_idx}" / "output.jsonl",
+            )
+            for r in result.results:
+                r.transcript_path = transcript_rel
+            return result
+
         assertions_payload = {
             "schema_version": 1,
             "skill": spec.skill_name,
@@ -601,9 +623,7 @@ def _cmd_grade_with_workspace(
             "runs": [
                 {
                     "run": idx,
-                    **run_assertions(
-                        text, spec.eval_spec.assertions
-                    ).to_json(),
+                    **_assertions_with_transcript(text, idx).to_json(),
                 }
                 for idx, (text, _events) in enumerate(run_outputs)
             ],
