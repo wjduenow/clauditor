@@ -1519,6 +1519,189 @@ class TestCmdCompareNumericRefs:
         assert "no flips" in out
 
 
+class TestCmdCompareBlind:
+    """--blind flag on compare subcommand (clauditor-dmw.3, #24 US-003)."""
+
+    def _make_blind_report(self, **overrides):
+        from clauditor.quality_grader import BlindReport
+
+        defaults = dict(
+            preference="b",
+            confidence=0.8,
+            score_a=0.72,
+            score_b=0.85,
+            reasoning="After is clearer and more complete.",
+            model="claude-sonnet-4-6",
+            position_agreement=True,
+        )
+        defaults.update(overrides)
+        return BlindReport(**defaults)
+
+    def _write_pair(self, tmp_path, before_text="before content",
+                    after_text="after content"):
+        before = tmp_path / "before.txt"
+        after = tmp_path / "after.txt"
+        before.write_text(before_text)
+        after.write_text(after_text)
+        return before, after
+
+    def test_compare_blind_happy_path(self, tmp_path, capsys):
+        before, after = self._write_pair(tmp_path)
+        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_blind_report(
+            preference="b",
+            confidence=0.8,
+            score_a=0.72,
+            score_b=0.85,
+            reasoning="After is clearer.",
+        )
+        with patch(
+            "clauditor.cli.SkillSpec.from_file", return_value=spec
+        ), patch(
+            "clauditor.quality_grader.blind_compare",
+            new=AsyncMock(return_value=report),
+        ):
+            rc = main(
+                [
+                    "compare",
+                    str(before),
+                    str(after),
+                    "--spec",
+                    "skill.md",
+                    "--blind",
+                ]
+            )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "AFTER" in out
+        assert "before.txt" in out
+        assert "after.txt" in out
+        assert "0.80" in out
+        assert "After is clearer." in out
+
+    def test_compare_blind_tie_output(self, tmp_path, capsys):
+        before, after = self._write_pair(tmp_path)
+        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_blind_report(preference="tie")
+        with patch(
+            "clauditor.cli.SkillSpec.from_file", return_value=spec
+        ), patch(
+            "clauditor.quality_grader.blind_compare",
+            new=AsyncMock(return_value=report),
+        ):
+            rc = main(
+                [
+                    "compare",
+                    str(before),
+                    str(after),
+                    "--spec",
+                    "skill.md",
+                    "--blind",
+                ]
+            )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "TIE" in out
+
+    def test_compare_blind_surfaces_position_bias(self, tmp_path, capsys):
+        before, after = self._write_pair(tmp_path)
+        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_blind_report(position_agreement=False)
+        with patch(
+            "clauditor.cli.SkillSpec.from_file", return_value=spec
+        ), patch(
+            "clauditor.quality_grader.blind_compare",
+            new=AsyncMock(return_value=report),
+        ):
+            rc = main(
+                [
+                    "compare",
+                    str(before),
+                    str(after),
+                    "--spec",
+                    "skill.md",
+                    "--blind",
+                ]
+            )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "position agreement: no" in out
+
+    def test_compare_blind_with_iteration_refs_errors(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        (tmp_path / ".git").mkdir()
+        monkeypatch.chdir(tmp_path)
+        rc = main(
+            [
+                "compare",
+                "--skill",
+                "foo",
+                "--from",
+                "3",
+                "--to",
+                "4",
+                "--spec",
+                "skill.md",
+                "--blind",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "file-pair form" in err
+
+    def test_compare_blind_requires_spec(self, tmp_path, capsys):
+        before, after = self._write_pair(tmp_path)
+        rc = main(
+            [
+                "compare",
+                str(before),
+                str(after),
+                "--blind",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--spec" in err
+        assert "blind" in err.lower()
+
+    def test_compare_blind_reads_both_txt_files(self, tmp_path, capsys):
+        before, after = self._write_pair(
+            tmp_path,
+            before_text="UNIQUE_BEFORE_CONTENT_XYZ",
+            after_text="UNIQUE_AFTER_CONTENT_XYZ",
+        )
+        eval_spec = _make_eval_spec(test_args="Do a thing")
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_blind_report()
+        mock_blind = AsyncMock(return_value=report)
+        with patch(
+            "clauditor.cli.SkillSpec.from_file", return_value=spec
+        ), patch(
+            "clauditor.quality_grader.blind_compare", new=mock_blind
+        ):
+            rc = main(
+                [
+                    "compare",
+                    str(before),
+                    str(after),
+                    "--spec",
+                    "skill.md",
+                    "--blind",
+                ]
+            )
+        assert rc == 0
+        assert mock_blind.call_count == 1
+        call_args = mock_blind.call_args
+        # user_prompt, output_a, output_b, rubric_hint as positional args
+        assert call_args.args[0] == "Do a thing"
+        assert call_args.args[1] == "UNIQUE_BEFORE_CONTENT_XYZ"
+        assert call_args.args[2] == "UNIQUE_AFTER_CONTENT_XYZ"
+
+
 class TestCmdGradeCompareFlagRemoved:
     """US-003: the legacy --compare flag on grade is gone."""
 
