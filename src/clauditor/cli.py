@@ -10,8 +10,13 @@ from pathlib import Path
 from clauditor import history
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.paths import resolve_clauditor_dir
-from clauditor.runner import SkillRunner
+from clauditor.runner import SkillResult, SkillRunner
 from clauditor.spec import SkillSpec
+from clauditor.workspace import (
+    IterationExistsError,
+    IterationWorkspace,
+    allocate_iteration,
+)
 
 
 def _positive_int(value: str) -> int:
@@ -128,10 +133,29 @@ def cmd_run(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
-def cmd_grade(args: argparse.Namespace) -> int:
-    """Run Layer 3 quality grading against a skill's output."""
-    import asyncio
+def _write_run_dir(
+    run_dir: Path, output_text: str, stream_events: list[dict]
+) -> None:
+    """Write ``output.txt`` and ``output.jsonl`` to a ``run-K/`` subdir.
 
+    ``stream_events`` is one JSON object per line. Empty list yields an
+    empty ``output.jsonl`` (the file still exists for layout consistency).
+    """
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "output.txt").write_text(output_text, encoding="utf-8")
+    lines = [json.dumps(ev) for ev in stream_events]
+    body = ("\n".join(lines) + "\n") if lines else ""
+    (run_dir / "output.jsonl").write_text(body, encoding="utf-8")
+
+
+def cmd_grade(args: argparse.Namespace) -> int:
+    """Run Layer 3 quality grading against a skill's output.
+
+    Always writes a per-iteration workspace under
+    ``.clauditor/iteration-N/<skill>/`` containing ``grading.json``,
+    ``timing.json`` and one ``run-K/`` subdir per skill invocation
+    (DEC-002, DEC-003, DEC-010, DEC-011, DEC-012, DEC-014).
+    """
     spec = SkillSpec.from_file(args.skill, eval_path=args.eval)
 
     if not spec.eval_spec:
@@ -180,47 +204,210 @@ def cmd_grade(args: argparse.Namespace) -> int:
         print(f"Prompt:\n{prompt}")
         return 0
 
-    # Get output
-    skill_result = None
+    # Allocate the iteration workspace early so that a collision
+    # (--iteration N already exists) fails before we make any LLM calls.
+    clauditor_dir = resolve_clauditor_dir()
+    try:
+        workspace = allocate_iteration(
+            clauditor_dir,
+            spec.skill_name,
+            iteration=getattr(args, "iteration", None),
+            force=getattr(args, "force", False),
+        )
+    except IterationExistsError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+
+    try:
+        return _cmd_grade_with_workspace(
+            args=args,
+            spec=spec,
+            model=model,
+            clauditor_dir=clauditor_dir,
+            workspace=workspace,
+        )
+    except Exception:
+        workspace.abort()
+        raise
+
+
+def _cmd_grade_with_workspace(
+    *,
+    args: argparse.Namespace,
+    spec: SkillSpec,
+    model: str,
+    clauditor_dir: Path,
+    workspace: IterationWorkspace,
+) -> int:
+    """Body of cmd_grade that runs inside an allocated iteration workspace."""
+    import asyncio
+
+    from clauditor.metrics import TokenUsage, build_metrics
+    from clauditor.quality_grader import (
+        GradingReport,
+        grade_quality,
+    )
+
+    n_variance = int(args.variance) if args.variance else 0
+    total_runs = 1 + n_variance
+
+    # Collect a (output_text, stream_events) tuple per run plus the
+    # corresponding skill-side token / duration totals.
+    run_outputs: list[tuple[str, list[dict]]] = []
+    skill_input_total = 0
+    skill_output_total = 0
+    skill_duration_total = 0.0
+
+    # Run 0: primary. Honors --output (no subprocess) when provided.
+    primary_skill_result: SkillResult | None = None
     if args.output:
-        output = Path(args.output).read_text()
+        primary_text = Path(args.output).read_text()
+        run_outputs.append((primary_text, []))
     else:
-        print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
-        skill_result = spec.run()
-        if not skill_result.succeeded:
+        print(
+            f"Running /{spec.skill_name} {spec.eval_spec.test_args}..."
+        )
+        primary_skill_result = spec.run()
+        if not primary_skill_result.succeeded:
             print(
-                f"ERROR: Skill failed: {skill_result.error}", file=sys.stderr
+                f"ERROR: Skill failed: {primary_skill_result.error}",
+                file=sys.stderr,
             )
             return 1
-        output = skill_result.output
-
-    # Grade (and optionally measure variance in a single event loop)
-    from clauditor.quality_grader import grade_quality
-
-    async def _run_grade():
-        report = await grade_quality(
-            output, spec.eval_spec, model,
-            thresholds=spec.eval_spec.grade_thresholds,
+        primary_text = primary_skill_result.output
+        run_outputs.append(
+            (primary_text, list(primary_skill_result.stream_events))
         )
-        variance_report = None
-        if args.variance:
-            from clauditor.quality_grader import measure_variance
+        skill_input_total += primary_skill_result.input_tokens
+        skill_output_total += primary_skill_result.output_tokens
+        skill_duration_total += primary_skill_result.duration_seconds
 
-            variance_report = await measure_variance(
-                spec, args.variance, model
+    # Variance runs: always invoke the skill subprocess (variance against
+    # a fixed --output file would be meaningless).
+    for _ in range(n_variance):
+        variance_result = spec.run()
+        if not variance_result.succeeded:
+            print(
+                f"ERROR: Variance skill run failed: {variance_result.error}",
+                file=sys.stderr,
             )
-        return report, variance_report
+            return 1
+        run_outputs.append(
+            (variance_result.output, list(variance_result.stream_events))
+        )
+        skill_input_total += variance_result.input_tokens
+        skill_output_total += variance_result.output_tokens
+        skill_duration_total += variance_result.duration_seconds
 
-    report, variance_report = asyncio.run(_run_grade())
+    # Grade every run's output. Primary report drives the exit code; the
+    # rest contribute to variance stats and aggregated token counts.
+    async def _grade_all() -> list[GradingReport]:
+        return list(
+            await asyncio.gather(
+                *[
+                    grade_quality(
+                        text,
+                        spec.eval_spec,
+                        model,
+                        thresholds=spec.eval_spec.grade_thresholds,
+                    )
+                    for text, _ev in run_outputs
+                ]
+            )
+        )
+
+    reports = asyncio.run(_grade_all())
+    primary_report = reports[0]
+    variance_reports = reports[1:]
+
+    # Build a VarianceReport when --variance was passed so the JSON /
+    # human summary continues to surface stability statistics.
+    variance_report = None
+    if n_variance >= 1:
+        from clauditor.quality_grader import VarianceReport
+
+        scores = [r.mean_score for r in reports]
+        score_mean = sum(scores) / len(scores)
+        score_stddev = (
+            sum((s - score_mean) ** 2 for s in scores) / len(scores)
+        ) ** 0.5
+        pass_rate_mean = sum(r.pass_rate for r in reports) / len(reports)
+        stability = sum(1 for r in reports if r.passed) / len(reports)
+        min_stability = 0.8
+        if spec.eval_spec.variance is not None:
+            min_stability = spec.eval_spec.variance.min_stability
+        variance_report = VarianceReport(
+            skill_name=spec.skill_name,
+            n_runs=total_runs,
+            reports=reports,
+            score_mean=score_mean,
+            score_stddev=score_stddev,
+            pass_rate_mean=pass_rate_mean,
+            stability=stability,
+            min_stability=min_stability,
+            model=model,
+            input_tokens=sum(r.input_tokens for r in variance_reports),
+            output_tokens=sum(r.output_tokens for r in variance_reports),
+            skill_input_tokens=0,  # all skill totals already aggregated above
+            skill_output_tokens=0,
+            skill_duration_seconds=0.0,
+        )
+
+    # Aggregate quality (Layer 3 grader) tokens across every run.
+    quality_input_total = sum(r.input_tokens for r in reports)
+    quality_output_total = sum(r.output_tokens for r in reports)
+
+    metrics_dict = build_metrics(
+        skill=TokenUsage(
+            input_tokens=skill_input_total,
+            output_tokens=skill_output_total,
+        ),
+        duration_seconds=skill_duration_total,
+        quality=TokenUsage(
+            input_tokens=quality_input_total,
+            output_tokens=quality_output_total,
+        ),
+    )
+    primary_report.metrics = metrics_dict
+
+    # ------------------------------------------------------------------ #
+    # Write workspace files (DEC-012: stage in tmp_path, then finalize)  #
+    # ------------------------------------------------------------------ #
+    skill_dir = workspace.tmp_path
+    for idx, (text, events) in enumerate(run_outputs):
+        _write_run_dir(skill_dir / f"run-{idx}", text, events)
+
+    (skill_dir / "grading.json").write_text(
+        primary_report.to_json(), encoding="utf-8"
+    )
+
+    timing_payload: dict = {
+        "skill": spec.skill_name,
+        "iteration": workspace.iteration,
+        "n_runs": total_runs,
+        "metrics": metrics_dict,
+    }
+    (skill_dir / "timing.json").write_text(
+        json.dumps(timing_payload, indent=2) + "\n", encoding="utf-8"
+    )
+
+    workspace.finalize()
+
+    # ------------------------------------------------------------------ #
+    # Report to the user                                                  #
+    # ------------------------------------------------------------------ #
+    final_skill_dir = workspace.final_path
 
     if args.json:
         data: dict = {
             "skill": spec.skill_name,
             "model": model,
+            "iteration": workspace.iteration,
+            "workspace": str(final_skill_dir),
             "grade": {
-                "passed": report.passed,
-                "pass_rate": report.pass_rate,
-                "mean_score": report.mean_score,
+                "passed": primary_report.passed,
+                "pass_rate": primary_report.pass_rate,
+                "mean_score": primary_report.mean_score,
                 "results": [
                     {
                         "criterion": r.criterion,
@@ -229,7 +416,7 @@ def cmd_grade(args: argparse.Namespace) -> int:
                         "evidence": r.evidence,
                         "reasoning": r.reasoning,
                     }
-                    for r in report.results
+                    for r in primary_report.results
                 ],
             },
             "variance": None,
@@ -246,122 +433,137 @@ def cmd_grade(args: argparse.Namespace) -> int:
         print(json.dumps(data, indent=2))
     else:
         print(f"Quality Grade: {spec.skill_name} ({model})")
-        print(report.summary())
+        print(primary_report.summary())
         if variance_report:
             print(f"\n{variance_report.summary()}")
+        print(f"\nWorkspace: {final_skill_dir}")
 
-    # --diff: compare against prior results
-    # Use stderr for human output when --json is set to keep stdout valid JSON
-    save_dir = resolve_clauditor_dir()
-    save_path = save_dir / f"{spec.skill_name}.grade.json"
+    # --diff: compare against the previous iteration's grading.json,
+    # if any. Output goes to stderr in --json mode so stdout stays
+    # parseable.
     diff_out = sys.stderr if args.json else sys.stdout
-
-    if args.diff:
-        if save_path.exists():
-            from clauditor.quality_grader import GradingReport
-
-            prior = GradingReport.from_json(save_path.read_text())
-            prior_by_name = {r.criterion: r for r in prior.results}
-            current_by_name = {r.criterion: r for r in report.results}
-            common = set(prior_by_name) & set(current_by_name)
-            regressions = []
-            print("\nDiff vs prior results:", file=diff_out)
-            print(
-                f"  {'Criterion':<40} {'Prior':>6} {'Current':>8} {'Delta':>6}",
-                file=diff_out,
-            )
-            print(
-                f"  {'-'*40} {'-'*6} {'-'*8} {'-'*6}", file=diff_out
-            )
-            for name in sorted(common):
-                p_score = prior_by_name[name].score
-                c_score = current_by_name[name].score
-                delta = c_score - p_score
-                is_regression = (
-                    delta < -0.1
-                    or (prior_by_name[name].passed and not current_by_name[name].passed)
-                )
-                marker = " REGRESSION" if is_regression else ""
-                line = (
-                    f"  {name:<40} {p_score:>6.2f}"
-                    f" {c_score:>8.2f} {delta:>+6.2f}{marker}"
-                )
-                print(line, file=diff_out)
-                if is_regression:
-                    regressions.append(name)
-            if regressions:
-                print(
-                    f"\n  {len(regressions)} regression(s) detected.", file=diff_out
-                )
-            else:
-                print("\n  No regressions detected.", file=diff_out)
+    if getattr(args, "diff", False):
+        prior_path = _find_prior_grading_json(
+            clauditor_dir, spec.skill_name, workspace.iteration
+        )
+        if prior_path is not None:
+            _print_grade_diff(prior_path, primary_report, diff_out)
         else:
             print(
-                f"\nWARNING: No prior results at {save_path}. "
-                "Run with --save first to establish a baseline.",
+                "\nWARNING: No prior iteration grading.json found "
+                f"for skill '{spec.skill_name}'.",
                 file=sys.stderr,
             )
-
-    # Build the canonical bucketed metrics dict (US-004). For --output
-    # runs there's no skill subprocess, so skill tokens/duration are zero.
-    # When --variance N was passed, the variance path runs the skill N
-    # additional times and makes N additional Layer 3 grader calls — those
-    # must be included so longitudinal trends reflect the real cost.
-    from clauditor.metrics import TokenUsage, build_metrics
-
-    base_skill_input = getattr(skill_result, "input_tokens", 0) or 0
-    base_skill_output = getattr(skill_result, "output_tokens", 0) or 0
-    base_skill_duration = getattr(skill_result, "duration_seconds", 0.0) or 0.0
-    base_quality_input = report.input_tokens
-    base_quality_output = report.output_tokens
-
-    if variance_report is not None:
-        base_skill_input += variance_report.skill_input_tokens
-        base_skill_output += variance_report.skill_output_tokens
-        base_skill_duration += variance_report.skill_duration_seconds
-        base_quality_input += variance_report.input_tokens
-        base_quality_output += variance_report.output_tokens
-
-    skill_tokens = TokenUsage(
-        input_tokens=base_skill_input,
-        output_tokens=base_skill_output,
-    )
-    quality_tokens = TokenUsage(
-        input_tokens=base_quality_input,
-        output_tokens=base_quality_output,
-    )
-    metrics_dict = build_metrics(
-        skill=skill_tokens,
-        duration_seconds=base_skill_duration,
-        quality=quality_tokens,
-    )
-    report.metrics = metrics_dict
-
-    if args.save:
-        save_dir.mkdir(parents=True, exist_ok=True)
-        save_path.write_text(report.to_json())
-        print(f"\nGrade report saved to {save_path}", file=diff_out)
 
     # Append a history record for trendability (US-006). Skip when
     # --only-criterion is set: partial-criterion runs would silently
     # corrupt longitudinal pass_rate/mean_score trends.
     if not getattr(args, "only_criterion", None):
+        workspace_rel = _relative_to_repo(clauditor_dir, final_skill_dir)
         try:
             history.append_record(
                 skill=spec.skill_name,
-                pass_rate=report.pass_rate,
-                mean_score=report.mean_score,
+                pass_rate=primary_report.pass_rate,
+                mean_score=primary_report.mean_score,
                 metrics=metrics_dict,
                 command="grade",
+                iteration=workspace.iteration,
+                workspace_path=workspace_rel,
             )
         except Exception as e:  # pragma: no cover - defensive
             print(f"WARNING: failed to append history: {e}", file=sys.stderr)
 
     # Determine exit code
-    passed = report.passed
+    passed = primary_report.passed
     if variance_report:
         passed = passed and variance_report.passed
     return 0 if passed else 1
+
+
+def _relative_to_repo(clauditor_dir: Path, final_skill_dir: Path) -> str:
+    """Return ``final_skill_dir`` as a path relative to the repo root.
+
+    The repo root is ``clauditor_dir.parent`` (DEC-009). Falls back to the
+    absolute path if the directories are not related (defensive — should
+    not happen in practice).
+    """
+    repo_root = clauditor_dir.parent
+    try:
+        return str(final_skill_dir.relative_to(repo_root))
+    except ValueError:  # pragma: no cover - defensive
+        return str(final_skill_dir)
+
+
+def _find_prior_grading_json(
+    clauditor_dir: Path, skill: str, current_iteration: int
+) -> Path | None:
+    """Return the most recent prior ``grading.json`` for ``skill``, if any.
+
+    Scans ``iteration-*`` siblings of ``iteration-<current>``, picks the
+    highest index strictly less than ``current_iteration`` whose
+    ``<skill>/grading.json`` exists.
+    """
+    if not clauditor_dir.exists():
+        return None
+    import re as _re
+
+    pattern = _re.compile(r"^iteration-(\d+)$")
+    candidates: list[int] = []
+    for child in clauditor_dir.iterdir():
+        if not child.is_dir():
+            continue
+        m = pattern.match(child.name)
+        if m is None:
+            continue
+        idx = int(m.group(1))
+        if idx >= current_iteration:
+            continue
+        if (child / skill / "grading.json").exists():
+            candidates.append(idx)
+    if not candidates:
+        return None
+    best = max(candidates)
+    return clauditor_dir / f"iteration-{best}" / skill / "grading.json"
+
+
+def _print_grade_diff(prior_path: Path, current_report, out) -> None:
+    """Print a per-criterion diff against ``prior_path``'s GradingReport."""
+    from clauditor.quality_grader import GradingReport
+
+    prior = GradingReport.from_json(prior_path.read_text())
+    prior_by_name = {r.criterion: r for r in prior.results}
+    current_by_name = {r.criterion: r for r in current_report.results}
+    common = set(prior_by_name) & set(current_by_name)
+    regressions: list[str] = []
+    print(f"\nDiff vs prior results ({prior_path}):", file=out)
+    print(
+        f"  {'Criterion':<40} {'Prior':>6} {'Current':>8} {'Delta':>6}",
+        file=out,
+    )
+    print(f"  {'-'*40} {'-'*6} {'-'*8} {'-'*6}", file=out)
+    for name in sorted(common):
+        p_score = prior_by_name[name].score
+        c_score = current_by_name[name].score
+        delta = c_score - p_score
+        is_regression = (
+            delta < -0.1
+            or (
+                prior_by_name[name].passed
+                and not current_by_name[name].passed
+            )
+        )
+        marker = " REGRESSION" if is_regression else ""
+        line = (
+            f"  {name:<40} {p_score:>6.2f}"
+            f" {c_score:>8.2f} {delta:>+6.2f}{marker}"
+        )
+        print(line, file=out)
+        if is_regression:
+            regressions.append(name)
+    if regressions:
+        print(f"\n  {len(regressions)} regression(s) detected.", file=out)
+    else:
+        print("\n  No regressions detected.", file=out)
 
 
 def _load_assertion_set(
@@ -974,10 +1176,27 @@ def main(argv: list[str] | None = None) -> int:
         help="Run N times with variance measurement",
     )
     p_grade.add_argument(
-        "--save", action="store_true", help="Save grade report to .clauditor/"
+        "--iteration",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "Explicit iteration index. Defaults to auto-increment "
+            "(scan .clauditor/iteration-* and pick max+1)."
+        ),
     )
     p_grade.add_argument(
-        "--diff", action="store_true", help="Compare against prior grade results"
+        "--force",
+        action="store_true",
+        help=(
+            "With --iteration N, remove the existing iteration-N/ "
+            "directory before writing (clean slate)."
+        ),
+    )
+    p_grade.add_argument(
+        "--diff",
+        action="store_true",
+        help="Compare against the previous iteration's grading.json",
     )
     p_grade.add_argument(
         "--only-criterion",
