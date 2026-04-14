@@ -115,6 +115,7 @@ class EvalSpec:
     skill_name: str
     description: str = ""
     test_args: str = ""  # Pre-filled args to skip interactive Q&A
+    input_files: list[str] = field(default_factory=list)  # Resolved absolute paths
     assertions: list[dict] = field(default_factory=list)  # Layer 1 checks
     sections: list[SectionRequirement] = field(default_factory=list)  # Layer 2 schema
     grading_criteria: list[str] = field(default_factory=list)  # Layer 3 rubric
@@ -131,6 +132,51 @@ class EvalSpec:
         path = Path(path)
         with open(path) as f:
             data = json.load(f)
+
+        skill_name = data.get("skill_name", path.stem)
+        spec_dir = path.parent.resolve()
+        raw_input_files = data.get("input_files", [])
+        resolved_input_files: list[str] = []
+        input_basenames: list[str] = []
+        for i, entry in enumerate(raw_input_files):
+            if Path(entry).is_absolute():
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"input_files[{i}]={entry!r} — absolute paths not allowed"
+                )
+            try:
+                candidate = (path.parent / entry).resolve(strict=True)
+            except FileNotFoundError as e:
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"input_files[{i}]={entry!r} — file not found under {spec_dir}"
+                ) from e
+            if not candidate.is_relative_to(spec_dir):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"input_files[{i}]={entry!r} — escapes spec directory"
+                )
+            resolved_input_files.append(str(candidate))
+            input_basenames.append(candidate.name)
+        for i, name_i in enumerate(input_basenames):
+            for j in range(i + 1, len(input_basenames)):
+                if input_basenames[j] == name_i:
+                    raise ValueError(
+                        f"EvalSpec(skill_name={skill_name!r}): "
+                        f"input_files entries {i} and {j} share destination "
+                        f"basename {name_i!r}"
+                    )
+
+        raw_output_files = data.get("output_files", [])
+        input_basename_set = set(input_basenames)
+        for pat in raw_output_files:
+            pat_name = Path(pat).name
+            if pat_name in input_basename_set:
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"output_files pattern {pat!r} collides with "
+                    f"input_files basename {pat_name!r}"
+                )
 
         sections = []
         for s in data.get("sections", []):
@@ -205,9 +251,10 @@ class EvalSpec:
             )
 
         return cls(
-            skill_name=data.get("skill_name", path.stem),
+            skill_name=skill_name,
             description=data.get("description", ""),
             test_args=data.get("test_args", ""),
+            input_files=resolved_input_files,
             assertions=data.get("assertions", []),
             sections=sections,
             grading_criteria=data.get("grading_criteria", []),
@@ -225,6 +272,7 @@ class EvalSpec:
             "skill_name": self.skill_name,
             "description": self.description,
             "test_args": self.test_args,
+            "input_files": self.input_files,
             "assertions": self.assertions,
             "sections": [
                 {
