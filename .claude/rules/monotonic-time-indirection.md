@@ -51,9 +51,9 @@ assert report.duration_seconds == pytest.approx(1.25)
 ## Canonical implementation
 
 `src/clauditor/quality_grader.py` — the `_monotonic = time.monotonic` alias
-at the top of the module, used by `blind_compare`, `grade_quality`, and
-`measure_variance`. `tests/test_quality_grader.py::test_blind_compare_tracks_duration`
-is the canonical test shape.
+at the top of the module, used by `blind_compare` and `grade_quality`.
+`tests/test_quality_grader.py::test_blind_compare_tracks_duration` is the
+canonical test shape.
 
 ## When this rule does not apply
 

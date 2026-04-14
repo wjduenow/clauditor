@@ -293,7 +293,7 @@ For a true baseline A/B run (skill vs raw Claude against the same rubric), use t
 Rubric-based grading can miss holistic regressions where two outputs pass every criterion but one visibly feels worse. For that, pass `--blind` to have a Sonnet judge compare the two outputs side-by-side without knowing which version is which:
 
 ```bash
-clauditor compare before.txt after.txt --spec <skill.eval.json> --blind
+clauditor compare before.txt after.txt --spec <skill.md> --blind
 ```
 
 The judge runs twice with the A/B positions swapped so position bias shows up as disagreement. Output includes a preference (`BEFORE` / `AFTER` / `TIE`), confidence, per-output holistic score, whether the two runs agreed on the winner, and the judge's reasoning. Currently only the file-pair form is supported (iteration refs like `--from/--to` are rejected); `--blind` requires `--spec` for the user prompt context and uses `grading_criteria` from the spec as an optional rubric hint to the judge.
