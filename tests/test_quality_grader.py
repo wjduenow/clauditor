@@ -1163,6 +1163,26 @@ class TestBlindCompare:
         assert report.confidence == pytest.approx(0.3)
 
     @pytest.mark.asyncio
+    async def test_blind_compare_disagreement_takes_min_confidence(self):
+        # Explicit named test for the min-not-mean invariant on disagreement.
+        # Seed 1 → run-1 "ab->12" says "1" → a wins (conf 0.9).
+        # Run-2 "ab->21" says "1" → b wins (conf 0.7). Disagreement → min.
+        r1 = _blind_response("1", confidence=0.9, score_1=0.9, score_2=0.4)
+        r2 = _blind_response("1", confidence=0.7, score_1=0.8, score_2=0.5)
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[r1, r2])
+        with patch(
+            "anthropic.AsyncAnthropic",
+            return_value=mock_client,
+        ):
+            report = await blind_compare(
+                "q", "a-text", "b-text", rng=random.Random(1)
+            )
+        assert report.preference == "tie"
+        assert report.position_agreement is False
+        assert report.confidence == pytest.approx(0.7)  # min(0.9, 0.7)
+
+    @pytest.mark.asyncio
     async def test_blind_compare_explicit_tie_verdict(self):
         r1 = _blind_response("tie", confidence=0.5, score_1=0.7, score_2=0.7)
         r2 = _blind_response("tie", confidence=0.5, score_1=0.7, score_2=0.7)
@@ -1369,8 +1389,36 @@ class TestBlindCompare:
         assert report.score_b == pytest.approx(0.3)
         assert report.confidence == pytest.approx(0.9)
         assert "parse" in report.reasoning.lower()
+        assert "run-1" in report.reasoning
         assert report.input_tokens == 120
         assert report.output_tokens == 50
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_partial_parse_run1_bad_keeps_run2(self):
+        # Symmetric to test_blind_compare_partial_parse_failure_keeps_good_run:
+        # run-1 is garbage, run-2 parses. Verdict must come from run-2 and
+        # the reasoning must credit run-2 (not "run-1"). Regression test for
+        # the hardcoded-run-number bug flagged by CodeRabbit.
+        bad = MagicMock(usage=MagicMock(input_tokens=20, output_tokens=10))
+        bad.content = [MagicMock(text="garbage not json")]
+        # Seed 1 → run-2 "ab->21"; judge says "2" → a wins in original space.
+        good = _blind_response(
+            "2", confidence=0.8, score_1=0.4, score_2=0.85,
+            input_tokens=100, output_tokens=40,
+        )
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[bad, good])
+        with patch(
+            "anthropic.AsyncAnthropic",
+            return_value=mock_client,
+        ):
+            report = await blind_compare(
+                "q", "a-text", "b-text", rng=random.Random(1)
+            )
+        assert report.preference == "a"
+        assert report.position_agreement is False
+        assert "run-2" in report.reasoning
+        assert "run-1" not in report.reasoning or report.reasoning.count("run-") == 1
 
     @pytest.mark.asyncio
     async def test_blind_compare_default_rng_works(self):

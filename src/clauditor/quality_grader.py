@@ -416,11 +416,13 @@ async def blind_compare(
                 parsed1, run1_mapping
             )
             failed_text = text2
+            good_run = 1
         else:
             winner, conf, score_a, score_b, reason = translate(
                 parsed2, run2_mapping
             )
             failed_text = text1
+            good_run = 2
         duration = _monotonic() - start
         return BlindReport(
             preference=winner,  # type: ignore[arg-type]
@@ -428,8 +430,8 @@ async def blind_compare(
             score_a=score_a,
             score_b=score_b,
             reasoning=(
-                "Position-check run failed to parse; using only the "
-                "first run's verdict. Raw failed text: "
+                "Position-check run failed to parse; using only run-"
+                f"{good_run}'s verdict. Raw failed text: "
                 f"{failed_text[:300]!r}\n---\n{reason}"
             ),
             position_agreement=False,
