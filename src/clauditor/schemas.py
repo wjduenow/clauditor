@@ -135,6 +135,13 @@ class EvalSpec:
 
         skill_name = data.get("skill_name", path.stem)
         spec_dir = path.parent.resolve()
+        # Path resolution split (intentional): `input_files` are pre-existing
+        # static assets and resolve HERE at load time, relative to the spec
+        # file's parent dir, with strict source-containment. `output_files`
+        # are runtime artifacts and resolve at run time against the runner's
+        # effective CWD (staging dir when inputs are declared, else
+        # project_dir) — see `spec.py` `_collect_outputs` / `effective_cwd`.
+        # Any new path-bearing field must pick a side of this split.
         raw_input_files = data.get("input_files", [])
         resolved_input_files: list[str] = []
         input_basenames: list[str] = []
