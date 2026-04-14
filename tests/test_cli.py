@@ -952,6 +952,56 @@ class TestCmdGradeSaveDiff:
         # And the file that path names actually exists on disk.
         assert (skill_dir / "run-0" / "output.jsonl").is_file()
 
+    def test_cmd_grade_no_transcript_suppresses_run_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """US-005: --no-transcript skips run-K/output.jsonl writes and
+        leaves every AssertionResult.transcript_path as None, while
+        assertions.json / grading.json still land."""
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec(
+            assertions=[
+                {"id": "has-primary", "type": "contains", "value": "primary"},
+                {"id": "min-len", "type": "min_length", "value": "3"},
+            ]
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="primary output here",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[
+                    {"type": "assistant", "text": "primary output here"}
+                ],
+                input_tokens=10,
+                output_tokens=5,
+                duration_seconds=0.5,
+            )
+        )
+        report = self._make_grading_report()
+        s, g = self._patch_grade(spec, report)
+        with s, g:
+            rc = main(["grade", "skill.md", "--no-transcript"])
+        assert rc == 0
+
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        # No run-K dir written at all.
+        assert not (skill_dir / "run-0" / "output.jsonl").exists()
+        assert not (skill_dir / "run-0" / "output.txt").exists()
+        assert not (skill_dir / "run-0").exists()
+        # assertions.json still persisted, but transcript_path is None.
+        payload = json.loads(
+            (skill_dir / "assertions.json").read_text()
+        )
+        run0 = payload["runs"][0]
+        assert len(run0["results"]) == 2
+        for r in run0["results"]:
+            assert r["transcript_path"] is None
+        # grading.json still persisted.
+        assert (skill_dir / "grading.json").is_file()
+
     def test_cmd_grade_variance_runs_each_have_assertions_json_entry(
         self, tmp_path, monkeypatch
     ):
