@@ -317,8 +317,9 @@ class TestClauditorSpecInputFiles:
         assert ret == "RESULT"
         original_run.assert_called_once()
         call_kwargs = original_run.call_args.kwargs
-        assert call_kwargs["run_dir"] == tmp_path / "clauditor_run"
-        assert (tmp_path / "clauditor_run").exists()
+        expected_dir = tmp_path / f"clauditor_run_{id(result)}"
+        assert call_kwargs["run_dir"] == expected_dir
+        assert expected_dir.exists()
 
         # Explicit run_dir passed by caller overrides the default
         original_run.reset_mock()

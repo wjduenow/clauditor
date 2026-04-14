@@ -117,7 +117,7 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
         spec = SkillSpec.from_file(skill_path, eval_path=eval_path, runner=runner)
         if spec.eval_spec is not None and spec.eval_spec.input_files:
             original_run = spec.run
-            default_run_dir = tmp_path / "clauditor_run"
+            default_run_dir = tmp_path / f"clauditor_run_{id(spec)}"
 
             def _run_with_default_run_dir(
                 args: str | None = None,

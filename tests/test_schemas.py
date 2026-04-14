@@ -1108,3 +1108,25 @@ class TestEvalSpecInputFiles:
         d = spec.to_dict()
         assert "input_files" in d
         assert d["input_files"] == [str(f.resolve())]
+        # Loading the same spec twice yields the same in-memory state.
+        # (to_dict emits absolute paths for inspection, not as a re-loadable
+        # authoring format — by design, since from_file rejects absolute paths.)
+        reloaded = EvalSpec.from_file(spec_path)
+        assert reloaded.input_files == spec.input_files
+
+    @pytest.mark.parametrize("bad_entry", [None, 42, ["nested"], ""])
+    def test_non_string_or_empty_entry_rejected(self, tmp_path, bad_entry):
+        spec_path = self._write_spec(tmp_path, {"input_files": [bad_entry]})
+        with pytest.raises(ValueError, match="non-empty string"):
+            EvalSpec.from_file(spec_path)
+
+    def test_directory_entry_rejected(self, tmp_path):
+        (tmp_path / "subdir").mkdir()
+        spec_path = self._write_spec(tmp_path, {"input_files": ["subdir"]})
+        with pytest.raises(ValueError, match="not a regular file"):
+            EvalSpec.from_file(spec_path)
+
+    def test_dot_entry_rejected_as_directory(self, tmp_path):
+        spec_path = self._write_spec(tmp_path, {"input_files": ["."]})
+        with pytest.raises(ValueError, match="not a regular file"):
+            EvalSpec.from_file(spec_path)

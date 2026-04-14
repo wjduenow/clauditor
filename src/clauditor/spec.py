@@ -101,7 +101,11 @@ class SkillSpec:
         # Read output from files if eval spec specifies file-based output
         # Only read files on successful runs to avoid stale output
         if self.eval_spec and result.succeeded:
-            base_dir = self.runner.project_dir
+            base_dir = (
+                effective_cwd
+                if effective_cwd is not None
+                else self.runner.project_dir
+            )
             if self.eval_spec.output_file:
                 file_path = base_dir / self.eval_spec.output_file
                 if file_path.exists():
@@ -126,7 +130,9 @@ class SkillSpec:
     def evaluate(self, output: str | None = None) -> AssertionSet:
         """Run Layer 1 assertions from the eval spec against output.
 
-        If output is None, runs the skill first to get output.
+        If output is None, runs the skill first to get output. Note that this
+        path does not stage ``input_files`` — for that, call ``run(run_dir=...)``
+        directly (the CLI and pytest plugin do this for you).
         """
         if not self.eval_spec:
             raise ValueError(

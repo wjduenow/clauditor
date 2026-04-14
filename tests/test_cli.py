@@ -387,10 +387,16 @@ class TestCmdGradeInputFilesStaging:
 
         assert rc == 0
         skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        staged_paths = []
         for k in (0, 1, 2):
             staged = skill_dir / f"run-{k}" / "inputs" / "sales.csv"
             assert staged.is_file(), f"run-{k} missing staged input"
             assert staged.read_bytes() == source.read_bytes()
+            staged_paths.append(staged)
+        # Independence: mutating run-0's copy must not affect run-1 / run-2.
+        staged_paths[0].write_bytes(b"tampered")
+        assert staged_paths[1].read_bytes() == source.read_bytes()
+        assert staged_paths[2].read_bytes() == source.read_bytes()
 
     def test_grade_captured_output_mode_with_input_files_warns(  # noqa: E501
         self, tmp_path, monkeypatch, capsys

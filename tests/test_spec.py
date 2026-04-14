@@ -209,6 +209,76 @@ class TestFileBasedOutput:
         assert result.outputs == {}
 
 
+class TestOutputFilesResolutionWithStagedInputs:
+    """When input_files is staged, output_files must glob from the staging CWD,
+    not the runner's project_dir — otherwise mutated outputs are lost."""
+
+    def test_output_files_resolves_against_staging_cwd(
+        self, tmp_path, mock_runner
+    ):
+        skill_dir = tmp_path / ".claude" / "commands"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "csv-cleaner.md").write_text("# CSV cleaner\n")
+        (skill_dir / "sales.csv").write_text("a,b\n1,2\n")
+        (skill_dir / "csv-cleaner.eval.json").write_text(
+            json.dumps(
+                {
+                    "skill_name": "csv-cleaner",
+                    "test_args": "",
+                    "assertions": [],
+                    "input_files": ["sales.csv"],
+                    "output_files": ["cleaned.csv"],
+                }
+            )
+        )
+
+        runner = mock_runner(output="stdout transcript")
+        runner.project_dir = tmp_path  # repo root, NOT the staging dir
+
+        run_dir = tmp_path / "iter-tmp" / "csv-cleaner" / "run-0"
+        run_dir.mkdir(parents=True)
+        cleaned_text = "header\nclean,row\n"
+
+        # Side-effect: the "skill" writes cleaned.csv into its staging CWD.
+        base_result = runner.run.return_value
+
+        def side_effect(skill_name, args, *, cwd=None):
+            assert cwd == run_dir / "inputs"
+            (cwd / "cleaned.csv").write_text(cleaned_text)
+            return base_result
+
+        runner.run.side_effect = side_effect
+
+        spec = SkillSpec.from_file(skill_dir / "csv-cleaner.md", runner=runner)
+        result = spec.run(run_dir=run_dir)
+
+        assert "cleaned.csv" in result.outputs
+        assert result.outputs["cleaned.csv"] == cleaned_text
+        assert result.output == cleaned_text
+
+    def test_output_files_without_input_files_still_uses_project_dir(
+        self, tmp_skill_file, mock_runner
+    ):
+        # Regression guard: pre-existing output_files behavior is unchanged
+        # when no input_files are declared.
+        eval_data = {
+            "skill_name": "glob-skill",
+            "test_args": "",
+            "assertions": [],
+            "output_files": ["out/*.txt"],
+        }
+        skill_path, _ = tmp_skill_file("glob-skill", eval_data=eval_data)
+        runner = mock_runner(output="stdout content")
+        project_dir = skill_path.parent
+        runner.project_dir = project_dir
+        (project_dir / "out").mkdir()
+        (project_dir / "out" / "a.txt").write_text("alpha")
+
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        result = spec.run()
+        assert result.outputs["out/a.txt"] == "alpha"
+
+
 class TestSkillSpecRunWithInputFiles:
     """US-003: run_dir staging hook for EvalSpec.input_files."""
 

@@ -139,6 +139,11 @@ class EvalSpec:
         resolved_input_files: list[str] = []
         input_basenames: list[str] = []
         for i, entry in enumerate(raw_input_files):
+            if not isinstance(entry, str) or entry == "":
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"input_files[{i}]={entry!r} — must be a non-empty string"
+                )
             if Path(entry).is_absolute():
                 raise ValueError(
                     f"EvalSpec(skill_name={skill_name!r}): "
@@ -155,6 +160,11 @@ class EvalSpec:
                 raise ValueError(
                     f"EvalSpec(skill_name={skill_name!r}): "
                     f"input_files[{i}]={entry!r} — escapes spec directory"
+                )
+            if not candidate.is_file():
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"input_files[{i}]={entry!r} — not a regular file"
                 )
             resolved_input_files.append(str(candidate))
             input_basenames.append(candidate.name)
