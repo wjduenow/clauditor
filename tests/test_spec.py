@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -63,7 +64,7 @@ class TestRun:
         runner = mock_runner(output="explicit output")
         spec = SkillSpec.from_file(skill_path, runner=runner)
         result = spec.run(args="--custom flag")
-        runner.run.assert_called_once_with("run-skill", "--custom flag")
+        runner.run.assert_called_once_with("run-skill", "--custom flag", cwd=None)
         assert result.output == "explicit output"
 
     def test_run_uses_eval_test_args_when_no_args(self, tmp_skill_file, mock_runner):
@@ -71,7 +72,7 @@ class TestRun:
         runner = mock_runner(output="eval args output")
         spec = SkillSpec.from_file(skill_path, runner=runner)
         spec.run()
-        runner.run.assert_called_once_with("run-skill", "--depth quick")
+        runner.run.assert_called_once_with("run-skill", "--depth quick", cwd=None)
 
     def test_run_uses_empty_string_when_no_eval_no_args(
         self, tmp_skill_file, mock_runner
@@ -80,7 +81,7 @@ class TestRun:
         runner = mock_runner(output="empty args output")
         spec = SkillSpec.from_file(skill_path, runner=runner)
         spec.run()
-        runner.run.assert_called_once_with("run-skill", "")
+        runner.run.assert_called_once_with("run-skill", "", cwd=None)
 
 
 class TestEvaluate:
@@ -206,6 +207,83 @@ class TestFileBasedOutput:
         result = spec.run()
         assert result.output == "just stdout"
         assert result.outputs == {}
+
+
+class TestSkillSpecRunWithInputFiles:
+    """US-003: run_dir staging hook for EvalSpec.input_files."""
+
+    def test_spec_run_without_run_dir_uses_project_dir(
+        self, tmp_skill_file, mock_runner
+    ):
+        skill_path = tmp_skill_file("no-rd-skill")
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run()
+        # cwd kwarg defaults to None (runner falls back to project_dir)
+        assert runner.run.call_args.kwargs.get("cwd") is None
+
+    def test_spec_run_with_empty_input_files_does_not_stage(
+        self, tmp_skill_file, mock_runner, tmp_path
+    ):
+        eval_data = {
+            "skill_name": "empty-inputs",
+            "test_args": "",
+            "assertions": [],
+            "input_files": [],
+        }
+        skill_path, _ = tmp_skill_file("empty-inputs", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        with patch("clauditor.spec.stage_inputs") as mock_stage:
+            spec.run(run_dir=tmp_path / "run-0")
+        mock_stage.assert_not_called()
+        assert runner.run.call_args.kwargs.get("cwd") is None
+
+    def test_spec_run_with_input_files_stages_and_sets_cwd(
+        self, tmp_skill_file, mock_runner, tmp_path
+    ):
+        # Create sibling input files next to the skill
+        (tmp_path / "data1.txt").write_text("one")
+        (tmp_path / "data2.txt").write_text("two")
+        eval_data = {
+            "skill_name": "staging-skill",
+            "test_args": "",
+            "assertions": [],
+            "input_files": ["data1.txt", "data2.txt"],
+        }
+        skill_path, _ = tmp_skill_file("staging-skill", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        run_dir = tmp_path / "run-0"
+        run_dir.mkdir()
+        spec.run(run_dir=run_dir)
+
+        assert (run_dir / "inputs" / "data1.txt").read_text() == "one"
+        assert (run_dir / "inputs" / "data2.txt").read_text() == "two"
+        assert runner.run.call_args.kwargs.get("cwd") == run_dir / "inputs"
+
+    def test_spec_run_with_input_files_emits_staged_log_line(
+        self, tmp_skill_file, mock_runner, tmp_path, capsys
+    ):
+        (tmp_path / "a.txt").write_text("a")
+        (tmp_path / "b.txt").write_text("b")
+        eval_data = {
+            "skill_name": "log-skill",
+            "test_args": "",
+            "assertions": [],
+            "input_files": ["a.txt", "b.txt"],
+        }
+        skill_path, _ = tmp_skill_file("log-skill", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        run_dir = tmp_path / "run-1"
+        run_dir.mkdir()
+        spec.run(run_dir=run_dir)
+
+        captured = capsys.readouterr()
+        assert "Staged 2 input file(s)" in captured.out
 
 
 class TestFailedRunResult:

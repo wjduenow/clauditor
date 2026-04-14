@@ -261,6 +261,24 @@ class TestSkillRunnerRun:
         assert result.output == ""
 
 
+class TestSkillRunnerCwd:
+    """US-003: cwd override threads through to Popen."""
+
+    def test_runner_default_cwd_is_project_dir(self):
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("out")
+            runner.run("my-skill", "args")
+            assert mock_popen.call_args.kwargs["cwd"] == "/tmp"
+
+    def test_runner_cwd_override_passes_through_to_popen(self, tmp_path):
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("out")
+            runner.run("my-skill", "args", cwd=tmp_path)
+            assert mock_popen.call_args.kwargs["cwd"] == str(tmp_path)
+
+
 # ---------------------------------------------------------------------------
 # SkillResult.outputs dict
 # ---------------------------------------------------------------------------
