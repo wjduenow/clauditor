@@ -320,6 +320,30 @@ class SkillRunner:
             )
             return result
         finally:
+            # Defensive cleanup: if an unexpected exception escaped the
+            # inner try, the subprocess could still be running. Always try
+            # to reap it so we never leak a claude process. Swallow all
+            # cleanup errors — duration must still be set below.
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=1)
+                    except Exception:
+                        try:
+                            proc.kill()
+                            proc.wait(timeout=1)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            if proc is not None:
+                for stream in (proc.stdout, proc.stderr):
+                    try:
+                        if stream is not None and hasattr(stream, "close"):
+                            stream.close()
+                    except Exception:
+                        pass
             duration = time.monotonic() - start
             if result is not None:
                 result.duration_seconds = duration
