@@ -62,6 +62,7 @@ class SkillResult:
     input_tokens: int = 0
     output_tokens: int = 0
     raw_messages: list[dict] = field(default_factory=list)
+    stream_events: list[dict] = field(default_factory=list)
 
     @property
     def succeeded(self) -> bool:
@@ -167,6 +168,7 @@ class SkillRunner:
         """
         start = time.monotonic()
         raw_messages: list[dict] = []
+        stream_events: list[dict] = []
         text_chunks: list[str] = []
         input_tokens = 0
         output_tokens = 0
@@ -258,6 +260,8 @@ class SkillRunner:
                             continue
 
                         raw_messages.append(msg)
+                        if "type" in msg:
+                            stream_events.append(msg)
                         mtype = msg.get("type")
                         if mtype == "assistant":
                             message = msg.get("message") or {}
@@ -306,6 +310,7 @@ class SkillRunner:
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     raw_messages=raw_messages,
+                    stream_events=stream_events,
                 )
                 return result
 
@@ -325,6 +330,7 @@ class SkillRunner:
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 raw_messages=raw_messages,
+                stream_events=stream_events,
             )
             return result
         finally:
