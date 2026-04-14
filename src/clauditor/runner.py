@@ -130,12 +130,20 @@ class SkillRunner:
         self.timeout = timeout
         self.claude_bin = claude_bin
 
-    def run(self, skill_name: str, args: str = "") -> SkillResult:
+    def run(
+        self,
+        skill_name: str,
+        args: str = "",
+        *,
+        cwd: Path | None = None,
+    ) -> SkillResult:
         """Run a skill and capture its output.
 
         Args:
             skill_name: Name of the skill (e.g., "find-kid-activities")
             args: Pre-filled arguments to skip interactive prompts
+            cwd: Optional override for the subprocess working directory.
+                When ``None``, falls back to ``self.project_dir``.
 
         Returns:
             SkillResult with captured output
@@ -143,7 +151,7 @@ class SkillRunner:
         prompt = f"/{skill_name}"
         if args:
             prompt += f" {args}"
-        return self._invoke(prompt=prompt, skill_name=skill_name, args=args)
+        return self._invoke(prompt=prompt, skill_name=skill_name, args=args, cwd=cwd)
 
     def run_raw(self, prompt: str) -> SkillResult:
         """Run a raw prompt without skill prefix for baseline comparison.
@@ -160,7 +168,14 @@ class SkillRunner:
     # Stream-json Popen implementation                                    #
     # ------------------------------------------------------------------ #
 
-    def _invoke(self, *, prompt: str, skill_name: str, args: str) -> SkillResult:
+    def _invoke(
+        self,
+        *,
+        prompt: str,
+        skill_name: str,
+        args: str,
+        cwd: Path | None = None,
+    ) -> SkillResult:
         """Run ``claude`` with stream-json output and parse the NDJSON stream.
 
         Uses ``try/finally`` so ``duration_seconds`` is populated on every
@@ -189,7 +204,7 @@ class SkillRunner:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
-                    cwd=str(self.project_dir),
+                    cwd=str(cwd) if cwd is not None else str(self.project_dir),
                 )
             except FileNotFoundError:
                 result = SkillResult(

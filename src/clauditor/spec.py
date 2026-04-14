@@ -11,6 +11,7 @@ from pathlib import Path
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.runner import SkillResult, SkillRunner
 from clauditor.schemas import EvalSpec
+from clauditor.workspace import stage_inputs
 
 
 class SkillSpec:
@@ -64,17 +65,38 @@ class SkillSpec:
 
         return cls(skill_path=skill_path, eval_spec=eval_spec, runner=runner)
 
-    def run(self, args: str | None = None) -> SkillResult:
+    def run(
+        self,
+        args: str | None = None,
+        *,
+        run_dir: Path | None = None,
+    ) -> SkillResult:
         """Run the skill and return captured output.
 
         If args is None and an eval spec exists, uses the eval spec's test_args.
+
+        If ``run_dir`` is provided and the eval spec declares non-empty
+        ``input_files``, those files are staged into ``run_dir / "inputs"``
+        and the subprocess runs with that directory as its CWD.
         """
         run_args = (
             args
             if args is not None
             else (self.eval_spec.test_args if self.eval_spec else "")
         )
-        result = self.runner.run(self.skill_name, run_args)
+
+        effective_cwd: Path | None = None
+        if (
+            run_dir is not None
+            and self.eval_spec is not None
+            and self.eval_spec.input_files
+        ):
+            sources = [Path(p) for p in self.eval_spec.input_files]
+            stage_inputs(run_dir, sources)
+            effective_cwd = run_dir / "inputs"
+            print(f"Staged {len(sources)} input file(s) into {effective_cwd}")
+
+        result = self.runner.run(self.skill_name, run_args, cwd=effective_cwd)
 
         # Read output from files if eval spec specifies file-based output
         # Only read files on successful runs to avoid stale output
