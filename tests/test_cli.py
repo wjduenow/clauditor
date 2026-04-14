@@ -836,6 +836,157 @@ class TestCmdCompare:
         assert "Mismatched" in err
 
 
+class TestCmdCompareIterationDirs:
+    """compare auto-detects iteration directory layouts (clauditor-yng.6)."""
+
+    def _make_grading_json(self, dir_path, criterion_passes):
+        dir_path.mkdir(parents=True, exist_ok=True)
+        results = [
+            GradingResult(
+                criterion=c,
+                passed=p,
+                score=0.9 if p else 0.3,
+                evidence="",
+                reasoning="",
+            )
+            for c, p in criterion_passes.items()
+        ]
+        report = GradingReport(
+            skill_name=dir_path.name,
+            model="test-model",
+            results=results,
+            duration_seconds=0.0,
+        )
+        (dir_path / "grading.json").write_text(report.to_json())
+        return dir_path
+
+    def test_compare_two_iteration_dirs(self, tmp_path, capsys):
+        before_dir = self._make_grading_json(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            {"c1": True, "c2": True},
+        )
+        after_dir = self._make_grading_json(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            {"c1": True, "c2": False},
+        )
+        rc = main(["compare", str(before_dir), str(after_dir)])
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "[REGRESSION]" in out
+        assert "c2" in out
+
+    def test_compare_dir_missing_grading_json_errors(self, tmp_path, capsys):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        other = tmp_path / "other"
+        other.mkdir()
+        rc = main(["compare", str(empty_dir), str(other)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "no grading.json found" in err
+
+
+class TestCmdCompareNumericRefs:
+    """compare --skill/--from/--to numeric ref form (clauditor-yng.6)."""
+
+    def _make_grading_json(self, dir_path, criterion_passes):
+        dir_path.mkdir(parents=True, exist_ok=True)
+        results = [
+            GradingResult(
+                criterion=c,
+                passed=p,
+                score=0.9 if p else 0.3,
+                evidence="",
+                reasoning="",
+            )
+            for c, p in criterion_passes.items()
+        ]
+        report = GradingReport(
+            skill_name=dir_path.name,
+            model="test-model",
+            results=results,
+            duration_seconds=0.0,
+        )
+        (dir_path / "grading.json").write_text(report.to_json())
+
+    def test_compare_numeric_refs(self, tmp_path, monkeypatch, capsys):
+        # Set up a fake repo root marker so resolve_clauditor_dir() finds it.
+        (tmp_path / ".git").mkdir()
+        self._make_grading_json(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            {"c1": True, "c2": True},
+        )
+        self._make_grading_json(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            {"c1": True, "c2": False},
+        )
+        monkeypatch.chdir(tmp_path)
+        rc = main(["compare", "--skill", "foo", "--from", "1", "--to", "2"])
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "[REGRESSION]" in out
+        assert "c2" in out
+
+    def test_compare_positional_and_numeric_conflict_errors(
+        self, tmp_path, capsys
+    ):
+        before = tmp_path / "before.grade.json"
+        after = tmp_path / "after.grade.json"
+        report = GradingReport(
+            skill_name="x",
+            model="m",
+            results=[],
+            duration_seconds=0.0,
+        )
+        before.write_text(report.to_json())
+        after.write_text(report.to_json())
+        rc = main(
+            [
+                "compare",
+                str(before),
+                str(after),
+                "--skill",
+                "foo",
+                "--from",
+                "1",
+                "--to",
+                "2",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "cannot combine" in err or "--skill" in err
+
+    def test_compare_legacy_grade_json_files(self, tmp_path, capsys):
+        """Regression: legacy two .grade.json file form still works."""
+        before = tmp_path / "before.grade.json"
+        after = tmp_path / "after.grade.json"
+        for p, passes in [
+            (before, {"c1": True}),
+            (after, {"c1": True}),
+        ]:
+            report = GradingReport(
+                skill_name=p.stem,
+                model="test-model",
+                results=[
+                    GradingResult(
+                        criterion=c,
+                        passed=v,
+                        score=0.9 if v else 0.3,
+                        evidence="",
+                        reasoning="",
+                    )
+                    for c, v in passes.items()
+                ],
+                duration_seconds=0.0,
+            )
+            p.write_text(report.to_json())
+        rc = main(["compare", str(before), str(after)])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "no flips" in out
+
+
 class TestCmdGradeCompareFlagRemoved:
     """US-003: the legacy --compare flag on grade is gone."""
 

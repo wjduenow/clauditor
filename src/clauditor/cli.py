@@ -579,6 +579,11 @@ def _load_assertion_set(
     from clauditor.assertions import AssertionResult
     from clauditor.quality_grader import GradingReport
 
+    if path.is_dir():
+        grading = path / "grading.json"
+        if not grading.is_file():
+            raise ValueError(f"no grading.json found in {path}")
+        path = grading
     suffix = "".join(path.suffixes)
     if path.suffix == ".txt":
         if not spec_path:
@@ -590,7 +595,11 @@ def _load_assertion_set(
             raise ValueError(f"No eval spec found for {spec_path}")
         output = path.read_text()
         return run_assertions(output, spec.eval_spec.assertions)
-    if suffix.endswith(".grade.json") or path.name.endswith(".grade.json"):
+    if (
+        suffix.endswith(".grade.json")
+        or path.name.endswith(".grade.json")
+        or path.name == "grading.json"
+    ):
         report = GradingReport.from_json(path.read_text())
         results = [
             AssertionResult(
@@ -609,7 +618,15 @@ def _load_assertion_set(
 
 
 def _file_kind(path: Path) -> str:
-    """Return a coarse file-kind label for mismatch detection."""
+    """Return a coarse file-kind label for mismatch detection.
+
+    Directories containing a ``grading.json`` are treated as the
+    ``grade.json`` kind so they diff uniformly with saved grade reports.
+    """
+    if path.is_dir():
+        return "grade.json"
+    if path.name == "grading.json":
+        return "grade.json"
     if path.name.endswith(".grade.json"):
         return "grade.json"
     if path.suffix == ".txt":
@@ -626,8 +643,41 @@ def cmd_compare(args: argparse.Namespace) -> int:
     """
     from clauditor.comparator import diff_assertion_sets
 
-    before_path = Path(args.before)
-    after_path = Path(args.after)
+    skill = getattr(args, "skill", None)
+    from_iter = getattr(args, "from_iter", None)
+    to_iter = getattr(args, "to_iter", None)
+    numeric_form = any(v is not None for v in (skill, from_iter, to_iter))
+    positional_form = args.before is not None or args.after is not None
+
+    if numeric_form and positional_form:
+        print(
+            "ERROR: cannot combine positional paths with "
+            "--skill/--from/--to",
+            file=sys.stderr,
+        )
+        return 2
+
+    if numeric_form:
+        if skill is None or from_iter is None or to_iter is None:
+            print(
+                "ERROR: --skill, --from, and --to must all be provided "
+                "together",
+                file=sys.stderr,
+            )
+            return 2
+        clauditor_dir = resolve_clauditor_dir()
+        before_path = clauditor_dir / f"iteration-{from_iter}" / skill
+        after_path = clauditor_dir / f"iteration-{to_iter}" / skill
+    else:
+        if args.before is None or args.after is None:
+            print(
+                "ERROR: compare requires two positional paths or "
+                "--skill/--from/--to",
+                file=sys.stderr,
+            )
+            return 2
+        before_path = Path(args.before)
+        after_path = Path(args.after)
 
     before_kind = _file_kind(before_path)
     after_kind = _file_kind(after_path)
@@ -1217,8 +1267,18 @@ def main(argv: list[str] | None = None) -> int:
             "(.txt) or saved grade reports (.grade.json)"
         ),
     )
-    p_compare.add_argument("before", help="Baseline file (.txt or .grade.json)")
-    p_compare.add_argument("after", help="Candidate file (.txt or .grade.json)")
+    p_compare.add_argument(
+        "before",
+        nargs="?",
+        default=None,
+        help="Baseline file, iteration dir (.txt or .grade.json or dir)",
+    )
+    p_compare.add_argument(
+        "after",
+        nargs="?",
+        default=None,
+        help="Candidate file, iteration dir (.txt or .grade.json or dir)",
+    )
     p_compare.add_argument(
         "--spec",
         default=None,
@@ -1228,6 +1288,25 @@ def main(argv: list[str] | None = None) -> int:
         "--eval",
         default=None,
         help="Path to eval.json (auto-discovered if omitted)",
+    )
+    p_compare.add_argument(
+        "--skill",
+        default=None,
+        help="Skill name (used with --from/--to to resolve iteration dirs)",
+    )
+    p_compare.add_argument(
+        "--from",
+        dest="from_iter",
+        default=None,
+        type=int,
+        help="Baseline iteration number (requires --skill)",
+    )
+    p_compare.add_argument(
+        "--to",
+        dest="to_iter",
+        default=None,
+        type=int,
+        help="Candidate iteration number (requires --skill)",
     )
 
     # triggers
