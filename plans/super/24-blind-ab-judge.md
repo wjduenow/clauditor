@@ -7,7 +7,10 @@
 | Ticket        | wjduenow/clauditor#24                      |
 | Branch        | `feature/24-blind-ab-judge` (created in-place on dev checkout) |
 | Worktree      | none — in-place feature branch (DEC-005)   |
-| Phase         | detailing                                  |
+| Phase         | devolved                                   |
+| PR            | https://github.com/wjduenow/clauditor/pull/33 (draft) |
+| Epic          | clauditor-dmw                              |
+| Tasks         | clauditor-dmw.1 .. clauditor-dmw.5         |
 | Created       | 2026-04-14                                 |
 | Sessions      | 1                                          |
 
