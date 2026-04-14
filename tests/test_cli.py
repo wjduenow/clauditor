@@ -1776,6 +1776,75 @@ class TestCmdCompareBlind:
         assert "UTF-8" in err
         assert "before.txt" in err
 
+    def test_compare_blind_non_utf8_after_file(self, tmp_path, capsys):
+        # Covers the after_path UnicodeDecodeError branch separately from
+        # the before_path branch (cli.py lines 783-791).
+        before, _ = self._write_pair(tmp_path)
+        after = tmp_path / "after.txt"
+        after.write_bytes(b"\xff\xfe\xfd")
+        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        spec = _make_spec(eval_spec=eval_spec)
+        with patch(
+            "clauditor.cli.SkillSpec.from_file", return_value=spec
+        ):
+            rc = main(
+                [
+                    "compare",
+                    str(before),
+                    str(after),
+                    "--spec",
+                    "skill.md",
+                    "--blind",
+                ]
+            )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "UTF-8" in err
+        assert "after.txt" in err
+
+    def test_compare_blind_no_eval_spec_errors(self, tmp_path, capsys):
+        # Covers the "No eval spec found" branch (cli.py lines 745-750).
+        before, after = self._write_pair(tmp_path)
+        spec = _make_spec(eval_spec=None)
+        with patch(
+            "clauditor.cli.SkillSpec.from_file", return_value=spec
+        ):
+            rc = main(
+                [
+                    "compare",
+                    str(before),
+                    str(after),
+                    "--spec",
+                    "skill.md",
+                    "--blind",
+                ]
+            )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "No eval spec" in err
+
+    def test_compare_blind_empty_test_args_errors(self, tmp_path, capsys):
+        # Covers the whitespace-only test_args branch (cli.py lines 752-759).
+        before, after = self._write_pair(tmp_path)
+        eval_spec = _make_eval_spec(test_args="   \n")
+        spec = _make_spec(eval_spec=eval_spec)
+        with patch(
+            "clauditor.cli.SkillSpec.from_file", return_value=spec
+        ):
+            rc = main(
+                [
+                    "compare",
+                    str(before),
+                    str(after),
+                    "--spec",
+                    "skill.md",
+                    "--blind",
+                ]
+            )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "test_args" in err
+
 
 class TestCmdGradeCompareFlagRemoved:
     """US-003: the legacy --compare flag on grade is gone."""

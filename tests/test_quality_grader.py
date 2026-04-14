@@ -1433,6 +1433,54 @@ class TestBlindCompare:
             report = await blind_compare("q", "a-text", "b-text")
         assert isinstance(report, BlindReport)
 
+    @pytest.mark.asyncio
+    async def test_blind_compare_malformed_score_fields_fall_back_to_zero(self):
+        # Covers the translate() fallback branches for non-numeric confidence,
+        # score_1, and score_2 — where the judge returns strings/null/etc.
+        payload = json.dumps({
+            "preference": "1",
+            "confidence": "high",  # non-numeric → 0.0
+            "score_1": None,        # None → 0.0
+            "score_2": "lots",      # non-numeric → 0.0
+            "reasoning": "broken floats",
+        })
+        r1 = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        r1.content = [MagicMock(text=payload)]
+        r2 = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        r2.content = [MagicMock(text=payload)]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[r1, r2])
+        with patch(
+            "anthropic.AsyncAnthropic",
+            return_value=mock_client,
+        ):
+            report = await blind_compare(
+                "q", "a-text", "b-text", rng=random.Random(1)
+            )
+        assert report.confidence == 0.0
+        assert report.score_a == 0.0
+        assert report.score_b == 0.0
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_empty_content_response(self):
+        # Covers the text_of() branch where response.content is empty —
+        # the function returns "", which then fails JSON parse → graceful tie.
+        empty = MagicMock(usage=MagicMock(input_tokens=5, output_tokens=2))
+        empty.content = []
+        ok = _blind_response("1", confidence=0.8, score_1=0.9, score_2=0.3)
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[empty, ok])
+        with patch(
+            "anthropic.AsyncAnthropic",
+            return_value=mock_client,
+        ):
+            report = await blind_compare(
+                "q", "a-text", "b-text", rng=random.Random(1)
+            )
+        # Partial parse failure path: run-2 is the good run.
+        assert report.position_agreement is False
+        assert "run-2" in report.reasoning
+
 
 class TestParseBlindResponse:
     def _full(self, **overrides):
@@ -1500,3 +1548,12 @@ class TestParseBlindResponse:
         result = _parse_blind_response(json.dumps(data))
         assert result is not None
         assert result["extra"] == "field"
+
+    def test_parses_bare_markdown_fence(self):
+        # Covers the fallback branch when the fence has no 'json' language tag.
+        from clauditor.quality_grader import _parse_blind_response
+
+        data = self._full()
+        text = "```\n" + json.dumps(data) + "\n```"
+        result = _parse_blind_response(text)
+        assert result == data
