@@ -885,3 +885,54 @@ class TestAssertionKind:
         out = s.summary()
         assert "1/2" in out
         assert "FAIL: b" in out
+
+
+class TestAssertionSetJson:
+    """US-002: serialize AssertionSet to JSON keyed by stable spec ids."""
+
+    def test_assertion_set_roundtrip_json(self):
+        original = AssertionSet(
+            results=[
+                AssertionResult(
+                    id="has-venues",
+                    name="contains:Venues",
+                    passed=True,
+                    message="Found 'Venues'",
+                    kind="presence",
+                    evidence=None,
+                ),
+                AssertionResult(
+                    id="min-length",
+                    name="min_length>=100",
+                    passed=False,
+                    message="Length 12 (need >=100)",
+                    kind="count",
+                ),
+            ],
+            input_tokens=0,
+            output_tokens=0,
+        )
+        payload = original.to_json()
+        assert payload["results"][0]["id"] == "has-venues"
+        assert payload["results"][1]["passed"] is False
+
+        restored = AssertionSet.from_json(payload)
+        assert len(restored.results) == 2
+        assert restored.results[0].id == "has-venues"
+        assert restored.results[0].passed is True
+        assert restored.results[1].id == "min-length"
+        assert restored.results[1].kind == "count"
+
+    def test_assertion_set_json_uses_stable_id(self):
+        """run_assertions stamps the spec ``id`` onto every result so
+        assertions.json is keyed by id, not by list position."""
+        assertions = [
+            {"id": "venues", "type": "contains", "value": "Venues"},
+            {"id": "min-len", "type": "min_length", "value": "10"},
+        ]
+        result_set = run_assertions(SAMPLE_OUTPUT, assertions)
+        payload = result_set.to_json()
+        ids = [r["id"] for r in payload["results"]]
+        assert ids == ["venues", "min-len"]
+        # And every result_set entry carries the id directly too.
+        assert [r.id for r in result_set.results] == ["venues", "min-len"]

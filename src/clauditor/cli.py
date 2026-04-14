@@ -21,6 +21,23 @@ from clauditor.workspace import (
 )
 
 
+def _unit_float(value: str) -> float:
+    """argparse type: finite float in [0.0, 1.0]. Used by audit thresholds."""
+    import math
+
+    try:
+        x = float(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a float"
+        ) from e
+    if not math.isfinite(x) or x < 0.0 or x > 1.0:
+        raise argparse.ArgumentTypeError(
+            f"must be a finite float in [0.0, 1.0], got {value!r}"
+        )
+    return x
+
+
 def _positive_int(value: str) -> int:
     """argparse type: accept integers >= 1."""
     try:
@@ -197,16 +214,24 @@ def cmd_grade(args: argparse.Namespace) -> int:
             name = getattr(item, "name", None) or ""
             desc = getattr(item, "description", None) or ""
             if not name and not desc:
-                # list-of-strings case
-                name = str(item)
+                if isinstance(item, dict):
+                    # Canonical {id, criterion} shape from from_file
+                    name = str(item.get("id", ""))
+                    desc = str(item.get("criterion", ""))
+                else:
+                    # list-of-strings case (in-memory fixtures)
+                    name = str(item)
             hay = f"{name}\n{desc}".lower()
             return any(n in hay for n in needles)
 
+        def _label(item: object) -> str:
+            if isinstance(item, dict):
+                return str(item.get("id") or item.get("criterion") or item)
+            return getattr(item, "name", None) or str(item)
+
         filtered = [c for c in original if _match(c)]
         if not filtered:
-            available = ", ".join(
-                (getattr(c, "name", None) or str(c)) for c in original
-            )
+            available = ", ".join(_label(c) for c in original)
             print(
                 f"No grading criteria match filter. Available: {available}",
                 file=sys.stderr,
@@ -268,6 +293,99 @@ def cmd_grade(args: argparse.Namespace) -> int:
         # for a baseline.
         if not workspace.finalized:
             workspace.abort()
+
+
+def _run_baseline_phase(
+    *,
+    spec: SkillSpec,
+    skill_dir: Path,
+    iteration: int,
+    model: str,
+) -> None:
+    """US-004: run the test args without the skill prefix and persist L1/L2/L3
+    sidecars into ``skill_dir`` (the staging iteration dir).
+
+    Four files are written alongside the primary sidecars:
+    - ``baseline.json`` — run metadata (output, tokens, duration, exit_code)
+    - ``baseline_assertions.json`` — Layer 1 results against baseline output
+    - ``baseline_extraction.json`` — Layer 2 extraction (only when the spec
+      declares sections)
+    - ``baseline_grading.json`` — Layer 3 ``GradingReport``
+
+    Strictly opt-in via ``--baseline``; roughly doubles LLM cost per run.
+    """
+    import asyncio
+
+    from clauditor.grader import extract_and_report
+    from clauditor.quality_grader import grade_quality
+    from clauditor.workspace import stage_inputs
+
+    test_args = spec.eval_spec.test_args or ""
+    # FIX-15: mirror the primary run's staging so baseline finds input
+    # files in the same relative layout. Without this, a spec with
+    # ``input_files`` would run the baseline against an empty CWD.
+    effective_cwd: Path | None = None
+    if spec.eval_spec.input_files:
+        baseline_run_dir = skill_dir / "baseline-run"
+        sources = [Path(p) for p in spec.eval_spec.input_files]
+        stage_inputs(baseline_run_dir, sources)
+        effective_cwd = baseline_run_dir / "inputs"
+    print(f"Running baseline (no skill prefix) {test_args}...")
+    baseline_result = spec.runner.run_raw(test_args, cwd=effective_cwd)
+
+    baseline_text = baseline_result.output
+
+    baseline_meta = {
+        "schema_version": 1,
+        "skill": spec.skill_name,
+        "iteration": iteration,
+        "output": baseline_text,
+        "exit_code": baseline_result.exit_code,
+        "input_tokens": baseline_result.input_tokens,
+        "output_tokens": baseline_result.output_tokens,
+        "duration_seconds": baseline_result.duration_seconds,
+    }
+    (skill_dir / "baseline.json").write_text(
+        json.dumps(baseline_meta, indent=2) + "\n", encoding="utf-8"
+    )
+
+    baseline_assertion_set = run_assertions(
+        baseline_text, spec.eval_spec.assertions
+    )
+    baseline_assertions_payload = {
+        "schema_version": 1,
+        "skill": spec.skill_name,
+        "iteration": iteration,
+        **baseline_assertion_set.to_json(),
+    }
+    (skill_dir / "baseline_assertions.json").write_text(
+        json.dumps(baseline_assertions_payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    if spec.eval_spec.sections:
+        baseline_extraction = asyncio.run(
+            extract_and_report(
+                baseline_text,
+                spec.eval_spec,
+                skill_name=spec.skill_name,
+            )
+        )
+        (skill_dir / "baseline_extraction.json").write_text(
+            baseline_extraction.to_json(), encoding="utf-8"
+        )
+
+    baseline_grading = asyncio.run(
+        grade_quality(
+            baseline_text,
+            spec.eval_spec,
+            model,
+            thresholds=spec.eval_spec.grade_thresholds,
+        )
+    )
+    (skill_dir / "baseline_grading.json").write_text(
+        baseline_grading.to_json(), encoding="utf-8"
+    )
 
 
 def _cmd_grade_with_workspace(
@@ -445,6 +563,47 @@ def _cmd_grade_with_workspace(
         (skill_dir / "grading.json").write_text(
             primary_report.to_json(), encoding="utf-8"
         )
+
+        assertions_payload = {
+            "schema_version": 1,
+            "skill": spec.skill_name,
+            "iteration": workspace.iteration,
+            "runs": [
+                {
+                    "run": idx,
+                    **run_assertions(
+                        text, spec.eval_spec.assertions
+                    ).to_json(),
+                }
+                for idx, (text, _events) in enumerate(run_outputs)
+            ],
+        }
+        (skill_dir / "assertions.json").write_text(
+            json.dumps(assertions_payload, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        if spec.eval_spec.sections:
+            from clauditor.grader import extract_and_report
+
+            extraction_report = asyncio.run(
+                extract_and_report(
+                    primary_text,
+                    spec.eval_spec,
+                    skill_name=spec.skill_name,
+                )
+            )
+            (skill_dir / "extraction.json").write_text(
+                extraction_report.to_json(), encoding="utf-8"
+            )
+
+        if getattr(args, "baseline", False):
+            _run_baseline_phase(
+                spec=spec,
+                skill_dir=skill_dir,
+                iteration=workspace.iteration,
+                model=model,
+            )
 
     if not only_criterion:
         timing_payload: dict = {
@@ -761,7 +920,10 @@ def _run_blind_compare(
     rubric_hint: str | None = None
     criteria = skill_spec.eval_spec.grading_criteria
     if criteria:
-        rubric_hint = "\n".join(f"- {c}" for c in criteria)
+        from clauditor.schemas import criterion_text
+        rubric_hint = "\n".join(
+            f"- {criterion_text(c)}" for c in criteria
+        )
 
     for path in (before_path, after_path):
         if not path.is_file():
@@ -1283,10 +1445,10 @@ def cmd_init(args: argparse.Namespace) -> int:
         "description": f"Eval spec for /{skill_path.stem}",
         "test_args": "",
         "assertions": [
-            {"type": "min_length", "value": "500"},
-            {"type": "has_urls", "value": "3"},
-            {"type": "has_entries", "value": "3"},
-            {"type": "not_contains", "value": "Error"},
+            {"id": "min_length_500", "type": "min_length", "value": "500"},
+            {"id": "has_urls_3", "type": "has_urls", "value": "3"},
+            {"id": "has_entries_3", "type": "has_entries", "value": "3"},
+            {"id": "no_error", "type": "not_contains", "value": "Error"},
         ],
         "sections": [
             {
@@ -1296,16 +1458,30 @@ def cmd_init(args: argparse.Namespace) -> int:
                         "label": "default",
                         "min_entries": 3,
                         "fields": [
-                            {"name": "name", "required": True},
-                            {"name": "address", "required": True},
+                            {
+                                "id": "results_name",
+                                "name": "name",
+                                "required": True,
+                            },
+                            {
+                                "id": "results_address",
+                                "name": "address",
+                                "required": True,
+                            },
                         ],
                     }
                 ],
             }
         ],
         "grading_criteria": [
-            "Are results relevant to the query?",
-            "Are descriptions specific (not generic filler)?",
+            {
+                "id": "relevant",
+                "criterion": "Are results relevant to the query?",
+            },
+            {
+                "id": "specific",
+                "criterion": "Are descriptions specific (not generic filler)?",
+            },
         ],
         "grading_model": "claude-sonnet-4-6",
         "trigger_tests": {
@@ -1396,6 +1572,126 @@ def cmd_trend(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_audit(args: argparse.Namespace) -> int:
+    """Load + aggregate + threshold-check per-assertion pass rates.
+
+    US-006: adds threshold-based flagging (DEC-005), markdown report
+    written to ``.clauditor/audit/<skill>-<ts>.md``, stdout summary
+    table, ``--json`` mode, and an exit code of ``1`` whenever any
+    assertion is flagged.
+    """
+    from datetime import UTC, datetime
+
+    from clauditor.audit import (
+        aggregate,
+        apply_thresholds,
+        load_iterations,
+        render_json,
+        render_markdown,
+        render_stdout_table,
+    )
+
+    # Reject path-traversal / shell-metacharacter skill names before any
+    # filesystem use — report_path joins `args.skill` into a filename.
+    try:
+        validate_skill_name(args.skill)
+    except InvalidSkillNameError as e:
+        print(f"invalid skill name: {e}", file=sys.stderr)
+        return 2
+
+    clauditor_dir = resolve_clauditor_dir()
+    records, skipped = load_iterations(
+        args.skill, last=args.last, clauditor_dir=clauditor_dir
+    )
+
+    if skipped:
+        print(
+            f"skipped {skipped} iteration dirs without assertion data",
+            file=sys.stderr,
+        )
+
+    aggregates = aggregate(records)
+
+    min_fail_rate = (
+        args.min_fail_rate if args.min_fail_rate is not None else 0.0
+    )
+    min_discrimination = (
+        args.min_discrimination
+        if args.min_discrimination is not None
+        else 0.05
+    )
+
+    verdicts = apply_thresholds(
+        aggregates,
+        min_fail_rate=min_fail_rate,
+        min_discrimination=min_discrimination,
+    )
+
+    iterations_analyzed = len({r.iteration for r in records})
+    # Include microseconds so concurrent audits don't collide on the
+    # report filename (FIX-8).
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    thresholds = {
+        "last": args.last,
+        "min_fail_rate": min_fail_rate,
+        "min_discrimination": min_discrimination,
+    }
+
+    try:
+        if args.json:
+            payload = render_json(
+                verdicts,
+                skill=args.skill,
+                iterations_analyzed=iterations_analyzed,
+                thresholds=thresholds,
+                timestamp=timestamp,
+            )
+            print(json.dumps(payload, indent=2))
+        else:
+            if not aggregates:
+                print(
+                    f"No audit data for skill {args.skill!r} under "
+                    f"{clauditor_dir}"
+                )
+            else:
+                output_dir = (
+                    args.output_dir
+                    if args.output_dir is not None
+                    else clauditor_dir / "audit"
+                )
+                try:
+                    output_dir.mkdir(parents=True, exist_ok=True)
+                    report_path = (
+                        output_dir / f"{args.skill}-{timestamp}.md"
+                    )
+                    report_path.write_text(
+                        render_markdown(
+                            verdicts,
+                            skill=args.skill,
+                            iterations_analyzed=iterations_analyzed,
+                            thresholds=thresholds,
+                            timestamp=timestamp,
+                        ),
+                        encoding="utf-8",
+                    )
+                except OSError as exc:
+                    # FIX-14: exit 1 is reserved for "flagged assertions";
+                    # IO errors surface as exit 2 so CI can distinguish.
+                    print(
+                        f"clauditor audit: failed to write report under "
+                        f"{output_dir}: {exc}",
+                        file=sys.stderr,
+                    )
+                    return 2
+                print(render_stdout_table(verdicts))
+                print(f"\nReport written to {report_path}")
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"clauditor audit: error rendering report: {exc}", file=sys.stderr)
+        return 2
+
+    return 1 if any(v.is_flagged for v in verdicts) else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="clauditor",
@@ -1471,6 +1767,15 @@ def main(argv: list[str] | None = None) -> int:
         "--diff",
         action="store_true",
         help="Compare against the previous iteration's grading.json",
+    )
+    p_grade.add_argument(
+        "--baseline",
+        action="store_true",
+        help=(
+            "After grading, run the test args through Claude without the "
+            "skill prefix (baseline) and capture L1/L2/L3 sidecars. "
+            "Roughly doubles LLM cost; never the default."
+        ),
     )
     p_grade.add_argument(
         "--only-criterion",
@@ -1654,6 +1959,50 @@ def main(argv: list[str] | None = None) -> int:
         help="Show last N records (default 20; must be >= 1)",
     )
 
+    # audit
+    p_audit = subparsers.add_parser(
+        "audit",
+        help=(
+            "Aggregate per-assertion pass rates across the last N "
+            "iteration workspaces for a skill"
+        ),
+        description=(
+            "Aggregate per-assertion pass rates across the last N "
+            "iteration workspaces for a skill. Exit codes: "
+            "0 (clean), 1 (flagged assertions), 2 (error)."
+        ),
+    )
+    p_audit.add_argument("skill", help="Skill name to audit")
+    p_audit.add_argument(
+        "--last",
+        type=_positive_int,
+        default=20,
+        help="Consider the last N iteration dirs (default 20)",
+    )
+    p_audit.add_argument(
+        "--min-fail-rate",
+        type=_unit_float,
+        default=None,
+        help="(US-006) minimum fail rate to flag an assertion (0.0-1.0)",
+    )
+    p_audit.add_argument(
+        "--min-discrimination",
+        type=_unit_float,
+        default=None,
+        help="(US-006) minimum with/baseline delta to flag (0.0-1.0)",
+    )
+    p_audit.add_argument(
+        "--json",
+        action="store_true",
+        help="(US-006) emit machine-readable JSON instead of a table",
+    )
+    p_audit.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="(US-006) directory to write audit reports",
+    )
+
     # doctor
     subparsers.add_parser(
         "doctor",
@@ -1699,6 +2048,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor(parsed)
     elif parsed.command == "trend":
         return cmd_trend(parsed)
+    elif parsed.command == "audit":
+        return cmd_audit(parsed)
 
     return 1
 

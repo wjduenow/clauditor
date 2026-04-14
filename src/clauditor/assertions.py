@@ -35,9 +35,27 @@ class AssertionResult:
     kind: AssertionKind
     evidence: str | None = None
     raw_data: dict | None = None
+    id: str | None = None
 
     def __bool__(self) -> bool:
         return self.passed
+
+    def to_json_dict(self) -> dict:
+        """Return a JSON-safe dict for per-iteration persistence.
+
+        Keyed on the stable spec ``id`` (DEC-001). ``name`` is retained as
+        a secondary human label but the id is the load-bearing identifier
+        for the assertion-auditor (US-002).
+        """
+        return {
+            "id": self.id,
+            "name": self.name,
+            "passed": self.passed,
+            "message": self.message,
+            "kind": self.kind,
+            "evidence": self.evidence,
+            "raw_data": self.raw_data,
+        }
 
 
 @dataclass
@@ -69,6 +87,41 @@ class AssertionSet:
         for r in self.failed:
             lines.append(f"  FAIL: {r.name} — {r.message}")
         return "\n".join(lines)
+
+    def to_json(self) -> dict:
+        """Return a JSON-safe dict for persistence in ``assertions.json``.
+
+        The top-level dict carries ``input_tokens``/``output_tokens`` so
+        Layer 1 cost can be reconstructed from disk, plus a ``results``
+        list where each entry is an :meth:`AssertionResult.to_json_dict`
+        (keyed by the stable spec id from DEC-001).
+        """
+        return {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "results": [r.to_json_dict() for r in self.results],
+        }
+
+    @classmethod
+    def from_json(cls, data: dict) -> AssertionSet:
+        """Inverse of :meth:`to_json` — used by tests and the auditor."""
+        results = [
+            AssertionResult(
+                id=r.get("id"),
+                name=r.get("name", ""),
+                passed=bool(r["passed"]),
+                message=r.get("message", ""),
+                kind=r.get("kind", "custom"),
+                evidence=r.get("evidence"),
+                raw_data=r.get("raw_data"),
+            )
+            for r in data.get("results", [])
+        ]
+        return cls(
+            results=results,
+            input_tokens=int(data.get("input_tokens", 0) or 0),
+            output_tokens=int(data.get("output_tokens", 0) or 0),
+        )
 
     def grouped_summary(self) -> list[str]:
         """Collapse repeated field/suffix failures into one line per group.
@@ -373,6 +426,8 @@ def run_assertions(output: str, assertions: list[dict]) -> AssertionSet:
     for a in assertions:
         atype = a["type"]
         value = a.get("value", "")
+        spec_id = a.get("id")
+        before = len(results.results)
 
         if atype == "contains":
             results.results.append(assert_contains(output, value))
@@ -411,5 +466,13 @@ def run_assertions(output: str, assertions: list[dict]) -> AssertionSet:
                     kind="custom",
                 )
             )
+
+        # Stamp the stable spec id onto every result produced by this
+        # assertion dict (US-002). Most assertion dicts produce exactly
+        # one result, but loop defensively across any added since
+        # `before` in case helpers grow to emit multiple.
+        if spec_id is not None:
+            for r in results.results[before:]:
+                r.id = spec_id
 
     return results

@@ -25,32 +25,34 @@ SAMPLE_EVAL = {
     "description": "Eval for /find-kid-activities",
     "test_args": '"Cupertino, CA" --dates today --cost Free --depth quick',
     "assertions": [
-        {"type": "contains", "value": "Venues"},
-        {"type": "has_entries", "value": "3"},
+        {"id": "a_venues", "type": "contains", "value": "Venues"},
+        {"id": "a_entries", "type": "has_entries", "value": "3"},
     ],
     "sections": [
         {
             "name": "Venues",
             "min_entries": 3,
             "fields": [
-                {"name": "name", "required": True},
-                {"name": "address", "required": True},
-                {"name": "hours", "required": True},
-                {"name": "website", "required": True},
-                {"name": "phone", "required": False},
+                {"id": "v_name", "name": "name", "required": True},
+                {"id": "v_address", "name": "address", "required": True},
+                {"id": "v_hours", "name": "hours", "required": True},
+                {"id": "v_website", "name": "website", "required": True},
+                {"id": "v_phone", "name": "phone", "required": False},
             ],
         },
         {
             "name": "Events",
             "min_entries": 0,
             "fields": [
-                {"name": "name", "required": True},
-                {"name": "date", "required": True},
-                {"name": "event_url", "required": True},
+                {"id": "e_name", "name": "name", "required": True},
+                {"id": "e_date", "name": "date", "required": True},
+                {"id": "e_url", "name": "event_url", "required": True},
             ],
         },
     ],
-    "grading_criteria": ["Are venues within the specified distance?"],
+    "grading_criteria": [
+        {"id": "c_distance", "criterion": "Are venues within the specified distance?"}
+    ],
 }
 
 
@@ -143,11 +145,13 @@ class TestFormatFieldRoundTrip:
                     "min_entries": 1,
                     "fields": [
                         {
+                            "id": "f_phone",
                             "name": "phone",
                             "required": True,
                             "format": "phone_us",
                         },
                         {
+                            "id": "f_email",
                             "name": "email",
                             "required": False,
                             "format": "email",
@@ -180,7 +184,7 @@ class TestFormatFieldRoundTrip:
                     "name": "Items",
                     "min_entries": 1,
                     "fields": [
-                        {"name": "name", "required": True},
+                        {"id": "f_name", "name": "name", "required": True},
                     ],
                 }
             ],
@@ -211,6 +215,7 @@ class TestFormatFieldRoundTrip:
                             "min_entries": 1,
                             "fields": [
                                 {
+                                    "id": "f_url",
                                     "name": "url",
                                     "required": True,
                                     "format": "url",
@@ -341,21 +346,24 @@ FULL_EVAL_DATA = {
     "description": "A fully populated eval spec",
     "test_args": "--location NYC --depth full",
     "assertions": [
-        {"type": "contains", "value": "Results"},
-        {"type": "min_length", "value": "200"},
+        {"id": "a_contains", "type": "contains", "value": "Results"},
+        {"id": "a_minlen", "type": "min_length", "value": "200"},
     ],
     "sections": [
         {
             "name": "Places",
             "min_entries": 2,
             "fields": [
-                {"name": "name", "required": True},
-                {"name": "address", "required": True},
-                {"name": "zip", "required": False, "format": r"^\d{5}$"},
+                {"id": "p_name", "name": "name", "required": True},
+                {"id": "p_address", "name": "address", "required": True},
+                {"id": "p_zip", "name": "zip", "required": False, "format": r"^\d{5}$"},
             ],
         },
     ],
-    "grading_criteria": ["Are results relevant?", "Is formatting correct?"],
+    "grading_criteria": [
+        {"id": "c_relevant", "criterion": "Are results relevant?"},
+        {"id": "c_format", "criterion": "Is formatting correct?"},
+    ],
     "grading_model": "claude-opus-4-6",
     "trigger_tests": {
         "should_trigger": ["find places in NYC", "places near me"],
@@ -393,8 +401,8 @@ class TestFromFile:
         assert tier.fields[2].format == r"^\d{5}$"
         assert tier.fields[2].required is False
         assert spec.grading_criteria == [
-            "Are results relevant?",
-            "Is formatting correct?",
+            {"id": "c_relevant", "criterion": "Are results relevant?"},
+            {"id": "c_format", "criterion": "Is formatting correct?"},
         ]
         assert spec.grading_model == "claude-opus-4-6"
         assert spec.trigger_tests is not None
@@ -440,12 +448,229 @@ class TestFromFile:
         data = {
             "skill_name": "test",
             "sections": [
-                {"name": "S", "fields": [{"name": "f1", "required": True}]}
+                {"name": "S", "fields": [{"id": "f1", "name": "f1", "required": True}]}
             ],
         }
         path = _write_json(tmp_path, data)
         spec = EvalSpec.from_file(path)
         assert spec.sections[0].tiers[0].fields[0].format is None
+
+    def test_assertion_missing_id_rejected(self, tmp_path):
+        """DEC-001 (#25): every assertion must carry an explicit id."""
+        data = {
+            "skill_name": "s",
+            "assertions": [
+                {"id": "ok", "type": "contains", "value": "a"},
+                {"type": "contains", "value": "b"},  # missing id
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(ValueError, match=r"assertions\[1\]: missing 'id'"):
+            EvalSpec.from_file(path)
+
+    def test_assertion_duplicate_id_rejected(self, tmp_path):
+        """DEC-001 (#25): assertion ids must be unique within the skill."""
+        data = {
+            "skill_name": "s",
+            "assertions": [
+                {"id": "dup", "type": "contains", "value": "a"},
+                {"id": "dup", "type": "contains", "value": "b"},
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError, match=r"assertions\[1\]: duplicate id 'dup'"
+        ):
+            EvalSpec.from_file(path)
+
+    def test_field_requirement_missing_id_rejected(self, tmp_path):
+        """DEC-001 (#25): every FieldRequirement must carry an explicit id."""
+        data = {
+            "skill_name": "s",
+            "sections": [
+                {
+                    "name": "S",
+                    "tiers": [
+                        {
+                            "label": "default",
+                            "fields": [
+                                {"id": "ok", "name": "a"},
+                                {"name": "b"},  # missing id
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError,
+            match=r"sections\[0\]\.tiers\[0\]\.fields\[1\]: missing 'id'",
+        ):
+            EvalSpec.from_file(path)
+
+    def test_field_requirement_legacy_missing_id_rejected(self, tmp_path):
+        """Legacy (no-tiers) field shape also requires explicit ids."""
+        data = {
+            "skill_name": "s",
+            "sections": [
+                {
+                    "name": "S",
+                    "fields": [{"name": "x"}],
+                }
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError, match=r"sections\[0\]\.fields\[0\]: missing 'id'"
+        ):
+            EvalSpec.from_file(path)
+
+    def test_criterion_missing_id_rejected(self, tmp_path):
+        """DEC-001 (#25): every grading criterion must carry an explicit id."""
+        data = {
+            "skill_name": "s",
+            "grading_criteria": [
+                {"id": "ok", "criterion": "a"},
+                {"criterion": "b"},  # missing id
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError, match=r"grading_criteria\[1\]: missing 'id'"
+        ):
+            EvalSpec.from_file(path)
+
+    def test_criterion_missing_text_rejected(self, tmp_path):
+        """Criterion entries must include a non-empty string 'criterion'."""
+        data = {
+            "skill_name": "s",
+            "grading_criteria": [{"id": "c1"}],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError,
+            match=r"grading_criteria\[0\]: 'criterion' must be a non-empty string",
+        ):
+            EvalSpec.from_file(path)
+
+    def test_criterion_empty_text_rejected(self, tmp_path):
+        """An empty ``criterion`` string must be rejected the same way as a
+        missing one — mirrors the non-empty check on ids."""
+        data = {
+            "skill_name": "s",
+            "grading_criteria": [{"id": "c1", "criterion": ""}],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError,
+            match=r"grading_criteria\[0\]: 'criterion' must be a non-empty string",
+        ):
+            EvalSpec.from_file(path)
+
+    def test_assertion_empty_id_rejected(self, tmp_path):
+        """``id: ""`` must be rejected — covers the non-empty string branch
+        of ``_require_id``."""
+        data = {
+            "skill_name": "s",
+            "assertions": [
+                {"id": "", "type": "contains", "value": "x"},
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError,
+            match=r"assertions\[0\]: 'id' must be a non-empty string",
+        ):
+            EvalSpec.from_file(path)
+
+    def test_assertion_non_dict_entry_rejected(self, tmp_path):
+        """Non-dict assertion entries (strings, numbers, lists) must be
+        rejected with a clear type error — covers the non-dict branch of
+        ``_require_id``."""
+        data = {
+            "skill_name": "s",
+            "assertions": ["not-a-dict"],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError,
+            match=r"assertions\[0\] — expected object, got str",
+        ):
+            EvalSpec.from_file(path)
+
+    def test_criterion_duplicate_id_rejected(self, tmp_path):
+        """Criterion ids must be unique within the skill."""
+        data = {
+            "skill_name": "s",
+            "grading_criteria": [
+                {"id": "same", "criterion": "a"},
+                {"id": "same", "criterion": "b"},
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError, match=r"grading_criteria\[1\]: duplicate id 'same'"
+        ):
+            EvalSpec.from_file(path)
+
+    def test_valid_spec_with_ids_loads(self, tmp_path):
+        """A spec with ids on all assertions/fields/criteria loads cleanly
+        and the ids are surfaced on FieldRequirement / criteria dicts."""
+        data = {
+            "skill_name": "s",
+            "assertions": [
+                {"id": "a1", "type": "contains", "value": "x"},
+                {"id": "a2", "type": "min_length", "value": "10"},
+            ],
+            "sections": [
+                {
+                    "name": "Places",
+                    "tiers": [
+                        {
+                            "label": "default",
+                            "fields": [
+                                {"id": "f_name", "name": "name"},
+                                {"id": "f_url", "name": "url"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+            "grading_criteria": [
+                {"id": "c_rel", "criterion": "Is it relevant?"},
+                {"id": "c_spec", "criterion": "Is it specific?"},
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+
+        assert [a["id"] for a in spec.assertions] == ["a1", "a2"]
+        tier = spec.sections[0].tiers[0]
+        assert [f.id for f in tier.fields] == ["f_name", "f_url"]
+        assert [c["id"] for c in spec.grading_criteria] == ["c_rel", "c_spec"]
+
+    def test_id_uniqueness_spans_all_layers(self, tmp_path):
+        """A duplicate id across an assertion and a field is rejected —
+        uniqueness scope is the whole skill, not per-layer."""
+        data = {
+            "skill_name": "s",
+            "assertions": [{"id": "shared", "type": "contains", "value": "x"}],
+            "sections": [
+                {
+                    "name": "S",
+                    "tiers": [
+                        {
+                            "label": "default",
+                            "fields": [{"id": "shared", "name": "name"}],
+                        }
+                    ],
+                }
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(ValueError, match=r"duplicate id 'shared'"):
+            EvalSpec.from_file(path)
 
     def test_from_file_legacy_pattern_key_rejected(self, tmp_path):
         """DEC-006: legacy 'pattern' key is rejected with a migration message."""
@@ -455,7 +680,7 @@ class TestFromFile:
                 {
                     "name": "S",
                     "fields": [
-                        {"name": "f1", "required": True, "pattern": r"\d+"},
+                        {"id": "f1", "name": "f1", "required": True, "pattern": r"\d+"},
                     ],
                 }
             ],
@@ -638,7 +863,7 @@ class TestEvalSpecOutputFields:
         old_data = {
             "skill_name": "legacy",
             "description": "An old spec",
-            "assertions": [{"type": "contains", "value": "hello"}],
+            "assertions": [{"id": "a_hello", "type": "contains", "value": "hello"}],
         }
         path = _write_json(tmp_path, old_data)
         spec = EvalSpec.from_file(path)
@@ -759,7 +984,9 @@ class TestTierRequirement:
                             "label": "default",
                             "min_entries": 1,
                             "max_entries": 3,
-                            "fields": [{"name": "name", "required": True}],
+                            "fields": [
+                                {"id": "f_name", "name": "name", "required": True}
+                            ],
                         }
                     ],
                 }
@@ -784,7 +1011,7 @@ class TestTierRequirement:
                     "name": "Venues",
                     "min_entries": 1,
                     "max_entries": 3,
-                    "fields": [{"name": "name", "required": True}],
+                    "fields": [{"id": "f_name", "name": "name", "required": True}],
                 }
             ],
         }
@@ -807,7 +1034,9 @@ class TestTierRequirement:
                         {
                             "label": "default",
                             "min_entries": 1,
-                            "fields": [{"name": "name", "required": True}],
+                            "fields": [
+                                {"id": "f_name", "name": "name", "required": True}
+                            ],
                         }
                     ],
                 }
@@ -834,8 +1063,8 @@ TIERED_SECTION_DATA = {
                     "description": "Minimum viable info",
                     "min_entries": 3,
                     "fields": [
-                        {"name": "name", "required": True},
-                        {"name": "address", "required": True},
+                        {"id": "basic_name", "name": "name", "required": True},
+                        {"id": "basic_address", "name": "address", "required": True},
                     ],
                 },
                 {
@@ -843,10 +1072,22 @@ TIERED_SECTION_DATA = {
                     "description": "Rich venue data",
                     "min_entries": 1,
                     "fields": [
-                        {"name": "name", "required": True},
-                        {"name": "address", "required": True},
-                        {"name": "hours", "required": True},
-                        {"name": "website", "required": False},
+                        {"id": "detailed_name", "name": "name", "required": True},
+                        {
+                            "id": "detailed_address",
+                            "name": "address",
+                            "required": True,
+                        },
+                        {
+                            "id": "detailed_hours",
+                            "name": "hours",
+                            "required": True,
+                        },
+                        {
+                            "id": "detailed_website",
+                            "name": "website",
+                            "required": False,
+                        },
                     ],
                 },
             ],
@@ -887,8 +1128,8 @@ class TestTieredSections:
                     "name": "Results",
                     "min_entries": 5,
                     "fields": [
-                        {"name": "title", "required": True},
-                        {"name": "url", "required": False},
+                        {"id": "r_title", "name": "title", "required": True},
+                        {"id": "r_url", "name": "url", "required": False},
                     ],
                 }
             ],
@@ -936,7 +1177,7 @@ class TestTieredSections:
                 {
                     "name": "Items",
                     "min_entries": 2,
-                    "fields": [{"name": "name", "required": True}],
+                    "fields": [{"id": "f_name", "name": "name", "required": True}],
                 }
             ],
         }

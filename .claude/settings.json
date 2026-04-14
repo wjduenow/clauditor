@@ -22,5 +22,36 @@
         "matcher": ""
       }
     ]
+  },
+  "allowedTools": {
+    "allow": [
+      "Bash(git:*)",
+      "Bash(uv run:*)",
+      "Bash(uv sync:*)",
+      "Bash(alembic:*)",
+      "Bash(bd:*)",
+      "Bash(gh:*)",
+      "Bash(cd:*)",
+      "Bash(ls:*)",
+      "Bash(pwd:*)",
+      "Bash(cp:*)",
+      "Bash(mkdir:*)",
+      "Bash(rm:*)",
+      "Bash(cat:*)",
+      "Bash(sleep:*)",
+      "Bash(date:*)",
+      "Bash(echo:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(chmod:*)",
+      "Bash(tmux:*)",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "WebSearch",
+      "WebFetch"
+    ]
   }
 }

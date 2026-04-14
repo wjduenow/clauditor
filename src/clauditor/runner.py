@@ -153,16 +153,29 @@ class SkillRunner:
             prompt += f" {args}"
         return self._invoke(prompt=prompt, skill_name=skill_name, args=args, cwd=cwd)
 
-    def run_raw(self, prompt: str) -> SkillResult:
+    def run_raw(
+        self,
+        prompt: str,
+        *,
+        cwd: Path | None = None,
+    ) -> SkillResult:
         """Run a raw prompt without skill prefix for baseline comparison.
 
         Args:
             prompt: The raw prompt to send to Claude (no /{skill} prefix).
+            cwd: Optional override for the subprocess working directory.
+                When ``None``, falls back to ``self.project_dir`` — see
+                ``.claude/rules/subprocess-cwd.md`` for the rationale.
 
         Returns:
             SkillResult with skill_name="__baseline__"
         """
-        return self._invoke(prompt=prompt, skill_name="__baseline__", args=prompt)
+        return self._invoke(
+            prompt=prompt,
+            skill_name="__baseline__",
+            args=prompt,
+            cwd=cwd,
+        )
 
     # ------------------------------------------------------------------ #
     # Stream-json Popen implementation                                    #

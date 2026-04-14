@@ -38,3 +38,7 @@ coverage.xml
 *.db
 .beads-credential-key
 work-*/
+
+# Local untracked artifacts
+.claude/scheduled_tasks.lock
+docs/temp/

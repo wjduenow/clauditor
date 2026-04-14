@@ -860,6 +860,105 @@ class TestCmdGradeSaveDiff:
         # Single grading.json at the skill level (not per-run)
         assert (skill_dir / "grading.json").is_file()
 
+    def test_cmd_grade_writes_assertions_json(self, tmp_path, monkeypatch):
+        """US-002: cmd_grade persists Layer 1 AssertionSet as assertions.json
+        keyed by the stable spec ids (DEC-001, DEC-007)."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world this is the skill output")
+
+        eval_spec = _make_eval_spec(
+            assertions=[
+                {"id": "has-hello", "type": "contains", "value": "hello"},
+                {"id": "min-len", "type": "min_length", "value": "5"},
+            ]
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_grading_report()
+
+        s, g = self._patch_grade(spec, report)
+        with s, g:
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            )
+        assert rc == 0
+
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assertions_path = skill_dir / "assertions.json"
+        assert assertions_path.is_file()
+
+        payload = json.loads(assertions_path.read_text())
+        # FIX-7 (#25): sidecar envelopes pin schema_version=1.
+        assert payload["schema_version"] == 1
+        assert payload["skill"] == "test-skill"
+        assert payload["iteration"] == 1
+        assert len(payload["runs"]) == 1
+        run0 = payload["runs"][0]
+        assert run0["run"] == 0
+        ids = [r["id"] for r in run0["results"]]
+        assert ids == ["has-hello", "min-len"]
+        # Every result carries an id (no position-keyed fallback).
+        assert all(r["id"] is not None for r in run0["results"])
+        assert all(r["passed"] for r in run0["results"])
+
+    def test_cmd_grade_variance_runs_each_have_assertions_json_entry(
+        self, tmp_path, monkeypatch
+    ):
+        """US-002: variance runs each persist their own record in
+        assertions.json (one entry per run-K)."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("primary output text long enough")
+
+        eval_spec = _make_eval_spec(
+            assertions=[
+                {"id": "has-text", "type": "contains", "value": "text"},
+            ]
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.side_effect = [
+            SkillResult(
+                output=f"variance text run {i}",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                duration_seconds=0.5,
+                input_tokens=10,
+                output_tokens=5,
+                stream_events=[{"type": "result", "i": i}],
+            )
+            for i in range(2)
+        ]
+        report = self._make_grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--variance",
+                    "2",
+                ]
+            )
+        assert rc == 0
+
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        payload = json.loads((skill_dir / "assertions.json").read_text())
+        assert [r["run"] for r in payload["runs"]] == [0, 1, 2]
+        for entry in payload["runs"]:
+            assert len(entry["results"]) == 1
+            assert entry["results"][0]["id"] == "has-text"
+            assert entry["results"][0]["passed"] is True
+
     def test_grade_primary_skill_subprocess_path(
         self, tmp_path, monkeypatch
     ):
@@ -1220,6 +1319,519 @@ class TestCmdGradeSaveDiff:
         assert rc == 0
         err = capsys.readouterr().err
         assert "No prior iteration" in err
+
+
+class TestCmdGradeLayer2Persistence:
+    """US-003 (#25): cmd_grade wires Layer 2 and writes extraction.json."""
+
+    def _make_grading_report(self):
+        return GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="Is the output relevant?",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                )
+            ],
+            duration_seconds=1.0,
+        )
+
+    def _make_sectioned_eval_spec(self):
+        return _make_eval_spec(
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            min_entries=0,
+                            fields=[
+                                FieldRequirement(
+                                    name="venue_name",
+                                    required=True,
+                                    id="venues.primary.venue_name.v1",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    def test_cmd_grade_invokes_layer2_when_sections_declared(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec with sections writes iteration-*/<skill>/extraction.json."""
+        from clauditor.grader import ExtractionReport, FieldExtractionResult
+
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some output")
+
+        spec = _make_spec(eval_spec=self._make_sectioned_eval_spec())
+        grading_report = self._make_grading_report()
+        extraction_report = ExtractionReport(
+            skill_name="test-skill",
+            model="claude-haiku-4-5-20251001",
+            results=[
+                FieldExtractionResult(
+                    field_id="venues.primary.venue_name.v1",
+                    field_name="venue_name",
+                    section="Venues",
+                    tier="primary",
+                    entry_index=0,
+                    required=True,
+                    presence_passed=True,
+                    format_passed=None,
+                    evidence="Cafe Foo",
+                ),
+            ],
+            input_tokens=42,
+            output_tokens=7,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ) as mock_extract,
+        ):
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            )
+
+        assert rc == 0
+        assert mock_extract.await_count == 1
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        extraction_path = skill_dir / "extraction.json"
+        assert extraction_path.is_file()
+
+    def test_cmd_grade_skips_layer2_when_no_sections(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec with no sections: no extraction.json, no L2 LLM calls."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some output")
+
+        spec = _make_spec(eval_spec=_make_eval_spec(sections=[]))
+        grading_report = self._make_grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+            ) as mock_extract,
+        ):
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            )
+
+        assert rc == 0
+        mock_extract.assert_not_awaited()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assert skill_dir.is_dir()
+        assert not (skill_dir / "extraction.json").exists()
+
+    def test_extraction_json_keyed_by_field_id(
+        self, tmp_path, monkeypatch
+    ):
+        """extraction.json on disk uses stable FieldRequirement.id as key."""
+        from clauditor.grader import ExtractionReport, FieldExtractionResult
+
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some output")
+
+        spec = _make_spec(eval_spec=self._make_sectioned_eval_spec())
+        grading_report = self._make_grading_report()
+        extraction_report = ExtractionReport(
+            skill_name="test-skill",
+            model="claude-haiku-4-5-20251001",
+            results=[
+                FieldExtractionResult(
+                    field_id="venues.primary.venue_name.v1",
+                    field_name="venue_name",
+                    section="Venues",
+                    tier="primary",
+                    entry_index=0,
+                    required=True,
+                    presence_passed=True,
+                    format_passed=None,
+                    evidence="Cafe Foo",
+                ),
+            ],
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            )
+
+        assert rc == 0
+        extraction_path = (
+            tmp_path
+            / ".clauditor"
+            / "iteration-1"
+            / "test-skill"
+            / "extraction.json"
+        )
+        payload = json.loads(extraction_path.read_text())
+        assert "fields" in payload
+        assert "venues.primary.venue_name.v1" in payload["fields"]
+        entries = payload["fields"]["venues.primary.venue_name.v1"]
+        assert isinstance(entries, list) and len(entries) == 1
+        assert entries[0]["field_name"] == "venue_name"
+        assert entries[0]["evidence"] == "Cafe Foo"
+        assert entries[0]["passed"] is True
+
+
+class TestBaselineFlag:
+    """US-004 (#25): --baseline flag on cmd_grade writes baseline sidecars."""
+
+    def _make_grading_report(self):
+        return GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="Is the output relevant?",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                )
+            ],
+            duration_seconds=1.0,
+        )
+
+    def _make_baseline_skill_result(self, output="baseline output"):
+        return SkillResult(
+            output=output,
+            exit_code=0,
+            skill_name="__baseline__",
+            args="",
+            duration_seconds=0.75,
+            input_tokens=11,
+            output_tokens=22,
+        )
+
+    def _make_sectioned_eval_spec(self):
+        return _make_eval_spec(
+            assertions=[
+                {
+                    "type": "contains",
+                    "value": "hello",
+                    "id": "a.hello.v1",
+                }
+            ],
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            min_entries=0,
+                            fields=[
+                                FieldRequirement(
+                                    name="venue_name",
+                                    required=True,
+                                    id="venues.primary.venue_name.v1",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    def _make_extraction_report(self):
+        from clauditor.grader import ExtractionReport, FieldExtractionResult
+
+        return ExtractionReport(
+            skill_name="test-skill",
+            model="claude-haiku-4-5-20251001",
+            results=[
+                FieldExtractionResult(
+                    field_id="venues.primary.venue_name.v1",
+                    field_name="venue_name",
+                    section="Venues",
+                    tier="primary",
+                    entry_index=0,
+                    required=True,
+                    presence_passed=True,
+                    format_passed=None,
+                    evidence="Cafe Foo",
+                ),
+            ],
+        )
+
+    def _prepare_spec(self, eval_spec):
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.runner = MagicMock()
+        spec.runner.run_raw.return_value = self._make_baseline_skill_result()
+        return spec
+
+    def test_grade_without_baseline_flag_writes_no_baseline_files(
+        self, tmp_path, monkeypatch
+    ):
+        """Default cmd_grade produces no baseline_*.json and no run_raw call."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        grading_report = self._make_grading_report()
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            )
+
+        assert rc == 0
+        spec.runner.run_raw.assert_not_called()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assert not (skill_dir / "baseline.json").exists()
+        assert not (skill_dir / "baseline_assertions.json").exists()
+        assert not (skill_dir / "baseline_extraction.json").exists()
+        assert not (skill_dir / "baseline_grading.json").exists()
+
+    def test_grade_with_baseline_flag_writes_all_baseline_sidecars(
+        self, tmp_path, monkeypatch
+    ):
+        """--baseline writes all four baseline sidecars for a sectioned spec."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        grading_report = self._make_grading_report()
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--baseline",
+                ]
+            )
+
+        assert rc == 0
+        spec.runner.run_raw.assert_called_once()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+
+        baseline_meta = json.loads((skill_dir / "baseline.json").read_text())
+        assert baseline_meta["skill"] == "test-skill"
+        assert baseline_meta["iteration"] == 1
+        assert baseline_meta["exit_code"] == 0
+        assert baseline_meta["input_tokens"] == 11
+        assert baseline_meta["output_tokens"] == 22
+        assert "output" in baseline_meta
+        assert "duration_seconds" in baseline_meta
+
+        baseline_assertions = json.loads(
+            (skill_dir / "baseline_assertions.json").read_text()
+        )
+        assert baseline_assertions["skill"] == "test-skill"
+        assert baseline_assertions["iteration"] == 1
+        assert "results" in baseline_assertions
+
+        baseline_extraction = json.loads(
+            (skill_dir / "baseline_extraction.json").read_text()
+        )
+        assert "fields" in baseline_extraction
+
+        baseline_grading = json.loads(
+            (skill_dir / "baseline_grading.json").read_text()
+        )
+        assert baseline_grading["skill_name"] == "test-skill"
+
+    def test_baseline_results_keyed_by_same_ids_as_primary(
+        self, tmp_path, monkeypatch
+    ):
+        """Baseline assertion/field ids match primary spec ids."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        grading_report = self._make_grading_report()
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--baseline",
+                ]
+            )
+
+        assert rc == 0
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+
+        baseline_assertions = json.loads(
+            (skill_dir / "baseline_assertions.json").read_text()
+        )
+        ids = {r["id"] for r in baseline_assertions["results"]}
+        assert "a.hello.v1" in ids
+
+        baseline_extraction = json.loads(
+            (skill_dir / "baseline_extraction.json").read_text()
+        )
+        assert "venues.primary.venue_name.v1" in baseline_extraction["fields"]
+
+    def test_baseline_skips_extraction_when_no_sections(
+        self, tmp_path, monkeypatch
+    ):
+        """No sections => no baseline_extraction.json; other 3 still written."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        eval_spec = _make_eval_spec(sections=[])
+        spec = self._prepare_spec(eval_spec)
+        grading_report = self._make_grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+            ) as mock_extract,
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--baseline",
+                ]
+            )
+
+        assert rc == 0
+        mock_extract.assert_not_awaited()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assert (skill_dir / "baseline.json").exists()
+        assert (skill_dir / "baseline_assertions.json").exists()
+        assert (skill_dir / "baseline_grading.json").exists()
+        assert not (skill_dir / "baseline_extraction.json").exists()
+
+    def test_run_baseline_phase_threads_cwd_to_run_raw(
+        self, tmp_path, monkeypatch
+    ):
+        """FIX-15: _run_baseline_phase must stage inputs and pass cwd."""
+        from clauditor.cli import _run_baseline_phase
+
+        monkeypatch.chdir(tmp_path)
+        # Real input file in cwd so schemas validation accepts it.
+        (tmp_path / "fixture.txt").write_text("seed")
+        eval_spec = _make_eval_spec(
+            input_files=["fixture.txt"],
+            sections=[],
+        )
+        spec = self._prepare_spec(eval_spec)
+        grading_report = self._make_grading_report()
+        skill_dir = tmp_path / "skill-dir"
+        skill_dir.mkdir()
+
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new_callable=AsyncMock,
+            return_value=grading_report,
+        ):
+            _run_baseline_phase(
+                spec=spec,
+                skill_dir=skill_dir,
+                iteration=1,
+                model="claude-sonnet-4-6",
+            )
+
+        spec.runner.run_raw.assert_called_once()
+        call_kwargs = spec.runner.run_raw.call_args.kwargs
+        assert "cwd" in call_kwargs
+        assert call_kwargs["cwd"] == skill_dir / "baseline-run" / "inputs"
+        # The staged input file exists at the expected path.
+        assert (
+            skill_dir / "baseline-run" / "inputs" / "fixture.txt"
+        ).is_file()
 
 
 class TestCmdCompare:
