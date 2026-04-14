@@ -11,7 +11,7 @@ import json
 import math
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from clauditor.schemas import EvalSpec, GradeThresholds
 
@@ -143,6 +143,90 @@ class GradingReport:
             status = "PASS" if r.passed else "FAIL"
             lines.append(f"  {status}: {r.criterion} ({r.score:.1f})")
         return "\n".join(lines)
+
+
+@dataclass
+class BlindReport:
+    """Result of a blind A/B comparison between two skill outputs.
+
+    The judge sees outputs labeled 1 and 2 (to avoid training-data
+    anchoring on a/b), but results are reported against the canonical
+    a/b labels of the caller.
+    """
+
+    preference: Literal["a", "b", "tie"]
+    confidence: float
+    score_a: float
+    score_b: float
+    reasoning: str
+    model: str
+    position_agreement: bool = True
+    input_tokens: int = 0
+    output_tokens: int = 0
+    duration_seconds: float = 0.0
+
+    def to_json(self) -> str:
+        """Serialize the report to a JSON string."""
+        data = {
+            "preference": self.preference,
+            "confidence": self.confidence,
+            "score_a": self.score_a,
+            "score_b": self.score_b,
+            "reasoning": self.reasoning,
+            "position_agreement": self.position_agreement,
+            "model": self.model,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "duration_seconds": self.duration_seconds,
+            "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
+        }
+        return json.dumps(data, indent=2)
+
+
+def build_blind_prompt(
+    user_prompt: str,
+    output_1: str,
+    output_2: str,
+    rubric_hint: str | None = None,
+) -> str:
+    """Build a prompt for blind A/B comparison of two skill outputs.
+
+    Outputs are labeled ``1`` and ``2`` (never ``a``/``b``) to avoid
+    anchoring on LLM training-data priors about option ordering. The
+    caller is responsible for translating the judge's ``1``/``2``
+    preference back into its canonical ``a``/``b`` labels.
+    """
+    hint_block = ""
+    if rubric_hint is not None and rubric_hint != "":
+        hint_block = (
+            f"\nPay extra attention to: {rubric_hint}\n"
+        )
+
+    return (
+        "You are a blind judge comparing two candidate responses to the"
+        " same user query. You do not know which system produced which"
+        " response. Judge purely on quality relative to the user's"
+        " request.\n"
+        "\n"
+        "## User prompt\n"
+        f"{user_prompt}\n"
+        "\n"
+        "## Response 1\n"
+        f"{output_1}\n"
+        "\n"
+        "## Response 2\n"
+        f"{output_2}\n"
+        f"{hint_block}"
+        "\n"
+        "Decide which response better answers the user prompt. Pick"
+        ' "1", "2", or "tie". Score each response from 0.0 to 1.0 on'
+        " overall quality. Give a confidence value from 0.0 to 1.0"
+        " reflecting how sure you are in your preference.\n"
+        "\n"
+        "Respond with ONLY valid JSON matching this schema:\n"
+        '{"preference": "1"|"2"|"tie", "confidence": 0.0-1.0,'
+        ' "score_1": 0.0-1.0, "score_2": 0.0-1.0, "reasoning": "..."}'
+    )
 
 
 def build_grading_prompt(eval_spec: EvalSpec) -> str:

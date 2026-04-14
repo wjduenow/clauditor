@@ -8,9 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from clauditor.quality_grader import (
+    BlindReport,
     GradingReport,
     GradingResult,
     VarianceReport,
+    build_blind_prompt,
     build_grading_prompt,
     grade_quality,
     measure_variance,
@@ -960,3 +962,83 @@ class TestGradeThresholdsOnReport:
         assert report.pass_rate == pytest.approx(0.7)
         assert report.mean_score == pytest.approx(0.5)
         assert report.passed is True
+
+
+class TestBlindReport:
+    def test_blind_report_to_json_roundtrip(self):
+        report = BlindReport(
+            preference="a",
+            confidence=0.82,
+            score_a=0.9,
+            score_b=0.6,
+            reasoning="A is more concise and correct.",
+            position_agreement=False,
+            model="claude-sonnet-4-6",
+            input_tokens=123,
+            output_tokens=45,
+            duration_seconds=1.25,
+        )
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert data["preference"] == "a"
+        assert data["confidence"] == pytest.approx(0.82)
+        assert data["score_a"] == pytest.approx(0.9)
+        assert data["score_b"] == pytest.approx(0.6)
+        assert data["reasoning"] == "A is more concise and correct."
+        assert data["position_agreement"] is False
+        assert data["model"] == "claude-sonnet-4-6"
+        assert data["input_tokens"] == 123
+        assert data["output_tokens"] == 45
+        assert data["duration_seconds"] == pytest.approx(1.25)
+
+    def test_blind_report_defaults(self):
+        report = BlindReport(
+            preference="tie",
+            confidence=0.5,
+            score_a=0.7,
+            score_b=0.7,
+            reasoning="Equivalent quality.",
+            model="claude-sonnet-4-6",
+        )
+        assert report.position_agreement is True
+        assert report.input_tokens == 0
+        assert report.output_tokens == 0
+        assert report.duration_seconds == 0.0
+
+
+class TestBuildBlindPrompt:
+    def test_build_blind_prompt_includes_user_prompt(self):
+        prompt = build_blind_prompt(
+            "How do I center a div?", "Use flexbox.", "Use grid."
+        )
+        assert "How do I center a div?" in prompt
+
+    def test_build_blind_prompt_labels_outputs_1_and_2(self):
+        prompt = build_blind_prompt(
+            "Q?", "first output text", "second output text"
+        )
+        assert "1" in prompt
+        assert "2" in prompt
+        lowered = prompt.lower()
+        assert "output a" not in lowered
+        assert "output b" not in lowered
+        assert "option a" not in lowered
+        assert "option b" not in lowered
+
+    def test_build_blind_prompt_no_rubric_hint_when_none(self):
+        prompt = build_blind_prompt("Q?", "a-out", "b-out", rubric_hint=None)
+        lowered = prompt.lower()
+        assert "pay extra attention" not in lowered
+        assert "extra attention" not in lowered
+        assert "rubric hint" not in lowered
+
+    def test_build_blind_prompt_injects_rubric_hint_when_given(self):
+        prompt = build_blind_prompt(
+            "Q?", "a-out", "b-out", rubric_hint="code clarity"
+        )
+        assert "code clarity" in prompt
+
+    def test_build_blind_prompt_requests_json_schema(self):
+        prompt = build_blind_prompt("Q?", "a-out", "b-out")
+        for field in ("preference", "confidence", "score_1", "score_2", "reasoning"):
+            assert field in prompt
