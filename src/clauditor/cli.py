@@ -1543,15 +1543,23 @@ def cmd_trend(args: argparse.Namespace) -> int:
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
-    """Load + aggregate per-assertion pass rates across iterations.
+    """Load + aggregate + threshold-check per-assertion pass rates.
 
-    US-005: loader + minimal aggregate print. Threshold / flagging /
-    markdown rendering lives in US-006 (clauditor-8qo). The CLI flags
-    ``--min-fail-rate``, ``--min-discrimination``, ``--json``, and
-    ``--output-dir`` are accepted here for forward compatibility but
-    currently unused.
+    US-006: adds threshold-based flagging (DEC-005), markdown report
+    written to ``.clauditor/audit/<skill>-<ts>.md``, stdout summary
+    table, ``--json`` mode, and an exit code of ``1`` whenever any
+    assertion is flagged.
     """
-    from clauditor.audit import aggregate, load_iterations
+    from datetime import UTC, datetime
+
+    from clauditor.audit import (
+        aggregate,
+        apply_thresholds,
+        load_iterations,
+        render_json,
+        render_markdown,
+        render_stdout_table,
+    )
 
     clauditor_dir = resolve_clauditor_dir()
     records, skipped = load_iterations(
@@ -1565,27 +1573,66 @@ def cmd_audit(args: argparse.Namespace) -> int:
         )
 
     aggregates = aggregate(records)
-    if not aggregates:
-        print(f"No audit data for skill {args.skill!r} under {clauditor_dir}")
-        return 0
 
-    rows = sorted(aggregates.values(), key=lambda a: (a.layer, a.id))
-    header = f"{'LAYER':<6} {'ID':<40} {'RUNS':>6} {'WITH%':>8} {'BASE%':>8}"
-    print(header)
-    print("-" * len(header))
-    for agg in rows:
-        base = (
-            f"{agg.baseline_pass_rate * 100:7.1f}%"
-            if agg.baseline_pass_rate is not None
-            else "      -"
+    min_fail_rate = (
+        args.min_fail_rate if args.min_fail_rate is not None else 0.0
+    )
+    min_discrimination = (
+        args.min_discrimination
+        if args.min_discrimination is not None
+        else 0.05
+    )
+
+    verdicts = apply_thresholds(
+        aggregates,
+        min_fail_rate=min_fail_rate,
+        min_discrimination=min_discrimination,
+    )
+
+    iterations_analyzed = len({r.iteration for r in records})
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    thresholds = {
+        "last": args.last,
+        "min_fail_rate": min_fail_rate,
+        "min_discrimination": min_discrimination,
+    }
+
+    if args.json:
+        payload = render_json(
+            verdicts,
+            skill=args.skill,
+            iterations_analyzed=iterations_analyzed,
+            thresholds=thresholds,
+            timestamp=timestamp,
         )
-        print(
-            f"{agg.layer:<6} {agg.id[:40]:<40} "
-            f"{agg.total_with_runs:>6} "
-            f"{agg.with_pass_rate * 100:7.1f}% "
-            f"{base:>8}"
-        )
-    return 0
+        print(json.dumps(payload, indent=2))
+    else:
+        if not aggregates:
+            print(
+                f"No audit data for skill {args.skill!r} under {clauditor_dir}"
+            )
+        else:
+            output_dir = (
+                args.output_dir
+                if args.output_dir is not None
+                else clauditor_dir / "audit"
+            )
+            output_dir.mkdir(parents=True, exist_ok=True)
+            report_path = output_dir / f"{args.skill}-{timestamp}.md"
+            report_path.write_text(
+                render_markdown(
+                    verdicts,
+                    skill=args.skill,
+                    iterations_analyzed=iterations_analyzed,
+                    thresholds=thresholds,
+                    timestamp=timestamp,
+                ),
+                encoding="utf-8",
+            )
+            print(render_stdout_table(verdicts))
+            print(f"\nReport written to {report_path}")
+
+    return 1 if any(v.is_flagged for v in verdicts) else 0
 
 
 def main(argv: list[str] | None = None) -> int:

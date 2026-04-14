@@ -25,17 +25,33 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 from clauditor.paths import resolve_clauditor_dir
 
 __all__ = [
     "AuditAggregate",
+    "AuditVerdict",
     "IterationRecord",
+    "Verdict",
     "aggregate",
+    "apply_thresholds",
     "load_iterations",
+    "render_json",
+    "render_markdown",
+    "render_stdout_table",
 ]
+
+
+class Verdict(StrEnum):
+    """Audit verdict for a single (layer, id) aggregate."""
+
+    KEEP = "keep"
+    FLAG_ALWAYS_PASS = "flag-always-pass"
+    FLAG_ZERO_FAILURES = "flag-zero-failures"
+    FLAG_NO_DISCRIMINATION = "flag-no-discrimination"
 
 _ITERATION_RE = re.compile(r"^iteration-(\d+)$")
 
@@ -318,3 +334,229 @@ def aggregate(
             baseline_pass_rate=baseline_pass_rate,
         )
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Thresholds / verdicts                                                        #
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class AuditVerdict:
+    """A threshold classification over one :class:`AuditAggregate`."""
+
+    layer: str
+    id: str
+    verdict: Verdict
+    reasons: list[str] = field(default_factory=list)
+    aggregate: AuditAggregate | None = None
+
+    @property
+    def is_flagged(self) -> bool:
+        return self.verdict != Verdict.KEEP
+
+
+def apply_thresholds(
+    aggregates: dict[tuple[str, str], AuditAggregate],
+    *,
+    min_fail_rate: float,
+    min_discrimination: float,
+) -> list[AuditVerdict]:
+    """Classify each aggregate against the audit thresholds (DEC-005).
+
+    Rules, in priority order (the first match drives the verdict; all
+    matches are recorded in ``reasons``):
+
+    1. ``with_pass_rate >= 1.0 - min_fail_rate`` → FLAG_ALWAYS_PASS.
+       When ``min_fail_rate == 0`` this collapses to ``pass_rate == 1.0``.
+    2. ``with_fails == 0`` → FLAG_ZERO_FAILURES.
+    3. ``discrimination is not None`` and ``abs(discrimination) <
+       min_discrimination`` → FLAG_NO_DISCRIMINATION.
+
+    Otherwise the verdict is :attr:`Verdict.KEEP`.
+    """
+    verdicts: list[AuditVerdict] = []
+    for (layer, rid), agg in sorted(aggregates.items()):
+        reasons: list[str] = []
+        verdict = Verdict.KEEP
+
+        threshold = 1.0 - min_fail_rate
+        if agg.total_with_runs > 0 and agg.with_pass_rate >= threshold:
+            if min_fail_rate > 0 and agg.with_pass_rate < 1.0:
+                reasons.append(
+                    f"pass rate {agg.with_pass_rate:.2%} exceeds "
+                    f"{threshold:.2%} (min-fail-rate={min_fail_rate})"
+                )
+            else:
+                reasons.append(
+                    f"passes on every run ({agg.total_with_runs}/"
+                    f"{agg.total_with_runs})"
+                )
+            if verdict == Verdict.KEEP:
+                verdict = Verdict.FLAG_ALWAYS_PASS
+
+        if agg.total_with_runs > 0 and agg.with_fails == 0:
+            reasons.append(
+                f"zero recorded failures across {agg.total_with_runs} runs"
+            )
+            if verdict == Verdict.KEEP:
+                verdict = Verdict.FLAG_ZERO_FAILURES
+
+        disc = agg.discrimination
+        if disc is not None and abs(disc) < min_discrimination:
+            reasons.append(
+                f"discrimination {disc:+.2%} below "
+                f"{min_discrimination:.2%} threshold"
+            )
+            if verdict == Verdict.KEEP:
+                verdict = Verdict.FLAG_NO_DISCRIMINATION
+
+        verdicts.append(
+            AuditVerdict(
+                layer=layer,
+                id=rid,
+                verdict=verdict,
+                reasons=reasons,
+                aggregate=agg,
+            )
+        )
+    return verdicts
+
+
+# --------------------------------------------------------------------------- #
+# Renderers                                                                    #
+# --------------------------------------------------------------------------- #
+
+
+def _fmt_pct(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value * 100:.1f}%"
+
+
+def _fmt_disc(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return f"{value * 100:+.1f}%"
+
+
+def render_stdout_table(verdicts: list[AuditVerdict]) -> str:
+    """Compact table: layer, id, with%, verdict."""
+    header = f"{'LAYER':<6} {'ID':<40} {'WITH%':>8} {'VERDICT':<24}"
+    lines = [header, "-" * len(header)]
+    for v in verdicts:
+        agg = v.aggregate
+        with_pct = _fmt_pct(agg.with_pass_rate) if agg else "-"
+        lines.append(
+            f"{v.layer:<6} {v.id[:40]:<40} {with_pct:>8} {v.verdict.value:<24}"
+        )
+    return "\n".join(lines)
+
+
+def render_markdown(
+    verdicts: list[AuditVerdict],
+    *,
+    skill: str,
+    iterations_analyzed: int,
+    thresholds: dict[str, float | int],
+    timestamp: str,
+) -> str:
+    """Render the audit report as markdown."""
+    flagged = [v for v in verdicts if v.is_flagged]
+    kept = [v for v in verdicts if not v.is_flagged]
+
+    lines: list[str] = []
+    lines.append(f"# Clauditor audit — {skill}")
+    lines.append("")
+    lines.append(f"- **Skill:** `{skill}`")
+    lines.append(f"- **Timestamp:** {timestamp}")
+    lines.append(f"- **Iterations analyzed:** {iterations_analyzed}")
+    lines.append("- **Thresholds:**")
+    for key, value in thresholds.items():
+        lines.append(f"  - `{key}` = {value}")
+    lines.append("")
+
+    lines.append("## Summary")
+    lines.append("")
+    lines.append(f"- Total assertions: {len(verdicts)}")
+    lines.append(f"- Flagged: {len(flagged)}")
+    lines.append(f"- Keep: {len(kept)}")
+    counts: dict[str, int] = {}
+    for v in verdicts:
+        counts[v.verdict.value] = counts.get(v.verdict.value, 0) + 1
+    for verdict_name, count in sorted(counts.items()):
+        lines.append(f"  - `{verdict_name}`: {count}")
+    lines.append("")
+
+    lines.append("## Suggest removal")
+    lines.append("")
+    if not flagged:
+        lines.append("_No assertions flagged — nothing to remove._")
+    else:
+        for v in flagged:
+            reasons = "; ".join(v.reasons) if v.reasons else v.verdict.value
+            lines.append(f"- **{v.layer} `{v.id}`** — {reasons}")
+    lines.append("")
+
+    for layer in ("L1", "L2", "L3"):
+        layer_rows = [v for v in verdicts if v.layer == layer]
+        lines.append(f"## {layer} detail")
+        lines.append("")
+        if not layer_rows:
+            lines.append("_No data._")
+            lines.append("")
+            continue
+        lines.append(
+            "| id | runs | with% | baseline% | discrimination | verdict |"
+        )
+        lines.append("|----|------|-------|-----------|----------------|---------|")
+        for v in layer_rows:
+            agg = v.aggregate
+            if agg is None:
+                continue
+            lines.append(
+                f"| `{v.id}` | {agg.total_with_runs} | "
+                f"{_fmt_pct(agg.with_pass_rate)} | "
+                f"{_fmt_pct(agg.baseline_pass_rate)} | "
+                f"{_fmt_disc(agg.discrimination)} | "
+                f"`{v.verdict.value}` |"
+            )
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def render_json(
+    verdicts: list[AuditVerdict],
+    *,
+    skill: str,
+    iterations_analyzed: int,
+    thresholds: dict[str, float | int],
+    timestamp: str,
+) -> dict:
+    """Return a JSON-serializable audit payload."""
+    assertions_list: list[dict] = []
+    for v in verdicts:
+        agg = v.aggregate
+        assertions_list.append(
+            {
+                "layer": v.layer,
+                "id": v.id,
+                "with_runs": agg.total_with_runs if agg else 0,
+                "with_pass_rate": agg.with_pass_rate if agg else None,
+                "baseline_runs": agg.total_baseline_runs if agg else 0,
+                "baseline_pass_rate": (
+                    agg.baseline_pass_rate if agg else None
+                ),
+                "discrimination": agg.discrimination if agg else None,
+                "verdict": v.verdict.value,
+                "reasons": list(v.reasons),
+            }
+        )
+    return {
+        "skill": skill,
+        "timestamp": timestamp,
+        "iterations": iterations_analyzed,
+        "thresholds": dict(thresholds),
+        "assertions": assertions_list,
+    }

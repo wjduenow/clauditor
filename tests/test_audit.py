@@ -9,9 +9,15 @@ import pytest
 
 from clauditor.audit import (
     AuditAggregate,
+    AuditVerdict,
     IterationRecord,
+    Verdict,
     aggregate,
+    apply_thresholds,
     load_iterations,
+    render_json,
+    render_markdown,
+    render_stdout_table,
 )
 from clauditor.cli import main as cli_main
 
@@ -325,6 +331,316 @@ class TestCmdAudit:
         out = capsys.readouterr().out
         assert "has_header" in out
         assert "L1" in out
+
+
+def _agg(
+    layer: str = "L1",
+    rid: str = "a",
+    *,
+    with_runs: int = 4,
+    with_fails: int = 0,
+    baseline_runs: int = 0,
+    baseline_fails: int = 0,
+) -> AuditAggregate:
+    with_pass_rate = (
+        (with_runs - with_fails) / with_runs if with_runs else 0.0
+    )
+    baseline_pass_rate: float | None
+    if baseline_runs:
+        baseline_pass_rate = (baseline_runs - baseline_fails) / baseline_runs
+    else:
+        baseline_pass_rate = None
+    return AuditAggregate(
+        layer=layer,
+        id=rid,
+        total_with_runs=with_runs,
+        with_fails=with_fails,
+        with_pass_rate=with_pass_rate,
+        total_baseline_runs=baseline_runs,
+        baseline_fails=baseline_fails,
+        baseline_pass_rate=baseline_pass_rate,
+    )
+
+
+class TestApplyThresholds:
+    def test_threshold_flags_100_percent_pass(self) -> None:
+        aggs = {("L1", "a"): _agg(with_runs=20, with_fails=0)}
+        verdicts = apply_thresholds(
+            aggs, min_fail_rate=0.0, min_discrimination=0.05
+        )
+        assert len(verdicts) == 1
+        assert verdicts[0].is_flagged
+        assert verdicts[0].verdict == Verdict.FLAG_ALWAYS_PASS
+
+    def test_threshold_flags_zero_failures(self) -> None:
+        # 100% pass is the priority reason, but zero-failures still in reasons.
+        aggs = {("L1", "a"): _agg(with_runs=5, with_fails=0)}
+        verdicts = apply_thresholds(
+            aggs, min_fail_rate=0.0, min_discrimination=0.05
+        )
+        assert any("zero recorded failures" in r for r in verdicts[0].reasons)
+
+    def test_threshold_flags_low_discrimination_when_baseline_present(
+        self,
+    ) -> None:
+        # With-rate 0.8, baseline 0.78 → discrimination 0.02 < 0.05
+        aggs = {
+            ("L1", "a"): _agg(
+                with_runs=10,
+                with_fails=2,
+                baseline_runs=50,
+                baseline_fails=11,
+            )
+        }
+        verdicts = apply_thresholds(
+            aggs, min_fail_rate=0.0, min_discrimination=0.05
+        )
+        assert verdicts[0].verdict == Verdict.FLAG_NO_DISCRIMINATION
+
+    def test_threshold_passes_discriminating_assertion(self) -> None:
+        # with 0.75 pass, baseline 0.25 pass → 0.5 discrimination, keeps.
+        aggs = {
+            ("L1", "a"): _agg(
+                with_runs=4,
+                with_fails=1,
+                baseline_runs=4,
+                baseline_fails=3,
+            )
+        }
+        verdicts = apply_thresholds(
+            aggs, min_fail_rate=0.0, min_discrimination=0.05
+        )
+        assert verdicts[0].verdict == Verdict.KEEP
+        assert not verdicts[0].is_flagged
+
+    def test_threshold_override_via_cli_args(self) -> None:
+        # 95% pass, not 100%; default 0.0 min_fail_rate wouldn't flag,
+        # but 0.1 min_fail_rate (threshold 0.9) flags it.
+        aggs = {("L1", "a"): _agg(with_runs=20, with_fails=1)}
+        lax = apply_thresholds(
+            aggs, min_fail_rate=0.0, min_discrimination=0.05
+        )
+        strict = apply_thresholds(
+            aggs, min_fail_rate=0.1, min_discrimination=0.05
+        )
+        assert lax[0].verdict == Verdict.KEEP
+        assert strict[0].verdict == Verdict.FLAG_ALWAYS_PASS
+
+
+class TestRenderers:
+    def _verdicts(self) -> list[AuditVerdict]:
+        flagged = _agg("L1", "always_pass", with_runs=20, with_fails=0)
+        kept = _agg(
+            "L2",
+            "sometimes",
+            with_runs=10,
+            with_fails=3,
+            baseline_runs=10,
+            baseline_fails=9,
+        )
+        return apply_thresholds(
+            {("L1", "always_pass"): flagged, ("L2", "sometimes"): kept},
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+
+    def test_render_markdown_contains_suggest_removal_section(self) -> None:
+        md = render_markdown(
+            self._verdicts(),
+            skill="my_skill",
+            iterations_analyzed=20,
+            thresholds={"last": 20, "min_fail_rate": 0.0},
+            timestamp="20260101T000000Z",
+        )
+        assert "## Suggest removal" in md
+        assert "always_pass" in md
+        assert "my_skill" in md
+
+    def test_render_markdown_contains_per_layer_tables(self) -> None:
+        md = render_markdown(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=20,
+            thresholds={"last": 20},
+            timestamp="t",
+        )
+        assert "## L1 detail" in md
+        assert "## L2 detail" in md
+        assert "## L3 detail" in md
+        assert "| id | runs |" in md
+
+    def test_render_json_shape_stable(self) -> None:
+        payload = render_json(
+            self._verdicts(),
+            skill="my_skill",
+            iterations_analyzed=20,
+            thresholds={"last": 20, "min_fail_rate": 0.0},
+            timestamp="20260101T000000Z",
+        )
+        assert set(payload.keys()) == {
+            "skill",
+            "timestamp",
+            "iterations",
+            "thresholds",
+            "assertions",
+        }
+        assert isinstance(payload["assertions"], list)
+        first = payload["assertions"][0]
+        for key in (
+            "layer",
+            "id",
+            "with_runs",
+            "with_pass_rate",
+            "baseline_runs",
+            "baseline_pass_rate",
+            "discrimination",
+            "verdict",
+            "reasons",
+        ):
+            assert key in first
+        # Must round-trip through json.
+        json.dumps(payload)
+
+    def test_render_stdout_table_has_verdict_column(self) -> None:
+        table = render_stdout_table(self._verdicts())
+        assert "VERDICT" in table
+        assert "always_pass" in table
+
+
+class TestCmdAuditExitCode:
+    def test_cmd_audit_exit_1_when_any_flagged(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".git").mkdir()
+        _make_iteration_fixture(
+            project,
+            "my_skill",
+            {i: {"l1": [{"id": "always", "passed": True}]} for i in range(1, 6)},
+        )
+        monkeypatch.chdir(project)
+        rc = cli_main(["audit", "my_skill"])
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "always" in out
+
+    def test_cmd_audit_exit_0_when_all_clean(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".git").mkdir()
+        _make_iteration_fixture(
+            project,
+            "my_skill",
+            {
+                1: {
+                    "l1": [{"id": "a", "passed": True}],
+                    "baseline_l1": [{"id": "a", "passed": False}],
+                },
+                2: {
+                    "l1": [{"id": "a", "passed": False}],
+                    "baseline_l1": [{"id": "a", "passed": False}],
+                },
+                3: {
+                    "l1": [{"id": "a", "passed": True}],
+                    "baseline_l1": [{"id": "a", "passed": False}],
+                },
+                4: {
+                    "l1": [{"id": "a", "passed": False}],
+                    "baseline_l1": [{"id": "a", "passed": False}],
+                },
+            },
+        )
+        monkeypatch.chdir(project)
+        rc = cli_main(["audit", "my_skill"])
+        assert rc == 0
+
+    def test_cmd_audit_json_mode_does_not_write_markdown_file(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".git").mkdir()
+        _make_iteration_fixture(
+            project,
+            "s",
+            {i: {"l1": [{"id": "a", "passed": True}]} for i in range(1, 4)},
+        )
+        monkeypatch.chdir(project)
+        rc = cli_main(["audit", "s", "--json"])
+        assert rc == 1
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        assert payload["skill"] == "s"
+        assert not (project / ".clauditor" / "audit").exists()
+
+    def test_cmd_audit_writes_markdown_to_output_dir(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".git").mkdir()
+        _make_iteration_fixture(
+            project,
+            "s",
+            {1: {"l1": [{"id": "a", "passed": True}]}},
+        )
+        custom_out = tmp_path / "reports"
+        monkeypatch.chdir(project)
+        rc = cli_main(
+            ["audit", "s", "--output-dir", str(custom_out)]
+        )
+        assert rc == 1
+        written = list(custom_out.glob("s-*.md"))
+        assert len(written) == 1
+        content = written[0].read_text()
+        assert "Suggest removal" in content
+        assert "`a`" in content
+
+    def test_cmd_audit_finds_always_pass_assertions_20_runs(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """Canonical Done-when: 20 always-passing runs → flagged."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".git").mkdir()
+        _make_iteration_fixture(
+            project,
+            "find-restaurants",
+            {
+                i: {"l1": [{"id": "has_header", "passed": True}]}
+                for i in range(1, 21)
+            },
+        )
+        monkeypatch.chdir(project)
+        rc = cli_main(["audit", "find-restaurants"])
+        assert rc == 1
+        report = next(
+            (project / ".clauditor" / "audit").glob(
+                "find-restaurants-*.md"
+            )
+        )
+        text = report.read_text()
+        assert "Suggest removal" in text
+        assert "has_header" in text
+        # must appear under the removal section.
+        suggest_section = text.split("## Suggest removal", 1)[1]
+        assert "has_header" in suggest_section.split("## ", 1)[0]
 
 
 class TestAuditAggregateDataclass:
