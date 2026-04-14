@@ -37,12 +37,13 @@ clauditor implements (and in places extends) the skill evaluation workflow descr
 | Rubric quality grading | **Layer 3** — `quality_grader.py`, per-criterion scoring + variance measurement |
 | With-skill vs without-skill baseline | `compare_ab()` Python API (`clauditor.comparator`) |
 | Regression diff between runs | `clauditor compare <before> <after>` |
-| Timing + token capture | `SkillResult.input_tokens/output_tokens/duration_seconds`, persisted to `history.jsonl` and `.grade.json` under nested bucket keys (`skill`, `grader`, `quality`, `triggers`, `total`) |
-| Longitudinal history | `.clauditor/history.jsonl` schema v2 + `clauditor trend --metric <dotted.path>` with ASCII sparklines |
+| Timing + token capture | `SkillResult.input_tokens/output_tokens/duration_seconds`, persisted to `history.jsonl` and `.clauditor/iteration-N/<skill>/grading.json` under nested bucket keys (`skill`, `grader`, `quality`, `triggers`, `total`) |
+| Longitudinal history | `.clauditor/history.jsonl` schema v3 + `clauditor trend --metric <dotted.path>` with ASCII sparklines |
+| Per-iteration workspace | `.clauditor/iteration-N/<skill>/` with `grading.json`, `timing.json`, and `run-*/output.{txt,jsonl}` captures |
 
 **Beyond the spec**, clauditor adds: trigger precision testing (`triggers.py`), a strict/extract `FORMAT_REGISTRY` invariant for canonical types, tiered section extraction (top-3 restaurants require more fields than the next 7), a reusable pytest plugin, and an `AssertionResult.kind` enum for programmatic filtering.
 
-**Deliberately out of scope**: per-iteration workspace dirs, automated with/without pair runs, blind A/B judges, human-feedback capture, and LLM-driven skill improvement proposers. These are tracked as follow-up issues (#22–#27).
+**Deliberately out of scope**: automated with/without pair runs, blind A/B judges, human-feedback capture, and LLM-driven skill improvement proposers. These are tracked as follow-up issues (#23–#27).
 
 ## Install
 
@@ -231,19 +232,56 @@ Define rubric criteria in your eval spec:
 ```bash
 clauditor grade .claude/commands/my-skill.md
 clauditor grade .claude/commands/my-skill.md --json
-clauditor grade .claude/commands/my-skill.md --dry-run   # Print prompt, no API call
-clauditor grade .claude/commands/my-skill.md --save       # Persist results to .clauditor/
-clauditor grade .claude/commands/my-skill.md --diff       # Compare against prior saved results
+clauditor grade .claude/commands/my-skill.md --dry-run      # Print prompt, no API call
+clauditor grade .claude/commands/my-skill.md --iteration 5  # Write to iteration-5/ explicitly
+clauditor grade .claude/commands/my-skill.md --iteration 5 --force  # Overwrite existing iteration-5/
+clauditor grade .claude/commands/my-skill.md --diff         # Compare against prior iteration
 ```
 
-Each criterion gets a pass/fail, score (0.0-1.0), evidence (quoted output), and reasoning. Use `--save` to persist results for regression tracking, and `--diff` to compare against a prior run (flags regressions where a criterion's score drops by more than 0.1).
+Every `grade` run is persisted to `.clauditor/iteration-N/<skill>/` — there is no opt-in `--save`. By default the iteration number auto-increments to the next free slot. Pass `--iteration N` to target a specific slot; if `iteration-N/` already exists the command errors unless you also pass `--force` to overwrite.
+
+Each criterion gets a pass/fail, score (0.0-1.0), evidence (quoted output), and reasoning. Use `--diff` to compare against a prior iteration (flags regressions where a criterion's score drops by more than 0.1).
+
+#### Iteration workspace layout
+
+`.clauditor/` is anchored at the repository root (the nearest ancestor of your CWD containing `.git/` or `.claude/`), so `grade` from any subdirectory writes to the same place. Each run produces:
+
+```
+.clauditor/
+  iteration-1/
+    my-skill/
+      grading.json        # full GradingReport
+      timing.json         # skill name, iteration, n_runs, token + duration metrics
+      run-0/
+        output.txt        # rendered text blocks
+        output.jsonl      # raw stream-json events
+  iteration-2/
+    my-skill/
+      grading.json
+      timing.json
+      run-0/
+        output.txt
+        output.jsonl
+      run-1/              # additional runs appear under --variance N
+        output.txt
+        output.jsonl
+  history.jsonl
+```
 
 #### Regression Comparison
 
-Diffs two saved grade reports (from `--save`) or two captured outputs, printing `[REGRESSION]` for pass→fail flips and `[IMPROVEMENT]` for fail→pass. Exits 1 on any regression.
+Diffs two grade reports, printing `[REGRESSION]` for pass→fail flips and `[IMPROVEMENT]` for fail→pass. Exits 1 on any regression. `compare` accepts three input forms:
 
 ```bash
+# 1. Numeric iteration refs (preferred — pairs with auto-incremented iterations)
+clauditor compare --skill my-skill --from 1 --to 2
+
+# 2. Iteration directory paths
+clauditor compare .clauditor/iteration-1/my-skill .clauditor/iteration-2/my-skill
+
+# 3. Legacy grade-report files
 clauditor compare before.grade.json after.grade.json
+
 # Or re-grade two raw captures against a spec:
 clauditor compare before.txt after.txt --spec <skill.md>
 ```
@@ -336,12 +374,15 @@ clauditor validate <skill.md> --json   # JSON output for CI
 clauditor run <skill-name> --args "…"  # Run skill, print output
 clauditor extract <skill.md>           # Layer 2 schema extraction
 clauditor extract <skill.md> --dry-run # Print extraction prompt only
-clauditor grade <skill.md>             # Layer 3 quality grading
-clauditor grade <skill.md> --variance 3  # Variance measurement
-clauditor grade <skill.md> --only-criterion clarity  # Run a subset (repeatable, substring match)
-clauditor grade <skill.md> --save      # Persist results to .clauditor/
-clauditor grade <skill.md> --diff      # Compare against prior results
-clauditor compare before.grade.json after.grade.json  # Diff two saved grade reports
+clauditor grade <skill.md>                             # Layer 3 quality grading (auto-increments iteration)
+clauditor grade <skill.md> --variance 3                # Variance measurement
+clauditor grade <skill.md> --only-criterion clarity    # Run a subset (repeatable, substring match)
+clauditor grade <skill.md> --iteration 5               # Write to .clauditor/iteration-5/<skill>/
+clauditor grade <skill.md> --iteration 5 --force       # Overwrite an existing iteration-5/
+clauditor grade <skill.md> --diff                      # Compare against prior iteration
+clauditor compare --skill <skill> --from 1 --to 2      # Diff two iterations by number
+clauditor compare .clauditor/iteration-1/<skill> .clauditor/iteration-2/<skill>  # Diff by directory
+clauditor compare before.grade.json after.grade.json   # Diff two legacy grade reports
 clauditor compare before.txt after.txt --spec <skill.md>  # Re-grade two captures
 clauditor trend <skill> --metric total.total     # Tab-separated history + ASCII sparkline
 clauditor trend <skill> --list-metrics           # List available metric paths
@@ -353,14 +394,16 @@ clauditor doctor                       # Report environment diagnostics
 
 ### Persistent metric history
 
-Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.clauditor/history.jsonl`. Records are schema v2 with a `command` discriminator and a nested `metrics` dict:
+Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.clauditor/history.jsonl`. Records are schema v3 with a `command` discriminator, a nested `metrics` dict, and (for `grade`) the `iteration` slot and on-disk `workspace_path`. Legacy v2 records still read cleanly.
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "command": "grade",
   "ts": "2026-04-13T15:00:00+00:00",
   "skill": "find-restaurants",
+  "iteration": 4,
+  "workspace_path": ".clauditor/iteration-4/find-restaurants",
   "pass_rate": 0.83,
   "mean_score": 0.75,
   "metrics": {
@@ -521,6 +564,13 @@ the count failure and any per-entry failures.
 > `FieldRequirement` has been removed. Migrate by renaming `pattern` to
 > `format` — inline regexes work as before; registered names are now the
 > preferred ergonomics.
+
+## Migration notes
+
+- **`clauditor grade --save` has been removed.** Every `grade` run is now persisted to `.clauditor/iteration-N/<skill>/` automatically. Drop `--save` from scripts and CI; use `--iteration N` / `--force` if you need to target a specific slot.
+- **Legacy `.clauditor/<skill>.grade.json` files are ignored by auto-discovery.** The canonical grade report is `.clauditor/iteration-N/<skill>/grading.json`, and `grade --diff` / `cmd_trend` only look at the new layout. You can still pass a legacy `.grade.json` explicitly to `clauditor compare` (e.g. `compare old.grade.json new.grade.json`), but clauditor no longer writes that format.
+- **`history.jsonl` is now schema v3** with `iteration` and `workspace_path` fields on `grade` records. Mixed v2/v3 files continue to load.
+- **`.clauditor/` is anchored at the repo root** (walking up for `.git/` or `.claude/`), so running `grade` from a subdirectory writes to the same workspace as running it from the top.
 
 ## License
 

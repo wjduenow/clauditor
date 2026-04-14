@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import patch
+
 import pytest
 
 from clauditor.history import (
@@ -160,12 +163,14 @@ class TestAppendAndRead:
         with pytest.raises(TypeError):
             append_record("s", 1.0, 1.0, {}, path=path)  # type: ignore[call-arg]
 
-    def test_schema_version_v2_written(self, tmp_path):
+    def test_schema_version_v3_written(self, tmp_path):
         path = tmp_path / "history.jsonl"
         append_record("s", 1.0, 1.0, {"k": 1}, command="grade", path=path)
         records = read_records(path=path)
-        assert records[0]["schema_version"] == 2
+        assert records[0]["schema_version"] == 3
         assert records[0]["command"] == "grade"
+        assert records[0]["iteration"] is None
+        assert records[0]["workspace_path"] is None
 
     def test_append_record_rejects_invalid_command(self, tmp_path):
         path = tmp_path / "history.jsonl"
@@ -181,6 +186,171 @@ class TestAppendAndRead:
         for cmd in ("grade", "extract", "validate"):
             append_record("s", None, None, {}, command=cmd, path=path)
         assert len(read_records(path=path)) == 3
+
+
+class TestAppendV3:
+    """Schema v3: iteration + workspace_path fields (US-005)."""
+
+    def test_append_v3_record_shape(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        append_record(
+            "s",
+            0.9,
+            0.8,
+            {"k": 1},
+            command="grade",
+            path=path,
+            iteration=3,
+            workspace_path=".clauditor/iteration-3/foo",
+        )
+        records = read_records(path=path)
+        assert len(records) == 1
+        rec = records[0]
+        assert rec["schema_version"] == 3
+        assert rec["iteration"] == 3
+        assert rec["workspace_path"] == ".clauditor/iteration-3/foo"
+
+    def test_append_v3_defaults_none(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        append_record("s", 1.0, 1.0, {}, command="grade", path=path)
+        rec = read_records(path=path)[0]
+        assert rec["iteration"] is None
+        assert rec["workspace_path"] is None
+
+
+class TestReadMixedSchema:
+    """Reading mixed v2 and v3 history files (US-005)."""
+
+    def test_read_mixed_v2_v3_records(self, tmp_path):
+        import json as _json
+
+        path = tmp_path / "history.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        v2_record = {
+            "schema_version": 2,
+            "command": "grade",
+            "ts": "2026-01-01T00:00:00+00:00",
+            "skill": "skill-a",
+            "pass_rate": 0.5,
+            "mean_score": 0.6,
+            "metrics": {},
+        }
+        with path.open("w", encoding="utf-8") as f:
+            f.write(_json.dumps(v2_record) + "\n")
+
+        # Append a v3 record via the API.
+        append_record(
+            "skill-a",
+            0.9,
+            0.85,
+            {},
+            command="grade",
+            path=path,
+            iteration=2,
+            workspace_path="ws/2",
+        )
+
+        records = read_records(path=path)
+        assert len(records) == 2
+        assert records[0]["schema_version"] == 2
+        assert records[0].get("iteration") is None
+        assert records[0].get("workspace_path") is None
+        assert records[1]["schema_version"] == 3
+        assert records[1]["iteration"] == 2
+        assert records[1]["workspace_path"] == "ws/2"
+
+
+def _concurrent_writer(args):
+    # Top-level so multiprocessing can pickle it.
+    from clauditor.history import append_record as _append
+
+    path_str, idx = args
+    _append(
+        f"skill-{idx}",
+        float(idx) / 10,
+        None,
+        {"i": idx},
+        command="grade",
+        path=Path(path_str),
+        iteration=idx,
+        workspace_path=f"ws/{idx}",
+    )
+
+
+class TestConcurrentAppend:
+    """fcntl.flock serializes concurrent append_record across processes."""
+
+    def test_concurrent_append_no_interleave(self, tmp_path):
+        import json as _json
+        import multiprocessing
+
+        path = tmp_path / ".clauditor" / "history.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        n = 8
+        # Use fork: it's reliable under pytest+coverage, cheap, and this
+        # test is Linux-only (pyproject.toml pins clauditor to Linux).
+        # spawn hangs under pytest-cov due to the child needing to
+        # re-import coverage machinery before any user code runs.
+        if not hasattr(__import__("os"), "fork"):
+            pytest.skip("fork multiprocessing required for this test")
+        ctx = multiprocessing.get_context("fork")
+        with ctx.Pool(4) as pool:
+            pool.map(
+                _concurrent_writer,
+                [(str(path), i) for i in range(n)],
+            )
+
+        with path.open("r", encoding="utf-8") as f:
+            lines = [ln for ln in f.readlines() if ln.strip()]
+        assert len(lines) == n
+        seen_iters = set()
+        for line in lines:
+            rec = _json.loads(line)  # would raise if interleaved/corrupt
+            assert rec["schema_version"] == 3
+            assert isinstance(rec["iteration"], int)
+            seen_iters.add(rec["iteration"])
+        assert seen_iters == set(range(n))
+
+
+class TestFileLockFallback:
+    """Coverage for _file_lock's fallback path on filesystems without flock."""
+
+    def test_flock_oserror_falls_back_to_unlocked_append(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """If fcntl.flock raises OSError, append still succeeds with warn.
+
+        Simulates WSL2 /mnt/* drvfs / NFSv3 environments where advisory
+        locking is unsupported.
+        """
+        import clauditor.history as history_mod
+
+        # Reset the module-level warn-once flag so the warning fires.
+        monkeypatch.setattr(history_mod, "_FLOCK_UNSUPPORTED_WARNED", False)
+
+        path = tmp_path / ".clauditor" / "history.jsonl"
+
+        def _raise(*_a, **_k):
+            raise OSError("flock unsupported on this fs")
+
+        with patch.object(history_mod.fcntl, "flock", side_effect=_raise):
+            append_record(
+                skill="foo",
+                pass_rate=1.0,
+                mean_score=0.9,
+                metrics={},
+                command="grade",
+                path=path,
+                iteration=1,
+                workspace_path=".clauditor/iteration-1/foo",
+            )
+
+        records = read_records(path=path)
+        assert len(records) == 1
+        assert records[0]["schema_version"] == 3
+        err = capsys.readouterr().err
+        assert "fcntl.flock unsupported" in err
 
 
 class TestSparkline:
