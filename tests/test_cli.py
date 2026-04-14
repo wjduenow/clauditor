@@ -1513,6 +1513,286 @@ class TestCmdGradeLayer2Persistence:
         assert entries[0]["passed"] is True
 
 
+class TestBaselineFlag:
+    """US-004 (#25): --baseline flag on cmd_grade writes baseline sidecars."""
+
+    def _make_grading_report(self):
+        return GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="Is the output relevant?",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                )
+            ],
+            duration_seconds=1.0,
+        )
+
+    def _make_baseline_skill_result(self, output="baseline output"):
+        return SkillResult(
+            output=output,
+            exit_code=0,
+            skill_name="__baseline__",
+            args="",
+            duration_seconds=0.75,
+            input_tokens=11,
+            output_tokens=22,
+        )
+
+    def _make_sectioned_eval_spec(self):
+        return _make_eval_spec(
+            assertions=[
+                {
+                    "type": "contains",
+                    "value": "hello",
+                    "id": "a.hello.v1",
+                }
+            ],
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            min_entries=0,
+                            fields=[
+                                FieldRequirement(
+                                    name="venue_name",
+                                    required=True,
+                                    id="venues.primary.venue_name.v1",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    def _make_extraction_report(self):
+        from clauditor.grader import ExtractionReport, FieldExtractionResult
+
+        return ExtractionReport(
+            skill_name="test-skill",
+            model="claude-haiku-4-5-20251001",
+            results=[
+                FieldExtractionResult(
+                    field_id="venues.primary.venue_name.v1",
+                    field_name="venue_name",
+                    section="Venues",
+                    tier="primary",
+                    entry_index=0,
+                    required=True,
+                    presence_passed=True,
+                    format_passed=None,
+                    evidence="Cafe Foo",
+                ),
+            ],
+        )
+
+    def _prepare_spec(self, eval_spec):
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.runner = MagicMock()
+        spec.runner.run_raw.return_value = self._make_baseline_skill_result()
+        return spec
+
+    def test_grade_without_baseline_flag_writes_no_baseline_files(
+        self, tmp_path, monkeypatch
+    ):
+        """Default cmd_grade produces no baseline_*.json and no run_raw call."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        grading_report = self._make_grading_report()
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            )
+
+        assert rc == 0
+        spec.runner.run_raw.assert_not_called()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assert not (skill_dir / "baseline.json").exists()
+        assert not (skill_dir / "baseline_assertions.json").exists()
+        assert not (skill_dir / "baseline_extraction.json").exists()
+        assert not (skill_dir / "baseline_grading.json").exists()
+
+    def test_grade_with_baseline_flag_writes_all_baseline_sidecars(
+        self, tmp_path, monkeypatch
+    ):
+        """--baseline writes all four baseline sidecars for a sectioned spec."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        grading_report = self._make_grading_report()
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--baseline",
+                ]
+            )
+
+        assert rc == 0
+        spec.runner.run_raw.assert_called_once()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+
+        baseline_meta = json.loads((skill_dir / "baseline.json").read_text())
+        assert baseline_meta["skill"] == "test-skill"
+        assert baseline_meta["iteration"] == 1
+        assert baseline_meta["exit_code"] == 0
+        assert baseline_meta["input_tokens"] == 11
+        assert baseline_meta["output_tokens"] == 22
+        assert "output" in baseline_meta
+        assert "duration_seconds" in baseline_meta
+
+        baseline_assertions = json.loads(
+            (skill_dir / "baseline_assertions.json").read_text()
+        )
+        assert baseline_assertions["skill"] == "test-skill"
+        assert baseline_assertions["iteration"] == 1
+        assert "results" in baseline_assertions
+
+        baseline_extraction = json.loads(
+            (skill_dir / "baseline_extraction.json").read_text()
+        )
+        assert "fields" in baseline_extraction
+
+        baseline_grading = json.loads(
+            (skill_dir / "baseline_grading.json").read_text()
+        )
+        assert baseline_grading["skill_name"] == "test-skill"
+
+    def test_baseline_results_keyed_by_same_ids_as_primary(
+        self, tmp_path, monkeypatch
+    ):
+        """Baseline assertion/field ids match primary spec ids."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        grading_report = self._make_grading_report()
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--baseline",
+                ]
+            )
+
+        assert rc == 0
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+
+        baseline_assertions = json.loads(
+            (skill_dir / "baseline_assertions.json").read_text()
+        )
+        ids = {r["id"] for r in baseline_assertions["results"]}
+        assert "a.hello.v1" in ids
+
+        baseline_extraction = json.loads(
+            (skill_dir / "baseline_extraction.json").read_text()
+        )
+        assert "venues.primary.venue_name.v1" in baseline_extraction["fields"]
+
+    def test_baseline_skips_extraction_when_no_sections(
+        self, tmp_path, monkeypatch
+    ):
+        """No sections => no baseline_extraction.json; other 3 still written."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        eval_spec = _make_eval_spec(sections=[])
+        spec = self._prepare_spec(eval_spec)
+        grading_report = self._make_grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+            ) as mock_extract,
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--baseline",
+                ]
+            )
+
+        assert rc == 0
+        mock_extract.assert_not_awaited()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assert (skill_dir / "baseline.json").exists()
+        assert (skill_dir / "baseline_assertions.json").exists()
+        assert (skill_dir / "baseline_grading.json").exists()
+        assert not (skill_dir / "baseline_extraction.json").exists()
+
+
 class TestCmdCompare:
     """Tests for the compare subcommand (US-003)."""
 
