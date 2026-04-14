@@ -36,6 +36,7 @@ class AssertionResult:
     evidence: str | None = None
     raw_data: dict | None = None
     id: str | None = None
+    transcript_path: str | None = None
 
     def __bool__(self) -> bool:
         return self.passed
@@ -55,7 +56,23 @@ class AssertionResult:
             "kind": self.kind,
             "evidence": self.evidence,
             "raw_data": self.raw_data,
+            "transcript_path": self.transcript_path,
         }
+
+    @classmethod
+    def from_json_dict(cls, data: dict) -> AssertionResult:
+        """Inverse of :meth:`to_json_dict` — tolerates missing keys for
+        older on-disk fixtures that predate newly added fields."""
+        return cls(
+            id=data.get("id"),
+            name=data.get("name", ""),
+            passed=bool(data["passed"]),
+            message=data.get("message", ""),
+            kind=data.get("kind", "custom"),
+            evidence=data.get("evidence"),
+            raw_data=data.get("raw_data"),
+            transcript_path=data.get("transcript_path"),
+        )
 
 
 @dataclass
@@ -106,16 +123,7 @@ class AssertionSet:
     def from_json(cls, data: dict) -> AssertionSet:
         """Inverse of :meth:`to_json` — used by tests and the auditor."""
         results = [
-            AssertionResult(
-                id=r.get("id"),
-                name=r.get("name", ""),
-                passed=bool(r["passed"]),
-                message=r.get("message", ""),
-                kind=r.get("kind", "custom"),
-                evidence=r.get("evidence"),
-                raw_data=r.get("raw_data"),
-            )
-            for r in data.get("results", [])
+            AssertionResult.from_json_dict(r) for r in data.get("results", [])
         ]
         return cls(
             results=results,
