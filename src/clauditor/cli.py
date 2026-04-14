@@ -763,16 +763,45 @@ def _run_blind_compare(
     if criteria:
         rubric_hint = "\n".join(f"- {c}" for c in criteria)
 
-    output_a = before_path.read_text(encoding="utf-8")
-    output_b = after_path.read_text(encoding="utf-8")
+    for path in (before_path, after_path):
+        if not path.is_file():
+            print(
+                f"ERROR: {path} does not exist or is not a regular file",
+                file=sys.stderr,
+            )
+            return 2
 
+    try:
+        output_a = before_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        print(
+            f"ERROR: {before_path} is not valid UTF-8 — blind compare "
+            "requires plain text files",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        output_b = after_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        print(
+            f"ERROR: {after_path} is not valid UTF-8 — blind compare "
+            "requires plain text files",
+            file=sys.stderr,
+        )
+        return 2
+
+    model = skill_spec.eval_spec.grading_model
+    print(
+        f"Running blind A/B judge ({model}) — 2 API calls...",
+        file=sys.stderr,
+    )
     report = asyncio.run(
         blind_compare(
             user_prompt,
             output_a,
             output_b,
             rubric_hint,
-            model=skill_spec.eval_spec.grading_model,
+            model=model,
         )
     )
     _print_blind_report(report, before_path, after_path)

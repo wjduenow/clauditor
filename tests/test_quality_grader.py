@@ -1019,13 +1019,20 @@ class TestBuildBlindPrompt:
         prompt = build_blind_prompt(
             "Q?", "first output text", "second output text"
         )
-        assert "1" in prompt
-        assert "2" in prompt
+        assert "<response_1>" in prompt
+        assert "</response_1>" in prompt
+        assert "<response_2>" in prompt
+        assert "</response_2>" in prompt
         lowered = prompt.lower()
         assert "output a" not in lowered
         assert "output b" not in lowered
         assert "option a" not in lowered
         assert "option b" not in lowered
+
+    def test_build_blind_prompt_empty_string_hint_matches_none(self):
+        a = build_blind_prompt("q", "o1", "o2", rubric_hint="")
+        b = build_blind_prompt("q", "o1", "o2", rubric_hint=None)
+        assert a == b
 
     def test_build_blind_prompt_no_rubric_hint_when_none(self):
         prompt = build_blind_prompt("Q?", "a-out", "b-out", rubric_hint=None)
@@ -1200,19 +1207,23 @@ class TestBlindCompare:
         with patch(
             "anthropic.AsyncAnthropic",
             return_value=mock_client,
+        ), patch(
+            "clauditor.quality_grader._monotonic",
+            side_effect=[0.0, 1.25],
         ):
             report = await blind_compare(
                 "q", "a-text", "b-text", rng=random.Random(1)
             )
-        assert report.duration_seconds >= 0.0
+        assert report.duration_seconds == pytest.approx(1.25)
 
     @pytest.mark.asyncio
     async def test_blind_compare_malformed_json_returns_graceful_tie(self):
-        bad = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
-        bad.content = [MagicMock(text="not json at all")]
-        ok = _blind_response("1")
+        bad1 = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        bad1.content = [MagicMock(text="not json at all")]
+        bad2 = MagicMock(usage=MagicMock(input_tokens=12, output_tokens=7))
+        bad2.content = [MagicMock(text="also not json")]
         mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(side_effect=[bad, ok])
+        mock_client.messages.create = AsyncMock(side_effect=[bad1, bad2])
         with patch(
             "anthropic.AsyncAnthropic",
             return_value=mock_client,
@@ -1229,8 +1240,9 @@ class TestBlindCompare:
             "parse" in report.reasoning.lower()
             or "not json at all" in report.reasoning
         )
-        # Tokens still populated from both calls
-        assert report.input_tokens > 0
+        # Tokens still populated from both calls (sums exactly)
+        assert report.input_tokens == 22
+        assert report.output_tokens == 12
 
     @pytest.mark.asyncio
     async def test_blind_compare_seeded_rng_is_deterministic(self):
@@ -1254,8 +1266,10 @@ class TestBlindCompare:
         ][0]["content"]
         # Under seed 42, run-1 is "ab->21": a should appear after
         # "Response 2" and b after "Response 1".
-        idx_r1 = first_prompt.index("## Response 1")
-        idx_r2 = first_prompt.index("## Response 2")
+        # rindex to skip over the warning sentence mention and find the
+        # actual section tags (which appear last in the prompt).
+        idx_r1 = first_prompt.rindex("<response_1>")
+        idx_r2 = first_prompt.rindex("<response_2>")
         idx_a = first_prompt.index("A_UNIQUE")
         idx_b = first_prompt.index("B_UNIQUE")
         assert idx_r1 < idx_b < idx_r2 < idx_a
@@ -1329,3 +1343,112 @@ class TestBlindCompare:
         assert report.position_agreement is True
         assert report.score_a == pytest.approx(0.3)
         assert report.score_b == pytest.approx(0.9)
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_partial_parse_failure_keeps_good_run(self):
+        # Seed 1 → run-1 "ab->12"; judge says "1" → a wins in run-1.
+        # Run-2 returns garbage → cannot verify position agreement.
+        good = _blind_response(
+            "1", confidence=0.9, score_1=0.85, score_2=0.3,
+            input_tokens=100, output_tokens=40,
+        )
+        bad = MagicMock(usage=MagicMock(input_tokens=20, output_tokens=10))
+        bad.content = [MagicMock(text="garbage not json")]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[good, bad])
+        with patch(
+            "anthropic.AsyncAnthropic",
+            return_value=mock_client,
+        ):
+            report = await blind_compare(
+                "q", "a-text", "b-text", rng=random.Random(1)
+            )
+        assert report.preference == "a"
+        assert report.position_agreement is False
+        assert report.score_a == pytest.approx(0.85)
+        assert report.score_b == pytest.approx(0.3)
+        assert report.confidence == pytest.approx(0.9)
+        assert "parse" in report.reasoning.lower()
+        assert report.input_tokens == 120
+        assert report.output_tokens == 50
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_default_rng_works(self):
+        r1 = _blind_response("1")
+        r2 = _blind_response("2")
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[r1, r2])
+        with patch(
+            "anthropic.AsyncAnthropic",
+            return_value=mock_client,
+        ):
+            report = await blind_compare("q", "a-text", "b-text")
+        assert isinstance(report, BlindReport)
+
+
+class TestParseBlindResponse:
+    def _full(self, **overrides):
+        data = {
+            "preference": "1",
+            "confidence": 0.8,
+            "score_1": 0.7,
+            "score_2": 0.5,
+            "reasoning": "because",
+        }
+        data.update(overrides)
+        return data
+
+    def test_parses_plain_json(self):
+        from clauditor.quality_grader import _parse_blind_response
+
+        data = self._full()
+        result = _parse_blind_response(json.dumps(data))
+        assert result == data
+
+    def test_parses_markdown_fenced_json(self):
+        from clauditor.quality_grader import _parse_blind_response
+
+        data = self._full()
+        text = "```json\n" + json.dumps(data) + "\n```"
+        result = _parse_blind_response(text)
+        assert result == data
+
+    def test_returns_none_on_non_dict(self):
+        from clauditor.quality_grader import _parse_blind_response
+
+        assert _parse_blind_response("[1, 2, 3]") is None
+        assert _parse_blind_response('"a string"') is None
+
+    def test_returns_none_on_missing_preference(self):
+        from clauditor.quality_grader import _parse_blind_response
+
+        data = self._full()
+        del data["preference"]
+        assert _parse_blind_response(json.dumps(data)) is None
+
+    def test_returns_none_on_missing_score_1(self):
+        from clauditor.quality_grader import _parse_blind_response
+
+        data = self._full()
+        del data["score_1"]
+        assert _parse_blind_response(json.dumps(data)) is None
+
+    def test_returns_none_on_missing_score_2(self):
+        from clauditor.quality_grader import _parse_blind_response
+
+        data = self._full()
+        del data["score_2"]
+        assert _parse_blind_response(json.dumps(data)) is None
+
+    def test_returns_none_on_garbage_text(self):
+        from clauditor.quality_grader import _parse_blind_response
+
+        assert _parse_blind_response("not json at all") is None
+
+    def test_accepts_extra_fields(self):
+        from clauditor.quality_grader import _parse_blind_response
+
+        data = self._full(extra="field", more=42)
+        result = _parse_blind_response(json.dumps(data))
+        assert result is not None
+        assert result["extra"] == "field"

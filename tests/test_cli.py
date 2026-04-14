@@ -1574,7 +1574,7 @@ class TestCmdCompareBlind:
             )
         assert rc == 0
         out = capsys.readouterr().out
-        assert "AFTER" in out
+        assert "preference: AFTER" in out
         assert "before.txt" in out
         assert "after.txt" in out
         assert "0.80" in out
@@ -1603,7 +1603,7 @@ class TestCmdCompareBlind:
             )
         assert rc == 0
         out = capsys.readouterr().out
-        assert "TIE" in out
+        assert "preference: TIE" in out
 
     def test_compare_blind_surfaces_position_bias(self, tmp_path, capsys):
         before, after = self._write_pair(tmp_path)
@@ -1700,6 +1700,81 @@ class TestCmdCompareBlind:
         assert call_args.args[0] == "Do a thing"
         assert call_args.args[1] == "UNIQUE_BEFORE_CONTENT_XYZ"
         assert call_args.args[2] == "UNIQUE_AFTER_CONTENT_XYZ"
+
+    def test_compare_blind_before_branch(self, tmp_path, capsys):
+        before, after = self._write_pair(tmp_path)
+        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_blind_report(preference="a")
+        with patch(
+            "clauditor.cli.SkillSpec.from_file", return_value=spec
+        ), patch(
+            "clauditor.quality_grader.blind_compare",
+            new=AsyncMock(return_value=report),
+        ):
+            rc = main(
+                [
+                    "compare",
+                    str(before),
+                    str(after),
+                    "--spec",
+                    "skill.md",
+                    "--blind",
+                ]
+            )
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "preference: BEFORE" in out
+
+    def test_compare_blind_missing_file(self, tmp_path, capsys):
+        before = tmp_path / "before.txt"
+        after = tmp_path / "after.txt"
+        before.write_text("ok")
+        # after intentionally not created
+        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        spec = _make_spec(eval_spec=eval_spec)
+        with patch(
+            "clauditor.cli.SkillSpec.from_file", return_value=spec
+        ):
+            rc = main(
+                [
+                    "compare",
+                    str(before),
+                    str(after),
+                    "--spec",
+                    "skill.md",
+                    "--blind",
+                ]
+            )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "does not exist" in err
+        assert "after.txt" in err
+
+    def test_compare_blind_non_utf8_file(self, tmp_path, capsys):
+        before = tmp_path / "before.txt"
+        after = tmp_path / "after.txt"
+        before.write_bytes(b"\xff\xfe\xfd")
+        after.write_text("ok")
+        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        spec = _make_spec(eval_spec=eval_spec)
+        with patch(
+            "clauditor.cli.SkillSpec.from_file", return_value=spec
+        ):
+            rc = main(
+                [
+                    "compare",
+                    str(before),
+                    str(after),
+                    "--spec",
+                    "skill.md",
+                    "--blind",
+                ]
+            )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "UTF-8" in err
+        assert "before.txt" in err
 
 
 class TestCmdGradeCompareFlagRemoved:
