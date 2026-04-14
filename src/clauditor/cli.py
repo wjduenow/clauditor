@@ -454,6 +454,28 @@ def _cmd_grade_with_workspace(
             primary_report.to_json(), encoding="utf-8"
         )
 
+        # US-002: persist Layer 1 AssertionSet per run keyed by stable
+        # spec id (DEC-001, DEC-007). Runs the deterministic assertions
+        # against every run's output — no LLM calls, cheap. Variance
+        # runs each produce their own record in the same file.
+        assertions_payload = {
+            "skill": spec.skill_name,
+            "iteration": workspace.iteration,
+            "runs": [
+                {
+                    "run": idx,
+                    **run_assertions(
+                        text, spec.eval_spec.assertions
+                    ).to_json(),
+                }
+                for idx, (text, _events) in enumerate(run_outputs)
+            ],
+        }
+        (skill_dir / "assertions.json").write_text(
+            json.dumps(assertions_payload, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
     if not only_criterion:
         timing_payload: dict = {
             "skill": spec.skill_name,

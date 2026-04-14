@@ -860,6 +860,103 @@ class TestCmdGradeSaveDiff:
         # Single grading.json at the skill level (not per-run)
         assert (skill_dir / "grading.json").is_file()
 
+    def test_cmd_grade_writes_assertions_json(self, tmp_path, monkeypatch):
+        """US-002: cmd_grade persists Layer 1 AssertionSet as assertions.json
+        keyed by the stable spec ids (DEC-001, DEC-007)."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world this is the skill output")
+
+        eval_spec = _make_eval_spec(
+            assertions=[
+                {"id": "has-hello", "type": "contains", "value": "hello"},
+                {"id": "min-len", "type": "min_length", "value": "5"},
+            ]
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_grading_report()
+
+        s, g = self._patch_grade(spec, report)
+        with s, g:
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            )
+        assert rc == 0
+
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assertions_path = skill_dir / "assertions.json"
+        assert assertions_path.is_file()
+
+        payload = json.loads(assertions_path.read_text())
+        assert payload["skill"] == "test-skill"
+        assert payload["iteration"] == 1
+        assert len(payload["runs"]) == 1
+        run0 = payload["runs"][0]
+        assert run0["run"] == 0
+        ids = [r["id"] for r in run0["results"]]
+        assert ids == ["has-hello", "min-len"]
+        # Every result carries an id (no position-keyed fallback).
+        assert all(r["id"] is not None for r in run0["results"])
+        assert all(r["passed"] for r in run0["results"])
+
+    def test_cmd_grade_variance_runs_each_have_assertions_json_entry(
+        self, tmp_path, monkeypatch
+    ):
+        """US-002: variance runs each persist their own record in
+        assertions.json (one entry per run-K)."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("primary output text long enough")
+
+        eval_spec = _make_eval_spec(
+            assertions=[
+                {"id": "has-text", "type": "contains", "value": "text"},
+            ]
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.side_effect = [
+            SkillResult(
+                output=f"variance text run {i}",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                duration_seconds=0.5,
+                input_tokens=10,
+                output_tokens=5,
+                stream_events=[{"type": "result", "i": i}],
+            )
+            for i in range(2)
+        ]
+        report = self._make_grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--variance",
+                    "2",
+                ]
+            )
+        assert rc == 0
+
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        payload = json.loads((skill_dir / "assertions.json").read_text())
+        assert [r["run"] for r in payload["runs"]] == [0, 1, 2]
+        for entry in payload["runs"]:
+            assert len(entry["results"]) == 1
+            assert entry["results"][0]["id"] == "has-text"
+            assert entry["results"][0]["passed"] is True
+
     def test_grade_primary_skill_subprocess_path(
         self, tmp_path, monkeypatch
     ):
