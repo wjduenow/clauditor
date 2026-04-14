@@ -4,9 +4,9 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/26
 - **Branch:** `feature/26-execution-transcripts`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/26-execution-transcripts`
-- **Phase:** `detailing`
-- **PR:** _pending_
-- **Sessions:** 1
+- **Phase:** `devolved`
+- **PR:** https://github.com/wjduenow/clauditor/pull/35
+- **Sessions:** 2
 - **Last session:** 2026-04-14
 
 ---
@@ -737,4 +737,21 @@ implementation. Candidates:
 ---
 
 ## Beads Manifest
-_pending devolve_
+
+Devolved 2026-04-14. Epic: `clauditor-061`.
+
+| Bead ID            | Story   | Title                                                 | Depends on                          |
+|--------------------|---------|-------------------------------------------------------|-------------------------------------|
+| `clauditor-061`    | Epic    | #26: Execution transcripts for root-cause analysis    | —                                   |
+| `clauditor-061.1`  | US-001  | Redaction module (`clauditor/transcripts.py`)         | —                                   |
+| `clauditor-061.2`  | US-002  | `AssertionResult.transcript_path` field               | —                                   |
+| `clauditor-061.3`  | US-003  | Wire redaction into `_write_run_dir`                  | `.1`                                |
+| `clauditor-061.4`  | US-004  | Thread `transcript_path` into grade assertion results | `.2`, `.3`                          |
+| `clauditor-061.5`  | US-005  | `--no-transcript` opt-out flag                        | `.4`                                |
+| `clauditor-061.6`  | US-006  | Extend workspace staging to `cmd_validate`            | `.3`, `.4`, `.5`                    |
+| `clauditor-061.7`  | US-007  | Verbose `-v` transcript slice printer                 | `.1`, `.6`                          |
+| `clauditor-061.8`  | US-008  | Stream-json schema contract docs                      | —                                   |
+| `clauditor-061.9`  | US-009  | Quality Gate                                          | `.1`–`.8`                           |
+| `clauditor-061.10` | US-010  | Patterns & Memory                                     | `.9`                                |
+
+**Ready to claim:** `clauditor-061.1`, `clauditor-061.2`, `clauditor-061.8` (zero deps).
