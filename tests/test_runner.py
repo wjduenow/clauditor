@@ -836,3 +836,94 @@ class TestStreamJsonDefensiveBranches:
             runner.run("skill")
         # terminate raised, but the outer handler swallowed it; the
         # original RuntimeError from wait still propagated.
+
+
+class TestStreamEvents:
+    """Tests for SkillResult.stream_events capture (US-003 / DEC-010)."""
+
+    def test_stream_events_populated(self):
+        """Mock subprocess emits 3 JSON lines -> 3 dicts in order."""
+        messages = [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "hello"}],
+                },
+            },
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "usage": {"input_tokens": 7, "output_tokens": 3},
+            },
+        ]
+        fake = _FakePopen([json.dumps(m) for m in messages])
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            result = runner.run("skill")
+
+        assert len(result.stream_events) == 3
+        assert result.stream_events == messages
+        # order preserved
+        assert [e["type"] for e in result.stream_events] == [
+            "system",
+            "assistant",
+            "result",
+        ]
+
+    def test_stream_events_skips_non_json(self):
+        """Non-JSON lines are ignored; stream_events only contains dicts."""
+        messages = [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "hi"}],
+                },
+            },
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            },
+        ]
+        lines = [
+            json.dumps(messages[0]),
+            "this is not json at all",
+            json.dumps(messages[1]),
+            "{broken json",
+            json.dumps(messages[2]),
+        ]
+        fake = _FakePopen(lines)
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            result = runner.run("skill")
+
+        assert len(result.stream_events) == 3
+        assert result.stream_events == messages
+
+    def test_output_field_still_renders_text_blocks(self):
+        """Regression: SkillResult.output is unchanged by stream_events work."""
+        fake = make_fake_skill_stream("the quick brown fox")
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            result = runner.run("skill")
+
+        assert result.output == "the quick brown fox"
+        assert result.exit_code == 0
+        # stream_events contains assistant + result (2 entries from the helper)
+        assert len(result.stream_events) == 2
+        assert result.stream_events[0]["type"] == "assistant"
+        assert result.stream_events[-1]["type"] == "result"
+
+    def test_stream_events_default_empty_list(self):
+        """SkillResult default factory gives each instance its own list."""
+        a = SkillResult(output="", exit_code=0, skill_name="x", args="")
+        b = SkillResult(output="", exit_code=0, skill_name="y", args="")
+        assert a.stream_events == []
+        a.stream_events.append({"type": "foo"})
+        assert b.stream_events == []
