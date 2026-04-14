@@ -479,9 +479,10 @@ async def blind_compare(
 
 def build_grading_prompt(eval_spec: EvalSpec) -> str:
     """Build a prompt that asks the LLM to grade output against rubric criteria."""
+    from clauditor.schemas import criterion_text
     criteria_lines = []
     for i, criterion in enumerate(eval_spec.grading_criteria, 1):
-        criteria_lines.append(f"{i}. {criterion}")
+        criteria_lines.append(f"{i}. {criterion_text(criterion)}")
     criteria_block = "\n".join(criteria_lines)
 
     return (
@@ -508,7 +509,7 @@ def build_grading_prompt(eval_spec: EvalSpec) -> str:
 
 
 def parse_grading_response(
-    text: str, criteria: list[str]
+    text: str, criteria: list
 ) -> list[GradingResult]:
     """Parse a JSON grading response into GradingResult objects.
 
