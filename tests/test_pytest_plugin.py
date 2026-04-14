@@ -369,9 +369,8 @@ class TestClauditorSpecInputFiles:
                     skill_name="my-skill",
                     args="--depth quick",
                 )
-                with patch(
-                    "clauditor.spec.SkillRunner.run",
-                    return_value=fake_result,
+                with patch.object(
+                    spec.runner, "run", return_value=fake_result,
                 ):
                     result = spec.run()
                 assert result.exit_code == 0
