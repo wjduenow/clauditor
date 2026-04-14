@@ -16,7 +16,9 @@ Two complementary scrub strategies run during the walk:
    scanned for known secret shapes and only the matched span is replaced.
    The regex set:
 
-   - OpenAI-style keys: ``sk-(ant|proj|live|test)?[-_]?[A-Za-z0-9]{20,}``
+   - OpenAI / Anthropic-style keys: ``sk-[A-Za-z0-9_\\-]{20,}`` (matches
+     ``sk-proj-...``, ``sk-ant-api03-...``, etc. through trailing dashes
+     and underscores, so long keys are not truncated mid-secret)
    - GitHub classic PAT: ``ghp_[A-Za-z0-9]{36,}``
    - GitHub fine-grained PAT: ``github_pat_[A-Za-z0-9_]{80,}``
    - AWS access key ids: ``AKIA[0-9A-Z]{16}``, ``ASIA[0-9A-Z]{16}``
@@ -43,10 +45,22 @@ _SENSITIVE_KEY_SUFFIXES = (
     "_CREDENTIAL",
 )
 
-_SENSITIVE_EXACT_KEYS = frozenset({"AUTH", "API_KEY"})
+_SENSITIVE_EXACT_KEYS = frozenset(
+    {
+        "AUTH",
+        "API_KEY",
+        "KEY",
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSPHRASE",
+        "CREDENTIAL",
+        "CREDENTIALS",
+    }
+)
 
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"sk-(?:ant|proj|live|test)?[-_]?[A-Za-z0-9]{20,}"),
+    re.compile(r"sk-[A-Za-z0-9_\-]{20,}"),
     re.compile(r"ghp_[A-Za-z0-9]{36,}"),
     re.compile(r"github_pat_[A-Za-z0-9_]{80,}"),
     re.compile(r"AKIA[0-9A-Z]{16}"),

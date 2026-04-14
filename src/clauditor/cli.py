@@ -49,6 +49,46 @@ def _positive_int(value: str) -> int:
     return ivalue
 
 
+def _append_validate_history(
+    skill_name: str,
+    *,
+    pass_rate: float,
+    skill_result: SkillResult | None,
+    iteration: int | None,
+    workspace_path: str | None,
+) -> None:
+    """Append a ``command="validate"`` row to ``history.jsonl``.
+
+    Called on both the success and skill-failure paths of ``cmd_validate``
+    so failed live validates stay visible to trend/audit tooling. On the
+    failure path ``iteration`` / ``workspace_path`` are ``None`` (the
+    workspace was aborted) and ``pass_rate`` is ``0.0``.
+    """
+    from clauditor.metrics import TokenUsage, build_metrics
+
+    skill_tokens = TokenUsage(
+        input_tokens=getattr(skill_result, "input_tokens", 0) or 0,
+        output_tokens=getattr(skill_result, "output_tokens", 0) or 0,
+    )
+    skill_duration = getattr(skill_result, "duration_seconds", 0.0) or 0.0
+    metrics_dict = build_metrics(
+        skill=skill_tokens,
+        duration_seconds=skill_duration,
+    )
+    try:
+        history.append_record(
+            skill=skill_name,
+            pass_rate=pass_rate,
+            mean_score=None,
+            metrics=metrics_dict,
+            command="validate",
+            iteration=iteration,
+            workspace_path=workspace_path,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"WARNING: failed to append history: {e}", file=sys.stderr)
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     """Validate a skill's output against its eval spec (Layer 1 only).
 
@@ -70,8 +110,6 @@ def cmd_validate(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-
-    from clauditor.metrics import TokenUsage, build_metrics
 
     skill_result: SkillResult | None = None
     workspace: IterationWorkspace | None = None
@@ -108,6 +146,16 @@ def cmd_validate(args: argparse.Namespace) -> int:
                     file=sys.stderr,
                 )
                 workspace.abort()
+                # Still record history so failed live-validates remain
+                # visible in trend/audit tooling. No iteration is
+                # published, so iteration/workspace fields stay None.
+                _append_validate_history(
+                    spec.skill_name,
+                    pass_rate=0.0,
+                    skill_result=skill_result,
+                    iteration=None,
+                    workspace_path=None,
+                )
                 return 1
             output = skill_result.output
             print(f"Skill completed in {skill_result.duration_seconds:.1f}s")
@@ -136,6 +184,14 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 )
                 for r in results.results:
                     r.transcript_path = transcript_rel
+            else:
+                # Scrub any `run-0/` subtree the skill already wrote
+                # during staging (e.g. `inputs/` copies), so --no-transcript
+                # does not leak a half-populated run-0 dir into the
+                # published iteration.
+                import shutil
+
+                shutil.rmtree(skill_dir / "run-0", ignore_errors=True)
 
             assertions_payload = {
                 "schema_version": 1,
@@ -159,27 +215,13 @@ def cmd_validate(args: argparse.Namespace) -> int:
             raise
 
     # Record history (US-005). Layer 1 only — no grader/quality/triggers.
-    skill_tokens = TokenUsage(
-        input_tokens=getattr(skill_result, "input_tokens", 0) or 0,
-        output_tokens=getattr(skill_result, "output_tokens", 0) or 0,
+    _append_validate_history(
+        spec.skill_name,
+        pass_rate=results.pass_rate,
+        skill_result=skill_result,
+        iteration=iteration_index,
+        workspace_path=workspace_rel,
     )
-    skill_duration = getattr(skill_result, "duration_seconds", 0.0) or 0.0
-    metrics_dict = build_metrics(
-        skill=skill_tokens,
-        duration_seconds=skill_duration,
-    )
-    try:
-        history.append_record(
-            skill=spec.skill_name,
-            pass_rate=results.pass_rate,
-            mean_score=None,
-            metrics=metrics_dict,
-            command="validate",
-            iteration=iteration_index,
-            workspace_path=workspace_rel,
-        )
-    except Exception as e:  # pragma: no cover - defensive
-        print(f"WARNING: failed to append history: {e}", file=sys.stderr)
 
     if args.json:
         print(
@@ -260,7 +302,7 @@ def _print_failing_transcript_slice(
                 text_blocks.append(text_val)
 
     slice_blocks = text_blocks[-5:]
-    scrubbed_slice, _count = transcripts.redact(slice_blocks)
+    scrubbed_slice, redaction_count = transcripts.redact(slice_blocks)
 
     def _cap(text: str) -> str:
         encoded = text.encode("utf-8")
@@ -280,6 +322,10 @@ def _print_failing_transcript_slice(
         if i > 0:
             print("", file=out)
         print(_cap(text), file=out)
+    if redaction_count > 0:
+        # Match the audit-breadcrumb that `_write_run_dir` prints under
+        # verbose mode, so users can see the slice printer also scrubbed.
+        print(f"[{redaction_count} redactions applied]", file=out)
 
 
 def cmd_run(args: argparse.Namespace) -> int:

@@ -33,6 +33,14 @@ class TestKeyBasedScrub:
         assert scrubbed == {"AUTH": "[REDACTED]"}
         assert count == 1
 
+    def test_bare_sensitive_keys(self):
+        # Stream events and MCP tool args often use bare names like
+        # `token`, `password`, `secret` — must be scrubbed, case-insensitive.
+        for key in ("token", "password", "secret", "key", "credentials"):
+            scrubbed, count = redact({key: "hunter2"})
+            assert scrubbed == {key: "[REDACTED]"}, key
+            assert count == 1, key
+
     def test_suffix_matches(self):
         for key in (
             "MY_KEY",
@@ -62,6 +70,18 @@ class TestRegexScrub:
         scrubbed, count = redact("sk-abcdefghijklmnopqrstuvwx")
         assert scrubbed == "[REDACTED]"
         assert count == 1
+
+    def test_anthropic_long_key_fully_scrubbed(self):
+        # sk-ant-api03-<long-body-with-dashes-and-underscores> shape.
+        # The old regex stopped at the first dash after `api03`, leaking
+        # the tail. The widened char class must consume the whole token.
+        key = "sk-ant-api03-" + "A" * 20 + "-" + "B" * 20 + "_" + "C" * 20
+        scrubbed, count = redact(f"before {key} after")
+        assert scrubbed == "before [REDACTED] after"
+        assert count == 1
+        assert "A" * 20 not in scrubbed
+        assert "B" * 20 not in scrubbed
+        assert "C" * 20 not in scrubbed
 
     def test_github_pat_positive(self):
         token = "ghp_" + "A" * 40
