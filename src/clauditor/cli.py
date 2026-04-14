@@ -454,10 +454,6 @@ def _cmd_grade_with_workspace(
             primary_report.to_json(), encoding="utf-8"
         )
 
-        # US-002: persist Layer 1 AssertionSet per run keyed by stable
-        # spec id (DEC-001, DEC-007). Runs the deterministic assertions
-        # against every run's output — no LLM calls, cheap. Variance
-        # runs each produce their own record in the same file.
         assertions_payload = {
             "skill": spec.skill_name,
             "iteration": workspace.iteration,
@@ -475,6 +471,20 @@ def _cmd_grade_with_workspace(
             json.dumps(assertions_payload, indent=2) + "\n",
             encoding="utf-8",
         )
+
+        if spec.eval_spec.sections:
+            from clauditor.grader import extract_and_report
+
+            extraction_report = asyncio.run(
+                extract_and_report(
+                    primary_text,
+                    spec.eval_spec,
+                    skill_name=spec.skill_name,
+                )
+            )
+            (skill_dir / "extraction.json").write_text(
+                extraction_report.to_json(), encoding="utf-8"
+            )
 
     if not only_criterion:
         timing_payload: dict = {

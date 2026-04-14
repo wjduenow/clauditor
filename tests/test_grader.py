@@ -8,7 +8,9 @@ import pytest
 from clauditor.grader import (
     ExtractedEntry,
     ExtractedOutput,
+    ExtractionReport,
     build_extraction_prompt,
+    build_extraction_report,
     extract_and_grade,
     grade_extraction,
 )
@@ -1004,3 +1006,150 @@ class TestFormatEnforcement:
         assert len(format_r) == 1
         assert format_r[0].passed
         assert format_r[0].evidence == "42"
+
+
+class TestExtractionReport:
+    """US-003 (#25): ExtractionReport field-id keyed persistence."""
+
+    def _sectioned_spec(self) -> EvalSpec:
+        return EvalSpec(
+            skill_name="test-skill",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            min_entries=1,
+                            fields=[
+                                FieldRequirement(
+                                    name="venue_name",
+                                    required=True,
+                                    id="venues.primary.venue_name.v1",
+                                ),
+                                FieldRequirement(
+                                    name="phone",
+                                    required=False,
+                                    format="phone_us",
+                                    id="venues.primary.phone.v1",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    def test_build_extraction_report_records_keyed_by_field_id(self):
+        spec = self._sectioned_spec()
+        extracted = ExtractedOutput(
+            sections={
+                "Venues": {
+                    "primary": [
+                        ExtractedEntry(
+                            fields={
+                                "venue_name": "Cafe Foo",
+                                "phone": "(415) 555-0100",
+                            }
+                        ),
+                    ]
+                }
+            }
+        )
+        report = build_extraction_report(
+            extracted,
+            spec,
+            skill_name="test-skill",
+            model="haiku",
+            input_tokens=10,
+            output_tokens=3,
+        )
+        assert len(report.results) == 2
+        by_id = {r.field_id: r for r in report.results}
+        assert "venues.primary.venue_name.v1" in by_id
+        assert "venues.primary.phone.v1" in by_id
+        assert by_id["venues.primary.venue_name.v1"].passed is True
+        assert by_id["venues.primary.phone.v1"].format_passed is True
+        assert report.passed is True
+
+    def test_extraction_report_roundtrip_json(self):
+        spec = self._sectioned_spec()
+        extracted = ExtractedOutput(
+            sections={
+                "Venues": {
+                    "primary": [
+                        ExtractedEntry(
+                            fields={
+                                "venue_name": "Cafe Foo",
+                                "phone": "not-a-phone",
+                            }
+                        ),
+                    ]
+                }
+            }
+        )
+        original = build_extraction_report(
+            extracted,
+            spec,
+            skill_name="test-skill",
+            model="haiku",
+            input_tokens=11,
+            output_tokens=4,
+        )
+
+        text = original.to_json()
+        payload = json.loads(text)
+        # Shape: fields keyed by stable id.
+        assert "fields" in payload
+        assert "venues.primary.venue_name.v1" in payload["fields"]
+        # format_passed=False surfaces in the phone record.
+        phone_entries = payload["fields"]["venues.primary.phone.v1"]
+        assert phone_entries[0]["format_passed"] is False
+        assert phone_entries[0]["passed"] is False
+
+        roundtrip = ExtractionReport.from_json(text)
+        assert roundtrip.skill_name == "test-skill"
+        assert roundtrip.input_tokens == 11
+        assert roundtrip.output_tokens == 4
+        assert {r.field_id for r in roundtrip.results} == {
+            "venues.primary.venue_name.v1",
+            "venues.primary.phone.v1",
+        }
+        # Round-tripped FieldExtractionResult preserves per-record fields.
+        phone_rt = next(
+            r
+            for r in roundtrip.results
+            if r.field_id == "venues.primary.phone.v1"
+        )
+        assert phone_rt.format_passed is False
+        assert phone_rt.evidence == "not-a-phone"
+
+    def test_build_extraction_report_falls_back_to_name_when_id_empty(self):
+        spec = EvalSpec(
+            skill_name="test-skill",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            min_entries=0,
+                            fields=[
+                                FieldRequirement(name="venue_name"),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        extracted = ExtractedOutput(
+            sections={
+                "Venues": {
+                    "primary": [
+                        ExtractedEntry(fields={"venue_name": "Cafe"}),
+                    ]
+                }
+            }
+        )
+        report = build_extraction_report(extracted, spec)
+        assert report.results[0].field_id == "venue_name"
