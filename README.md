@@ -31,7 +31,7 @@ clauditor implements (and in places extends) the skill evaluation workflow descr
 
 | agentskills.io concept | clauditor |
 |---|---|
-| Test case (prompt + expected + files) | `.eval.json` with `test_args`, `sections`, `fields`, `grading_criteria` |
+| Test case (prompt + expected + files) | `.eval.json` with `test_args`, `input_files`, `sections`, `fields`, `grading_criteria` |
 | Deterministic assertions | **Layer 1** — `assertions.py`, `FORMAT_REGISTRY` (20 canonical types), strict/extract invariants |
 | LLM-judged structural checks | **Layer 2** — `grader.py`, tiered schema extraction with per-tier field requirements |
 | Rubric quality grading | **Layer 3** — `quality_grader.py`, per-criterion scoring + variance measurement |
@@ -455,6 +455,38 @@ Place `<skill-name>.eval.json` alongside your `.claude/commands/<skill-name>.md`
 
 **File-based output:** Many skills save results to files instead of printing to stdout. Use `output_file` for skills that write to one known path (e.g., `research/results.md`). Use `output_files` with glob patterns for skills that produce multiple files (e.g., `["research/*.md"]`). If both are set, `output_file` takes precedence. When set, clauditor reads the file(s) after running the skill instead of capturing stdout.
 
+### Input files
+
+Some skills need sample inputs — a CSV to clean, a log file to summarize, a PDF to extract. Declare them with `input_files` and clauditor will stage them into each variance run's working directory before invoking the skill:
+
+```json
+{
+  "skill_name": "csv-cleaner",
+  "test_args": "--strict",
+  "input_files": ["fixtures/sales.csv"]
+}
+```
+
+At grade time, `fixtures/sales.csv` is copied (via `shutil.copy2`) into `.clauditor/iteration-N/csv-cleaner/run-K/inputs/sales.csv` for each of the `variance.n_runs` runs, and the skill's subprocess is launched with that `inputs/` directory as its CWD. So `/csv-cleaner --strict` sees `sales.csv` as a plain basename in its own current directory — no path wrangling required. Each `run-K` gets its own fresh copy, so a skill that mutates its input in one run does not affect the next.
+
+Rules enforced at spec-load time (`EvalSpec.from_file`):
+
+- **Paths are relative to the eval spec's parent directory**, not the repo root. An `input_files` entry of `fixtures/sales.csv` next to `my-skill.eval.json` resolves to `<spec-dir>/fixtures/sales.csv`. This intentionally differs from `output_files`, which globs relative to the skill's working directory.
+- **Absolute paths are rejected.** Use a relative path under the spec directory.
+- **Source containment is enforced.** The resolved path (including symlink targets) must live under the spec's parent directory. Escapes via `..` or symlinks pointing outside the spec tree raise `ValueError`.
+- **Missing files fail loudly.** Paths are resolved with `Path.resolve(strict=True)` — a typo fails at load, not at grade time.
+- **Destinations are flattened to basenames.** `input_files: ["data/sales.csv"]` stages as `run-K/inputs/sales.csv`, not `run-K/inputs/data/sales.csv`. Two entries that would flatten to the same basename (e.g. `a/data.csv` and `b/data.csv`) raise `ValueError` at load.
+- **Collision guard with `output_files`.** Any literal `output_files` pattern whose basename matches an `input_files` basename raises `ValueError` at load. If your skill mutates `sales.csv` in place and you want to capture the result, either declare the output under a different basename / subdirectory in `output_files`, or read the post-run file back from the persisted `iteration-N/<skill>/run-K/inputs/` directory after grading.
+- **No file-size cap.** Files are copied verbatim — eval specs are author-controlled, so keep fixtures reasonable.
+
+**Captured-output mode:** `clauditor grade --output <file>` reads a pre-captured output file instead of running the skill. In that mode, staging is skipped. If a spec declares `input_files` and `--output` is passed, clauditor prints `WARNING: --output bypasses the runner; input_files declaration is ignored.` to stderr and continues.
+
+**Persistence:** staged inputs are preserved post-finalize under `.clauditor/iteration-N/<skill>/run-K/inputs/` alongside `output.txt` and `output.jsonl`, so you can inspect exactly what the skill saw (and what it did to the files) after each run.
+
+**Pytest plugin:** the `clauditor_spec` fixture transparently stages `input_files` into `tmp_path` when a loaded spec declares them, so existing tests need zero changes.
+
+**Security / trust model:** Eval specs are developer-authored and run with the repo owner's filesystem access. Clauditor resolves `input_files` paths under the spec's parent directory, enforces source containment, and rejects absolute paths — but the underlying assumption is that eval specs live in a repo you already trust. Do not run clauditor against eval specs from untrusted sources without reviewing them first.
+
 A complete eval spec with all three layers:
 
 ```json
@@ -462,6 +494,7 @@ A complete eval spec with all three layers:
   "skill_name": "find-kid-activities",
   "description": "Finds kid-friendly activities near a location",
   "test_args": "\"Cupertino, CA\" --ages 4-6 --count 5 --depth quick",
+  "input_files": ["fixtures/sample-venues.csv"],
 
   "assertions": [
     {"type": "contains", "value": "Venues"},
