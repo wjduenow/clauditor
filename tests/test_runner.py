@@ -1,8 +1,8 @@
 """Tests for SkillRunner."""
 
 import importlib
-import subprocess
-from unittest.mock import MagicMock, patch
+import json
+from unittest.mock import patch
 
 import pytest
 
@@ -11,28 +11,38 @@ import clauditor.runner as _runner_mod
 importlib.reload(_runner_mod)
 
 from clauditor.runner import SkillResult, SkillRunner  # noqa: E402
+from tests.conftest import _FakePopen, make_fake_skill_stream  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# SkillRunner.run_raw
+# ---------------------------------------------------------------------------
 
 
 class TestRunRaw:
     def test_run_raw_returns_baseline_skill_name(self):
-        runner = SkillRunner(project_dir="/tmp", claude_bin="echo")
-        result = runner.run_raw("test prompt")
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=make_fake_skill_stream("hi"),
+        ):
+            result = runner.run_raw("test prompt")
         assert result.skill_name == "__baseline__"
 
     def test_run_raw_passes_prompt_directly(self):
         """Verify run_raw sends the prompt without a skill prefix."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                stdout="some output", stderr="", returncode=0
-            )
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("some output")
             result = runner.run_raw("find me activities in Seattle")
-            mock_run.assert_called_once()
-            cmd = mock_run.call_args[0][0]
+            mock_popen.assert_called_once()
+            cmd = mock_popen.call_args[0][0]
             assert cmd == [
                 "claude",
                 "-p",
                 "find me activities in Seattle",
+                "--output-format",
+                "stream-json",
+                "--verbose",
             ]
             assert result.skill_name == "__baseline__"
             assert result.args == "find me activities in Seattle"
@@ -40,22 +50,39 @@ class TestRunRaw:
 
     def test_run_raw_handles_timeout(self):
         runner = SkillRunner(project_dir="/tmp", timeout=1, claude_bin="claude")
-        with patch(
-            "subprocess.run",
-            side_effect=subprocess.TimeoutExpired("claude", 1),
+        fake = make_fake_skill_stream("partial")
+
+        # Simulate the watchdog firing immediately by patching threading.Timer
+        # to invoke the callback on .start() before any stdout is read.
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run_raw("test prompt")
-            assert result.exit_code == -1
-            assert result.skill_name == "__baseline__"
-            assert "Timed out" in result.error
+        assert result.exit_code == -1
+        assert result.skill_name == "__baseline__"
+        assert result.error == "timeout"
 
     def test_run_raw_handles_missing_binary(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="nonexistent-binary")
-        with patch("subprocess.run", side_effect=FileNotFoundError):
+        with patch(
+            "clauditor.runner.subprocess.Popen", side_effect=FileNotFoundError
+        ):
             result = runner.run_raw("test prompt")
-            assert result.exit_code == -1
-            assert result.skill_name == "__baseline__"
-            assert "not found" in result.error
+        assert result.exit_code == -1
+        assert result.skill_name == "__baseline__"
+        assert "not found" in result.error
 
 
 # ---------------------------------------------------------------------------
@@ -164,22 +191,27 @@ class TestSkillResultAssertions:
 
 
 # ---------------------------------------------------------------------------
-# SkillRunner.run()
+# SkillRunner.run() — covered more thoroughly in TestStreamJsonRunner
 # ---------------------------------------------------------------------------
 
 
 class TestSkillRunnerRun:
     def test_runner_run_success(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                stdout="skill output", stderr="", returncode=0
-            )
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("skill output")
             result = runner.run("my-skill", "some args")
 
-            mock_run.assert_called_once()
-            cmd = mock_run.call_args[0][0]
-            assert cmd == ["claude", "-p", "/my-skill some args"]
+            mock_popen.assert_called_once()
+            cmd = mock_popen.call_args[0][0]
+            assert cmd == [
+                "claude",
+                "-p",
+                "/my-skill some args",
+                "--output-format",
+                "stream-json",
+                "--verbose",
+            ]
             assert result.output == "skill output"
             assert result.exit_code == 0
             assert result.skill_name == "my-skill"
@@ -188,35 +220,45 @@ class TestSkillRunnerRun:
 
     def test_runner_run_success_no_args(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(
-                stdout="output", stderr="", returncode=0
-            )
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("output")
             runner.run("my-skill")
-            cmd = mock_run.call_args[0][0]
-            assert cmd == ["claude", "-p", "/my-skill"]
+            cmd = mock_popen.call_args[0][0]
+            assert cmd[:3] == ["claude", "-p", "/my-skill"]
 
     def test_runner_run_timeout(self):
         runner = SkillRunner(project_dir="/tmp", timeout=5, claude_bin="claude")
-        with patch(
-            "clauditor.runner.subprocess.run",
-            side_effect=subprocess.TimeoutExpired("claude", 5),
+        fake = make_fake_skill_stream("partial")
+
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run("my-skill")
-            assert result.exit_code == -1
-            assert "Timed out" in result.error
-            assert result.output == ""
+        assert result.exit_code == -1
+        assert result.error == "timeout"
 
     def test_runner_run_not_found(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="missing-bin")
         with patch(
-            "clauditor.runner.subprocess.run",
+            "clauditor.runner.subprocess.Popen",
             side_effect=FileNotFoundError,
         ):
             result = runner.run("my-skill")
-            assert result.exit_code == -1
-            assert "not found" in result.error
-            assert result.output == ""
+        assert result.exit_code == -1
+        assert "not found" in result.error
+        assert result.output == ""
 
 
 # ---------------------------------------------------------------------------
@@ -261,3 +303,536 @@ class TestSkillResultOutputs:
         )
         result.assert_contains("hello world")
         result.assert_not_contains("completely different text")
+
+
+# ---------------------------------------------------------------------------
+# Stream-JSON runner — new Popen-based behavior
+# ---------------------------------------------------------------------------
+
+
+class TestStreamJsonRunner:
+    def test_single_assistant_message_single_text_block(self):
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=make_fake_skill_stream(
+                "hello", input_tokens=100, output_tokens=50
+            ),
+        ):
+            result = runner.run("skill")
+        assert result.output == "hello"
+        assert result.input_tokens == 100
+        assert result.output_tokens == 50
+        assert result.exit_code == 0
+        assert result.duration_seconds >= 0
+
+    def test_two_assistant_messages_joined_with_newline(self):
+        extra = [
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "second"}],
+                },
+            }
+        ]
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=make_fake_skill_stream("first", extra_messages=extra),
+        ):
+            result = runner.run("skill")
+        assert result.output == "first\nsecond"
+
+    def test_assistant_text_and_tool_use_only_text_included(self):
+        lines = [
+            json.dumps({"type": "system", "subtype": "init"}),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "visible"},
+                            {
+                                "type": "tool_use",
+                                "id": "t1",
+                                "name": "Bash",
+                                "input": {"command": "ls"},
+                            },
+                        ],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "usage": {"input_tokens": 5, "output_tokens": 7},
+                }
+            ),
+        ]
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+        ):
+            result = runner.run("skill")
+        assert result.output == "visible"
+        assert result.input_tokens == 5
+        assert result.output_tokens == 7
+
+    def test_missing_result_message_defaults_tokens_to_zero(self, capsys):
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "only text"}],
+                    },
+                }
+            ),
+        ]
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+        ):
+            result = runner.run("skill")
+        assert isinstance(result, SkillResult)
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+        assert result.output == "only text"
+        captured = capsys.readouterr()
+        assert "without a 'result'" in captured.err
+
+    def test_malformed_json_line_skipped_with_warning(self, capsys):
+        lines = [
+            "this is not json",
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "survived"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "usage": {"input_tokens": 1, "output_tokens": 2},
+                }
+            ),
+        ]
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+        ):
+            result = runner.run("skill")
+        assert result.output == "survived"
+        assert result.input_tokens == 1
+        assert result.output_tokens == 2
+        captured = capsys.readouterr()
+        assert "malformed" in captured.err
+
+    def test_timeout_sets_duration_and_kills_process(self):
+        runner = SkillRunner(project_dir="/tmp", timeout=5, claude_bin="claude")
+        fake = make_fake_skill_stream("partial")
+
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
+            result = runner.run("skill")
+        assert result.error == "timeout"
+        assert result.exit_code == -1
+        assert result.duration_seconds >= 0
+        assert fake.kill_called is True
+
+    def test_timeout_watchdog_skips_if_child_already_exited(self):
+        """Watchdog race: if the child exits cleanly before the timer fires,
+        _on_timeout should bail out without setting timed_out[hit] and the
+        run should return a success result, not a bogus timeout."""
+        runner = SkillRunner(project_dir="/tmp", timeout=5, claude_bin="claude")
+        fake = make_fake_skill_stream("done", input_tokens=1, output_tokens=2)
+        # Simulate "child already exited" by pre-killing the fake. poll()
+        # will return a non-None returncode so _on_timeout early-returns.
+        fake._killed = True
+        fake.returncode = 0
+
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
+            result = runner.run("skill")
+        # _on_timeout was called but returned early (poll() was not None);
+        # the run completes normally and we get a success result, not a
+        # false timeout.
+        assert result.error != "timeout"
+        assert result.output == "done"
+
+    def test_file_not_found_sets_duration(self):
+        """DEC-005: duration must be set even on FileNotFoundError."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="missing")
+        with patch(
+            "clauditor.runner.subprocess.Popen", side_effect=FileNotFoundError
+        ):
+            result = runner.run("skill")
+        assert result.exit_code == -1
+        assert "not found" in result.error
+        assert result.duration_seconds >= 0
+
+    def test_raw_messages_populated(self):
+        extra = [
+            {"type": "system", "subtype": "ping"},
+        ]
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=make_fake_skill_stream("x", extra_messages=extra),
+        ):
+            result = runner.run("skill")
+        # assistant + system + result == 3 messages
+        assert len(result.raw_messages) == 3
+        types = [m.get("type") for m in result.raw_messages]
+        assert types == ["assistant", "system", "result"]
+
+
+class TestStreamJsonDefensiveBranches:
+    """Cover defensive branches added in #21 so codecov/patch is green."""
+
+    def test_non_dict_json_line_is_skipped(self):
+        """runner.py:258 — JSON scalar/array lines are not stream-json
+        messages; skip without crashing."""
+        lines = [
+            "123",  # bare scalar
+            "[1, 2, 3]",  # bare array
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "survived"}]
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "usage": {"input_tokens": 1, "output_tokens": 2},
+                }
+            ),
+        ]
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=_FakePopen(lines),
+        ):
+            result = runner.run("skill")
+        assert result.output == "survived"
+        assert result.input_tokens == 1
+
+    def test_assistant_content_non_list_is_skipped(self):
+        """runner.py:266 — assistant message with non-list content."""
+        lines = [
+            json.dumps(
+                {"type": "assistant", "message": {"content": "oops string"}}
+            ),
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "real one"}]
+                    },
+                }
+            ),
+            json.dumps({"type": "result", "usage": {}}),
+        ]
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=_FakePopen(lines),
+        ):
+            result = runner.run("skill")
+        assert result.output == "real one"
+
+    def test_usage_input_tokens_non_numeric_defaults_to_zero(self):
+        """runner.py:283-284 — ValueError on int() cast for input_tokens."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "hi"}]},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "usage": {"input_tokens": "bogus", "output_tokens": 50},
+                }
+            ),
+        ]
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=_FakePopen(lines),
+        ):
+            result = runner.run("skill")
+        assert result.input_tokens == 0
+        assert result.output_tokens == 50
+
+    def test_usage_output_tokens_non_numeric_defaults_to_zero(self):
+        """runner.py:289-290 — ValueError on int() cast for output_tokens."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "hi"}]},
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "usage": {"input_tokens": 10, "output_tokens": {"not": "int"}},
+                }
+            ),
+        ]
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=_FakePopen(lines),
+        ):
+            result = runner.run("skill")
+        assert result.input_tokens == 10
+        assert result.output_tokens == 0
+
+    def test_stderr_drain_collects_chunks(self):
+        """runner.py:211 — stderr chunks are accumulated by the drain thread."""
+        fake = make_fake_skill_stream("ok")
+        fake.stderr = iter(["warning: something\n", "more diagnostic\n"])
+        # Return a nonzero exit code so stderr is surfaced in result.error.
+        fake.returncode = 1
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen", return_value=fake
+        ):
+            result = runner.run("skill")
+        assert "warning: something" in (result.error or "")
+        assert "more diagnostic" in (result.error or "")
+
+    def test_stderr_drain_exception_is_swallowed(self):
+        """runner.py:212-213 — exception while iterating stderr must not
+        crash the run. Replace _FakePopen.stderr with a raising iterator."""
+
+        class _RaisingIter:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                raise RuntimeError("stderr blew up")
+
+        fake = make_fake_skill_stream("ok")
+        fake.stderr = _RaisingIter()
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen", return_value=fake
+        ):
+            result = runner.run("skill")
+        # The run completed successfully despite the stderr drain exception.
+        assert result.output == "ok"
+        assert result.exit_code == 0
+
+    def test_outer_finally_reaps_leaked_subprocess(self):
+        """runner.py:338-345, 353-354 — if an unexpected exception escapes
+        the inner try, the outer finally must terminate/kill/close the
+        child so no process leaks."""
+        fake = make_fake_skill_stream("ok")
+        # Force the wait step to raise an unexpected exception.
+        original_wait = fake.wait
+        call_count = {"n": 0}
+
+        def _explode_once(timeout=None):  # noqa: ARG001
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("boom inside parsing")
+            return original_wait(timeout=timeout)
+
+        fake.wait = _explode_once
+        # Track whether terminate + close were called.
+        fake.terminate_called = False
+
+        def _terminate():
+            fake.terminate_called = True
+            fake._killed = True
+            fake.returncode = -15
+
+        fake.terminate = _terminate
+
+        stdout_closed = {"hit": False}
+        original_stdout = fake.stdout
+
+        def _close_stdout():
+            stdout_closed["hit"] = True
+            original_stdout.close()
+
+        fake.stdout.close = _close_stdout
+
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            runner.run("skill")
+        # Defensive cleanup fired: terminate was called and stdout closed.
+        assert fake.terminate_called is True
+        assert stdout_closed["hit"] is True
+
+    def test_blank_lines_in_stream_are_skipped(self):
+        """runner.py:245 — blank lines between NDJSON messages are ignored."""
+        lines = [
+            "",
+            "   ",
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "hi"}]},
+                }
+            ),
+            "",
+            json.dumps(
+                {
+                    "type": "result",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+        ]
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=_FakePopen(lines),
+        ):
+            result = runner.run("skill")
+        assert result.output == "hi"
+        assert result.input_tokens == 1
+
+    def test_cleanup_terminate_succeeds_but_wait_raises(self):
+        """runner.py:340-345 — terminate() succeeds but proc.wait(timeout=1)
+        raises, so the kill() + wait() fallback runs."""
+        fake = make_fake_skill_stream("ok")
+
+        call_log = {"terminate": 0, "kill": 0, "wait_during_cleanup": 0}
+
+        def _boom_wait(timeout=None):
+            # The first wait (in the read loop) raises the real error.
+            # Subsequent waits are from cleanup — the first cleanup wait
+            # raises TimeoutExpired so kill() runs; the second succeeds.
+            call_log["wait_during_cleanup"] += 1
+            if call_log["wait_during_cleanup"] == 1:
+                raise RuntimeError("parse failure")
+            if call_log["wait_during_cleanup"] == 2:
+                # terminate() was called, but cleanup wait times out.
+                raise RuntimeError("cleanup wait timeout")
+            return 0
+
+        fake.wait = _boom_wait
+
+        def _terminate():
+            call_log["terminate"] += 1
+            fake._killed = False  # still alive after terminate
+
+        def _kill():
+            call_log["kill"] += 1
+            fake._killed = True
+
+        fake.terminate = _terminate
+        fake.kill = _kill
+
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            pytest.raises(RuntimeError, match="parse failure"),
+        ):
+            runner.run("skill")
+        assert call_log["terminate"] == 1
+        assert call_log["kill"] == 1  # kill fallback ran after terminate-wait raised
+
+    def test_cleanup_wait_after_kill_also_raises(self):
+        """runner.py:344-345 — kill() + wait(timeout=1) cascade: if the
+        wait AFTER kill also raises, the innermost except swallows it
+        and the original exception still propagates."""
+        fake = make_fake_skill_stream("ok")
+
+        cleanup_wait_calls = {"n": 0}
+
+        def _always_boom_wait(timeout=None):  # noqa: ARG001
+            # First call = main run's wait in the read loop
+            if cleanup_wait_calls["n"] == 0:
+                cleanup_wait_calls["n"] = 1
+                raise RuntimeError("parse failure")
+            # Every subsequent call (cleanup waits) also raises
+            cleanup_wait_calls["n"] += 1
+            raise RuntimeError(f"cleanup wait #{cleanup_wait_calls['n']} boom")
+
+        fake.wait = _always_boom_wait
+        # Don't let terminate mark the child as dead, so cleanup proceeds.
+        fake.terminate = lambda: None
+        fake.kill = lambda: None
+
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            pytest.raises(RuntimeError, match="parse failure"),
+        ):
+            runner.run("skill")
+        # Three wait() calls total: main loop + after terminate + after kill.
+        assert cleanup_wait_calls["n"] >= 3
+
+    def test_cleanup_terminate_exception_is_swallowed(self):
+        """runner.py:340-347 — if terminate() itself raises, the kill
+        fallback still runs and the run's exception propagates."""
+        fake = make_fake_skill_stream("ok")
+
+        def _boom_wait(timeout=None):  # noqa: ARG001
+            raise RuntimeError("parse failure")
+
+        fake.wait = _boom_wait
+
+        def _terminate_raises():
+            raise RuntimeError("terminate failed")
+
+        fake.terminate = _terminate_raises
+        kill_called = {"hit": False}
+
+        def _kill():
+            kill_called["hit"] = True
+
+        fake.kill = _kill
+
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            pytest.raises(RuntimeError, match="parse failure"),
+        ):
+            runner.run("skill")
+        # terminate raised, but the outer handler swallowed it; the
+        # original RuntimeError from wait still propagated.

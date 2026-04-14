@@ -234,6 +234,35 @@ class TestGradingReportSerialization:
         assert restored.thresholds.min_mean_score == pytest.approx(0.6)
         assert restored.passed == original.passed
 
+    def test_token_fields_roundtrip(self):
+        """input_tokens/output_tokens survive JSON round-trip."""
+        original = GradingReport(
+            skill_name="tokens",
+            results=_make_results([True]),
+            model="claude-sonnet-4-6",
+            input_tokens=500,
+            output_tokens=200,
+        )
+        raw = original.to_json()
+        data = json.loads(raw)
+        assert data["input_tokens"] == 500
+        assert data["output_tokens"] == 200
+
+        restored = GradingReport.from_json(raw)
+        assert restored.input_tokens == 500
+        assert restored.output_tokens == 200
+
+    def test_token_fields_default_when_missing(self):
+        """Missing token fields in legacy grade.json files default to 0."""
+        data = json.dumps({
+            "skill_name": "legacy",
+            "model": "claude-sonnet-4-6",
+            "results": [],
+        })
+        restored = GradingReport.from_json(data)
+        assert restored.input_tokens == 0
+        assert restored.output_tokens == 0
+
     def test_no_thresholds_roundtrip(self):
         """Report without thresholds omits them from JSON."""
         original = GradingReport(
@@ -384,7 +413,7 @@ class TestGradeQuality:
             },
         ]
 
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [
             MagicMock(text=json.dumps(grading_data))
         ]
@@ -411,7 +440,7 @@ class TestGradeQuality:
     async def test_parse_failure_returns_failed_report(self):
         spec = _make_spec()
 
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [
             MagicMock(text="I cannot parse this as valid output")
         ]
@@ -444,7 +473,7 @@ class TestGradeQuality:
             },
         ]
 
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [
             MagicMock(text=f"```json\n{json.dumps(grading_data)}\n```")
         ]
@@ -474,7 +503,7 @@ class TestGradeQuality:
             },
         ]
 
-        mock_response = MagicMock()
+        mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
         mock_response.content = [
             MagicMock(text=json.dumps(grading_data))
         ]
@@ -494,6 +523,30 @@ class TestGradeQuality:
         user_message = call_kwargs["messages"][0]["content"]
         assert "THE SKILL OUTPUT" in user_message
         assert call_kwargs["model"] == "claude-sonnet-4-6"
+
+    @pytest.mark.asyncio
+    async def test_captures_token_usage(self):
+        """grade_quality propagates SDK usage into the GradingReport."""
+        spec = _make_spec()
+        grading_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "e",
+                "reasoning": "r",
+            },
+        ]
+        mock_response = MagicMock(
+            usage=MagicMock(input_tokens=500, output_tokens=200)
+        )
+        mock_response.content = [MagicMock(text=json.dumps(grading_data))]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await grade_quality("some output", spec)
+        assert report.input_tokens == 500
+        assert report.output_tokens == 200
 
 
 def _make_grading_report(
@@ -753,6 +806,60 @@ class TestMeasureVariance:
             vr = await measure_variance(mock_spec, n_runs=2)
 
         assert vr.min_stability == 0.8
+
+    @pytest.mark.asyncio
+    async def test_measure_variance_aggregates_tokens(self):
+        """Tokens across the internal grade_quality runs are summed."""
+        mock_report = GradingReport(
+            skill_name="test-skill",
+            results=[
+                GradingResult(
+                    criterion="Is clear",
+                    passed=True,
+                    score=0.9,
+                    evidence="e",
+                    reasoning="r",
+                )
+            ],
+            model="claude-sonnet-4-6",
+            input_tokens=100,
+            output_tokens=50,
+        )
+
+        # Use real attrs (not MagicMock defaults) so skill-side token
+        # aggregation is actually verifiable — MagicMock would silently
+        # return MagicMock instances for arithmetic and the test would
+        # pass while storing nonsense.
+        mock_result = MagicMock()
+        mock_result.output = "some output"
+        mock_result.succeeded = True
+        mock_result.input_tokens = 10
+        mock_result.output_tokens = 5
+        mock_result.duration_seconds = 1.5
+
+        mock_spec = MagicMock()
+        mock_spec.skill_name = "test-skill"
+        mock_spec.run.return_value = mock_result
+        mock_spec.eval_spec = EvalSpec(
+            skill_name="test-skill",
+            grading_criteria=["Is clear"],
+            variance=VarianceConfig(n_runs=3, min_stability=0.8),
+        )
+
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new_callable=AsyncMock,
+            return_value=mock_report,
+        ):
+            vr = await measure_variance(mock_spec, n_runs=3)
+
+        # Grader (Layer 3) tokens aggregated across the 3 internal runs
+        assert vr.input_tokens == 300
+        assert vr.output_tokens == 150
+        # Skill (subprocess) tokens aggregated across the 3 skill runs
+        assert vr.skill_input_tokens == 30
+        assert vr.skill_output_tokens == 15
+        assert vr.skill_duration_seconds == pytest.approx(4.5)
 
     @pytest.mark.asyncio
     async def test_measure_variance_no_eval_spec(self):

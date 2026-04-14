@@ -5,6 +5,20 @@ Appends a JSON line per grade run to ``.clauditor/history.jsonl`` so the
 
 ASCII-only (DEC-014): the sparkline uses ``"_.-=#"`` glyphs — no Unicode
 block characters.
+
+Schema v2 (US-004): each record is a JSON object with the following
+top-level keys:
+
+- ``schema_version``: int, always ``2``
+- ``command``: one of ``"grade"``, ``"extract"``, ``"validate"``
+- ``ts``: ISO-8601 UTC timestamp
+- ``skill``: skill name
+- ``pass_rate``: float or None
+- ``mean_score``: float or None
+- ``metrics``: dict (canonical bucketed metrics from ``clauditor.metrics``)
+
+v1 records (no ``schema_version``, no ``command``) may still exist on disk
+and are returned as-is by :func:`read_records`.
 """
 
 from __future__ import annotations
@@ -14,16 +28,20 @@ import math
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 _DEFAULT_PATH = Path(".clauditor/history.jsonl")
 SPARK_GLYPHS = "_.-=#"
+SCHEMA_VERSION = 2
 
 
 def append_record(
     skill: str,
-    pass_rate: float,
+    pass_rate: float | None,
     mean_score: float | None,
     metrics: dict,
+    *,
+    command: Literal["grade", "extract", "validate"],
     path: Path | None = None,
 ) -> None:
     """Append one history record for a grade run.
@@ -31,11 +49,21 @@ def append_record(
     Creates the parent directory if it does not already exist.
     ``path`` defaults to :data:`_DEFAULT_PATH` resolved at call time, so
     tests can monkeypatch the module attribute.
+
+    ``command`` is required (keyword-only) and identifies which clauditor
+    subcommand produced the record. Every written record includes
+    ``schema_version: 2`` at the top level.
     """
+    if command not in ("grade", "extract", "validate"):
+        raise ValueError(
+            f"command must be one of 'grade', 'extract', 'validate'; got {command!r}"
+        )
     if path is None:
         path = _DEFAULT_PATH
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
+        "schema_version": SCHEMA_VERSION,
+        "command": command,
         "ts": datetime.now(UTC).isoformat(),
         "skill": skill,
         "pass_rate": pass_rate,
@@ -87,6 +115,84 @@ def read_records(
                 continue
             records.append(record)
     return records
+
+
+_TOP_LEVEL_KEYS = ("pass_rate", "mean_score")
+
+
+def resolve_path(record: dict, path: str) -> float | int | None:
+    """Resolve a dotted metric path against a history record.
+
+    Rules:
+
+    - ``pass_rate`` and ``mean_score`` resolve at the top level of the
+      record (not inside ``metrics``).
+    - Any other path (including ``duration_seconds``) is walked as dotted
+      keys inside ``record["metrics"]``.
+
+    Returns the numeric value or ``None`` if any intermediate key is
+    missing or the final value is not int/float. Never raises.
+    """
+    if not isinstance(record, dict):
+        return None
+
+    if path in _TOP_LEVEL_KEYS:
+        value = record.get(path)
+    else:
+        node: object = record.get("metrics")
+        if not isinstance(node, dict):
+            return None
+        for part in path.split("."):
+            if not isinstance(node, dict) or part not in node:
+                return None
+            node = node[part]
+        value = node
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    return None
+
+
+def collect_metric_paths(record: dict) -> set[str]:
+    """Return every dotted metric path in ``record`` that resolves numeric.
+
+    Top-level ``pass_rate``/``mean_score`` are included when numeric.
+    Every numeric leaf inside ``record["metrics"]`` is emitted with its
+    dotted path (e.g. ``grader.input_tokens``, ``total.total``,
+    ``duration_seconds``).
+    """
+    paths: set[str] = set()
+    if not isinstance(record, dict):
+        return paths
+
+    for key in _TOP_LEVEL_KEYS:
+        value = record.get(key)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            paths.add(key)
+
+    metrics = record.get("metrics")
+    if isinstance(metrics, dict):
+        _walk_numeric(metrics, (), paths)
+    return paths
+
+
+def _walk_numeric(
+    node: dict, prefix: tuple[str, ...], out: set[str]
+) -> None:
+    for key, value in node.items():
+        if not isinstance(key, str):
+            continue
+        next_prefix = prefix + (key,)
+        if isinstance(value, bool):
+            continue
+        if isinstance(value, (int, float)):
+            out.add(".".join(next_prefix))
+        elif isinstance(value, dict):
+            _walk_numeric(value, next_prefix, out)
 
 
 def sparkline(values: list[float]) -> str:

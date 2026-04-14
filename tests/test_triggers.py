@@ -66,7 +66,7 @@ def _mock_client(response_text: str) -> AsyncMock:
     client = AsyncMock()
     mock_content = MagicMock()
     mock_content.text = response_text
-    mock_response = MagicMock()
+    mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
     mock_response.content = [mock_content]
     client.messages.create = AsyncMock(return_value=mock_response)
     return client
@@ -281,6 +281,17 @@ class TestClassifyQuery:
         assert result.confidence == 0.0
 
     @pytest.mark.asyncio
+    async def test_captures_token_usage(self):
+        client = _mock_client(
+            '{"triggered": true, "confidence": 0.9, "reasoning": "ok"}'
+        )
+        result = await classify_query(
+            "skill", "desc", "query", True, client, "test-model"
+        )
+        assert result.input_tokens == 500
+        assert result.output_tokens == 200
+
+    @pytest.mark.asyncio
     async def test_calls_client_with_correct_model(self):
         client = _mock_client(
             '{"triggered": true, "confidence": 0.9, "reasoning": "ok"}'
@@ -332,6 +343,26 @@ class TestTestTriggers:
         report = await run_test_triggers(spec, model="test-model")
         assert len(report.results) == 3
         assert report.model == "test-model"
+
+    @pytest.mark.asyncio
+    async def test_aggregates_token_usage(self, monkeypatch):
+        """TriggerReport sums tokens across all classify_query calls."""
+        spec = _make_eval_spec(
+            should_trigger=["a", "b"],
+            should_not_trigger=["c"],
+        )
+        mock_client = _mock_client(
+            '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
+        )
+        mock_cls = MagicMock(return_value=mock_client)
+        import anthropic
+
+        monkeypatch.setattr(anthropic, "AsyncAnthropic", mock_cls)
+
+        report = await run_test_triggers(spec)
+        # 3 queries × 500/200 per mock
+        assert report.input_tokens == 1500
+        assert report.output_tokens == 600
 
     @pytest.mark.asyncio
     async def test_parallel_execution(self, monkeypatch):

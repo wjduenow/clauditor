@@ -23,6 +23,8 @@ class TriggerResult:
     passed: bool  # expected == predicted
     confidence: float  # 0.0-1.0
     reasoning: str
+    input_tokens: int = 0
+    output_tokens: int = 0
 
 
 @dataclass
@@ -33,6 +35,8 @@ class TriggerReport:
     skill_description: str
     results: list[TriggerResult]
     model: str
+    input_tokens: int = 0
+    output_tokens: int = 0
 
     @property
     def passed(self) -> bool:
@@ -185,6 +189,8 @@ async def classify_query(
         max_tokens=1024,
         messages=[{"role": "user", "content": prompt}],
     )
+    input_tokens = getattr(getattr(response, "usage", None), "input_tokens", 0)
+    output_tokens = getattr(getattr(response, "usage", None), "output_tokens", 0)
 
     if not response.content or not hasattr(response.content[0], "text"):
         return TriggerResult(
@@ -194,6 +200,8 @@ async def classify_query(
             passed=not expected,
             confidence=0.0,
             reasoning="LLM response contained no text content",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
     response_text = response.content[0].text
@@ -206,6 +214,8 @@ async def classify_query(
         passed=expected == predicted,
         confidence=confidence,
         reasoning=reasoning,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
 
 
@@ -255,10 +265,13 @@ async def test_triggers(
     ]
 
     results = await asyncio.gather(*tasks)
+    results_list = list(results)
 
     return TriggerReport(
         skill_name=eval_spec.skill_name,
         skill_description=eval_spec.description,
-        results=list(results),
+        results=results_list,
         model=model,
+        input_tokens=sum(r.input_tokens for r in results_list),
+        output_tokens=sum(r.output_tokens for r in results_list),
     )

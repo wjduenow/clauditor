@@ -211,6 +211,8 @@ async def extract_and_grade(
             {"role": "user", "content": f"{prompt}\n\nSkill output:\n{output}"},
         ],
     )
+    input_tokens = getattr(response.usage, "input_tokens", 0)
+    output_tokens = getattr(response.usage, "output_tokens", 0)
 
     # Parse the JSON response
     response_text = response.content[0].text
@@ -237,7 +239,9 @@ async def extract_and_grade(
                     kind="custom",
                     evidence=response_text[:200],
                 )
-            ]
+            ],
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
         )
 
     # Convert raw JSON to ExtractedOutput
@@ -276,6 +280,13 @@ async def extract_and_grade(
             )
 
     if parse_errors:
-        return AssertionSet(results=parse_errors)
+        return AssertionSet(
+            results=parse_errors,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
 
-    return grade_extraction(extracted, eval_spec)
+    result = grade_extraction(extracted, eval_spec)
+    result.input_tokens = input_tokens
+    result.output_tokens = output_tokens
+    return result

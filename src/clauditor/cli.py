@@ -36,21 +36,48 @@ def cmd_validate(args: argparse.Namespace) -> int:
         )
         return 1
 
+    skill_result = None
     if args.output:
         # Validate against provided output file
         output = Path(args.output).read_text()
     else:
         # Run the skill to get output
         print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
-        result = spec.run()
-        if not result.succeeded:
-            print(f"ERROR: Skill failed to run: {result.error}", file=sys.stderr)
+        skill_result = spec.run()
+        if not skill_result.succeeded:
+            print(
+                f"ERROR: Skill failed to run: {skill_result.error}",
+                file=sys.stderr,
+            )
             return 1
-        output = result.output
-        print(f"Skill completed in {result.duration_seconds:.1f}s")
+        output = skill_result.output
+        print(f"Skill completed in {skill_result.duration_seconds:.1f}s")
 
     # Run Layer 1 assertions
     results = run_assertions(output, spec.eval_spec.assertions)
+
+    # Record history (US-005). Layer 1 only — no grader/quality/triggers.
+    from clauditor.metrics import TokenUsage, build_metrics
+
+    skill_tokens = TokenUsage(
+        input_tokens=getattr(skill_result, "input_tokens", 0) or 0,
+        output_tokens=getattr(skill_result, "output_tokens", 0) or 0,
+    )
+    skill_duration = getattr(skill_result, "duration_seconds", 0.0) or 0.0
+    metrics_dict = build_metrics(
+        skill=skill_tokens,
+        duration_seconds=skill_duration,
+    )
+    try:
+        history.append_record(
+            skill=spec.skill_name,
+            pass_rate=results.pass_rate,
+            mean_score=None,
+            metrics=metrics_dict,
+            command="validate",
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"WARNING: failed to append history: {e}", file=sys.stderr)
 
     if args.json:
         print(
@@ -153,15 +180,18 @@ def cmd_grade(args: argparse.Namespace) -> int:
         return 0
 
     # Get output
+    skill_result = None
     if args.output:
         output = Path(args.output).read_text()
     else:
         print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
-        result = spec.run()
-        if not result.succeeded:
-            print(f"ERROR: Skill failed: {result.error}", file=sys.stderr)
+        skill_result = spec.run()
+        if not skill_result.succeeded:
+            print(
+                f"ERROR: Skill failed: {skill_result.error}", file=sys.stderr
+            )
             return 1
-        output = result.output
+        output = skill_result.output
 
     # Grade (and optionally measure variance in a single event loop)
     from clauditor.quality_grader import grade_quality
@@ -271,6 +301,41 @@ def cmd_grade(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
 
+    # Build the canonical bucketed metrics dict (US-004). For --output
+    # runs there's no skill subprocess, so skill tokens/duration are zero.
+    # When --variance N was passed, the variance path runs the skill N
+    # additional times and makes N additional Layer 3 grader calls — those
+    # must be included so longitudinal trends reflect the real cost.
+    from clauditor.metrics import TokenUsage, build_metrics
+
+    base_skill_input = getattr(skill_result, "input_tokens", 0) or 0
+    base_skill_output = getattr(skill_result, "output_tokens", 0) or 0
+    base_skill_duration = getattr(skill_result, "duration_seconds", 0.0) or 0.0
+    base_quality_input = report.input_tokens
+    base_quality_output = report.output_tokens
+
+    if variance_report is not None:
+        base_skill_input += variance_report.skill_input_tokens
+        base_skill_output += variance_report.skill_output_tokens
+        base_skill_duration += variance_report.skill_duration_seconds
+        base_quality_input += variance_report.input_tokens
+        base_quality_output += variance_report.output_tokens
+
+    skill_tokens = TokenUsage(
+        input_tokens=base_skill_input,
+        output_tokens=base_skill_output,
+    )
+    quality_tokens = TokenUsage(
+        input_tokens=base_quality_input,
+        output_tokens=base_quality_output,
+    )
+    metrics_dict = build_metrics(
+        skill=skill_tokens,
+        duration_seconds=base_skill_duration,
+        quality=quality_tokens,
+    )
+    report.metrics = metrics_dict
+
     if args.save:
         save_dir.mkdir(parents=True, exist_ok=True)
         save_path.write_text(report.to_json())
@@ -285,7 +350,8 @@ def cmd_grade(args: argparse.Namespace) -> int:
                 skill=spec.skill_name,
                 pass_rate=report.pass_rate,
                 mean_score=report.mean_score,
-                metrics={},
+                metrics=metrics_dict,
+                command="grade",
             )
         except Exception as e:  # pragma: no cover - defensive
             print(f"WARNING: failed to append history: {e}", file=sys.stderr)
@@ -501,20 +567,50 @@ def cmd_extract(args: argparse.Namespace) -> int:
         return 0
 
     # Get output
+    skill_result = None
     if args.output:
         output = Path(args.output).read_text()
     else:
         print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
-        result = spec.run()
-        if not result.succeeded:
-            print(f"ERROR: Skill failed: {result.error}", file=sys.stderr)
+        skill_result = spec.run()
+        if not skill_result.succeeded:
+            print(f"ERROR: Skill failed: {skill_result.error}", file=sys.stderr)
             return 1
-        output = result.output
+        output = skill_result.output
 
     # Extract and grade
     from clauditor.grader import extract_and_grade
 
     results = asyncio.run(extract_and_grade(output, spec.eval_spec, model))
+
+    # Record history (US-005). Extract does not compute Layer 3
+    # pass_rate/mean_score, so those are None (DEC-013).
+    from clauditor.metrics import TokenUsage, build_metrics
+
+    skill_tokens = TokenUsage(
+        input_tokens=getattr(skill_result, "input_tokens", 0) or 0,
+        output_tokens=getattr(skill_result, "output_tokens", 0) or 0,
+    )
+    skill_duration = getattr(skill_result, "duration_seconds", 0.0) or 0.0
+    grader_tokens = TokenUsage(
+        input_tokens=getattr(results, "input_tokens", 0) or 0,
+        output_tokens=getattr(results, "output_tokens", 0) or 0,
+    )
+    metrics_dict = build_metrics(
+        skill=skill_tokens,
+        duration_seconds=skill_duration,
+        grader=grader_tokens,
+    )
+    try:
+        history.append_record(
+            skill=spec.skill_name,
+            pass_rate=None,
+            mean_score=None,
+            metrics=metrics_dict,
+            command="extract",
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        print(f"WARNING: failed to append history: {e}", file=sys.stderr)
 
     if args.json:
         print(
@@ -762,26 +858,52 @@ def cmd_trend(args: argparse.Namespace) -> int:
         )
         return 1
 
+    command_filter = args.command_filter
+    if command_filter != "all":
+        # v1 records (pre-#21) have no "command" key; they were all produced
+        # by cmd_grade, so treat a missing key as "grade" for filter purposes.
+        records = [
+            rec
+            for rec in records
+            if rec.get("command", "grade") == command_filter
+        ]
+        if not records:
+            print(
+                f"ERROR: no history records for skill '{args.skill_name}' "
+                f"with command '{command_filter}'. Try --command all to "
+                "union across all recorded commands.",
+                file=sys.stderr,
+            )
+            return 1
+
     last_n = args.last
     if last_n is not None and last_n > 0:
         records = records[-last_n:]
+
+    if args.list_metrics:
+        paths: set[str] = set()
+        for rec in records:
+            paths |= history.collect_metric_paths(rec)
+        if not paths:
+            print(
+                f"ERROR: no metric paths available for skill "
+                f"'{args.skill_name}'.",
+                file=sys.stderr,
+            )
+            return 1
+        for path in sorted(paths):
+            print(path)
+        return 0
 
     metric = args.metric
     timestamps: list[str] = []
     values: list[float] = []
     for rec in records:
-        if metric in ("pass_rate", "mean_score"):
-            v = rec.get(metric)
-        else:
-            v = rec.get("metrics", {}).get(metric)
+        v = history.resolve_path(rec, metric)
         if v is None:
             continue
-        try:
-            value = float(v)
-        except (TypeError, ValueError):
-            continue
         timestamps.append(str(rec.get("ts", "")))
-        values.append(value)
+        values.append(float(v))
 
     if not values:
         print(
@@ -974,10 +1096,25 @@ def main(argv: list[str] | None = None) -> int:
         help="Print a trend line (TSV + ASCII sparkline) from grade history",
     )
     p_trend.add_argument("skill_name", help="Skill name to trend")
-    p_trend.add_argument(
+    p_trend_group = p_trend.add_mutually_exclusive_group(required=True)
+    p_trend_group.add_argument(
         "--metric",
-        required=True,
-        help="Metric to trend (pass_rate, mean_score, or a metrics.<name>)",
+        help=(
+            "Metric to trend (pass_rate, mean_score, or a dotted path "
+            "into metrics like total.total or grader.input_tokens)"
+        ),
+    )
+    p_trend_group.add_argument(
+        "--list-metrics",
+        action="store_true",
+        help="List every available metric path in history for the skill",
+    )
+    p_trend.add_argument(
+        "--command",
+        dest="command_filter",
+        choices=["grade", "extract", "validate", "all"],
+        default="grade",
+        help="Filter history records by command (default: grade)",
     )
     p_trend.add_argument(
         "--last",

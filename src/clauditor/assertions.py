@@ -45,6 +45,8 @@ class AssertionSet:
     """A collection of assertion results from checking skill output."""
 
     results: list[AssertionResult] = field(default_factory=list)
+    input_tokens: int = 0
+    output_tokens: int = 0
 
     @property
     def passed(self) -> bool:
