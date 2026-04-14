@@ -13,9 +13,11 @@ from clauditor.paths import resolve_clauditor_dir
 from clauditor.runner import SkillResult, SkillRunner
 from clauditor.spec import SkillSpec
 from clauditor.workspace import (
+    InvalidSkillNameError,
     IterationExistsError,
     IterationWorkspace,
     allocate_iteration,
+    validate_skill_name,
 )
 
 
@@ -166,9 +168,28 @@ def cmd_grade(args: argparse.Namespace) -> int:
         print("ERROR: No grading_criteria defined in eval spec", file=sys.stderr)
         return 1
 
-    # --only-criterion: filter criteria before LLM call (token savings)
+    # --only-criterion: filter criteria before LLM call (token savings).
+    # Partial runs produce a subset grading.json and must not publish an
+    # iteration workspace (the partial report would later be misused as a
+    # baseline). Reject combinations that would either destroy existing
+    # iteration state or interact confusingly with diffing.
     only = getattr(args, "only_criterion", None)
     if only:
+        conflict = []
+        if getattr(args, "iteration", None) is not None:
+            conflict.append("--iteration")
+        if getattr(args, "force", False):
+            conflict.append("--force")
+        if getattr(args, "diff", False):
+            conflict.append("--diff")
+        if conflict:
+            print(
+                "ERROR: --only-criterion cannot be combined with "
+                + ", ".join(conflict)
+                + " (partial runs are not persisted to the iteration workspace)",
+                file=sys.stderr,
+            )
+            return 2
         needles = [s.lower() for s in only]
         original = list(spec.eval_spec.grading_criteria)
 
@@ -226,9 +247,15 @@ def cmd_grade(args: argparse.Namespace) -> int:
             clauditor_dir=clauditor_dir,
             workspace=workspace,
         )
-    except Exception:
-        workspace.abort()
-        raise
+    finally:
+        # workspace.finalized is set to True inside finalize(); any other
+        # exit path (early return on skill failure, exception mid-write,
+        # --only-criterion partial run) leaves the staging dir behind,
+        # so we clean it up here. --only-criterion in particular must NOT
+        # publish a partial grading.json that later runs would mistake
+        # for a baseline.
+        if not workspace.finalized:
+            workspace.abort()
 
 
 def _cmd_grade_with_workspace(
@@ -318,7 +345,6 @@ def _cmd_grade_with_workspace(
 
     reports = asyncio.run(_grade_all())
     primary_report = reports[0]
-    variance_reports = reports[1:]
 
     # Build a VarianceReport when --variance was passed so the JSON /
     # human summary continues to surface stability statistics.
@@ -336,6 +362,10 @@ def _cmd_grade_with_workspace(
         min_stability = 0.8
         if spec.eval_spec.variance is not None:
             min_stability = spec.eval_spec.variance.min_stability
+        # Token / duration fields cover *all* runs (primary + variance),
+        # matching the pre-#22 measure_variance() contract — downstream
+        # cost accounting reads these for the full n_runs, not just
+        # non-primary. See review Pass 1 bug 4.
         variance_report = VarianceReport(
             skill_name=spec.skill_name,
             n_runs=total_runs,
@@ -346,11 +376,11 @@ def _cmd_grade_with_workspace(
             stability=stability,
             min_stability=min_stability,
             model=model,
-            input_tokens=sum(r.input_tokens for r in variance_reports),
-            output_tokens=sum(r.output_tokens for r in variance_reports),
-            skill_input_tokens=0,  # all skill totals already aggregated above
-            skill_output_tokens=0,
-            skill_duration_seconds=0.0,
+            input_tokens=sum(r.input_tokens for r in reports),
+            output_tokens=sum(r.output_tokens for r in reports),
+            skill_input_tokens=skill_input_total,
+            skill_output_tokens=skill_output_total,
+            skill_duration_seconds=skill_duration_total,
         )
 
     # Aggregate quality (Layer 3 grader) tokens across every run.
@@ -373,37 +403,46 @@ def _cmd_grade_with_workspace(
     # ------------------------------------------------------------------ #
     # Write workspace files (DEC-012: stage in tmp_path, then finalize)  #
     # ------------------------------------------------------------------ #
-    skill_dir = workspace.tmp_path
-    for idx, (text, events) in enumerate(run_outputs):
-        _write_run_dir(skill_dir / f"run-{idx}", text, events)
+    # --only-criterion runs grade a filtered subset of criteria. That
+    # partial report must NOT land in iteration-N/<skill>/grading.json
+    # where --diff / compare / _find_prior_grading_json would later pick
+    # it up as a misleading baseline. Skip the entire write+finalize step;
+    # the outer finally block will abort() the staging dir.
+    only_criterion = bool(getattr(args, "only_criterion", None))
 
-    (skill_dir / "grading.json").write_text(
-        primary_report.to_json(), encoding="utf-8"
-    )
+    if not only_criterion:
+        skill_dir = workspace.tmp_path
+        for idx, (text, events) in enumerate(run_outputs):
+            _write_run_dir(skill_dir / f"run-{idx}", text, events)
 
-    timing_payload: dict = {
-        "skill": spec.skill_name,
-        "iteration": workspace.iteration,
-        "n_runs": total_runs,
-        "metrics": metrics_dict,
-    }
-    (skill_dir / "timing.json").write_text(
-        json.dumps(timing_payload, indent=2) + "\n", encoding="utf-8"
-    )
+        (skill_dir / "grading.json").write_text(
+            primary_report.to_json(), encoding="utf-8"
+        )
 
-    workspace.finalize()
+    if not only_criterion:
+        timing_payload: dict = {
+            "skill": spec.skill_name,
+            "iteration": workspace.iteration,
+            "n_runs": total_runs,
+            "metrics": metrics_dict,
+        }
+        (skill_dir / "timing.json").write_text(
+            json.dumps(timing_payload, indent=2) + "\n", encoding="utf-8"
+        )
+
+        workspace.finalize()
 
     # ------------------------------------------------------------------ #
     # Report to the user                                                  #
     # ------------------------------------------------------------------ #
-    final_skill_dir = workspace.final_path
+    final_skill_dir = workspace.final_path if workspace.finalized else None
 
     if args.json:
         data: dict = {
             "skill": spec.skill_name,
             "model": model,
-            "iteration": workspace.iteration,
-            "workspace": str(final_skill_dir),
+            "iteration": workspace.iteration if final_skill_dir else None,
+            "workspace": str(final_skill_dir) if final_skill_dir else None,
             "grade": {
                 "passed": primary_report.passed,
                 "pass_rate": primary_report.pass_rate,
@@ -436,7 +475,8 @@ def _cmd_grade_with_workspace(
         print(primary_report.summary())
         if variance_report:
             print(f"\n{variance_report.summary()}")
-        print(f"\nWorkspace: {final_skill_dir}")
+        if final_skill_dir is not None:
+            print(f"\nWorkspace: {final_skill_dir}")
 
     # --diff: compare against the previous iteration's grading.json,
     # if any. Output goes to stderr in --json mode so stdout stays
@@ -620,8 +660,10 @@ def _load_assertion_set(
 def _file_kind(path: Path) -> str:
     """Return a coarse file-kind label for mismatch detection.
 
-    Directories containing a ``grading.json`` are treated as the
-    ``grade.json`` kind so they diff uniformly with saved grade reports.
+    Directories are treated as the ``grade.json`` kind so they diff
+    uniformly with saved grade reports; the eventual ``grading.json``
+    lookup in :func:`_load_assertion_set` surfaces a precise
+    ``no grading.json found in <path>`` error when the dir is empty.
     """
     if path.is_dir():
         return "grade.json"
@@ -662,6 +704,17 @@ def cmd_compare(args: argparse.Namespace) -> int:
             print(
                 "ERROR: --skill, --from, and --to must all be provided "
                 "together",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            validate_skill_name(skill)
+        except InvalidSkillNameError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        if from_iter < 1 or to_iter < 1:
+            print(
+                "ERROR: --from and --to must be >= 1",
                 file=sys.stderr,
             )
             return 2

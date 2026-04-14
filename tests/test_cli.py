@@ -379,6 +379,71 @@ class TestOnlyCriterion:
         assert rc == 0
         assert spec.eval_spec.grading_criteria == ["foo"]
 
+    @pytest.mark.parametrize(
+        "extra,label",
+        [
+            (["--iteration", "3"], "--iteration"),
+            (["--force"], "--force"),
+            (["--diff"], "--diff"),
+        ],
+    )
+    def test_only_criterion_rejects_conflicting_flags(
+        self, tmp_path, monkeypatch, capsys, extra, label
+    ):
+        """--only-criterion + --iteration/--force/--diff is a hard error.
+
+        Pass 3 bug 1/2 regression guard: these combinations could either
+        destroy the existing iteration-N baseline (--force) or report a
+        confusing diff against an abandoned slot (--diff).
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        output_file = tmp_path / "o.txt"
+        output_file.write_text("out")
+        eval_spec = _make_eval_spec(grading_criteria=["foo", "bar"])
+        spec = _make_spec(eval_spec=eval_spec)
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--only-criterion",
+                    "foo",
+                    *extra,
+                ]
+            )
+        assert rc == 2
+        assert label in capsys.readouterr().err
+
+    def test_only_criterion_does_not_publish_iteration_dir(
+        self, tmp_path, monkeypatch
+    ):
+        """--only-criterion must not leave an iteration-N/ dir on disk.
+
+        A partial grading.json from a filtered run would otherwise be
+        picked up later as a bogus baseline by --diff / compare /
+        _find_prior_grading_json. Pass 2 bug 2 regression guard.
+        """
+        (tmp_path / ".git").mkdir()
+        rc, _mock, _spec = self._run(
+            tmp_path,
+            ["foo", "bar"],
+            ["--only-criterion", "foo"],
+            monkeypatch=monkeypatch,
+        )
+        assert rc == 0
+        clauditor_dir = tmp_path / ".clauditor"
+        if clauditor_dir.exists():
+            iteration_dirs = sorted(clauditor_dir.glob("iteration-*"))
+            final_dirs = [
+                d for d in iteration_dirs if not d.name.endswith("-tmp")
+            ]
+            assert final_dirs == [], (
+                f"--only-criterion unexpectedly published {final_dirs}"
+            )
+
 
 class TestCmdGradeSaveDiff:
     """Tests for the iteration workspace layout (US-004) and --diff."""

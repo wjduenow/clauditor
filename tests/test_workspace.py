@@ -8,9 +8,11 @@ from pathlib import Path
 import pytest
 
 from clauditor.workspace import (
+    InvalidSkillNameError,
     IterationExistsError,
     IterationWorkspace,
     allocate_iteration,
+    validate_skill_name,
 )
 
 
@@ -125,3 +127,73 @@ class TestConcurrent:
         iterations = sorted(ws.iteration for ws in results)
         assert iterations == list(range(1, n_threads + 1))
         assert len(set(iterations)) == n_threads
+
+
+class TestSkillNameValidation:
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "",
+            ".",
+            "..",
+            "../evil",
+            "foo/bar",
+            "/abs",
+            "with space",
+            "has\\backslash",
+        ],
+    )
+    def test_rejects_unsafe_names(self, tmp_path: Path, bad: str) -> None:
+        with pytest.raises(InvalidSkillNameError):
+            validate_skill_name(bad)
+        with pytest.raises(InvalidSkillNameError):
+            allocate_iteration(tmp_path, bad)
+
+    @pytest.mark.parametrize(
+        "good", ["foo", "foo-bar", "foo_bar.v2", "Abc123"]
+    )
+    def test_accepts_safe_names(self, tmp_path: Path, good: str) -> None:
+        assert validate_skill_name(good) == good
+        ws = allocate_iteration(tmp_path, good)
+        assert ws.iteration == 1
+
+
+class TestExplicitIterationRobustness:
+    def test_rejects_non_positive_iteration(self, tmp_path: Path) -> None:
+        for bad in (0, -1, -99):
+            with pytest.raises(ValueError, match="iteration must be >= 1"):
+                allocate_iteration(tmp_path, "foo", iteration=bad)
+
+    def test_clears_orphan_tmp_from_prior_crash(self, tmp_path: Path) -> None:
+        # Prior crashed run left iteration-5-tmp behind. Rerunning
+        # --iteration 5 should succeed without --force (tmp is junk).
+        orphan = tmp_path / "iteration-5-tmp" / "foo"
+        orphan.mkdir(parents=True)
+        (orphan / "stale.txt").write_text("junk")
+
+        ws = allocate_iteration(tmp_path, "foo", iteration=5)
+        assert ws.iteration == 5
+        assert ws.tmp_path.is_dir()
+        assert not (ws.tmp_path / "stale.txt").exists()
+
+
+class TestFinalizeConcurrentRace:
+    def test_finalize_raises_iteration_exists_when_target_occupied(
+        self, tmp_path: Path
+    ) -> None:
+        # Simulate a concurrent peer that finalized iteration-1 between our
+        # allocation and our finalize() — populate the destination with
+        # a non-empty dir so os.rename raises ENOTEMPTY on Linux.
+        ws = allocate_iteration(tmp_path, "foo")
+        racer_final = tmp_path / "iteration-1" / "foo"
+        racer_final.mkdir(parents=True)
+        (racer_final / "race.txt").write_text("from peer")
+
+        with pytest.raises(IterationExistsError):
+            ws.finalize()
+
+        # After the race, the caller's staging dir is cleaned up.
+        assert not (tmp_path / "iteration-1-tmp").exists()
+        # The peer's finalized data is untouched.
+        assert (racer_final / "race.txt").read_text() == "from peer"
+        assert ws.finalized is False

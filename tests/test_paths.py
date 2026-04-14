@@ -38,3 +38,26 @@ class TestResolveClauditorDir:
         assert result == sub / ".clauditor"
         captured = capsys.readouterr()
         assert "clauditor" in (captured.err + captured.out).lower()
+
+    def test_home_dir_claude_marker_is_ignored(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``~/.claude`` must not be treated as a repo-root marker.
+
+        Pass 3 bug 6 regression guard: a user's global Claude Code config
+        directory would otherwise cause every clauditor invocation from a
+        project without .git to write iterations into ``~/.clauditor``.
+        """
+        fake_home = tmp_path / "home"
+        (fake_home / ".claude").mkdir(parents=True)
+        project = fake_home / "project" / "nested"
+        project.mkdir(parents=True)
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.chdir(project)
+
+        result = resolve_clauditor_dir()
+        # Should NOT resolve to ~/.clauditor (which would be
+        # fake_home / ".clauditor"). Instead it falls back to the
+        # current working directory because no valid marker was found.
+        assert result != fake_home / ".clauditor"
+        assert result == project / ".clauditor"

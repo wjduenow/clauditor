@@ -20,17 +20,38 @@ from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
+    "InvalidSkillNameError",
     "IterationExistsError",
     "IterationWorkspace",
     "allocate_iteration",
+    "validate_skill_name",
 ]
 
 _ITERATION_RE = re.compile(r"^iteration-(\d+)$")
+_SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+$")
 _MAX_AUTO_RETRIES = 100
 
 
 class IterationExistsError(Exception):
     """Raised when an explicit ``iteration=N`` collides and ``force`` is False."""
+
+
+class InvalidSkillNameError(ValueError):
+    """Raised when a skill name contains characters unsafe for path joining."""
+
+
+def validate_skill_name(skill: str) -> str:
+    """Reject skill names that could escape the clauditor directory.
+
+    Accepts alphanumerics plus ``_ . -``. Rejects empty strings, path
+    separators, parent references (``..``), and leading dots that could
+    otherwise collide with hidden dirs. Returns the validated name.
+    """
+    if not skill or skill in {".", ".."} or not _SKILL_NAME_RE.match(skill):
+        raise InvalidSkillNameError(
+            f"invalid skill name for workspace path: {skill!r}"
+        )
+    return skill
 
 
 @dataclass
@@ -48,6 +69,7 @@ class IterationWorkspace:
     iteration: int
     final_path: Path
     tmp_path: Path
+    finalized: bool = False
 
     @property
     def _tmp_parent(self) -> Path:
@@ -63,8 +85,22 @@ class IterationWorkspace:
         Uses :func:`os.rename` on the ``iteration-N-tmp`` → ``iteration-N``
         parent directories (they are peers under ``clauditor_dir``, so the
         rename is atomic on POSIX).
+
+        If a concurrent peer finalized the same iteration index between our
+        allocation scan and this call, the rename raises ``OSError``
+        (``ENOTEMPTY``); we clean up the staging dir and surface the race as
+        an :class:`IterationExistsError` so the caller sees a consistent
+        failure mode rather than a bare OSError.
         """
-        os.rename(self._tmp_parent, self._final_parent)
+        try:
+            os.rename(self._tmp_parent, self._final_parent)
+        except OSError as exc:
+            self.abort()
+            raise IterationExistsError(
+                f"iteration-{self.iteration} was finalized by a concurrent "
+                f"writer; staging dir discarded"
+            ) from exc
+        self.finalized = True
 
     def abort(self) -> None:
         """Remove the staging directory. Safe if it's already gone."""
@@ -115,6 +151,7 @@ def allocate_iteration(
         RuntimeError: Auto-increment could not find a free slot within the
             retry cap (pathological contention).
     """
+    validate_skill_name(skill)
     clauditor_dir.mkdir(parents=True, exist_ok=True)
 
     if iteration is not None:
@@ -125,6 +162,10 @@ def allocate_iteration(
 def _allocate_explicit(
     clauditor_dir: Path, skill: str, iteration: int, *, force: bool
 ) -> IterationWorkspace:
+    if iteration < 1:
+        raise ValueError(
+            f"iteration must be >= 1, got {iteration}"
+        )
     final_parent = clauditor_dir / f"iteration-{iteration}"
     tmp_parent = clauditor_dir / f"iteration-{iteration}-tmp"
 
@@ -135,7 +176,9 @@ def _allocate_explicit(
             )
         shutil.rmtree(final_parent)
 
-    # --force may also mean a prior aborted run left an orphan tmp dir.
+    # Orphan tmp dirs are stage-only junk from a crashed prior run — always
+    # clear them regardless of --force so explicit --iteration N doesn't
+    # crash with a bare FileExistsError.
     if tmp_parent.exists():
         shutil.rmtree(tmp_parent)
 

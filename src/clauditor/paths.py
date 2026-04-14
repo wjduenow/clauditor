@@ -24,10 +24,28 @@ def resolve_clauditor_dir() -> Path:
     of ``.git`` or ``.claude``. Returns ``<that_dir>/.clauditor``. If no
     ancestor contains a marker, emits a single-line warning to stderr and
     returns ``Path.cwd() / ".clauditor"``.
+
+    The user's home directory is only accepted as a match via the
+    ``.git`` marker, never ``.claude``. A stray ``~/.claude`` (common:
+    Claude Code's user config directory) would otherwise cause any
+    clauditor invocation run from a project lacking ``.git`` to write
+    iterations into ``~/.clauditor`` and contaminate unrelated work.
     """
+    try:
+        home = Path.home().resolve()
+    except (RuntimeError, OSError):
+        home = None
+
     cwd = Path.cwd()
     for candidate in (cwd, *cwd.parents):
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+        at_home = home is not None and resolved == home
         for marker in _MARKERS:
+            if at_home and marker == ".claude":
+                continue
             if (candidate / marker).exists():
                 return candidate / _CLAUDITOR_DIRNAME
     print(

@@ -59,6 +59,9 @@ SPARK_GLYPHS = "_.-=#"
 SCHEMA_VERSION = 3
 
 
+_FLOCK_UNSUPPORTED_WARNED = False
+
+
 @contextlib.contextmanager
 def _file_lock(lock_path: Path) -> Iterator[None]:
     """Acquire an exclusive ``fcntl.flock`` on ``lock_path``.
@@ -66,16 +69,39 @@ def _file_lock(lock_path: Path) -> Iterator[None]:
     Creates the lockfile (and its parent dir) if missing. The lock is
     released when the context exits. Use this only to serialize the
     short ``history.jsonl`` append — do not hold it across other work.
+
+    On filesystems that do not implement advisory locking (WSL2
+    ``/mnt/*`` drvfs, some NFSv3 mounts, 9p shares) ``fcntl.flock``
+    raises ``OSError`` (typically ``ENOLCK`` or ``EINVAL``). Rather
+    than losing the history append entirely we fall back to an
+    unlocked context and warn once per process — concurrent appends
+    may theoretically interleave, but a single-writer history is still
+    better than silent data loss.
     """
+    global _FLOCK_UNSUPPORTED_WARNED
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     # ``open(..., "a")`` creates the file if missing without truncating
     # an existing one and gives us a writable fd flock can lock.
     with lock_path.open("a") as lock_fd:
-        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+        try:
+            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+        except OSError as exc:
+            if not _FLOCK_UNSUPPORTED_WARNED:
+                print(
+                    f"WARNING: fcntl.flock unsupported on {lock_path} "
+                    f"({exc}); history appends will be unlocked",
+                    file=sys.stderr,
+                )
+                _FLOCK_UNSUPPORTED_WARNED = True
+            yield
+            return
         try:
             yield
         finally:
-            fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+            try:
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
 
 
 def append_record(
