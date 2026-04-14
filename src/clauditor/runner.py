@@ -204,7 +204,7 @@ class SkillRunner:
             stderr_chunks: list[str] = []
 
             def _drain_stderr() -> None:
-                if proc is None or proc.stderr is None:
+                if proc is None or proc.stderr is None:  # pragma: no cover
                     return
                 try:
                     for chunk in proc.stderr:
@@ -220,7 +220,7 @@ class SkillRunner:
             timed_out = {"hit": False}
 
             def _on_timeout() -> None:
-                if proc is None:
+                if proc is None:  # pragma: no cover
                     return
                 # Don't flip the flag if the child already exited cleanly —
                 # prevents a race where the read loop finishes right as the
@@ -230,7 +230,7 @@ class SkillRunner:
                 timed_out["hit"] = True
                 try:
                     proc.kill()
-                except Exception:
+                except Exception:  # pragma: no cover
                     pass
 
             watchdog = threading.Timer(self.timeout, _on_timeout)
