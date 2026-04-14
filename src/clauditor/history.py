@@ -30,7 +30,18 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
 
-_DEFAULT_PATH = Path(".clauditor/history.jsonl")
+from clauditor.paths import resolve_clauditor_dir
+
+# Module-level override, monkeypatched by tests. When ``None``, the
+# default path is resolved lazily via :func:`resolve_clauditor_dir` so
+# the lookup honors the caller's current working directory.
+_DEFAULT_PATH: Path | None = None
+
+
+def _default_path() -> Path:
+    if _DEFAULT_PATH is not None:
+        return _DEFAULT_PATH
+    return resolve_clauditor_dir() / "history.jsonl"
 SPARK_GLYPHS = "_.-=#"
 SCHEMA_VERSION = 2
 
@@ -59,7 +70,7 @@ def append_record(
             f"command must be one of 'grade', 'extract', 'validate'; got {command!r}"
         )
     if path is None:
-        path = _DEFAULT_PATH
+        path = _default_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     record = {
         "schema_version": SCHEMA_VERSION,
@@ -85,7 +96,7 @@ def read_records(
     time so tests can monkeypatch the module attribute.
     """
     if path is None:
-        path = _DEFAULT_PATH
+        path = _default_path()
     if not path.exists():
         return []
 
