@@ -3906,3 +3906,129 @@ class TestCmdValidateHistory:
         assert metrics["skill"]["output_tokens"] == 0
         assert metrics["duration_seconds"] == 0.0
         assert "grader" not in metrics
+
+
+class TestCmdValidateWorkspace:
+    """cmd_validate persists an iteration workspace on live runs (US-006)."""
+
+    def _live_spec(self, output_text: str = "hello world output"):
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.return_value = SkillResult(
+            output=output_text,
+            exit_code=0,
+            skill_name="test-skill",
+            args="",
+            duration_seconds=1.5,
+            input_tokens=100,
+            output_tokens=50,
+            stream_events=[
+                {"type": "system", "session_id": "abc"},
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [{"type": "text", "text": "hi"}]
+                    },
+                },
+            ],
+        )
+        return spec
+
+    def test_validate_live_run_publishes_iteration(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        spec = self._live_spec()
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assert skill_dir.is_dir()
+        assert (skill_dir / "run-0" / "output.jsonl").is_file()
+        assert (skill_dir / "run-0" / "output.txt").is_file()
+        assertions_path = skill_dir / "assertions.json"
+        assert assertions_path.is_file()
+        # No Layer 3 artifacts for validate.
+        assert not (skill_dir / "grading.json").exists()
+        assert not (skill_dir / "timing.json").exists()
+
+        payload = json.loads(assertions_path.read_text())
+        assert payload["schema_version"] == 1
+        assert payload["skill"] == "test-skill"
+        assert payload["iteration"] == 1
+        assert len(payload["runs"]) == 1
+        run_row = payload["runs"][0]
+        assert run_row["run"] == 0
+        # transcript_path wired onto assertion rows.
+        for r in run_row["results"]:
+            assert r["transcript_path"].endswith("run-0/output.jsonl")
+
+        # History row.
+        hist = tmp_path / ".clauditor" / "history.jsonl"
+        lines = [ln for ln in hist.read_text().splitlines() if ln]
+        assert len(lines) == 1
+        rec = json.loads(lines[0])
+        assert rec["command"] == "validate"
+        assert rec["iteration"] == 1
+        assert rec["workspace_path"].endswith("iteration-1/test-skill")
+
+    def test_validate_no_transcript_skips_run_dir(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        spec = self._live_spec()
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--no-transcript"])
+
+        assert rc == 0
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assert skill_dir.is_dir()
+        assert not (skill_dir / "run-0").exists()
+        payload = json.loads((skill_dir / "assertions.json").read_text())
+        for r in payload["runs"][0]["results"]:
+            assert r["transcript_path"] is None
+
+    def test_validate_shares_counter_with_grade(self, tmp_path, monkeypatch):
+        """A prior ``iteration-1`` dir forces validate onto ``iteration-2``."""
+        monkeypatch.chdir(tmp_path)
+        # Simulate a prior grade run.
+        prior = tmp_path / ".clauditor" / "iteration-1" / "other-skill"
+        prior.mkdir(parents=True)
+
+        spec = self._live_spec()
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        assert (
+            tmp_path / ".clauditor" / "iteration-2" / "test-skill"
+        ).is_dir()
+        assert not (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        ).exists()
+
+    def test_validate_skill_failure_aborts_workspace(
+        self, tmp_path, monkeypatch
+    ):
+        """Failed skill run cleans up the staging dir and returns 1."""
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.return_value = SkillResult(
+            output="",
+            exit_code=1,
+            skill_name="test-skill",
+            args="",
+            duration_seconds=0.5,
+            error="boom",
+        )
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 1
+        clauditor_dir = tmp_path / ".clauditor"
+        # Neither a staging dir nor a finalized iteration should remain.
+        assert not (clauditor_dir / "iteration-1").exists()
+        assert not (clauditor_dir / "iteration-1-tmp").exists()
