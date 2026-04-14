@@ -5,7 +5,7 @@
 - **Ticket:** [clauditor#23](https://github.com/wjduenow/clauditor/issues/23)
 - **Title:** Input files support on eval specs
 - **Branch:** `feature/23-eval-input-files`
-- **Phase:** detailing
+- **Phase:** devolved
 - **Sessions:** 1
 - **Last session:** 2026-04-13
 
@@ -430,4 +430,17 @@ Layering follows the natural clauditor stack: schema → workspace helper → sp
 
 ## Beads Manifest
 
-*(pending — Phase 7)*
+- **Epic:** `clauditor-5o9` — #23: Input files support on eval specs
+- **Draft PR:** https://github.com/wjduenow/clauditor/pull/32
+- **Branch / worktree:** `feature/23-eval-input-files` at repo root
+- **Tasks (parent = epic):**
+  - `clauditor-5o9.1` — US-001 — EvalSpec.input_files field + load-time validation *(no deps, ready)*
+  - `clauditor-5o9.2` — US-002 — workspace.stage_inputs() pure copy helper *(blocked by .1)*
+  - `clauditor-5o9.3` — US-003 — SkillRunner cwd override + SkillSpec.run() staging hook *(blocked by .1, .2)*
+  - `clauditor-5o9.4` — US-004 — CLI grade integration, variance fresh copies, captured-output warning *(blocked by .3)*
+  - `clauditor-5o9.5` — US-005 — Pytest plugin transparent staging *(blocked by .3)*
+  - `clauditor-5o9.6` — US-006 — Docs: README, example eval spec, trust-model note *(blocked by .1..5)*
+  - `clauditor-5o9.7` — Quality Gate — code review x4 + CodeRabbit + ruff + pytest *(blocked by .1..6)*
+  - `clauditor-5o9.8` — Patterns & Memory *(blocked by .7, priority 4)*
+- **Parallel-safe at start:** `clauditor-5o9.1` only (everything else depends on it).
+- **After US-001 lands:** `.2` unblocks; then `.3`; then `.4` and `.5` run in parallel.
