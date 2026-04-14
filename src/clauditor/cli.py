@@ -278,6 +278,87 @@ def cmd_grade(args: argparse.Namespace) -> int:
             workspace.abort()
 
 
+def _run_baseline_phase(
+    *,
+    spec: SkillSpec,
+    skill_dir: Path,
+    iteration: int,
+    model: str,
+) -> None:
+    """US-004: run the test args without the skill prefix and persist L1/L2/L3
+    sidecars into ``skill_dir`` (the staging iteration dir).
+
+    Four files are written alongside the primary sidecars:
+    - ``baseline.json`` — run metadata (output, tokens, duration, exit_code)
+    - ``baseline_assertions.json`` — Layer 1 results against baseline output
+    - ``baseline_extraction.json`` — Layer 2 extraction (only when the spec
+      declares sections)
+    - ``baseline_grading.json`` — Layer 3 ``GradingReport``
+
+    Strictly opt-in via ``--baseline``; roughly doubles LLM cost per run.
+    """
+    import asyncio
+
+    from clauditor.grader import extract_and_report
+    from clauditor.quality_grader import grade_quality
+
+    test_args = spec.eval_spec.test_args or ""
+    print(f"Running baseline (no skill prefix) {test_args}...")
+    baseline_result = spec.runner.run_raw(test_args)
+
+    baseline_text = baseline_result.output
+
+    baseline_meta = {
+        "skill": spec.skill_name,
+        "iteration": iteration,
+        "output": baseline_text,
+        "exit_code": baseline_result.exit_code,
+        "input_tokens": baseline_result.input_tokens,
+        "output_tokens": baseline_result.output_tokens,
+        "duration_seconds": baseline_result.duration_seconds,
+    }
+    (skill_dir / "baseline.json").write_text(
+        json.dumps(baseline_meta, indent=2) + "\n", encoding="utf-8"
+    )
+
+    baseline_assertion_set = run_assertions(
+        baseline_text, spec.eval_spec.assertions
+    )
+    baseline_assertions_payload = {
+        "skill": spec.skill_name,
+        "iteration": iteration,
+        **baseline_assertion_set.to_json(),
+    }
+    (skill_dir / "baseline_assertions.json").write_text(
+        json.dumps(baseline_assertions_payload, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    if spec.eval_spec.sections:
+        baseline_extraction = asyncio.run(
+            extract_and_report(
+                baseline_text,
+                spec.eval_spec,
+                skill_name=spec.skill_name,
+            )
+        )
+        (skill_dir / "baseline_extraction.json").write_text(
+            baseline_extraction.to_json(), encoding="utf-8"
+        )
+
+    baseline_grading = asyncio.run(
+        grade_quality(
+            baseline_text,
+            spec.eval_spec,
+            model,
+            thresholds=spec.eval_spec.grade_thresholds,
+        )
+    )
+    (skill_dir / "baseline_grading.json").write_text(
+        baseline_grading.to_json(), encoding="utf-8"
+    )
+
+
 def _cmd_grade_with_workspace(
     *,
     args: argparse.Namespace,
@@ -484,6 +565,14 @@ def _cmd_grade_with_workspace(
             )
             (skill_dir / "extraction.json").write_text(
                 extraction_report.to_json(), encoding="utf-8"
+            )
+
+        if getattr(args, "baseline", False):
+            _run_baseline_phase(
+                spec=spec,
+                skill_dir=skill_dir,
+                iteration=workspace.iteration,
+                model=model,
             )
 
     if not only_criterion:
@@ -1528,6 +1617,15 @@ def main(argv: list[str] | None = None) -> int:
         "--diff",
         action="store_true",
         help="Compare against the previous iteration's grading.json",
+    )
+    p_grade.add_argument(
+        "--baseline",
+        action="store_true",
+        help=(
+            "After grading, run the test args through Claude without the "
+            "skill prefix (baseline) and capture L1/L2/L3 sidecars. "
+            "Roughly doubles LLM cost; never the default."
+        ),
     )
     p_grade.add_argument(
         "--only-criterion",
