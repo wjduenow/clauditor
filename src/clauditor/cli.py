@@ -1453,6 +1453,52 @@ def cmd_trend(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_audit(args: argparse.Namespace) -> int:
+    """Load + aggregate per-assertion pass rates across iterations.
+
+    US-005: loader + minimal aggregate print. Threshold / flagging /
+    markdown rendering lives in US-006 (clauditor-8qo). The CLI flags
+    ``--min-fail-rate``, ``--min-discrimination``, ``--json``, and
+    ``--output-dir`` are accepted here for forward compatibility but
+    currently unused.
+    """
+    from clauditor.audit import aggregate, load_iterations
+
+    clauditor_dir = resolve_clauditor_dir()
+    records, skipped = load_iterations(
+        args.skill, last=args.last, clauditor_dir=clauditor_dir
+    )
+
+    if skipped:
+        print(
+            f"skipped {skipped} iteration dirs without assertion data",
+            file=sys.stderr,
+        )
+
+    aggregates = aggregate(records)
+    if not aggregates:
+        print(f"No audit data for skill {args.skill!r} under {clauditor_dir}")
+        return 0
+
+    rows = sorted(aggregates.values(), key=lambda a: (a.layer, a.id))
+    header = f"{'LAYER':<6} {'ID':<40} {'RUNS':>6} {'WITH%':>8} {'BASE%':>8}"
+    print(header)
+    print("-" * len(header))
+    for agg in rows:
+        base = (
+            f"{agg.baseline_pass_rate * 100:7.1f}%"
+            if agg.baseline_pass_rate is not None
+            else "      -"
+        )
+        print(
+            f"{agg.layer:<6} {agg.id[:40]:<40} "
+            f"{agg.total_with_runs:>6} "
+            f"{agg.with_pass_rate * 100:7.1f}% "
+            f"{base:>8}"
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="clauditor",
@@ -1711,6 +1757,45 @@ def main(argv: list[str] | None = None) -> int:
         help="Show last N records (default 20; must be >= 1)",
     )
 
+    # audit
+    p_audit = subparsers.add_parser(
+        "audit",
+        help=(
+            "Aggregate per-assertion pass rates across the last N "
+            "iteration workspaces for a skill"
+        ),
+    )
+    p_audit.add_argument("skill", help="Skill name to audit")
+    p_audit.add_argument(
+        "--last",
+        type=_positive_int,
+        default=20,
+        help="Consider the last N iteration dirs (default 20)",
+    )
+    p_audit.add_argument(
+        "--min-fail-rate",
+        type=float,
+        default=None,
+        help="(US-006) minimum fail rate to flag an assertion",
+    )
+    p_audit.add_argument(
+        "--min-discrimination",
+        type=float,
+        default=None,
+        help="(US-006) minimum with/baseline delta to flag",
+    )
+    p_audit.add_argument(
+        "--json",
+        action="store_true",
+        help="(US-006) emit machine-readable JSON instead of a table",
+    )
+    p_audit.add_argument(
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="(US-006) directory to write audit reports",
+    )
+
     # doctor
     subparsers.add_parser(
         "doctor",
@@ -1756,6 +1841,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor(parsed)
     elif parsed.command == "trend":
         return cmd_trend(parsed)
+    elif parsed.command == "audit":
+        return cmd_audit(parsed)
 
     return 1
 
