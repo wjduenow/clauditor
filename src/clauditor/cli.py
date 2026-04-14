@@ -118,6 +118,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
             verbose = bool(getattr(args, "verbose", False))
             no_transcript = bool(getattr(args, "no_transcript", False))
 
+            if verbose and results.failed:
+                _print_failing_transcript_slice(
+                    0, list(skill_result.stream_events), sys.stderr
+                )
+
             if not no_transcript:
                 _write_run_dir(
                     skill_dir / "run-0",
@@ -205,6 +210,76 @@ def cmd_validate(args: argparse.Namespace) -> int:
         print(results.summary())
 
     return 0 if results.passed else 1
+
+
+_TRANSCRIPT_SLICE_BLOCK_CAP_BYTES = 2048
+_TRANSCRIPT_SLICE_TRUNC_MARKER = "... [truncated]"
+
+
+def _print_failing_transcript_slice(
+    run_idx: int,
+    stream_events: list[dict],
+    out,
+) -> None:
+    """Print the last 5 ``assistant`` text blocks from ``stream_events``.
+
+    Pure helper — no filesystem or argparse access, so it is cheap to test
+    in isolation. The caller is responsible for gating invocation on
+    ``args.verbose`` and a non-empty ``AssertionSet.failed()`` for the run.
+
+    Each ``assistant`` event's ``message.content`` list is walked for
+    ``type == "text"`` blocks (in event order); the last 5 across all
+    events are kept. Each text is passed through
+    :func:`clauditor.transcripts.redact` before printing so that in-memory
+    ``stream_events`` stays untouched (DEC-010) while the printed output
+    is still scrubbed. Individual text blocks are capped at 2 KB by byte
+    count on the UTF-8 encoding (per-block, post-redaction); overflow is
+    truncated with a trailing ``... [truncated]`` marker.
+    """
+    from . import transcripts
+
+    text_blocks: list[str] = []
+    for event in stream_events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message") or {}
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content") or []
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "text":
+                continue
+            text_val = block.get("text")
+            if isinstance(text_val, str):
+                text_blocks.append(text_val)
+
+    slice_blocks = text_blocks[-5:]
+    scrubbed_slice, _count = transcripts.redact(slice_blocks)
+
+    def _cap(text: str) -> str:
+        encoded = text.encode("utf-8")
+        if len(encoded) <= _TRANSCRIPT_SLICE_BLOCK_CAP_BYTES:
+            return text
+        # Decode the first N bytes tolerating split codepoints at the edge.
+        truncated = encoded[:_TRANSCRIPT_SLICE_BLOCK_CAP_BYTES].decode(
+            "utf-8", errors="ignore"
+        )
+        return truncated + _TRANSCRIPT_SLICE_TRUNC_MARKER
+
+    header = (
+        f"--- transcript slice (run-{run_idx}, last 5 assistant blocks) ---"
+    )
+    print(header, file=out)
+    for i, text in enumerate(scrubbed_slice):
+        if i > 0:
+            print("", file=out)
+        print(_cap(text), file=out)
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -694,16 +769,28 @@ def _cmd_grade_with_workspace(
                 r.transcript_path = transcript_rel
             return result
 
+        per_run_assertions: list[tuple[int, AssertionSet]] = [
+            (idx, _assertions_with_transcript(text, idx))
+            for idx, (text, _events) in enumerate(run_outputs)
+        ]
+
+        # US-007: verbose transcript slice for any run whose assertions
+        # failed. Runs against in-memory stream_events (no disk read)
+        # and routes to stderr so grading JSON stdout stays clean.
+        if verbose:
+            for idx, aset in per_run_assertions:
+                if aset.failed:
+                    _print_failing_transcript_slice(
+                        idx, run_outputs[idx][1], sys.stderr
+                    )
+
         assertions_payload = {
             "schema_version": 1,
             "skill": spec.skill_name,
             "iteration": workspace.iteration,
             "runs": [
-                {
-                    "run": idx,
-                    **_assertions_with_transcript(text, idx).to_json(),
-                }
-                for idx, (text, _events) in enumerate(run_outputs)
+                {"run": idx, **aset.to_json()}
+                for idx, aset in per_run_assertions
             ],
         }
         (skill_dir / "assertions.json").write_text(
