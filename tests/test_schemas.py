@@ -568,6 +568,37 @@ class TestFromFile:
         ):
             EvalSpec.from_file(path)
 
+    def test_assertion_empty_id_rejected(self, tmp_path):
+        """``id: ""`` must be rejected — covers the non-empty string branch
+        of ``_require_id``."""
+        data = {
+            "skill_name": "s",
+            "assertions": [
+                {"id": "", "type": "contains", "value": "x"},
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError,
+            match=r"assertions\[0\]: 'id' must be a non-empty string",
+        ):
+            EvalSpec.from_file(path)
+
+    def test_assertion_non_dict_entry_rejected(self, tmp_path):
+        """Non-dict assertion entries (strings, numbers, lists) must be
+        rejected with a clear type error — covers the non-dict branch of
+        ``_require_id``."""
+        data = {
+            "skill_name": "s",
+            "assertions": ["not-a-dict"],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError,
+            match=r"assertions\[0\] — expected object, got str",
+        ):
+            EvalSpec.from_file(path)
+
     def test_criterion_duplicate_id_rejected(self, tmp_path):
         """Criterion ids must be unique within the skill."""
         data = {

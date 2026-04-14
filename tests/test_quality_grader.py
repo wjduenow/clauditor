@@ -537,6 +537,49 @@ class TestGradeQuality:
         )
 
     @pytest.mark.asyncio
+    async def test_grade_quality_coerces_unparseable_score_to_zero(self):
+        """Covers ``parse_grading_response`` ``score = float(item.get)``
+        exception branch — non-numeric score is coerced to 0.0 instead of
+        crashing."""
+        spec = _make_spec()
+        grading_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": "not a number",
+                "evidence": "e",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 1.0,
+                "evidence": "e",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 1.0,
+                "evidence": "e",
+                "reasoning": "r",
+            },
+        ]
+        mock_response = MagicMock(
+            usage=MagicMock(input_tokens=1, output_tokens=1)
+        )
+        mock_response.content = [
+            MagicMock(type="text", text=json.dumps(grading_data))
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await grade_quality("output", spec)
+
+        assert report.results[0].score == 0.0
+
+    @pytest.mark.asyncio
     async def test_grade_quality_skips_non_text_blocks(self):
         """Non-text blocks (tool_use, refusal) before a text block must not
         be indexed as ``.text``. The defensive filter selects the first
