@@ -1276,3 +1276,242 @@ class TestExtractAndReportEmptyResponse:
         assert result.results
         assert result.results[0].name == "grader:parse"
         assert "no text blocks" in result.results[0].message
+
+
+class TestExtractAndReportHappyPath:
+    """Exercise the full body of ``extract_and_report`` — the Layer 2 wire-up
+    used by ``cmd_grade`` when the spec declares sections."""
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_returns_field_keyed_report(self):
+        from clauditor.grader import extract_and_report
+
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[
+                                FieldRequirement(name="name", id="v1"),
+                                FieldRequirement(
+                                    name="website", id="v2", required=False
+                                ),
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+        data = {
+            "Venues": {
+                "primary": [
+                    {"name": "CDM", "website": "https://example.org"},
+                ],
+            }
+        }
+        fake_response = MagicMock(
+            usage=MagicMock(input_tokens=42, output_tokens=7)
+        )
+        fake_response.content = [
+            MagicMock(type="text", text=json.dumps(data))
+        ]
+        fake_client = MagicMock()
+        fake_client.messages.create = AsyncMock(return_value=fake_response)
+
+        with patch("anthropic.AsyncAnthropic", return_value=fake_client):
+            report = await extract_and_report("out", spec, skill_name="s")
+
+        assert report.input_tokens == 42
+        assert report.output_tokens == 7
+        assert report.parse_errors == []
+        assert "v1" in report.declared_field_ids
+        assert "v2" in report.declared_field_ids
+        by_id = {r.field_id: r for r in report.results}
+        assert by_id["v1"].presence_passed is True
+        assert by_id["v2"].presence_passed is True
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_handles_invalid_json(self):
+        from clauditor.grader import extract_and_report
+
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[FieldRequirement(name="n", id="v1")],
+                        )
+                    ],
+                )
+            ],
+        )
+        fake_response = MagicMock(
+            usage=MagicMock(input_tokens=1, output_tokens=1)
+        )
+        fake_response.content = [
+            MagicMock(type="text", text="definitely not json {")
+        ]
+        fake_client = MagicMock()
+        fake_client.messages.create = AsyncMock(return_value=fake_response)
+
+        with patch("anthropic.AsyncAnthropic", return_value=fake_client):
+            report = await extract_and_report("out", spec, skill_name="s")
+
+        assert report.parse_errors
+        assert "Failed to parse" in report.parse_errors[0]
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_handles_markdown_fenced_json(self):
+        from clauditor.grader import extract_and_report
+
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[FieldRequirement(name="n", id="v1")],
+                        )
+                    ],
+                )
+            ],
+        )
+        data = {"Venues": {"primary": [{"n": "CDM"}]}}
+        wrapped = f"```json\n{json.dumps(data)}\n```"
+        fake_response = MagicMock(
+            usage=MagicMock(input_tokens=1, output_tokens=1)
+        )
+        fake_response.content = [MagicMock(type="text", text=wrapped)]
+        fake_client = MagicMock()
+        fake_client.messages.create = AsyncMock(return_value=fake_response)
+
+        with patch("anthropic.AsyncAnthropic", return_value=fake_client):
+            report = await extract_and_report("out", spec, skill_name="s")
+
+        assert report.parse_errors == []
+        assert any(r.field_id == "v1" for r in report.results)
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_flags_flat_list_sections(self):
+        from clauditor.grader import extract_and_report
+
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[FieldRequirement(name="n", id="v1")],
+                        )
+                    ],
+                )
+            ],
+        )
+        data = {"Venues": [{"n": "CDM"}]}
+        fake_response = MagicMock(
+            usage=MagicMock(input_tokens=1, output_tokens=1)
+        )
+        fake_response.content = [
+            MagicMock(type="text", text=json.dumps(data))
+        ]
+        fake_client = MagicMock()
+        fake_client.messages.create = AsyncMock(return_value=fake_response)
+
+        with patch("anthropic.AsyncAnthropic", return_value=fake_client):
+            report = await extract_and_report("out", spec, skill_name="s")
+
+        assert report.parse_errors
+        assert any("flat list" in e for e in report.parse_errors)
+
+
+class TestExtractionReportDeclaredFieldIds:
+    """Copilot fix (PR #34): ``ExtractionReport.to_json`` pre-populates
+    every declared field id with an empty list, so the on-disk contract
+    (every declared field present) holds even on runs with zero entries."""
+
+    def test_to_json_emits_empty_list_for_declared_field_with_no_results(
+        self,
+    ) -> None:
+        from clauditor.grader import ExtractionReport
+
+        report = ExtractionReport(
+            skill_name="s",
+            model="m",
+            results=[],
+            declared_field_ids=["v1", "v2"],
+        )
+        payload = json.loads(report.to_json())
+        assert payload["fields"] == {"v1": [], "v2": []}
+
+    def test_build_extraction_report_collects_declared_ids(self) -> None:
+        from clauditor.grader import ExtractedOutput, build_extraction_report
+
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[
+                                FieldRequirement(name="a", id="v1"),
+                                FieldRequirement(name="b", id="v2"),
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+        report = build_extraction_report(
+            ExtractedOutput(raw_json={}, sections={}), spec
+        )
+        assert report.declared_field_ids == ["v1", "v2"]
+
+    def test_falsey_field_values_are_not_treated_as_missing(self) -> None:
+        """Copilot fix: ``raw_value = 0`` / ``False`` / ``""`` were
+        previously dropped as missing. Now zero/False are kept; empty
+        string is the only "missing" sentinel."""
+        from clauditor.grader import (
+            ExtractedEntry,
+            ExtractedOutput,
+            build_extraction_report,
+        )
+
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Stats",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[FieldRequirement(name="count", id="c1")],
+                        )
+                    ],
+                )
+            ],
+        )
+        extracted = ExtractedOutput(
+            raw_json={},
+            sections={
+                "Stats": {
+                    "primary": [ExtractedEntry(fields={"count": 0})]
+                }
+            },
+        )
+        report = build_extraction_report(extracted, spec)
+        c1_results = [r for r in report.results if r.field_id == "c1"]
+        assert len(c1_results) == 1
+        assert c1_results[0].presence_passed is True
+        assert c1_results[0].evidence == "0"

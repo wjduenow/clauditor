@@ -662,7 +662,15 @@ async def grade_quality(
     input_tokens = getattr(response.usage, "input_tokens", 0)
     output_tokens = getattr(response.usage, "output_tokens", 0)
 
-    if not response.content or not hasattr(response.content[0], "text"):
+    # Defensive unpack: filter for text blocks so non-text-first items
+    # (tool_use, refusal) don't crash the indexer. Covers both empty
+    # content and tool_use-before-text scenarios.
+    text_blocks = [
+        b.text
+        for b in (response.content or [])
+        if getattr(b, "type", None) == "text" and hasattr(b, "text")
+    ]
+    if not text_blocks:
         return GradingReport(
             skill_name=eval_spec.skill_name,
             results=[
@@ -680,8 +688,7 @@ async def grade_quality(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
-
-    response_text = response.content[0].text
+    response_text = text_blocks[0]
     try:
         results = parse_grading_response(
             response_text, eval_spec.grading_criteria

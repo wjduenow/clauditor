@@ -282,7 +282,7 @@ def load_iterations(
             skipped += 1
             continue
 
-        loaded_any = False
+        records_before = len(records)
 
         for prefix, with_skill in (("", True), ("baseline_", False)):
             assertions = _read_json(skill_dir / f"{prefix}assertions.json")
@@ -299,7 +299,6 @@ def load_iterations(
                         filename=f"{prefix}assertions.json",
                     )
                 )
-                loaded_any = True
             if extraction is not None:
                 records.extend(
                     _records_from_extraction(
@@ -310,7 +309,6 @@ def load_iterations(
                         filename=f"{prefix}extraction.json",
                     )
                 )
-                loaded_any = True
             if grading is not None:
                 records.extend(
                     _records_from_grading(
@@ -321,9 +319,10 @@ def load_iterations(
                         filename=f"{prefix}grading.json",
                     )
                 )
-                loaded_any = True
 
-        if not loaded_any:
+        # Count as skipped if no records were produced for this iteration —
+        # sidecars may exist but be empty / schema-mismatched / unparseable.
+        if len(records) == records_before:
             skipped += 1
 
     return records, skipped

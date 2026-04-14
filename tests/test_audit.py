@@ -797,10 +797,30 @@ class TestAuditL3StableId:
                 }
             )
         )
-        records, _ = load_iterations(
+        records, skipped = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert records == []
+        # Copilot fix: schema-mismatched sidecars must count as skipped,
+        # not as "loaded" — otherwise the skipped counter undercounts
+        # iteration dirs that contributed zero usable data.
+        assert skipped == 1
+
+    def test_loader_counts_unparseable_sidecars_as_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        """Copilot fix (PR #34): an iteration dir whose sidecars exist
+        but are all malformed JSON must increment ``skipped``, not
+        silently loaded as zero records."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "assertions.json").write_text("{not valid json")
+        records, skipped = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert records == []
+        assert skipped == 1
 
     def test_audit_drops_l3_result_without_id(
         self, tmp_path: Path

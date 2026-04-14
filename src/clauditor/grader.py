@@ -113,6 +113,7 @@ class ExtractionReport:
     input_tokens: int = 0
     output_tokens: int = 0
     parse_errors: list[str] = field(default_factory=list)
+    declared_field_ids: list[str] = field(default_factory=list)
 
     @property
     def passed(self) -> bool:
@@ -122,6 +123,11 @@ class ExtractionReport:
 
     def to_json(self) -> str:
         by_id: dict[str, list[dict]] = {}
+        # Pre-populate every declared field id with an empty list so the
+        # on-disk contract (every declared field present) holds even on
+        # runs where the grader extracted zero entries for a field.
+        for fid in self.declared_field_ids:
+            by_id.setdefault(fid, [])
         for r in self.results:
             by_id.setdefault(r.field_id, []).append(
                 {k: v for k, v in r.to_dict().items() if k != "field_id"}
@@ -165,6 +171,7 @@ class ExtractionReport:
             input_tokens=int(data.get("input_tokens", 0)),
             output_tokens=int(data.get("output_tokens", 0)),
             parse_errors=list(data.get("parse_errors") or []),
+            declared_field_ids=list((data.get("fields") or {}).keys()),
         )
 
 
@@ -195,8 +202,10 @@ def build_extraction_report(
             for i, entry in enumerate(entries):
                 for field_req in tier.fields:
                     raw_value = entry.fields.get(field_req.name)
-                    has_value = bool(raw_value)
-                    value = str(raw_value) if raw_value else None
+                    has_value = raw_value is not None and raw_value != ""
+                    value = (
+                        str(raw_value) if raw_value is not None else None
+                    )
 
                     format_passed: bool | None = None
                     if field_req.format and has_value:
@@ -241,6 +250,13 @@ def build_extraction_report(
                         )
                     )
 
+    declared_field_ids: list[str] = []
+    for section_req in eval_spec.sections:
+        for tier in section_req.tiers:
+            for field_req in tier.fields:
+                if field_req.id and field_req.id not in declared_field_ids:
+                    declared_field_ids.append(field_req.id)
+
     return ExtractionReport(
         skill_name=skill_name,
         model=model,
@@ -248,6 +264,7 @@ def build_extraction_report(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         parse_errors=list(parse_errors or []),
+        declared_field_ids=declared_field_ids,
     )
 
 
