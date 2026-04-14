@@ -1222,6 +1222,200 @@ class TestCmdGradeSaveDiff:
         assert "No prior iteration" in err
 
 
+class TestCmdGradeLayer2Persistence:
+    """US-003 (#25): cmd_grade wires Layer 2 and writes extraction.json."""
+
+    def _make_grading_report(self):
+        return GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="Is the output relevant?",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                )
+            ],
+            duration_seconds=1.0,
+        )
+
+    def _make_sectioned_eval_spec(self):
+        return _make_eval_spec(
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            min_entries=0,
+                            fields=[
+                                FieldRequirement(
+                                    name="venue_name",
+                                    required=True,
+                                    id="venues.primary.venue_name.v1",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    def test_cmd_grade_invokes_layer2_when_sections_declared(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec with sections writes iteration-*/<skill>/extraction.json."""
+        from clauditor.grader import ExtractionReport, FieldExtractionResult
+
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some output")
+
+        spec = _make_spec(eval_spec=self._make_sectioned_eval_spec())
+        grading_report = self._make_grading_report()
+        extraction_report = ExtractionReport(
+            skill_name="test-skill",
+            model="claude-haiku-4-5-20251001",
+            results=[
+                FieldExtractionResult(
+                    field_id="venues.primary.venue_name.v1",
+                    field_name="venue_name",
+                    section="Venues",
+                    tier="primary",
+                    entry_index=0,
+                    required=True,
+                    presence_passed=True,
+                    format_passed=None,
+                    evidence="Cafe Foo",
+                ),
+            ],
+            input_tokens=42,
+            output_tokens=7,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ) as mock_extract,
+        ):
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            )
+
+        assert rc == 0
+        assert mock_extract.await_count == 1
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        extraction_path = skill_dir / "extraction.json"
+        assert extraction_path.is_file()
+
+    def test_cmd_grade_skips_layer2_when_no_sections(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec with no sections: no extraction.json, no L2 LLM calls."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some output")
+
+        spec = _make_spec(eval_spec=_make_eval_spec(sections=[]))
+        grading_report = self._make_grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+            ) as mock_extract,
+        ):
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            )
+
+        assert rc == 0
+        mock_extract.assert_not_awaited()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assert skill_dir.is_dir()
+        assert not (skill_dir / "extraction.json").exists()
+
+    def test_extraction_json_keyed_by_field_id(
+        self, tmp_path, monkeypatch
+    ):
+        """extraction.json on disk uses stable FieldRequirement.id as key."""
+        from clauditor.grader import ExtractionReport, FieldExtractionResult
+
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some output")
+
+        spec = _make_spec(eval_spec=self._make_sectioned_eval_spec())
+        grading_report = self._make_grading_report()
+        extraction_report = ExtractionReport(
+            skill_name="test-skill",
+            model="claude-haiku-4-5-20251001",
+            results=[
+                FieldExtractionResult(
+                    field_id="venues.primary.venue_name.v1",
+                    field_name="venue_name",
+                    section="Venues",
+                    tier="primary",
+                    entry_index=0,
+                    required=True,
+                    presence_passed=True,
+                    format_passed=None,
+                    evidence="Cafe Foo",
+                ),
+            ],
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            )
+
+        assert rc == 0
+        extraction_path = (
+            tmp_path
+            / ".clauditor"
+            / "iteration-1"
+            / "test-skill"
+            / "extraction.json"
+        )
+        payload = json.loads(extraction_path.read_text())
+        assert "fields" in payload
+        assert "venues.primary.venue_name.v1" in payload["fields"]
+        entries = payload["fields"]["venues.primary.venue_name.v1"]
+        assert isinstance(entries, list) and len(entries) == 1
+        assert entries[0]["field_name"] == "venue_name"
+        assert entries[0]["evidence"] == "Cafe Foo"
+        assert entries[0]["passed"] is True
+
+
 class TestCmdCompare:
     """Tests for the compare subcommand (US-003)."""
 

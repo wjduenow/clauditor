@@ -454,6 +454,24 @@ def _cmd_grade_with_workspace(
             primary_report.to_json(), encoding="utf-8"
         )
 
+        # US-003 (#25): when the spec declares structured sections, run
+        # Layer 2 extraction on the primary output and persist the
+        # per-field report alongside grading.json. Skip cleanly (no
+        # wasted LLM calls, no extraction.json file) when no sections.
+        if spec.eval_spec.sections:
+            from clauditor.grader import extract_and_report
+
+            extraction_report = asyncio.run(
+                extract_and_report(
+                    primary_text,
+                    spec.eval_spec,
+                    skill_name=spec.skill_name,
+                )
+            )
+            (skill_dir / "extraction.json").write_text(
+                extraction_report.to_json(), encoding="utf-8"
+            )
+
     if not only_criterion:
         timing_payload: dict = {
             "skill": spec.skill_name,
