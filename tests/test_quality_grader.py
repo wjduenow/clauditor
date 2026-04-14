@@ -826,9 +826,16 @@ class TestMeasureVariance:
             output_tokens=50,
         )
 
+        # Use real attrs (not MagicMock defaults) so skill-side token
+        # aggregation is actually verifiable — MagicMock would silently
+        # return MagicMock instances for arithmetic and the test would
+        # pass while storing nonsense.
         mock_result = MagicMock()
         mock_result.output = "some output"
         mock_result.succeeded = True
+        mock_result.input_tokens = 10
+        mock_result.output_tokens = 5
+        mock_result.duration_seconds = 1.5
 
         mock_spec = MagicMock()
         mock_spec.skill_name = "test-skill"
@@ -846,8 +853,13 @@ class TestMeasureVariance:
         ):
             vr = await measure_variance(mock_spec, n_runs=3)
 
+        # Grader (Layer 3) tokens aggregated across the 3 internal runs
         assert vr.input_tokens == 300
         assert vr.output_tokens == 150
+        # Skill (subprocess) tokens aggregated across the 3 skill runs
+        assert vr.skill_input_tokens == 30
+        assert vr.skill_output_tokens == 15
+        assert vr.skill_duration_seconds == pytest.approx(4.5)
 
     @pytest.mark.asyncio
     async def test_measure_variance_no_eval_spec(self):

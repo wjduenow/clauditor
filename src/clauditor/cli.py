@@ -303,20 +303,35 @@ def cmd_grade(args: argparse.Namespace) -> int:
 
     # Build the canonical bucketed metrics dict (US-004). For --output
     # runs there's no skill subprocess, so skill tokens/duration are zero.
+    # When --variance N was passed, the variance path runs the skill N
+    # additional times and makes N additional Layer 3 grader calls — those
+    # must be included so longitudinal trends reflect the real cost.
     from clauditor.metrics import TokenUsage, build_metrics
 
+    base_skill_input = getattr(skill_result, "input_tokens", 0) or 0
+    base_skill_output = getattr(skill_result, "output_tokens", 0) or 0
+    base_skill_duration = getattr(skill_result, "duration_seconds", 0.0) or 0.0
+    base_quality_input = report.input_tokens
+    base_quality_output = report.output_tokens
+
+    if variance_report is not None:
+        base_skill_input += variance_report.skill_input_tokens
+        base_skill_output += variance_report.skill_output_tokens
+        base_skill_duration += variance_report.skill_duration_seconds
+        base_quality_input += variance_report.input_tokens
+        base_quality_output += variance_report.output_tokens
+
     skill_tokens = TokenUsage(
-        input_tokens=getattr(skill_result, "input_tokens", 0) or 0,
-        output_tokens=getattr(skill_result, "output_tokens", 0) or 0,
+        input_tokens=base_skill_input,
+        output_tokens=base_skill_output,
     )
-    skill_duration = getattr(skill_result, "duration_seconds", 0.0) or 0.0
     quality_tokens = TokenUsage(
-        input_tokens=report.input_tokens,
-        output_tokens=report.output_tokens,
+        input_tokens=base_quality_input,
+        output_tokens=base_quality_output,
     )
     metrics_dict = build_metrics(
         skill=skill_tokens,
-        duration_seconds=skill_duration,
+        duration_seconds=base_skill_duration,
         quality=quality_tokens,
     )
     report.metrics = metrics_dict
@@ -845,13 +860,18 @@ def cmd_trend(args: argparse.Namespace) -> int:
 
     command_filter = args.command_filter
     if command_filter != "all":
+        # v1 records (pre-#21) have no "command" key; they were all produced
+        # by cmd_grade, so treat a missing key as "grade" for filter purposes.
         records = [
-            rec for rec in records if rec.get("command") == command_filter
+            rec
+            for rec in records
+            if rec.get("command", "grade") == command_filter
         ]
         if not records:
             print(
                 f"ERROR: no history records for skill '{args.skill_name}' "
-                f"with command '{command_filter}'.",
+                f"with command '{command_filter}'. Try --command all to "
+                "union across all recorded commands.",
                 file=sys.stderr,
             )
             return 1

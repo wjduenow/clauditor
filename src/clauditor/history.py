@@ -54,6 +54,10 @@ def append_record(
     subcommand produced the record. Every written record includes
     ``schema_version: 2`` at the top level.
     """
+    if command not in ("grade", "extract", "validate"):
+        raise ValueError(
+            f"command must be one of 'grade', 'extract', 'validate'; got {command!r}"
+        )
     if path is None:
         path = _DEFAULT_PATH
     path.parent.mkdir(parents=True, exist_ok=True)

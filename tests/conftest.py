@@ -36,16 +36,29 @@ class _FakePopen:
         if body and not body.endswith("\n"):
             body += "\n"
         self.stdout = io.StringIO(body)
-        self.stderr = MagicMock()
-        self.stderr.read.return_value = ""
+        # iter(()) makes `for chunk in proc.stderr:` a no-op drain loop.
+        self.stderr = iter(())
         self.returncode = returncode
         self.kill_called = False
+        self._killed = False
 
     def wait(self, timeout=None):  # noqa: ARG002 — timeout ignored for fake
         return self.returncode
 
     def kill(self):
         self.kill_called = True
+        self._killed = True
+        # After kill, poll reports a non-None exit signal.
+        if self.returncode == 0:
+            self.returncode = -9
+
+    def poll(self) -> int | None:
+        # Immediate-timer tests want poll() to report "still running" so the
+        # watchdog sets timed_out=True. Production code only calls poll from
+        # the watchdog callback; returning None mimics a live child.
+        if self._killed:
+            return self.returncode
+        return None
 
 
 def make_fake_skill_stream(

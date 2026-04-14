@@ -1590,6 +1590,107 @@ class TestCmdGradeHistory:
         assert "grader" not in metrics
         assert "triggers" not in metrics
 
+    def test_grade_variance_rolls_tokens_into_history_and_grade_json(
+        self, tmp_path, monkeypatch
+    ):
+        """cmd_grade --variance N: variance-run skill + grader tokens must
+        be summed into metrics in BOTH history.jsonl and .grade.json."""
+        from clauditor.quality_grader import VarianceReport
+
+        monkeypatch.chdir(tmp_path)
+
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some output")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+
+        # Primary grade report: 500/200 grader tokens
+        primary_report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c",
+                    passed=True,
+                    score=1.0,
+                    evidence="",
+                    reasoning="",
+                )
+            ],
+            duration_seconds=1.0,
+            input_tokens=500,
+            output_tokens=200,
+        )
+
+        # Variance: 3 more runs with 100/50 grader tokens each, 10/5 skill
+        # tokens each, 0.5s skill duration each = totals 300/150 grader,
+        # 30/15 skill, 1.5s skill duration.
+        variance_report = VarianceReport(
+            skill_name="test-skill",
+            n_runs=3,
+            reports=[],
+            score_mean=1.0,
+            score_stddev=0.0,
+            pass_rate_mean=1.0,
+            stability=1.0,
+            input_tokens=300,
+            output_tokens=150,
+            skill_input_tokens=30,
+            skill_output_tokens=15,
+            skill_duration_seconds=1.5,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=primary_report,
+            ),
+            patch(
+                "clauditor.quality_grader.measure_variance",
+                new_callable=AsyncMock,
+                return_value=variance_report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--variance",
+                    "3",
+                    "--save",
+                ]
+            )
+
+        assert rc == 0
+
+        # Check history.jsonl
+        history_path = tmp_path / ".clauditor" / "history.jsonl"
+        record = json.loads(history_path.read_text().splitlines()[0])
+        history_metrics = record["metrics"]
+
+        # Primary --output run: skill tokens 0. Variance adds 30/15.
+        assert history_metrics["skill"]["input_tokens"] == 30
+        assert history_metrics["skill"]["output_tokens"] == 15
+        # Quality: primary 500/200 + variance 300/150 = 800/350
+        assert history_metrics["quality"]["input_tokens"] == 800
+        assert history_metrics["quality"]["output_tokens"] == 350
+        # Total: skill 30+15 + quality 800+350 = 1195
+        assert history_metrics["total"]["total"] == 1195
+        # Skill duration: --output path 0.0 + variance 1.5 = 1.5
+        assert history_metrics["duration_seconds"] == pytest.approx(1.5)
+
+        # Check .grade.json mirrors history
+        grade_path = tmp_path / ".clauditor" / "test-skill.grade.json"
+        assert grade_path.exists()
+        grade_data = json.loads(grade_path.read_text())
+        grade_metrics = grade_data["metrics"]
+        assert grade_metrics == history_metrics
+
     def test_grade_save_writes_metrics_to_grade_json(
         self, tmp_path, monkeypatch
     ):

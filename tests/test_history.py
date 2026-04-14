@@ -167,6 +167,21 @@ class TestAppendAndRead:
         assert records[0]["schema_version"] == 2
         assert records[0]["command"] == "grade"
 
+    def test_append_record_rejects_invalid_command(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(ValueError, match="command must be one of"):
+            append_record(
+                "s", 1.0, 1.0, {}, command="bogus", path=path  # type: ignore[arg-type]
+            )
+        with pytest.raises(ValueError):
+            append_record(
+                "s", 1.0, 1.0, {}, command="GRADE", path=path  # type: ignore[arg-type]
+            )
+        # Valid values still work.
+        for cmd in ("grade", "extract", "validate"):
+            append_record("s", None, None, {}, command=cmd, path=path)
+        assert len(read_records(path=path)) == 3
+
 
 class TestSparkline:
     def test_empty(self):

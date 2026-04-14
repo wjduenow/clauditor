@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -198,6 +199,44 @@ class SkillRunner:
                 )
                 return result
 
+            # Drain stderr on a background thread so a chatty child does
+            # not deadlock by filling its PIPE buffer while we read stdout.
+            stderr_chunks: list[str] = []
+
+            def _drain_stderr() -> None:
+                if proc is None or proc.stderr is None:
+                    return
+                try:
+                    for chunk in proc.stderr:
+                        stderr_chunks.append(chunk)
+                except Exception:
+                    pass
+
+            stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
+            stderr_thread.start()
+
+            # Watchdog: kill the child if it runs past the configured
+            # timeout. A blocked stdout read would otherwise never time out.
+            timed_out = {"hit": False}
+
+            def _on_timeout() -> None:
+                if proc is None:
+                    return
+                # Don't flip the flag if the child already exited cleanly —
+                # prevents a race where the read loop finishes right as the
+                # watchdog fires, yielding a false "timeout" result.
+                if proc.poll() is not None:
+                    return
+                timed_out["hit"] = True
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+            watchdog = threading.Timer(self.timeout, _on_timeout)
+            watchdog.daemon = True
+            watchdog.start()
+
             try:
                 if proc.stdout is not None:
                     for raw_line in proc.stdout:
@@ -213,12 +252,19 @@ class SkillRunner:
                                 file=sys.stderr,
                             )
                             continue
+                        if not isinstance(msg, dict):
+                            # Defensive: a well-formed JSON scalar / array is
+                            # not a valid stream-json message.
+                            continue
 
                         raw_messages.append(msg)
                         mtype = msg.get("type")
                         if mtype == "assistant":
                             message = msg.get("message") or {}
-                            for block in message.get("content", []) or []:
+                            content = message.get("content") or []
+                            if not isinstance(content, list):
+                                continue
+                            for block in content:
                                 if (
                                     isinstance(block, dict)
                                     and block.get("type") == "text"
@@ -227,14 +273,22 @@ class SkillRunner:
                         elif mtype == "result":
                             saw_result = True
                             usage = msg.get("usage") or {}
-                            input_tokens = int(usage.get("input_tokens", 0) or 0)
-                            output_tokens = int(
-                                usage.get("output_tokens", 0) or 0
-                            )
+                            if isinstance(usage, dict):
+                                input_tokens = int(
+                                    usage.get("input_tokens", 0) or 0
+                                )
+                                output_tokens = int(
+                                    usage.get("output_tokens", 0) or 0
+                                )
 
-                returncode = proc.wait(timeout=self.timeout)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+                returncode = proc.wait()
+            finally:
+                watchdog.cancel()
+
+            stderr_thread.join(timeout=2.0)
+            stderr_text = "".join(stderr_chunks)
+
+            if timed_out["hit"] and returncode != 0:
                 result = SkillResult(
                     output="\n".join(text_chunks),
                     exit_code=-1,
@@ -246,13 +300,6 @@ class SkillRunner:
                     raw_messages=raw_messages,
                 )
                 return result
-
-            stderr_text = ""
-            if proc.stderr is not None:
-                try:
-                    stderr_text = proc.stderr.read() or ""
-                except Exception:
-                    stderr_text = ""
 
             if not saw_result:
                 print(

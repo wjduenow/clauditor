@@ -2,7 +2,6 @@
 
 import importlib
 import json
-import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -52,10 +51,24 @@ class TestRunRaw:
     def test_run_raw_handles_timeout(self):
         runner = SkillRunner(project_dir="/tmp", timeout=1, claude_bin="claude")
         fake = make_fake_skill_stream("partial")
-        fake.wait = lambda timeout=None: (_ for _ in ()).throw(
-            subprocess.TimeoutExpired("claude", 1)
-        )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+
+        # Simulate the watchdog firing immediately by patching threading.Timer
+        # to invoke the callback on .start() before any stdout is read.
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
             result = runner.run_raw("test prompt")
         assert result.exit_code == -1
         assert result.skill_name == "__baseline__"
@@ -216,10 +229,22 @@ class TestSkillRunnerRun:
     def test_runner_run_timeout(self):
         runner = SkillRunner(project_dir="/tmp", timeout=5, claude_bin="claude")
         fake = make_fake_skill_stream("partial")
-        fake.wait = lambda timeout=None: (_ for _ in ()).throw(
-            subprocess.TimeoutExpired("claude", 5)
-        )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
             result = runner.run("my-skill")
         assert result.exit_code == -1
         assert result.error == "timeout"
@@ -413,16 +438,59 @@ class TestStreamJsonRunner:
         runner = SkillRunner(project_dir="/tmp", timeout=5, claude_bin="claude")
         fake = make_fake_skill_stream("partial")
 
-        def _raise(timeout=None):  # noqa: ARG001
-            raise subprocess.TimeoutExpired("claude", 5)
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
 
-        fake.wait = _raise
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
             result = runner.run("skill")
         assert result.error == "timeout"
         assert result.exit_code == -1
         assert result.duration_seconds >= 0
         assert fake.kill_called is True
+
+    def test_timeout_watchdog_skips_if_child_already_exited(self):
+        """Watchdog race: if the child exits cleanly before the timer fires,
+        _on_timeout should bail out without setting timed_out[hit] and the
+        run should return a success result, not a bogus timeout."""
+        runner = SkillRunner(project_dir="/tmp", timeout=5, claude_bin="claude")
+        fake = make_fake_skill_stream("done", input_tokens=1, output_tokens=2)
+        # Simulate "child already exited" by pre-killing the fake. poll()
+        # will return a non-None returncode so _on_timeout early-returns.
+        fake._killed = True
+        fake.returncode = 0
+
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
+            result = runner.run("skill")
+        # _on_timeout was called but returned early (poll() was not None);
+        # the run completes normally and we get a success result, not a
+        # false timeout.
+        assert result.error != "timeout"
+        assert result.output == "done"
 
     def test_file_not_found_sets_duration(self):
         """DEC-005: duration must be set even on FileNotFoundError."""

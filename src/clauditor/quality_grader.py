@@ -328,8 +328,11 @@ class VarianceReport:
     stability: float  # Fraction of runs where ALL criteria passed
     min_stability: float = 0.8
     model: str = ""
-    input_tokens: int = 0
+    input_tokens: int = 0  # Layer 3 grader tokens across all runs
     output_tokens: int = 0
+    skill_input_tokens: int = 0  # Skill subprocess tokens across all runs
+    skill_output_tokens: int = 0
+    skill_duration_seconds: float = 0.0  # Sum of skill run durations
 
     @property
     def passed(self) -> bool:
@@ -364,11 +367,18 @@ async def measure_variance(
             f"Cannot measure variance without an eval spec."
         )
 
-    # 1. Run skill n_runs times sequentially (subprocess)
+    # 1. Run skill n_runs times sequentially (subprocess) and accumulate
+    # skill-side tokens + duration for later aggregation into history.
     outputs: list[str] = []
+    skill_input_total = 0
+    skill_output_total = 0
+    skill_duration_total = 0.0
     for _ in range(n_runs):
         result = spec.run()
         outputs.append(result.output)
+        skill_input_total += result.input_tokens
+        skill_output_total += result.output_tokens
+        skill_duration_total += result.duration_seconds
 
     # 2. Grade all outputs in parallel
     reports = list(
@@ -406,4 +416,7 @@ async def measure_variance(
         model=model,
         input_tokens=sum(r.input_tokens for r in reports),
         output_tokens=sum(r.output_tokens for r in reports),
+        skill_input_tokens=skill_input_total,
+        skill_output_tokens=skill_output_total,
+        skill_duration_seconds=skill_duration_total,
     )
