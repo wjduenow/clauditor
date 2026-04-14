@@ -197,16 +197,24 @@ def cmd_grade(args: argparse.Namespace) -> int:
             name = getattr(item, "name", None) or ""
             desc = getattr(item, "description", None) or ""
             if not name and not desc:
-                # list-of-strings case
-                name = str(item)
+                if isinstance(item, dict):
+                    # Canonical {id, criterion} shape from from_file
+                    name = str(item.get("id", ""))
+                    desc = str(item.get("criterion", ""))
+                else:
+                    # list-of-strings case (in-memory fixtures)
+                    name = str(item)
             hay = f"{name}\n{desc}".lower()
             return any(n in hay for n in needles)
 
+        def _label(item: object) -> str:
+            if isinstance(item, dict):
+                return str(item.get("id") or item.get("criterion") or item)
+            return getattr(item, "name", None) or str(item)
+
         filtered = [c for c in original if _match(c)]
         if not filtered:
-            available = ", ".join(
-                (getattr(c, "name", None) or str(c)) for c in original
-            )
+            available = ", ".join(_label(c) for c in original)
             print(
                 f"No grading criteria match filter. Available: {available}",
                 file=sys.stderr,
@@ -761,7 +769,10 @@ def _run_blind_compare(
     rubric_hint: str | None = None
     criteria = skill_spec.eval_spec.grading_criteria
     if criteria:
-        rubric_hint = "\n".join(f"- {c}" for c in criteria)
+        from clauditor.schemas import criterion_text
+        rubric_hint = "\n".join(
+            f"- {criterion_text(c)}" for c in criteria
+        )
 
     for path in (before_path, after_path):
         if not path.is_file():
@@ -1283,10 +1294,10 @@ def cmd_init(args: argparse.Namespace) -> int:
         "description": f"Eval spec for /{skill_path.stem}",
         "test_args": "",
         "assertions": [
-            {"type": "min_length", "value": "500"},
-            {"type": "has_urls", "value": "3"},
-            {"type": "has_entries", "value": "3"},
-            {"type": "not_contains", "value": "Error"},
+            {"id": "min_length_500", "type": "min_length", "value": "500"},
+            {"id": "has_urls_3", "type": "has_urls", "value": "3"},
+            {"id": "has_entries_3", "type": "has_entries", "value": "3"},
+            {"id": "no_error", "type": "not_contains", "value": "Error"},
         ],
         "sections": [
             {
@@ -1296,16 +1307,30 @@ def cmd_init(args: argparse.Namespace) -> int:
                         "label": "default",
                         "min_entries": 3,
                         "fields": [
-                            {"name": "name", "required": True},
-                            {"name": "address", "required": True},
+                            {
+                                "id": "results_name",
+                                "name": "name",
+                                "required": True,
+                            },
+                            {
+                                "id": "results_address",
+                                "name": "address",
+                                "required": True,
+                            },
                         ],
                     }
                 ],
             }
         ],
         "grading_criteria": [
-            "Are results relevant to the query?",
-            "Are descriptions specific (not generic filler)?",
+            {
+                "id": "relevant",
+                "criterion": "Are results relevant to the query?",
+            },
+            {
+                "id": "specific",
+                "criterion": "Are descriptions specific (not generic filler)?",
+            },
         ],
         "grading_model": "claude-sonnet-4-6",
         "trigger_tests": {

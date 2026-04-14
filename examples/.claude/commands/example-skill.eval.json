@@ -8,35 +8,43 @@
   "assertions": [
     {
       "type": "contains",
-      "value": "Venues"
+      "value": "Venues",
+      "id": "contains_venues"
     },
     {
       "type": "contains",
-      "value": "Events"
+      "value": "Events",
+      "id": "contains_events"
     },
     {
       "type": "has_entries",
-      "value": "3"
+      "value": "3",
+      "id": "has_entries_3"
     },
     {
       "type": "has_urls",
-      "value": "3"
+      "value": "3",
+      "id": "has_urls_3"
     },
     {
       "type": "min_length",
-      "value": "500"
+      "value": "500",
+      "id": "min_length_500"
     },
     {
       "type": "not_contains",
-      "value": "AskUserQuestion"
+      "value": "AskUserQuestion",
+      "id": "no_ask_user_question"
     },
     {
       "type": "regex",
-      "value": "\\*\\*\\d+\\.\\s+"
+      "value": "\\*\\*\\d+\\.\\s+",
+      "id": "regex_numbered_bold"
     },
     {
       "type": "regex",
-      "value": "https?://[^\\s]+"
+      "value": "https?://[^\\s]+",
+      "id": "regex_url"
     }
   ],
   "sections": [
@@ -49,31 +57,38 @@
           "fields": [
             {
               "name": "name",
-              "required": true
+              "required": true,
+              "id": "venue_name"
             },
             {
               "name": "address",
-              "required": true
+              "required": true,
+              "id": "venue_address"
             },
             {
               "name": "hours",
-              "required": true
+              "required": true,
+              "id": "venue_hours"
             },
             {
               "name": "website",
-              "required": true
+              "required": true,
+              "id": "venue_website"
             },
             {
               "name": "phone",
-              "required": false
+              "required": false,
+              "id": "venue_phone"
             },
             {
               "name": "cost",
-              "required": true
+              "required": true,
+              "id": "venue_cost"
             },
             {
               "name": "ages",
-              "required": true
+              "required": true,
+              "id": "venue_ages"
             }
           ]
         }
@@ -88,23 +103,28 @@
           "fields": [
             {
               "name": "name",
-              "required": true
+              "required": true,
+              "id": "event_name"
             },
             {
               "name": "date",
-              "required": true
+              "required": true,
+              "id": "event_date"
             },
             {
               "name": "time",
-              "required": true
+              "required": true,
+              "id": "event_time"
             },
             {
               "name": "event_url",
-              "required": true
+              "required": true,
+              "id": "event_event_url"
             },
             {
               "name": "ages",
-              "required": true
+              "required": true,
+              "id": "event_ages"
             }
           ]
         }
@@ -112,10 +132,22 @@
     }
   ],
   "grading_criteria": [
-    "Are all venues within the specified distance?",
-    "Are venues appropriate for the specified age range?",
-    "Are events actually happening on the target date?",
-    "Do cost tiers match the specified budget filter?"
+    {
+      "id": "distance_match",
+      "criterion": "Are all venues within the specified distance?"
+    },
+    {
+      "id": "age_appropriate",
+      "criterion": "Are venues appropriate for the specified age range?"
+    },
+    {
+      "id": "events_on_target_date",
+      "criterion": "Are events actually happening on the target date?"
+    },
+    {
+      "id": "cost_tier_match",
+      "criterion": "Do cost tiers match the specified budget filter?"
+    }
   ],
   "grading_model": "claude-sonnet-4-6",
   "trigger_tests": {

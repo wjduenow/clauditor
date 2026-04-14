@@ -19,11 +19,17 @@ class FieldRequirement:
     registered format name (e.g. ``"phone_us"``, ``"domain"``) or an inline
     regex. Registry lookup wins when both could apply. Invalid values raise
     ``ValueError`` at construction time.
+
+    ``id`` is a stable identifier scoped to the enclosing skill (DEC-001,
+    ticket #25). It is required on all fields loaded from disk via
+    ``EvalSpec.from_file()``; in-memory construction defaults to an empty
+    string to keep unit-test fixtures terse.
     """
 
     name: str
     required: bool = True
     format: str | None = None  # Registry key or inline regex (DEC-007)
+    id: str = ""  # Stable id, required via from_file() (DEC-001)
 
     def __post_init__(self) -> None:
         if self.format is None:
@@ -89,6 +95,19 @@ class VarianceConfig:
     min_stability: float = 0.8
 
 
+def criterion_text(entry: object) -> str:
+    """Return the human-readable text of a grading criterion.
+
+    ``EvalSpec.grading_criteria`` tolerates both plain strings (for in-memory
+    test fixtures) and the canonical ``{"id": ..., "criterion": ...}`` dict
+    loaded from disk (DEC-001 / #25). Consumers go through this helper so
+    either shape works transparently.
+    """
+    if isinstance(entry, dict):
+        return str(entry.get("criterion", ""))
+    return str(entry)
+
+
 def _resolve_field_format(field_dict: dict) -> str | None:
     """Resolve the ``format`` value for a field entry during spec load.
 
@@ -118,7 +137,11 @@ class EvalSpec:
     input_files: list[str] = field(default_factory=list)  # Resolved absolute paths
     assertions: list[dict] = field(default_factory=list)  # Layer 1 checks
     sections: list[SectionRequirement] = field(default_factory=list)  # Layer 2 schema
-    grading_criteria: list[str] = field(default_factory=list)  # Layer 3 rubric
+    # Layer 3 rubric. Each entry is either a plain string (for ergonomic
+    # in-memory construction in tests) or a dict ``{"id": str, "criterion":
+    # str}`` when loaded via ``from_file`` per DEC-001 (#25). Consumers must
+    # normalize via ``criterion_text()``.
+    grading_criteria: list = field(default_factory=list)
     grading_model: str = "claude-sonnet-4-6"
     output_file: str | None = None  # Single output file path
     output_files: list[str] = field(default_factory=list)  # Multiple file paths/globs
@@ -195,20 +218,61 @@ class EvalSpec:
                     f"input_files basename {pat_name!r}"
                 )
 
+        # DEC-001 / #25: every L1 assertion, L2 field, and L3 criterion must
+        # carry a stable string ``id`` that is unique within the skill. These
+        # ids are the load-bearing key for the assertion-auditor's per-result
+        # persistence (US-002/003) — position-based matching would break
+        # history on any spec edit.
+        seen_ids: set[str] = set()
+
+        def _require_id(entry: object, ctx: str) -> str:
+            if not isinstance(entry, dict):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): {ctx} — "
+                    f"expected object, got {type(entry).__name__}"
+                )
+            if "id" not in entry:
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): {ctx}: missing 'id'"
+                )
+            raw = entry["id"]
+            if not isinstance(raw, str) or raw == "":
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): {ctx}: "
+                    f"'id' must be a non-empty string, got {raw!r}"
+                )
+            if raw in seen_ids:
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): {ctx}: "
+                    f"duplicate id {raw!r}"
+                )
+            seen_ids.add(raw)
+            return raw
+
+        raw_assertions = data.get("assertions", [])
+        for i, a in enumerate(raw_assertions):
+            _require_id(a, f"assertions[{i}]")
+
         sections = []
-        for s in data.get("sections", []):
+        for si, s in enumerate(data.get("sections", [])):
             if "tiers" in s:
                 # New tiered format
                 tiers = []
-                for t in s["tiers"]:
-                    tier_fields = [
-                        FieldRequirement(
-                            name=f["name"],
-                            required=f.get("required", True),
-                            format=_resolve_field_format(f),
+                for ti, t in enumerate(s["tiers"]):
+                    tier_fields = []
+                    for fi, f in enumerate(t.get("fields", [])):
+                        fid = _require_id(
+                            f,
+                            f"sections[{si}].tiers[{ti}].fields[{fi}]",
                         )
-                        for f in t.get("fields", [])
-                    ]
+                        tier_fields.append(
+                            FieldRequirement(
+                                name=f["name"],
+                                required=f.get("required", True),
+                                format=_resolve_field_format(f),
+                                id=fid,
+                            )
+                        )
                     tiers.append(
                         TierRequirement(
                             label=t["label"],
@@ -220,14 +284,19 @@ class EvalSpec:
                     )
             else:
                 # Legacy fields-style: normalize to single default tier
-                legacy_fields = [
-                    FieldRequirement(
-                        name=f["name"],
-                        required=f.get("required", True),
-                        format=_resolve_field_format(f),
+                legacy_fields = []
+                for fi, f in enumerate(s.get("fields", [])):
+                    fid = _require_id(
+                        f, f"sections[{si}].fields[{fi}]"
                     )
-                    for f in s.get("fields", [])
-                ]
+                    legacy_fields.append(
+                        FieldRequirement(
+                            name=f["name"],
+                            required=f.get("required", True),
+                            format=_resolve_field_format(f),
+                            id=fid,
+                        )
+                    )
                 tiers = [
                     TierRequirement(
                         label="default",
@@ -242,6 +311,15 @@ class EvalSpec:
                     tiers=tiers,
                 )
             )
+
+        raw_criteria = data.get("grading_criteria", [])
+        for i, c in enumerate(raw_criteria):
+            _require_id(c, f"grading_criteria[{i}]")
+            if "criterion" not in c or not isinstance(c["criterion"], str):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"grading_criteria[{i}]: missing string 'criterion'"
+                )
 
         trigger_tests = None
         if "trigger_tests" in data:
@@ -310,6 +388,7 @@ class EvalSpec:
                             ),
                             "fields": [
                                 {
+                                    **({"id": f.id} if f.id else {}),
                                     "name": f.name,
                                     "required": f.required,
                                     **(
