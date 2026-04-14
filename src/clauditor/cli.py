@@ -153,18 +153,45 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def _write_run_dir(
-    run_dir: Path, output_text: str, stream_events: list[dict]
+    run_dir: Path,
+    output_text: str,
+    stream_events: list[dict],
+    *,
+    verbose: bool = False,
 ) -> None:
     """Write ``output.txt`` and ``output.jsonl`` to a ``run-K/`` subdir.
 
     ``stream_events`` is one JSON object per line. Empty list yields an
     empty ``output.jsonl`` (the file still exists for layout consistency).
+
+    Both the stream events and the output text are passed through
+    :func:`clauditor.transcripts.redact` before being serialized to disk
+    so that secrets captured in skill execution traces never land in the
+    iteration workspace (DEC-003, DEC-007, DEC-010). The in-memory
+    ``stream_events`` list is not mutated — ``redact()`` returns a fresh
+    copy. Under ``verbose=True``, the total redaction count for this run
+    is always logged to stderr (including when the count is zero) so
+    that users can audit what the scrubber matched.
     """
+    from . import transcripts
+
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "output.txt").write_text(output_text, encoding="utf-8")
-    lines = [json.dumps(ev) for ev in stream_events]
+
+    scrubbed_events, events_count = transcripts.redact(stream_events)
+    scrubbed_text_wrap, text_count = transcripts.redact({"output": output_text})
+    scrubbed_text = scrubbed_text_wrap["output"]
+    total = events_count + text_count
+
+    (run_dir / "output.txt").write_text(scrubbed_text, encoding="utf-8")
+    lines = [json.dumps(ev) for ev in scrubbed_events]
     body = ("\n".join(lines) + "\n") if lines else ""
     (run_dir / "output.jsonl").write_text(body, encoding="utf-8")
+
+    if verbose:
+        print(
+            f"clauditor.transcripts: redacted {total} matches in {run_dir.name}",
+            file=sys.stderr,
+        )
 
 
 def cmd_grade(args: argparse.Namespace) -> int:
@@ -557,8 +584,11 @@ def _cmd_grade_with_workspace(
 
     if not only_criterion:
         skill_dir = workspace.tmp_path
+        verbose = bool(getattr(args, "verbose", False))
         for idx, (text, events) in enumerate(run_outputs):
-            _write_run_dir(skill_dir / f"run-{idx}", text, events)
+            _write_run_dir(
+                skill_dir / f"run-{idx}", text, events, verbose=verbose
+            )
 
         (skill_dir / "grading.json").write_text(
             primary_report.to_json(), encoding="utf-8"
@@ -1775,6 +1805,15 @@ def main(argv: list[str] | None = None) -> int:
             "After grading, run the test args through Claude without the "
             "skill prefix (baseline) and capture L1/L2/L3 sidecars. "
             "Roughly doubles LLM cost; never the default."
+        ),
+    )
+    p_grade.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help=(
+            "Log per-run transcript redaction counts to stderr "
+            "(clauditor.transcripts: redacted N matches in run-K)"
         ),
     )
     p_grade.add_argument(
