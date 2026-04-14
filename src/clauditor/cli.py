@@ -784,6 +784,15 @@ def _cmd_grade_with_workspace(
                 _write_run_dir(
                     skill_dir / f"run-{idx}", text, events, verbose=verbose
                 )
+        else:
+            # Scrub any `run-K/` subtrees the skill already staged
+            # (e.g. `inputs/` copies from input_files), so --no-transcript
+            # does not leak half-populated run dirs into the published
+            # iteration. Mirrors the same fix on the validate side.
+            import shutil as _shutil
+
+            for idx in range(len(run_outputs)):
+                _shutil.rmtree(skill_dir / f"run-{idx}", ignore_errors=True)
 
         (skill_dir / "grading.json").write_text(
             primary_report.to_json(), encoding="utf-8"

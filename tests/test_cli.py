@@ -91,8 +91,12 @@ class TestCmdValidate:
         # (contains assertion should pass since output has "hello")
         assert rc == 0
 
-    def test_validate_run_skill(self):
+    def test_validate_run_skill(self, tmp_path, monkeypatch):
         """Without --output, runs the skill to get output."""
+        # chdir into tmp_path so the new US-006 workspace staging does
+        # NOT pollute the repo's real .clauditor/ directory.
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
         eval_spec = _make_eval_spec()
         spec = _make_spec(eval_spec=eval_spec)
         spec.run.return_value = SkillResult(
@@ -109,8 +113,10 @@ class TestCmdValidate:
         assert rc == 0
         spec.run.assert_called_once()
 
-    def test_validate_run_skill_fails(self, capsys):
+    def test_validate_run_skill_fails(self, capsys, tmp_path, monkeypatch):
         """Returns 1 when skill run fails."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
         eval_spec = _make_eval_spec()
         spec = _make_spec(eval_spec=eval_spec)
         spec.run.return_value = SkillResult(
