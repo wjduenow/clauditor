@@ -550,7 +550,21 @@ class TestFromFile:
         path = _write_json(tmp_path, data)
         with pytest.raises(
             ValueError,
-            match=r"grading_criteria\[0\]: missing string 'criterion'",
+            match=r"grading_criteria\[0\]: 'criterion' must be a non-empty string",
+        ):
+            EvalSpec.from_file(path)
+
+    def test_criterion_empty_text_rejected(self, tmp_path):
+        """An empty ``criterion`` string must be rejected the same way as a
+        missing one — mirrors the non-empty check on ids."""
+        data = {
+            "skill_name": "s",
+            "grading_criteria": [{"id": "c1", "criterion": ""}],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError,
+            match=r"grading_criteria\[0\]: 'criterion' must be a non-empty string",
         ):
             EvalSpec.from_file(path)
 

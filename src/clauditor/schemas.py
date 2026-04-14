@@ -315,10 +315,11 @@ class EvalSpec:
         raw_criteria = data.get("grading_criteria", [])
         for i, c in enumerate(raw_criteria):
             _require_id(c, f"grading_criteria[{i}]")
-            if "criterion" not in c or not isinstance(c["criterion"], str):
+            crit = c.get("criterion")
+            if not isinstance(crit, str) or crit == "":
                 raise ValueError(
                     f"EvalSpec(skill_name={skill_name!r}): "
-                    f"grading_criteria[{i}]: missing string 'criterion'"
+                    f"grading_criteria[{i}]: 'criterion' must be a non-empty string"
                 )
 
         trigger_tests = None

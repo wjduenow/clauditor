@@ -34,7 +34,7 @@ with allocate_iteration(...) as workspace:
   call on the parent dir. Either every sidecar is visible under
   `iteration-N/<skill>/`, or none are.
 - **Rollback on exception**: any failure after writing some sidecars falls
-  through to `workspace.abort()` in the `finally` block, deleting the
+  through to `workspace.abort()` in the `except` block, deleting the
   staging dir entirely. There is no "partially published iteration" state.
 - **Concurrent peer safety**: two `clauditor grade` processes may race on
   the same iteration number. The rename-based publication detects the race

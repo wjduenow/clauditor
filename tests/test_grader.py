@@ -583,7 +583,7 @@ class TestExtractAndGrade:
             }
         }
         mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
-        mock_response.content = [MagicMock(text=json.dumps(data))]
+        mock_response.content = [MagicMock(type="text", text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
@@ -602,7 +602,7 @@ class TestExtractAndGrade:
         }
         wrapped = f"```json\n{json.dumps(data)}\n```"
         mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
-        mock_response.content = [MagicMock(text=wrapped)]
+        mock_response.content = [MagicMock(type="text", text=wrapped)]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
@@ -621,7 +621,7 @@ class TestExtractAndGrade:
         }
         wrapped = f"```\n{json.dumps(data)}\n```"
         mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
-        mock_response.content = [MagicMock(text=wrapped)]
+        mock_response.content = [MagicMock(type="text", text=wrapped)]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
@@ -631,7 +631,7 @@ class TestExtractAndGrade:
     @pytest.mark.asyncio
     async def test_json_parse_failure(self):
         mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
-        mock_response.content = [MagicMock(text="not valid json at all")]
+        mock_response.content = [MagicMock(type="text", text="not valid json at all")]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
@@ -658,7 +658,7 @@ class TestExtractAndGrade:
             }
         }
         mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
-        mock_response.content = [MagicMock(text=json.dumps(data))]
+        mock_response.content = [MagicMock(type="text", text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
@@ -697,7 +697,7 @@ class TestExtractAndGrade:
             ]
         }
         mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
-        mock_response.content = [MagicMock(text=json.dumps(data))]
+        mock_response.content = [MagicMock(type="text", text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
@@ -721,7 +721,7 @@ class TestExtractAndGrade:
             ],
         }
         mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
-        mock_response.content = [MagicMock(text=json.dumps(data))]
+        mock_response.content = [MagicMock(type="text", text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
@@ -744,7 +744,7 @@ class TestExtractAndGrade:
             }
         }
         mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
-        mock_response.content = [MagicMock(text=json.dumps(data))]
+        mock_response.content = [MagicMock(type="text", text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
@@ -760,7 +760,7 @@ class TestExtractAndGrade:
             ],
         }
         mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
-        mock_response.content = [MagicMock(text=json.dumps(data))]
+        mock_response.content = [MagicMock(type="text", text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
@@ -773,7 +773,7 @@ class TestExtractAndGrade:
     async def test_json_parse_failure_leaves_raw_data_none(self):
         """US-005: unparseable response keeps raw_data=None and evidence."""
         mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
-        mock_response.content = [MagicMock(text="not valid json at all")]
+        mock_response.content = [MagicMock(type="text", text="not valid json at all")]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
@@ -797,7 +797,7 @@ class TestExtractAndGrade:
         mock_response = MagicMock(
             usage=MagicMock(input_tokens=500, output_tokens=200)
         )
-        mock_response.content = [MagicMock(text=json.dumps(data))]
+        mock_response.content = [MagicMock(type="text", text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
@@ -817,7 +817,7 @@ class TestExtractAndGrade:
             }
         }
         mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
-        mock_response.content = [MagicMock(text=json.dumps(data))]
+        mock_response.content = [MagicMock(type="text", text=json.dumps(data))]
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=mock_response)
         with patch("anthropic.AsyncAnthropic", return_value=mock_client):
@@ -1235,3 +1235,44 @@ class TestExtractAndReportEmptyResponse:
         assert report.results == []
         assert report.input_tokens == 10
         assert report.output_tokens == 3
+
+    @pytest.mark.asyncio
+    async def test_extract_and_grade_handles_empty_content(self) -> None:
+        """Sibling of ``test_extract_and_report_handles_empty_content``:
+        ``extract_and_grade`` must also defensively unpack ``response.content``
+        so a refusal / tool-use reply does not crash the caller."""
+        from clauditor.grader import extract_and_grade
+
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[
+                                FieldRequirement(
+                                    name="venue_name", id="v1"
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        fake_response = MagicMock()
+        fake_response.content = []
+        fake_response.usage.input_tokens = 5
+        fake_response.usage.output_tokens = 1
+
+        fake_client = MagicMock()
+        fake_client.messages.create = AsyncMock(return_value=fake_response)
+
+        with patch("anthropic.AsyncAnthropic", return_value=fake_client):
+            result = await extract_and_grade("hello", spec)
+
+        assert result.results
+        assert result.results[0].name == "grader:parse"
+        assert "no text blocks" in result.results[0].message

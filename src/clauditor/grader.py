@@ -445,8 +445,26 @@ async def extract_and_grade(
     input_tokens = getattr(response.usage, "input_tokens", 0)
     output_tokens = getattr(response.usage, "output_tokens", 0)
 
-    # Parse the JSON response
-    response_text = response.content[0].text
+    text_blocks = [
+        b.text
+        for b in (response.content or [])
+        if getattr(b, "type", None) == "text"
+    ]
+    if not text_blocks:
+        return AssertionSet(
+            results=[
+                AssertionResult(
+                    name="grader:parse",
+                    passed=False,
+                    message="grader returned no text blocks",
+                    kind="custom",
+                    evidence="",
+                )
+            ],
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+    response_text = text_blocks[0]
     try:
         # Extract JSON from response (may be wrapped in markdown code block)
         json_str = response_text
