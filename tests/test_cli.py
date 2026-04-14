@@ -888,6 +888,8 @@ class TestCmdGradeSaveDiff:
         assert assertions_path.is_file()
 
         payload = json.loads(assertions_path.read_text())
+        # FIX-7 (#25): sidecar envelopes pin schema_version=1.
+        assert payload["schema_version"] == 1
         assert payload["skill"] == "test-skill"
         assert payload["iteration"] == 1
         assert len(payload["runs"]) == 1

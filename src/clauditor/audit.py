@@ -175,11 +175,12 @@ def _records_from_grading(
 ) -> list[IterationRecord]:
     records: list[IterationRecord] = []
     for result in data.get("results", []) or []:
-        # After US-001 the criterion carries a stable id; the current
-        # on-disk shape stores it under ``criterion`` as the canonical
-        # key. Prefer an explicit ``id`` field if a future writer adds
-        # it, otherwise fall back to the criterion text itself.
-        rid = result.get("id") or result.get("criterion")
+        # DEC-001 / #25: L3 results are keyed by their stable spec id.
+        # Drop records missing an ``id`` entirely — falling back to the
+        # criterion text would silently reset audit history the moment a
+        # criterion's wording changed (which is the whole point of the
+        # stable-id contract).
+        rid = result.get("id")
         if not rid:
             continue
         records.append(
@@ -554,6 +555,7 @@ def render_json(
             }
         )
     return {
+        "schema_version": 1,
         "skill": skill,
         "timestamp": timestamp,
         "iterations": iterations_analyzed,

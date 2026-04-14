@@ -29,13 +29,23 @@ _monotonic = time.monotonic
 
 @dataclass
 class GradingResult:
-    """Result of a single rubric criterion evaluation."""
+    """Result of a single rubric criterion evaluation.
+
+    ``id`` is the stable spec id from DEC-001 (#25), used as the primary
+    key by the ``clauditor audit`` loader so that history survives edits
+    to a criterion's wording. Defaults to an empty string for in-memory
+    construction in tests; :func:`grade_quality` populates it from the
+    ``EvalSpec.grading_criteria`` entries at call time, and
+    :meth:`GradingReport.to_json` / :meth:`GradingReport.from_json` carry
+    it through the on-disk ``grading.json`` sidecar.
+    """
 
     criterion: str
     passed: bool
     score: float  # 0.0-1.0
     evidence: str  # Quote from output
     reasoning: str  # Why it passed/failed
+    id: str = ""  # Stable spec id (DEC-001, #25)
 
 
 @dataclass
@@ -81,6 +91,7 @@ class GradingReport:
     def to_json(self) -> str:
         """Serialize the report to a JSON string."""
         data = {
+            "schema_version": 1,
             "skill_name": self.skill_name,
             "model": self.model,
             "duration_seconds": self.duration_seconds,
@@ -89,6 +100,7 @@ class GradingReport:
             "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
             "results": [
                 {
+                    "id": r.id,
                     "criterion": r.criterion,
                     "passed": r.passed,
                     "score": r.score,
@@ -113,6 +125,7 @@ class GradingReport:
         parsed = json.loads(data)
         results = [
             GradingResult(
+                id=str(item.get("id") or ""),
                 criterion=item.get("criterion", ""),
                 passed=bool(item.get("passed", False)),
                 score=float(item.get("score", 0.0)),
@@ -508,6 +521,19 @@ def build_grading_prompt(eval_spec: EvalSpec) -> str:
     )
 
 
+def _criterion_id(entry: object) -> str:
+    """Best-effort stable id extractor for a ``grading_criteria`` entry.
+
+    Loaded specs carry ``{"id": "...", "criterion": "..."}`` dicts per
+    DEC-001 (#25); in-memory test fixtures still use plain strings.
+    """
+    if isinstance(entry, dict):
+        val = entry.get("id")
+        if isinstance(val, str) and val:
+            return val
+    return ""
+
+
 def parse_grading_response(
     text: str, criteria: list
 ) -> list[GradingResult]:
@@ -535,15 +561,22 @@ def parse_grading_response(
         return []
 
     results = []
-    for item in data:
+    for idx, item in enumerate(data):
         if not isinstance(item, dict):
             continue
         try:
             score = float(item.get("score", 0.0))
         except (ValueError, TypeError):
             score = 0.0
+        # Resolve the stable spec id (DEC-001 / #25) by position. The judge
+        # responds in the same order as the prompt enumerated criteria, so
+        # the idx-th spec entry is the id for the idx-th returned result.
+        stable_id = ""
+        if 0 <= idx < len(criteria):
+            stable_id = _criterion_id(criteria[idx])
         results.append(
             GradingResult(
+                id=stable_id,
                 criterion=str(item.get("criterion", "")),
                 passed=bool(item.get("passed", False)),
                 score=score,

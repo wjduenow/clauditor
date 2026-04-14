@@ -132,7 +132,8 @@ def _write_sidecars(
             "timestamp": "2026-01-01T00:00:00+00:00",
             "results": [
                 {
-                    "criterion": entry["id"],
+                    "id": entry["id"],
+                    "criterion": entry.get("criterion", entry["id"]),
                     "passed": bool(entry["passed"]),
                     "score": 1.0 if entry["passed"] else 0.0,
                     "evidence": "",
@@ -478,12 +479,14 @@ class TestRenderers:
             timestamp="20260101T000000Z",
         )
         assert set(payload.keys()) == {
+            "schema_version",
             "skill",
             "timestamp",
             "iterations",
             "thresholds",
             "assertions",
         }
+        assert payload["schema_version"] == 1
         assert isinstance(payload["assertions"], list)
         first = payload["assertions"][0]
         for key in (
@@ -641,6 +644,123 @@ class TestCmdAuditExitCode:
         # must appear under the removal section.
         suggest_section = text.split("## Suggest removal", 1)[1]
         assert "has_header" in suggest_section.split("## ", 1)[0]
+
+
+class TestSchemaVersion:
+    def test_audit_render_json_has_schema_version_1(self) -> None:
+        """FIX-7 (#25): audit JSON payloads carry ``schema_version``."""
+        payload = render_json(
+            [],
+            skill="s",
+            iterations_analyzed=0,
+            thresholds={"last": 20},
+            timestamp="t",
+        )
+        assert payload["schema_version"] == 1
+
+
+class TestCmdAuditInvalidSkillName:
+    def test_rejects_traversal_skill_name(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """FIX-2 (#25): ``../..`` skill names must be rejected before
+        any filesystem use — otherwise the markdown report write escapes
+        the output dir."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".git").mkdir()
+        output_dir = tmp_path / "out"
+        monkeypatch.chdir(project)
+        rc = cli_main(
+            ["audit", "../../evil", "--output-dir", str(output_dir)]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "invalid skill name" in err
+        # Nothing written outside the tmp output dir.
+        assert not output_dir.exists() or not any(output_dir.iterdir())
+
+    def test_rejects_out_of_range_thresholds(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """FIX-4 (#25): ``--min-fail-rate`` / ``--min-discrimination``
+        outside [0.0, 1.0] must cause an argparse exit (2)."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".git").mkdir()
+        monkeypatch.chdir(project)
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(["audit", "my_skill", "--min-fail-rate", "1.5"])
+        assert exc_info.value.code == 2
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(
+                ["audit", "my_skill", "--min-discrimination", "-0.1"]
+            )
+        assert exc_info.value.code == 2
+
+        with pytest.raises(SystemExit) as exc_info:
+            cli_main(["audit", "my_skill", "--min-fail-rate", "nan"])
+        assert exc_info.value.code == 2
+
+
+class TestAuditL3StableId:
+    def test_audit_l3_keyed_by_id_not_text(self, tmp_path: Path) -> None:
+        """FIX-1 (#25): L3 aggregate is keyed by stable id, not the
+        criterion text. Editing the criterion's wording (while keeping
+        the id) must not reset audit history."""
+        clauditor_dir = _make_iteration_fixture(
+            tmp_path,
+            "s",
+            {
+                1: {"l3": [{"id": "quality", "passed": True}]},
+                2: {"l3": [{"id": "quality", "passed": False}]},
+            },
+        )
+        # Second iteration's criterion text differs even though id matches
+        # — rewrite the grading.json file inline to simulate an edit.
+        gj = clauditor_dir / "iteration-2" / "s" / "grading.json"
+        data = json.loads(gj.read_text())
+        data["results"][0]["criterion"] = "Totally different wording"
+        gj.write_text(json.dumps(data))
+
+        records, _ = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
+        l3 = [r for r in records if r.layer == "L3"]
+        assert len(l3) == 2
+        assert {r.id for r in l3} == {"quality"}
+        agg = aggregate(records)
+        assert ("L3", "quality") in agg
+        # One pass, one fail → 0.5 with_pass_rate.
+        assert agg[("L3", "quality")].with_pass_rate == pytest.approx(0.5)
+
+    def test_audit_drops_l3_result_without_id(
+        self, tmp_path: Path
+    ) -> None:
+        """L3 records missing the stable id are dropped (no fallback
+        to the criterion text)."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "grading.json").write_text(
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "criterion": "legacy no-id",
+                            "passed": True,
+                            "score": 1.0,
+                        }
+                    ]
+                }
+            )
+        )
+        records, _ = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
+        assert [r for r in records if r.layer == "L3"] == []
 
 
 class TestAuditAggregateDataclass:

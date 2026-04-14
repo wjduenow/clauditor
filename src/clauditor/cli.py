@@ -21,6 +21,23 @@ from clauditor.workspace import (
 )
 
 
+def _unit_float(value: str) -> float:
+    """argparse type: finite float in [0.0, 1.0]. Used by audit thresholds."""
+    import math
+
+    try:
+        x = float(value)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(
+            f"{value!r} is not a float"
+        ) from e
+    if not math.isfinite(x) or x < 0.0 or x > 1.0:
+        raise argparse.ArgumentTypeError(
+            f"must be a finite float in [0.0, 1.0], got {value!r}"
+        )
+    return x
+
+
 def _positive_int(value: str) -> int:
     """argparse type: accept integers >= 1."""
     try:
@@ -309,6 +326,7 @@ def _run_baseline_phase(
     baseline_text = baseline_result.output
 
     baseline_meta = {
+        "schema_version": 1,
         "skill": spec.skill_name,
         "iteration": iteration,
         "output": baseline_text,
@@ -325,6 +343,7 @@ def _run_baseline_phase(
         baseline_text, spec.eval_spec.assertions
     )
     baseline_assertions_payload = {
+        "schema_version": 1,
         "skill": spec.skill_name,
         "iteration": iteration,
         **baseline_assertion_set.to_json(),
@@ -536,6 +555,7 @@ def _cmd_grade_with_workspace(
         )
 
         assertions_payload = {
+            "schema_version": 1,
             "skill": spec.skill_name,
             "iteration": workspace.iteration,
             "runs": [
@@ -1561,6 +1581,14 @@ def cmd_audit(args: argparse.Namespace) -> int:
         render_stdout_table,
     )
 
+    # Reject path-traversal / shell-metacharacter skill names before any
+    # filesystem use — report_path joins `args.skill` into a filename.
+    try:
+        validate_skill_name(args.skill)
+    except InvalidSkillNameError as e:
+        print(f"invalid skill name: {e}", file=sys.stderr)
+        return 2
+
     clauditor_dir = resolve_clauditor_dir()
     records, skipped = load_iterations(
         args.skill, last=args.last, clauditor_dir=clauditor_dir
@@ -1590,7 +1618,9 @@ def cmd_audit(args: argparse.Namespace) -> int:
     )
 
     iterations_analyzed = len({r.iteration for r in records})
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    # Include microseconds so concurrent audits don't collide on the
+    # report filename (FIX-8).
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     thresholds = {
         "last": args.last,
         "min_fail_rate": min_fail_rate,
@@ -1919,15 +1949,15 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_audit.add_argument(
         "--min-fail-rate",
-        type=float,
+        type=_unit_float,
         default=None,
-        help="(US-006) minimum fail rate to flag an assertion",
+        help="(US-006) minimum fail rate to flag an assertion (0.0-1.0)",
     )
     p_audit.add_argument(
         "--min-discrimination",
-        type=float,
+        type=_unit_float,
         default=None,
-        help="(US-006) minimum with/baseline delta to flag",
+        help="(US-006) minimum with/baseline delta to flag (0.0-1.0)",
     )
     p_audit.add_argument(
         "--json",
