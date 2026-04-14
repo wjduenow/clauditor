@@ -187,8 +187,9 @@ class TestCmdGrade:
             duration_seconds=1.0,
         )
 
-    def test_grade_with_output(self, tmp_path):
+    def test_grade_with_output(self, tmp_path, monkeypatch):
         """Grades pre-captured output, returns 0 when passed."""
+        monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "output.txt"
         output_file.write_text("some skill output")
 
@@ -242,8 +243,9 @@ class TestCmdGrade:
         assert "Model:" in out
         assert "Prompt:" in out
 
-    def test_grade_failed(self, tmp_path):
+    def test_grade_failed(self, tmp_path, monkeypatch):
         """Returns 1 when grading fails."""
+        monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "output.txt"
         output_file.write_text("bad output")
 
@@ -283,7 +285,9 @@ class TestOnlyCriterion:
             duration_seconds=1.0,
         )
 
-    def _run(self, tmp_path, criteria, extra_args):
+    def _run(self, tmp_path, criteria, extra_args, monkeypatch=None):
+        if monkeypatch is not None:
+            monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "o.txt"
         output_file.write_text("out")
         eval_spec = _make_eval_spec(grading_criteria=list(criteria))
@@ -298,12 +302,13 @@ class TestOnlyCriterion:
             )
         return rc, mock_grade, spec
 
-    def test_single_substring_filters(self, tmp_path):
+    def test_single_substring_filters(self, tmp_path, monkeypatch):
         """--only-criterion foo keeps only matching criteria."""
         rc, mock_grade, spec = self._run(
             tmp_path,
             ["foo bar", "baz qux", "other foo"],
             ["--only-criterion", "foo"],
+            monkeypatch=monkeypatch,
         )
         assert rc == 0
         assert spec.eval_spec.grading_criteria == ["foo bar", "other foo"]
@@ -312,12 +317,13 @@ class TestOnlyCriterion:
         passed_spec = mock_grade.call_args.args[1]
         assert passed_spec.grading_criteria == ["foo bar", "other foo"]
 
-    def test_multiple_substrings_union(self, tmp_path):
+    def test_multiple_substrings_union(self, tmp_path, monkeypatch):
         """Multiple --only-criterion flags use OR semantics."""
         rc, mock_grade, spec = self._run(
             tmp_path,
             ["alpha", "beta", "gamma", "alphabeta"],
             ["--only-criterion", "alpha", "--only-criterion", "gamma"],
+            monkeypatch=monkeypatch,
         )
         assert rc == 0
         assert spec.eval_spec.grading_criteria == ["alpha", "gamma", "alphabeta"]
@@ -354,25 +360,28 @@ class TestOnlyCriterion:
         # Grader must NOT have been called
         mock_grade.assert_not_called()
 
-    def test_no_flag_passes_all(self, tmp_path):
+    def test_no_flag_passes_all(self, tmp_path, monkeypatch):
         """Without --only-criterion, all criteria are passed through."""
         rc, mock_grade, spec = self._run(
-            tmp_path, ["one", "two", "three"], []
+            tmp_path, ["one", "two", "three"], [], monkeypatch=monkeypatch
         )
         assert rc == 0
         assert spec.eval_spec.grading_criteria == ["one", "two", "three"]
 
-    def test_case_insensitive(self, tmp_path):
+    def test_case_insensitive(self, tmp_path, monkeypatch):
         """--only-criterion FOO matches criterion 'foo'."""
         rc, _mock, spec = self._run(
-            tmp_path, ["foo", "bar"], ["--only-criterion", "FOO"]
+            tmp_path,
+            ["foo", "bar"],
+            ["--only-criterion", "FOO"],
+            monkeypatch=monkeypatch,
         )
         assert rc == 0
         assert spec.eval_spec.grading_criteria == ["foo"]
 
 
 class TestCmdGradeSaveDiff:
-    """Tests for --save and --diff flags on the grade subcommand."""
+    """Tests for the iteration workspace layout (US-004) and --diff."""
 
     def _make_grading_report(self, skill_name="test-skill", passed=True, score=0.9):
         return GradingReport(
@@ -390,192 +399,322 @@ class TestCmdGradeSaveDiff:
             duration_seconds=1.0,
         )
 
-    def test_save_creates_file(self, tmp_path):
-        """--save writes JSON to .clauditor/."""
+    def _patch_grade(self, spec, report):
+        return (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        )
+
+    def test_grade_writes_iteration_one_when_empty(self, tmp_path, monkeypatch):
+        """An empty .clauditor/ allocates iteration-1 with the full layout."""
+        monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "output.txt"
         output_file.write_text("some skill output")
 
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
+        spec = _make_spec(eval_spec=_make_eval_spec())
         report = self._make_grading_report()
 
-        import os
-
-        orig_dir = os.getcwd()
-        try:
-            os.chdir(tmp_path)
-            with (
-                patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-                patch(
-                    "clauditor.quality_grader.grade_quality",
-                    new_callable=AsyncMock,
-                    return_value=report,
-                ),
-            ):
-                rc = main(
-                    ["grade", "skill.md", "--output", str(output_file), "--save"]
-                )
-
-            assert rc == 0
-            save_path = tmp_path / ".clauditor" / "test-skill.grade.json"
-            assert save_path.exists()
-            data = json.loads(save_path.read_text())
-            assert data["skill_name"] == "test-skill"
-        finally:
-            os.chdir(orig_dir)
-
-    def test_save_creates_directory(self, tmp_path):
-        """.clauditor/ is created if missing."""
-        output_file = tmp_path / "output.txt"
-        output_file.write_text("some skill output")
-
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-        report = self._make_grading_report()
-
-        import os
-
-        orig_dir = os.getcwd()
-        try:
-            os.chdir(tmp_path)
-            assert not (tmp_path / ".clauditor").exists()
-            with (
-                patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-                patch(
-                    "clauditor.quality_grader.grade_quality",
-                    new_callable=AsyncMock,
-                    return_value=report,
-                ),
-            ):
-                main(["grade", "skill.md", "--output", str(output_file), "--save"])
-
-            assert (tmp_path / ".clauditor").is_dir()
-        finally:
-            os.chdir(orig_dir)
-
-    def test_diff_shows_regressions(self, tmp_path, capsys):
-        """--diff with prior results shows regression table."""
-        output_file = tmp_path / "output.txt"
-        output_file.write_text("some skill output")
-
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-
-        # Prior report: high score
-        prior_report = self._make_grading_report(score=0.9, passed=True)
-        # Current report: low score (regression)
-        current_report = self._make_grading_report(score=0.5, passed=False)
-
-        import os
-
-        orig_dir = os.getcwd()
-        try:
-            os.chdir(tmp_path)
-            # Write prior results
-            save_dir = tmp_path / ".clauditor"
-            save_dir.mkdir()
-            (save_dir / "test-skill.grade.json").write_text(prior_report.to_json())
-
-            with (
-                patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-                patch(
-                    "clauditor.quality_grader.grade_quality",
-                    new_callable=AsyncMock,
-                    return_value=current_report,
-                ),
-            ):
-                main(["grade", "skill.md", "--output", str(output_file), "--diff"])
-
-            out = capsys.readouterr().out
-            assert "REGRESSION" in out
-            assert "1 regression(s) detected" in out
-        finally:
-            os.chdir(orig_dir)
-
-    def test_diff_no_prior_warns(self, tmp_path, capsys):
-        """--diff without prior results warns, doesn't error."""
-        output_file = tmp_path / "output.txt"
-        output_file.write_text("some skill output")
-
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-        report = self._make_grading_report()
-
-        import os
-
-        orig_dir = os.getcwd()
-        try:
-            os.chdir(tmp_path)
-            with (
-                patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-                patch(
-                    "clauditor.quality_grader.grade_quality",
-                    new_callable=AsyncMock,
-                    return_value=report,
-                ),
-            ):
-                rc = main(
-                    ["grade", "skill.md", "--output", str(output_file), "--diff"]
-                )
-
-            assert rc == 0
-            err = capsys.readouterr().err
-            assert "WARNING" in err
-            assert "No prior results" in err
-        finally:
-            os.chdir(orig_dir)
-
-    def test_save_and_diff_together(self, tmp_path, capsys):
-        """Both --save and --diff work in sequence."""
-        output_file = tmp_path / "output.txt"
-        output_file.write_text("some skill output")
-
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-
-        prior_report = self._make_grading_report(score=0.8, passed=True)
-        current_report = self._make_grading_report(score=0.85, passed=True)
-
-        import os
-
-        orig_dir = os.getcwd()
-        try:
-            os.chdir(tmp_path)
-            # Write prior results
-            save_dir = tmp_path / ".clauditor"
-            save_dir.mkdir()
-            (save_dir / "test-skill.grade.json").write_text(prior_report.to_json())
-
-            with (
-                patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-                patch(
-                    "clauditor.quality_grader.grade_quality",
-                    new_callable=AsyncMock,
-                    return_value=current_report,
-                ),
-            ):
-                rc = main(
-                    [
-                        "grade",
-                        "skill.md",
-                        "--output",
-                        str(output_file),
-                        "--diff",
-                        "--save",
-                    ]
-                )
-
-            assert rc == 0
-            out = capsys.readouterr().out
-            # Diff ran (no regressions since score improved)
-            assert "No regressions detected" in out
-            # Save ran — file updated with current results
-            saved = json.loads(
-                (save_dir / "test-skill.grade.json").read_text()
+        s_patch, g_patch = self._patch_grade(spec, report)
+        with s_patch, g_patch:
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)]
             )
-            assert saved["results"][0]["score"] == 0.85
-        finally:
-            os.chdir(orig_dir)
+
+        assert rc == 0
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assert skill_dir.is_dir()
+        assert (skill_dir / "grading.json").is_file()
+        assert (skill_dir / "timing.json").is_file()
+        assert (skill_dir / "run-0" / "output.txt").is_file()
+        assert (skill_dir / "run-0" / "output.jsonl").is_file()
+        assert (
+            (skill_dir / "run-0" / "output.txt").read_text()
+            == "some skill output"
+        )
+        # No tmp dir should remain after a successful finalize.
+        assert not (tmp_path / ".clauditor" / "iteration-1-tmp").exists()
+        # grading.json round-trips through GradingReport
+        rt = GradingReport.from_json(
+            (skill_dir / "grading.json").read_text()
+        )
+        assert rt.skill_name == "test-skill"
+        # timing.json holds metrics
+        timing = json.loads((skill_dir / "timing.json").read_text())
+        assert timing["iteration"] == 1
+        assert "metrics" in timing
+
+    def test_grade_auto_increments_across_runs(self, tmp_path, monkeypatch):
+        """Two runs in a row produce iteration-1/ then iteration-2/."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hi")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        report = self._make_grading_report()
+
+        s, g = self._patch_grade(spec, report)
+        with s, g:
+            assert main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            ) == 0
+            assert main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            ) == 0
+
+        assert (tmp_path / ".clauditor" / "iteration-1" / "test-skill").is_dir()
+        assert (tmp_path / ".clauditor" / "iteration-2" / "test-skill").is_dir()
+
+    def test_grade_iteration_explicit_collision_errors(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Re-running --iteration N without --force errors non-zero."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hi")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        report = self._make_grading_report()
+
+        s, g = self._patch_grade(spec, report)
+        with s, g:
+            assert main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--iteration",
+                    "5",
+                ]
+            ) == 0
+            rc2 = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--iteration",
+                    "5",
+                ]
+            )
+        assert rc2 != 0
+        err = capsys.readouterr().err
+        assert "iteration-5" in err
+        assert "--force" in err
+
+    def test_grade_iteration_force_overwrites(self, tmp_path, monkeypatch):
+        """--force replaces an existing iteration-N/ cleanly."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("first")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        first_report = self._make_grading_report(score=0.9)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=first_report,
+            ),
+        ):
+            assert main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--iteration",
+                    "5",
+                ]
+            ) == 0
+
+        # Second run with different content + --force
+        output_file.write_text("second")
+        second_report = self._make_grading_report(score=0.55)
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=second_report,
+            ),
+        ):
+            assert main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--iteration",
+                    "5",
+                    "--force",
+                ]
+            ) == 0
+
+        skill_dir = tmp_path / ".clauditor" / "iteration-5" / "test-skill"
+        assert (skill_dir / "run-0" / "output.txt").read_text() == "second"
+        rt = GradingReport.from_json((skill_dir / "grading.json").read_text())
+        assert rt.results[0].score == 0.55
+
+    def test_grade_variance_produces_run_subdirs(self, tmp_path, monkeypatch):
+        """--variance N produces N+1 run-K/ subdirs under one iteration."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("primary text")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+
+        # Variance runs invoke spec.run() — return distinct outputs.
+        spec.run.side_effect = [
+            SkillResult(
+                output=f"variance run {i}",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                duration_seconds=0.5,
+                input_tokens=10,
+                output_tokens=5,
+                stream_events=[{"type": "result", "i": i}],
+            )
+            for i in range(2)
+        ]
+
+        report = self._make_grading_report()
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--variance",
+                    "2",
+                ]
+            )
+        assert rc == 0
+
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        for k in (0, 1, 2):
+            assert (skill_dir / f"run-{k}" / "output.txt").is_file()
+            assert (skill_dir / f"run-{k}" / "output.jsonl").is_file()
+        assert (
+            (skill_dir / "run-0" / "output.txt").read_text() == "primary text"
+        )
+        assert (
+            (skill_dir / "run-1" / "output.txt").read_text() == "variance run 0"
+        )
+        assert (
+            (skill_dir / "run-2" / "output.txt").read_text() == "variance run 1"
+        )
+        # Single grading.json at the skill level (not per-run)
+        assert (skill_dir / "grading.json").is_file()
+
+    def test_grade_save_flag_removed(self, tmp_path, monkeypatch, capsys):
+        """argparse rejects --save with an unrecognized argument error."""
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            main(["grade", "skill.md", "--save"])
+        err = capsys.readouterr().err
+        assert "--save" in err or "unrecognized" in err
+
+    def test_grade_crash_leaves_no_iteration_dir(self, tmp_path, monkeypatch):
+        """An exception mid-write must not leave a finalized iteration-N/."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hi")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        boom = AsyncMock(side_effect=RuntimeError("kaboom"))
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch("clauditor.quality_grader.grade_quality", boom),
+            pytest.raises(RuntimeError),
+        ):
+            main(["grade", "skill.md", "--output", str(output_file)])
+
+        # iteration-1/ must not exist (only an orphan tmp dir is allowed).
+        assert not (tmp_path / ".clauditor" / "iteration-1").exists()
+
+    def test_grade_diff_shows_regression_against_prior_iteration(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--diff compares against the most recent prior iteration's grading.json."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hi")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+
+        prior_report = self._make_grading_report(score=0.9, passed=True)
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=prior_report,
+            ),
+        ):
+            assert main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            ) == 0
+
+        current_report = self._make_grading_report(score=0.4, passed=False)
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=current_report,
+            ),
+        ):
+            main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--diff",
+                ]
+            )
+        out = capsys.readouterr().out
+        assert "REGRESSION" in out
+
+    def test_grade_diff_no_prior_warns(self, tmp_path, monkeypatch, capsys):
+        """--diff with no prior iteration warns, does not error."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hi")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        report = self._make_grading_report()
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--diff",
+                ]
+            )
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "No prior iteration" in err
 
 
 class TestCmdCompare:
@@ -1632,13 +1771,11 @@ class TestCmdGradeHistory:
         assert "grader" not in metrics
         assert "triggers" not in metrics
 
-    def test_grade_variance_rolls_tokens_into_history_and_grade_json(
+    def test_grade_variance_rolls_tokens_into_history_and_grading_json(
         self, tmp_path, monkeypatch
     ):
-        """cmd_grade --variance N: variance-run skill + grader tokens must
-        be summed into metrics in BOTH history.jsonl and .grade.json."""
-        from clauditor.quality_grader import VarianceReport
-
+        """--variance N: skill + grader tokens across all runs roll up into
+        both history.jsonl metrics and the iteration's grading.json."""
         monkeypatch.chdir(tmp_path)
 
         output_file = tmp_path / "output.txt"
@@ -1646,9 +1783,25 @@ class TestCmdGradeHistory:
 
         eval_spec = _make_eval_spec()
         spec = _make_spec(eval_spec=eval_spec)
+        # Each variance run: 10 in / 5 out skill tokens, 0.5s duration.
+        spec.run.side_effect = [
+            SkillResult(
+                output=f"v{i}",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                duration_seconds=0.5,
+                input_tokens=10,
+                output_tokens=5,
+                stream_events=[],
+            )
+            for i in range(3)
+        ]
 
-        # Primary grade report: 500/200 grader tokens
-        primary_report = GradingReport(
+        # Each grade_quality call returns the same per-run report shape:
+        # 200 in / 100 out grader tokens. Total runs = 1 primary + 3 variance
+        # = 4 grader calls -> quality totals 800 / 400.
+        per_run_report = GradingReport(
             skill_name="test-skill",
             model="claude-sonnet-4-6",
             results=[
@@ -1661,26 +1814,8 @@ class TestCmdGradeHistory:
                 )
             ],
             duration_seconds=1.0,
-            input_tokens=500,
-            output_tokens=200,
-        )
-
-        # Variance: 3 more runs with 100/50 grader tokens each, 10/5 skill
-        # tokens each, 0.5s skill duration each = totals 300/150 grader,
-        # 30/15 skill, 1.5s skill duration.
-        variance_report = VarianceReport(
-            skill_name="test-skill",
-            n_runs=3,
-            reports=[],
-            score_mean=1.0,
-            score_stddev=0.0,
-            pass_rate_mean=1.0,
-            stability=1.0,
-            input_tokens=300,
-            output_tokens=150,
-            skill_input_tokens=30,
-            skill_output_tokens=15,
-            skill_duration_seconds=1.5,
+            input_tokens=200,
+            output_tokens=100,
         )
 
         with (
@@ -1688,12 +1823,7 @@ class TestCmdGradeHistory:
             patch(
                 "clauditor.quality_grader.grade_quality",
                 new_callable=AsyncMock,
-                return_value=primary_report,
-            ),
-            patch(
-                "clauditor.quality_grader.measure_variance",
-                new_callable=AsyncMock,
-                return_value=variance_report,
+                return_value=per_run_report,
             ),
         ):
             rc = main(
@@ -1704,39 +1834,32 @@ class TestCmdGradeHistory:
                     str(output_file),
                     "--variance",
                     "3",
-                    "--save",
                 ]
             )
 
         assert rc == 0
 
-        # Check history.jsonl
         history_path = tmp_path / ".clauditor" / "history.jsonl"
         record = json.loads(history_path.read_text().splitlines()[0])
-        history_metrics = record["metrics"]
+        m = record["metrics"]
+        # Primary --output -> skill 0/0/0.0; variance: 3 * (10/5/0.5) = 30/15/1.5
+        assert m["skill"]["input_tokens"] == 30
+        assert m["skill"]["output_tokens"] == 15
+        assert m["duration_seconds"] == pytest.approx(1.5)
+        # Quality: 4 grader calls * 200/100 = 800/400
+        assert m["quality"]["input_tokens"] == 800
+        assert m["quality"]["output_tokens"] == 400
+        assert m["total"]["total"] == 30 + 15 + 800 + 400
 
-        # Primary --output run: skill tokens 0. Variance adds 30/15.
-        assert history_metrics["skill"]["input_tokens"] == 30
-        assert history_metrics["skill"]["output_tokens"] == 15
-        # Quality: primary 500/200 + variance 300/150 = 800/350
-        assert history_metrics["quality"]["input_tokens"] == 800
-        assert history_metrics["quality"]["output_tokens"] == 350
-        # Total: skill 30+15 + quality 800+350 = 1195
-        assert history_metrics["total"]["total"] == 1195
-        # Skill duration: --output path 0.0 + variance 1.5 = 1.5
-        assert history_metrics["duration_seconds"] == pytest.approx(1.5)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        grade_data = json.loads((skill_dir / "grading.json").read_text())
+        assert grade_data["metrics"] == m
+        timing = json.loads((skill_dir / "timing.json").read_text())
+        assert timing["metrics"] == m
+        assert timing["n_runs"] == 4
 
-        # Check .grade.json mirrors history
-        grade_path = tmp_path / ".clauditor" / "test-skill.grade.json"
-        assert grade_path.exists()
-        grade_data = json.loads(grade_path.read_text())
-        grade_metrics = grade_data["metrics"]
-        assert grade_metrics == history_metrics
-
-    def test_grade_save_writes_metrics_to_grade_json(
-        self, tmp_path, monkeypatch
-    ):
-        """--save writes metrics into the .grade.json report."""
+    def test_grade_writes_metrics_to_grading_json(self, tmp_path, monkeypatch):
+        """grading.json carries the same metrics dict as history.jsonl."""
         monkeypatch.chdir(tmp_path)
 
         output_file = tmp_path / "output.txt"
@@ -1770,28 +1893,67 @@ class TestCmdGradeHistory:
             ),
         ):
             rc = main(
-                [
-                    "grade",
-                    "skill.md",
-                    "--output",
-                    str(output_file),
-                    "--save",
-                ]
+                ["grade", "skill.md", "--output", str(output_file)]
             )
 
         assert rc == 0
-        save_path = tmp_path / ".clauditor" / "test-skill.grade.json"
-        assert save_path.exists()
-        data = json.loads(save_path.read_text())
-        assert "metrics" in data
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        grading_path = skill_dir / "grading.json"
+        assert grading_path.exists()
+        data = json.loads(grading_path.read_text())
         assert data["metrics"]["quality"]["input_tokens"] == 300
         assert data["metrics"]["quality"]["output_tokens"] == 100
         assert data["metrics"]["total"]["total"] == 400
 
-        # Round-trip through GradingReport.from_json
-        rt = GradingReport.from_json(save_path.read_text())
+        rt = GradingReport.from_json(grading_path.read_text())
         assert rt.metrics is not None
         assert rt.metrics["quality"]["input_tokens"] == 300
+
+    def test_grade_history_record_has_iteration_and_workspace_path(
+        self, tmp_path, monkeypatch
+    ):
+        """history.jsonl records carry iteration + workspace_path (schema v3)."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hi")
+
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c",
+                    passed=True,
+                    score=1.0,
+                    evidence="",
+                    reasoning="",
+                )
+            ],
+            duration_seconds=1.0,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            assert main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            ) == 0
+
+        history_path = tmp_path / ".clauditor" / "history.jsonl"
+        record = json.loads(history_path.read_text().splitlines()[0])
+        assert record["iteration"] == 1
+        assert record["workspace_path"] is not None
+        assert record["workspace_path"].endswith(
+            "iteration-1/test-skill"
+        ) or record["workspace_path"].endswith(
+            "iteration-1\\test-skill"
+        )
 
     def test_grade_only_criterion_still_skips_history(
         self, tmp_path, monkeypatch
