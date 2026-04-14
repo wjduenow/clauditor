@@ -585,10 +585,12 @@ def _cmd_grade_with_workspace(
     if not only_criterion:
         skill_dir = workspace.tmp_path
         verbose = bool(getattr(args, "verbose", False))
-        for idx, (text, events) in enumerate(run_outputs):
-            _write_run_dir(
-                skill_dir / f"run-{idx}", text, events, verbose=verbose
-            )
+        no_transcript = bool(getattr(args, "no_transcript", False))
+        if not no_transcript:
+            for idx, (text, events) in enumerate(run_outputs):
+                _write_run_dir(
+                    skill_dir / f"run-{idx}", text, events, verbose=verbose
+                )
 
         (skill_dir / "grading.json").write_text(
             primary_report.to_json(), encoding="utf-8"
@@ -603,6 +605,10 @@ def _cmd_grade_with_workspace(
         ) -> AssertionSet:
             result = run_assertions(text, spec.eval_spec.assertions)
             if args.output:
+                return result
+            if no_transcript:
+                # US-005: --no-transcript suppresses the stream-json write,
+                # so there's no file to point at. Leave transcript_path=None.
                 return result
             # Path is computed against workspace.final_path (the post-
             # finalize iteration-N/<skill>/ dir), NOT the staging dir,
@@ -1763,6 +1769,11 @@ def main(argv: list[str] | None = None) -> int:
     p_validate.add_argument(
         "--json", action="store_true", help="Output results as JSON"
     )
+    p_validate.add_argument(
+        "--no-transcript",
+        action="store_true",
+        help="Skip writing per-run stream-json transcripts",
+    )
 
     # run
     p_run = subparsers.add_parser("run", help="Run a skill and print output")
@@ -1835,6 +1846,11 @@ def main(argv: list[str] | None = None) -> int:
             "Log per-run transcript redaction counts to stderr "
             "(clauditor.transcripts: redacted N matches in run-K)"
         ),
+    )
+    p_grade.add_argument(
+        "--no-transcript",
+        action="store_true",
+        help="Skip writing per-run stream-json transcripts",
     )
     p_grade.add_argument(
         "--only-criterion",
