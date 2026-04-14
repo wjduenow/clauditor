@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import errno
 import threading
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -175,6 +177,97 @@ class TestExplicitIterationRobustness:
         assert ws.iteration == 5
         assert ws.tmp_path.is_dir()
         assert not (ws.tmp_path / "stale.txt").exists()
+
+
+class TestScanMissingDir:
+    def test_scan_returns_empty_for_missing_dir(self, tmp_path: Path) -> None:
+        """_scan_existing_iterations should return empty set if dir absent."""
+        from clauditor.workspace import _scan_existing_iterations
+
+        missing = tmp_path / "does-not-exist"
+        assert _scan_existing_iterations(missing) == set()
+
+
+class TestAutoRetryExhaustion:
+    def test_auto_allocation_raises_after_max_retries(
+        self, tmp_path: Path
+    ) -> None:
+        """_allocate_auto raises RuntimeError after _MAX_AUTO_RETRIES.
+
+        Simulates persistent contention by making every tmp_parent.mkdir
+        raise FileExistsError so the loop never converges.
+        """
+        from clauditor import workspace as ws_mod
+
+        real_mkdir = Path.mkdir
+        call_count = {"n": 0}
+
+        def fake_mkdir(self, *args, **kwargs):
+            # Let the initial clauditor_dir.mkdir(parents=True,
+            # exist_ok=True) and the per-iteration skill-subdir mkdir
+            # succeed. Only sabotage tmp_parent.mkdir(exist_ok=False).
+            if "-tmp" in self.name and kwargs.get("exist_ok") is False:
+                call_count["n"] += 1
+                raise FileExistsError(self)
+            return real_mkdir(self, *args, **kwargs)
+
+        with (
+            patch.object(ws_mod, "_MAX_AUTO_RETRIES", 3),
+            patch.object(Path, "mkdir", fake_mkdir),
+        ):
+            with pytest.raises(RuntimeError, match="exceeded 3 retries"):
+                allocate_iteration(tmp_path, "foo")
+        assert call_count["n"] == 3
+
+    def test_auto_allocation_skips_finalized_peer(
+        self, tmp_path: Path
+    ) -> None:
+        """Auto loop increments past an existing iteration-N dir.
+
+        Coverage for the final_parent.exists() → candidate+=1 branch
+        in _allocate_auto. Forces the branch by injecting an extra
+        iteration directory AFTER the initial scan: the scan picks
+        candidate=N+1 but by the time the loop runs we've raced in a
+        peer N+1, so the first iteration of the loop must skip it.
+        """
+        (tmp_path / "iteration-5").mkdir()
+
+        # Patch _scan_existing_iterations to return {5} so the loop
+        # starts at candidate=6; then create iteration-6 on disk so
+        # the loop's exists() check triggers the skip branch.
+        from clauditor import workspace as ws_mod
+
+        original_scan = ws_mod._scan_existing_iterations
+
+        def scan_then_race(dir_):
+            result = original_scan(dir_)
+            (tmp_path / "iteration-6").mkdir(exist_ok=True)
+            return result
+
+        with patch.object(
+            ws_mod, "_scan_existing_iterations", side_effect=scan_then_race
+        ):
+            ws = allocate_iteration(tmp_path, "foo")
+        assert ws.iteration == 7
+
+
+class TestFinalizeNonRaceError:
+    def test_finalize_reraises_permission_error(
+        self, tmp_path: Path
+    ) -> None:
+        """finalize() must re-raise OSErrors other than ENOTEMPTY/EEXIST.
+
+        Pass 1 review follow-up: a permission-denied rename should
+        surface as the real error, not be relabeled as
+        IterationExistsError.
+        """
+        ws = allocate_iteration(tmp_path, "foo")
+        eacces = OSError(errno.EACCES, "permission denied")
+        with patch("clauditor.workspace.os.rename", side_effect=eacces):
+            with pytest.raises(OSError) as exc_info:
+                ws.finalize()
+        assert exc_info.value.errno == errno.EACCES
+        assert ws.finalized is False
 
 
 class TestFinalizeConcurrentRace:

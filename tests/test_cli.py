@@ -685,6 +685,271 @@ class TestCmdGradeSaveDiff:
         # Single grading.json at the skill level (not per-run)
         assert (skill_dir / "grading.json").is_file()
 
+    def test_grade_primary_skill_subprocess_path(
+        self, tmp_path, monkeypatch
+    ):
+        """No --output: cmd_grade runs the skill subprocess and captures
+        its stream_events + token totals into run-0/ and metrics.
+
+        Covers the primary-run branch (306-322).
+        """
+        monkeypatch.chdir(tmp_path)
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="primary output",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[
+                    {"type": "assistant", "text": "primary output"}
+                ],
+                input_tokens=100,
+                output_tokens=50,
+                duration_seconds=1.5,
+            )
+        )
+        report = self._make_grading_report()
+        s, g = self._patch_grade(spec, report)
+        with s, g:
+            rc = main(["grade", "skill.md"])
+        assert rc == 0
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assert (skill_dir / "run-0" / "output.txt").read_text() == (
+            "primary output"
+        )
+        # stream_events serialized to output.jsonl
+        jsonl_lines = [
+            line
+            for line in (skill_dir / "run-0" / "output.jsonl")
+            .read_text()
+            .splitlines()
+            if line.strip()
+        ]
+        assert len(jsonl_lines) == 1
+        assert json.loads(jsonl_lines[0])["type"] == "assistant"
+        # timing.json has skill bucket tokens
+        timing = json.loads((skill_dir / "timing.json").read_text())
+        metrics = timing["metrics"]
+        assert metrics["skill"]["input_tokens"] == 100
+        assert metrics["skill"]["output_tokens"] == 50
+
+    def test_grade_primary_skill_failure_returns_1(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """If the primary skill subprocess fails, grade exits 1 with error.
+
+        The workspace staging dir must be aborted (not finalized).
+        """
+        monkeypatch.chdir(tmp_path)
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="",
+                exit_code=1,
+                skill_name="test-skill",
+                args="",
+                error="skill blew up",
+            )
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["grade", "skill.md"])
+        assert rc == 1
+        assert "skill blew up" in capsys.readouterr().err
+        # No iteration-N/ should remain.
+        clauditor_dir = tmp_path / ".clauditor"
+        if clauditor_dir.exists():
+            assert list(clauditor_dir.glob("iteration-*/")) == []
+
+    def test_grade_variance_run_failure_returns_1(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """If a variance subrun fails, grade exits 1 with error.
+
+        Covers the variance-run failure branch (329-333).
+        """
+        monkeypatch.chdir(tmp_path)
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        # First call succeeds (primary), second fails (variance run 1).
+        spec.run = MagicMock(
+            side_effect=[
+                SkillResult(
+                    output="primary",
+                    exit_code=0,
+                    skill_name="test-skill",
+                    args="",
+                    stream_events=[],
+                    input_tokens=10,
+                    output_tokens=5,
+                    duration_seconds=0.5,
+                ),
+                SkillResult(
+                    output="",
+                    exit_code=1,
+                    skill_name="test-skill",
+                    args="",
+                    error="variance kaboom",
+                ),
+            ]
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["grade", "skill.md", "--variance", "1"])
+        assert rc == 1
+        assert "variance kaboom" in capsys.readouterr().err.lower()
+        # No iteration-N/ should remain.
+        clauditor_dir = tmp_path / ".clauditor"
+        if clauditor_dir.exists():
+            assert list(clauditor_dir.glob("iteration-*/")) == []
+
+    def test_grade_invalid_skill_name_errors(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Path-traversal skill names surface as a clean error from cmd_grade.
+
+        Covers the InvalidSkillNameError catch in cmd_grade (PR review).
+        """
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hi")
+        # SkillSpec.from_file returns a spec whose skill_name is unsafe.
+        spec = _make_spec(
+            skill_name="../evil", eval_spec=_make_eval_spec()
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            )
+        assert rc == 2
+        assert "invalid skill name" in capsys.readouterr().err
+
+    def test_grade_programmatic_value_error_caught(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """cmd_grade converts allocate_iteration ValueError to exit 2.
+
+        argparse rejects --iteration<1 at the CLI boundary, but the
+        programmatic path (direct call with a crafted Namespace) can
+        still reach the allocator; cmd_grade's `except ValueError`
+        branch surfaces the error cleanly.
+        """
+        import argparse
+
+        from clauditor.cli import cmd_grade
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        output_file = tmp_path / "o.txt"
+        output_file.write_text("hi")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        ns = argparse.Namespace(
+            skill="skill.md",
+            eval=None,
+            output=str(output_file),
+            model=None,
+            variance=None,
+            dry_run=False,
+            iteration=0,  # invalid — triggers ValueError in allocator
+            force=False,
+            only_criterion=None,
+            diff=False,
+            json=False,
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = cmd_grade(ns)
+        assert rc == 2
+        assert "iteration must be" in capsys.readouterr().err
+
+    def test_grade_iteration_zero_rejected_by_argparse(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--iteration 0 is rejected at argparse (uses _positive_int)."""
+        monkeypatch.chdir(tmp_path)
+        with pytest.raises(SystemExit):
+            main(["grade", "skill.md", "--iteration", "0"])
+        err = capsys.readouterr().err
+        assert "--iteration" in err or "must be" in err or "invalid" in err
+
+    def test_grade_finalize_race_surfaces_clean_error(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Concurrent finalize() race produces exit 1, not a traceback.
+
+        Covers the IterationExistsError catch around
+        _cmd_grade_with_workspace.
+        """
+        import errno as _errno
+
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hi")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        report = self._make_grading_report()
+
+        enotempty = OSError(_errno.ENOTEMPTY, "Directory not empty")
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch(
+                "clauditor.workspace.os.rename", side_effect=enotempty
+            ),
+        ):
+            rc = main(
+                ["grade", "skill.md", "--output", str(output_file)]
+            )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "finalized by a concurrent writer" in err
+
+    def test_grade_json_variance_output_shape(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--json --variance emits a populated data.variance sub-object.
+
+        Covers the `if variance_report:` JSON branch (475-483).
+        """
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "o.txt"
+        output_file.write_text("hi")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        # Variance runs call spec.run() — return a real SkillResult so
+        # the stream_events and token accounting paths don't blow up.
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="variance run",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[],
+                input_tokens=5,
+                output_tokens=3,
+                duration_seconds=0.1,
+            )
+        )
+        report = self._make_grading_report()
+        s, g = self._patch_grade(spec, report)
+        with s, g:
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--variance",
+                    "2",
+                    "--json",
+                ]
+            )
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["variance"] is not None
+        assert payload["variance"]["n_runs"] == 3
+        assert "score_mean" in payload["variance"]
+        assert "stability" in payload["variance"]
+
     def test_grade_save_flag_removed(self, tmp_path, monkeypatch, capsys):
         """argparse rejects --save with an unrecognized argument error."""
         monkeypatch.chdir(tmp_path)
@@ -1021,6 +1286,33 @@ class TestCmdCompareNumericRefs:
         assert rc == 2
         err = capsys.readouterr().err
         assert "cannot combine" in err or "--skill" in err
+
+    def test_compare_numeric_refs_partial_args_error(self, tmp_path, capsys):
+        """--skill without --from/--to errors with clear message."""
+        rc = main(["compare", "--skill", "foo", "--from", "1"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "all be provided together" in err
+
+    def test_compare_missing_positional_args_error(self, tmp_path, capsys):
+        """No positional paths and no --skill: clear error."""
+        rc = main(["compare"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "positional paths" in err or "--skill" in err
+
+    def test_compare_invalid_skill_name_in_numeric_form(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--skill with path-traversal name surfaces a clean error."""
+        (tmp_path / ".git").mkdir()
+        monkeypatch.chdir(tmp_path)
+        rc = main(
+            ["compare", "--skill", "../evil", "--from", "1", "--to", "2"]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "invalid skill name" in err
 
     def test_compare_legacy_grade_json_files(self, tmp_path, capsys):
         """Regression: legacy two .grade.json file form still works."""

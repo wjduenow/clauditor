@@ -238,6 +238,12 @@ def cmd_grade(args: argparse.Namespace) -> int:
     except IterationExistsError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
+    except InvalidSkillNameError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
     try:
         return _cmd_grade_with_workspace(
@@ -247,6 +253,12 @@ def cmd_grade(args: argparse.Namespace) -> int:
             clauditor_dir=clauditor_dir,
             workspace=workspace,
         )
+    except IterationExistsError as exc:
+        # Raised by workspace.finalize() when a concurrent peer won the
+        # rename race. The staging dir has already been aborted inside
+        # finalize(); surface a clean error instead of a traceback.
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
     finally:
         # workspace.finalized is set to True inside finalize(); any other
         # exit path (early return on skill failure, exception mid-write,
@@ -1280,11 +1292,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_grade.add_argument(
         "--iteration",
-        type=int,
+        type=_positive_int,
         default=None,
         metavar="N",
         help=(
-            "Explicit iteration index. Defaults to auto-increment "
+            "Explicit iteration index (>= 1). Defaults to auto-increment "
             "(scan .clauditor/iteration-* and pick max+1)."
         ),
     )
@@ -1351,15 +1363,15 @@ def main(argv: list[str] | None = None) -> int:
         "--from",
         dest="from_iter",
         default=None,
-        type=int,
-        help="Baseline iteration number (requires --skill)",
+        type=_positive_int,
+        help="Baseline iteration number >= 1 (requires --skill)",
     )
     p_compare.add_argument(
         "--to",
         dest="to_iter",
         default=None,
-        type=int,
-        help="Candidate iteration number (requires --skill)",
+        type=_positive_int,
+        help="Candidate iteration number >= 1 (requires --skill)",
     )
 
     # triggers

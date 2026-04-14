@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -310,6 +311,46 @@ class TestConcurrentAppend:
             assert isinstance(rec["iteration"], int)
             seen_iters.add(rec["iteration"])
         assert seen_iters == set(range(n))
+
+
+class TestFileLockFallback:
+    """Coverage for _file_lock's fallback path on filesystems without flock."""
+
+    def test_flock_oserror_falls_back_to_unlocked_append(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """If fcntl.flock raises OSError, append still succeeds with warn.
+
+        Simulates WSL2 /mnt/* drvfs / NFSv3 environments where advisory
+        locking is unsupported.
+        """
+        import clauditor.history as history_mod
+
+        # Reset the module-level warn-once flag so the warning fires.
+        monkeypatch.setattr(history_mod, "_FLOCK_UNSUPPORTED_WARNED", False)
+
+        path = tmp_path / ".clauditor" / "history.jsonl"
+
+        def _raise(*_a, **_k):
+            raise OSError("flock unsupported on this fs")
+
+        with patch.object(history_mod.fcntl, "flock", side_effect=_raise):
+            append_record(
+                skill="foo",
+                pass_rate=1.0,
+                mean_score=0.9,
+                metrics={},
+                command="grade",
+                path=path,
+                iteration=1,
+                workspace_path=".clauditor/iteration-1/foo",
+            )
+
+        records = read_records(path=path)
+        assert len(records) == 1
+        assert records[0]["schema_version"] == 3
+        err = capsys.readouterr().err
+        assert "fcntl.flock unsupported" in err
 
 
 class TestSparkline:

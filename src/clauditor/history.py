@@ -34,10 +34,26 @@ Concurrent appends from multiple processes are serialized via a
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import math
 import sys
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback
+    # fcntl is POSIX-only. On Windows we fall back to a no-op lock so
+    # the module can still be imported; concurrent history appends may
+    # theoretically interleave but the rest of clauditor continues to
+    # work.
+    class _FcntlFallback:
+        LOCK_EX = 0
+        LOCK_UN = 0
+
+        @staticmethod
+        def flock(_fd: int, _operation: int) -> None:
+            return None
+
+    fcntl = _FcntlFallback()  # type: ignore[assignment]
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -55,9 +71,10 @@ def _default_path() -> Path:
     if _DEFAULT_PATH is not None:
         return _DEFAULT_PATH
     return resolve_clauditor_dir() / "history.jsonl"
+
+
 SPARK_GLYPHS = "_.-=#"
 SCHEMA_VERSION = 3
-
 
 _FLOCK_UNSUPPORTED_WARNED = False
 
