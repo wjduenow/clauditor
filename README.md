@@ -25,6 +25,25 @@ Uses a stronger model (Sonnet) to grade output against a rubric you write: "Are 
 
 You ship AI features faster because you catch regressions automatically instead of manually spot-checking output. Layer 1 runs in CI on every push for free. Layer 3 runs before releases to catch quality problems that would otherwise reach users. The layered approach means you're not burning API dollars on every commit — just on the checks that need intelligence.
 
+## Alignment with agentskills.io
+
+clauditor implements (and in places extends) the skill evaluation workflow described at [agentskills.io/skill-creation/evaluating-skills](https://agentskills.io/skill-creation/evaluating-skills). If you're coming from that spec, this table maps the concepts to clauditor terminology:
+
+| agentskills.io concept | clauditor |
+|---|---|
+| Test case (prompt + expected + files) | `.eval.json` with `test_args`, `sections`, `fields`, `grading_criteria` |
+| Deterministic assertions | **Layer 1** — `assertions.py`, `FORMAT_REGISTRY` (20 canonical types), strict/extract invariants |
+| LLM-judged structural checks | **Layer 2** — `grader.py`, tiered schema extraction with per-tier field requirements |
+| Rubric quality grading | **Layer 3** — `quality_grader.py`, per-criterion scoring + variance measurement |
+| With-skill vs without-skill baseline | `compare_ab()` Python API (`clauditor.comparator`) |
+| Regression diff between runs | `clauditor compare <before> <after>` |
+| Timing + token capture | `SkillResult.input_tokens/output_tokens/duration_seconds`, persisted to `history.jsonl` and `.grade.json` under nested bucket keys (`skill`, `grader`, `quality`, `triggers`, `total`) |
+| Longitudinal history | `.clauditor/history.jsonl` schema v2 + `clauditor trend --metric <dotted.path>` with ASCII sparklines |
+
+**Beyond the spec**, clauditor adds: trigger precision testing (`triggers.py`), a strict/extract `FORMAT_REGISTRY` invariant for canonical types, tiered section extraction (top-3 restaurants require more fields than the next 7), a reusable pytest plugin, and an `AssertionResult.kind` enum for programmatic filtering.
+
+**Deliberately out of scope**: per-iteration workspace dirs, automated with/without pair runs, blind A/B judges, human-feedback capture, and LLM-driven skill improvement proposers. These are tracked as follow-up issues (#22–#27).
+
 ## Install
 
 ```bash
@@ -324,7 +343,9 @@ clauditor grade <skill.md> --save      # Persist results to .clauditor/
 clauditor grade <skill.md> --diff      # Compare against prior results
 clauditor compare before.grade.json after.grade.json  # Diff two saved grade reports
 clauditor compare before.txt after.txt --spec <skill.md>  # Re-grade two captures
-clauditor trend <skill> --metric pass_rate       # Tab-separated history + ASCII sparkline
+clauditor trend <skill> --metric total.total     # Tab-separated history + ASCII sparkline
+clauditor trend <skill> --list-metrics           # List available metric paths
+clauditor trend <skill> --metric pass_rate --command extract  # Filter by subcommand
 clauditor triggers <skill.md>          # Trigger precision testing
 clauditor capture <skill> -- "args"    # Run skill, save stdout to tests/eval/captured/
 clauditor doctor                       # Report environment diagnostics
@@ -332,13 +353,30 @@ clauditor doctor                       # Report environment diagnostics
 
 ### Persistent metric history
 
-Every `clauditor grade` run appends a JSON line to `.clauditor/history.jsonl`:
+Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.clauditor/history.jsonl`. Records are schema v2 with a `command` discriminator and a nested `metrics` dict:
 
 ```json
-{"ts": "2026-04-13T15:00:00+00:00", "skill": "find-restaurants", "pass_rate": 0.83, "mean_score": 0.75, "metrics": {}}
+{
+  "schema_version": 2,
+  "command": "grade",
+  "ts": "2026-04-13T15:00:00+00:00",
+  "skill": "find-restaurants",
+  "pass_rate": 0.83,
+  "mean_score": 0.75,
+  "metrics": {
+    "skill":   {"input_tokens": 1200, "output_tokens": 800},
+    "quality": {"input_tokens": 900,  "output_tokens": 350},
+    "total":   {"input_tokens": 2100, "output_tokens": 1150, "total": 3250},
+    "duration_seconds": 12.3
+  }
+}
 ```
 
-Use `clauditor trend <skill> --metric pass_rate --last 20` to view the last N values with an ASCII sparkline (`_.-=#` glyph set). Runs with `--only-criterion` skip the history append to keep longitudinal data comparable.
+Token buckets: `skill` (subprocess), `grader` (Layer 2 extract), `quality` (Layer 3 rubric), `triggers` (trigger precision). Buckets are **absent** when the command doesn't invoke them — e.g. `extract` records have `skill` + `grader`, `validate` records have `skill` only. `total` aggregates across all present buckets.
+
+Use `clauditor trend <skill> --metric <dotted.path>` to view a series. Paths walk the nested `metrics` dict (`total.total`, `grader.input_tokens`, `skill.output_tokens`, `duration_seconds`) with `pass_rate` and `mean_score` as top-level shortcuts. `--command {grade,extract,validate,all}` filters by subcommand (default `grade`). `--list-metrics` prints every resolvable metric path for the skill.
+
+Runs with `--only-criterion` skip the history append to keep longitudinal data comparable.
 
 ## Pytest Integration
 
