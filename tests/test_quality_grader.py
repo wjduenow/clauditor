@@ -537,6 +537,54 @@ class TestGradeQuality:
         )
 
     @pytest.mark.asyncio
+    async def test_grade_quality_catches_parse_misalignment(self):
+        """FIX-10 / PR #34: when ``parse_grading_response`` raises
+        ValueError on criterion reorder/drop, ``grade_quality`` must
+        catch it and return a graceful misalignment report (not crash)."""
+        spec = _make_spec()
+        # Return criteria in swapped order — triggers text-match
+        # mismatch inside parse_grading_response, which raises ValueError.
+        grading_data = [
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 1.0,
+                "evidence": "e",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 1.0,
+                "evidence": "e",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 1.0,
+                "evidence": "e",
+                "reasoning": "r",
+            },
+        ]
+        mock_response = MagicMock(
+            usage=MagicMock(input_tokens=1, output_tokens=1)
+        )
+        mock_response.content = [
+            MagicMock(type="text", text=json.dumps(grading_data))
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=mock_response)
+
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await grade_quality("output", spec)
+
+        assert report.passed is False
+        assert len(report.results) == 1
+        assert report.results[0].criterion == "parse_response"
+        assert "misalignment" in report.results[0].reasoning.lower()
+
+    @pytest.mark.asyncio
     async def test_grade_quality_coerces_unparseable_score_to_zero(self):
         """Covers ``parse_grading_response`` ``score = float(item.get)``
         exception branch — non-numeric score is coerced to 0.0 instead of
