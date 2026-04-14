@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import os
 import threading
 from pathlib import Path
 from unittest.mock import patch
@@ -14,6 +15,7 @@ from clauditor.workspace import (
     IterationExistsError,
     IterationWorkspace,
     allocate_iteration,
+    stage_inputs,
     validate_skill_name,
 )
 
@@ -290,3 +292,81 @@ class TestFinalizeConcurrentRace:
         # The peer's finalized data is untouched.
         assert (racer_final / "race.txt").read_text() == "from peer"
         assert ws.finalized is False
+
+
+class TestStageInputs:
+    def test_stage_inputs_empty_list_is_noop(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        result = stage_inputs(run_dir, [])
+        assert result == []
+        assert not (run_dir / "inputs").exists()
+
+    def test_stage_inputs_single_file_copies_content(
+        self, tmp_path: Path
+    ) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        src = tmp_path / "source.txt"
+        src.write_bytes(b"hello world")
+
+        result = stage_inputs(run_dir, [src])
+
+        assert len(result) == 1
+        assert result[0] == run_dir / "inputs" / "source.txt"
+        assert result[0].read_bytes() == b"hello world"
+
+    def test_stage_inputs_preserves_mtime(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        src = tmp_path / "source.txt"
+        src.write_bytes(b"content")
+        known_mtime = 1_600_000_000.0
+        os.utime(src, (known_mtime, known_mtime))
+
+        (dest,) = stage_inputs(run_dir, [src])
+
+        assert abs(dest.stat().st_mtime - known_mtime) < 1.0
+
+    def test_stage_inputs_multiple_files(self, tmp_path: Path) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        sources = []
+        for name, payload in [("a.txt", b"A"), ("b.txt", b"B"), ("c.txt", b"C")]:
+            p = tmp_path / name
+            p.write_bytes(payload)
+            sources.append(p)
+
+        result = stage_inputs(run_dir, sources)
+
+        assert result == [
+            run_dir / "inputs" / "a.txt",
+            run_dir / "inputs" / "b.txt",
+            run_dir / "inputs" / "c.txt",
+        ]
+        assert result[0].read_bytes() == b"A"
+        assert result[1].read_bytes() == b"B"
+        assert result[2].read_bytes() == b"C"
+
+    def test_stage_inputs_creates_inputs_subdir_when_missing(
+        self, tmp_path: Path
+    ) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        src = tmp_path / "source.txt"
+        src.write_bytes(b"x")
+        assert not (run_dir / "inputs").exists()
+
+        stage_inputs(run_dir, [src])
+
+        assert (run_dir / "inputs").is_dir()
+
+    def test_stage_inputs_missing_source_raises_filenotfounderror(
+        self, tmp_path: Path
+    ) -> None:
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        missing = tmp_path / "nope.txt"
+
+        with pytest.raises(FileNotFoundError, match="nope.txt"):
+            stage_inputs(run_dir, [missing])
