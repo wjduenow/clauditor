@@ -4,7 +4,8 @@
 
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/25
 - **Branch:** `feature/25-assertion-auditor`
-- **Phase:** detailing
+- **Phase:** devolved
+- **PR:** https://github.com/wjduenow/clauditor/pull/34
 - **Sessions:** 1 (2026-04-14)
 
 ## Discovery
@@ -410,4 +411,15 @@ about audit/baseline workflow).
 
 ## Beads Manifest
 
-*(pending devolve phase)*
+- **Epic:** clauditor-qcg
+- **Worktree / branch:** `feature/25-assertion-auditor`
+- **PR:** #34 (draft)
+- **Tasks:**
+  - clauditor-dmo — US-001 Stable ids
+  - clauditor-k60 — US-002 Persist L1 assertions.json (deps: US-001)
+  - clauditor-eid — US-003 Wire L2 + extraction.json (deps: US-001)
+  - clauditor-b9o — US-004 `--baseline` flag + sidecars (deps: US-002, US-003)
+  - clauditor-jth — US-005 audit command loader+aggregator (deps: US-002, US-003)
+  - clauditor-8qo — US-006 thresholds+reporter+exit code (deps: US-005)
+  - clauditor-8dm — Quality Gate (deps: US-001..US-006)
+  - clauditor-rbb — Patterns & Memory P4 (deps: Quality Gate)
