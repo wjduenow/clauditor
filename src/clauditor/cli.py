@@ -50,7 +50,17 @@ def _positive_int(value: str) -> int:
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
-    """Validate a skill's output against its eval spec (Layer 1 only)."""
+    """Validate a skill's output against its eval spec (Layer 1 only).
+
+    Live runs (no ``--output``) publish a per-iteration workspace under
+    ``.clauditor/iteration-N/<skill>/`` containing ``run-0/output.jsonl``,
+    ``run-0/output.txt`` and ``assertions.json`` (with ``transcript_path``
+    wired onto every assertion result). No ``grading.json`` or
+    ``timing.json`` is written — validate has no Layer 3. Shares the
+    iteration counter with ``clauditor grade``. ``--no-transcript``
+    suppresses the ``run-0/`` stream-json write and leaves
+    ``transcript_path`` unset on assertion rows (US-006).
+    """
     spec = SkillSpec.from_file(args.skill, eval_path=args.eval)
 
     if not spec.eval_spec:
@@ -61,29 +71,89 @@ def cmd_validate(args: argparse.Namespace) -> int:
         )
         return 1
 
-    skill_result = None
-    if args.output:
-        # Validate against provided output file
-        output = Path(args.output).read_text()
-    else:
-        # Run the skill to get output
-        print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
-        skill_result = spec.run()
-        if not skill_result.succeeded:
-            print(
-                f"ERROR: Skill failed to run: {skill_result.error}",
-                file=sys.stderr,
-            )
-            return 1
-        output = skill_result.output
-        print(f"Skill completed in {skill_result.duration_seconds:.1f}s")
-
-    # Run Layer 1 assertions
-    results = run_assertions(output, spec.eval_spec.assertions)
-
-    # Record history (US-005). Layer 1 only — no grader/quality/triggers.
     from clauditor.metrics import TokenUsage, build_metrics
 
+    skill_result: SkillResult | None = None
+    workspace: IterationWorkspace | None = None
+    workspace_rel: str | None = None
+    iteration_index: int | None = None
+
+    if args.output:
+        # Validate against a pre-captured output file. This path is
+        # intentionally NOT wrapped in a workspace: there is no skill
+        # subprocess to capture a transcript from, so there's nothing
+        # to persist under ``run-0/``. Preserve pre-US-006 behavior.
+        output = Path(args.output).read_text()
+        results = run_assertions(output, spec.eval_spec.assertions)
+    else:
+        # Live-run path: allocate an iteration workspace, run the skill
+        # into ``workspace.tmp_path / run-0``, persist sidecars, and
+        # finalize atomically. On any exception, abort the staging dir.
+        clauditor_dir = resolve_clauditor_dir()
+        try:
+            workspace = allocate_iteration(clauditor_dir, spec.skill_name)
+        except InvalidSkillNameError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+
+        try:
+            print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
+            skill_result = spec.run(run_dir=workspace.tmp_path / "run-0")
+            if not skill_result.succeeded:
+                print(
+                    f"ERROR: Skill failed to run: {skill_result.error}",
+                    file=sys.stderr,
+                )
+                workspace.abort()
+                return 1
+            output = skill_result.output
+            print(f"Skill completed in {skill_result.duration_seconds:.1f}s")
+
+            results = run_assertions(output, spec.eval_spec.assertions)
+
+            skill_dir = workspace.tmp_path
+            verbose = bool(getattr(args, "verbose", False))
+            no_transcript = bool(getattr(args, "no_transcript", False))
+
+            if not no_transcript:
+                _write_run_dir(
+                    skill_dir / "run-0",
+                    output,
+                    list(skill_result.stream_events),
+                    verbose=verbose,
+                )
+                transcript_rel = _relative_to_repo(
+                    clauditor_dir,
+                    workspace.final_path / "run-0" / "output.jsonl",
+                )
+                for r in results.results:
+                    r.transcript_path = transcript_rel
+
+            assertions_payload = {
+                "schema_version": 1,
+                "skill": spec.skill_name,
+                "iteration": workspace.iteration,
+                "runs": [{"run": 0, **results.to_json()}],
+            }
+            (skill_dir / "assertions.json").write_text(
+                json.dumps(assertions_payload, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            workspace.finalize()
+            iteration_index = workspace.iteration
+            workspace_rel = _relative_to_repo(
+                clauditor_dir, workspace.final_path
+            )
+        except Exception:
+            if workspace is not None and not workspace.finalized:
+                workspace.abort()
+            raise
+
+    # Record history (US-005). Layer 1 only — no grader/quality/triggers.
     skill_tokens = TokenUsage(
         input_tokens=getattr(skill_result, "input_tokens", 0) or 0,
         output_tokens=getattr(skill_result, "output_tokens", 0) or 0,
@@ -100,6 +170,8 @@ def cmd_validate(args: argparse.Namespace) -> int:
             mean_score=None,
             metrics=metrics_dict,
             command="validate",
+            iteration=iteration_index,
+            workspace_path=workspace_rel,
         )
     except Exception as e:  # pragma: no cover - defensive
         print(f"WARNING: failed to append history: {e}", file=sys.stderr)
