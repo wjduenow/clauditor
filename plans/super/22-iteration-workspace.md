@@ -1,7 +1,7 @@
 ---
 ticket: 22
 title: Per-iteration workspace layout for eval runs
-phase: detailing
+phase: devolved
 sessions: 1
 ---
 
@@ -213,4 +213,21 @@ Today `clauditor grade <skill>` writes a single `.clauditor/<skill>.grade.json`,
 - **Depends on:** Quality Gate
 
 ## Beads Manifest
-_Populated at devolve time._
+
+- **Epic:** `clauditor-yng` — #22: Per-iteration workspace layout for eval runs
+- **PR:** https://github.com/wjduenow/clauditor/pull/31
+- **Branch:** `feature/22-iteration-workspace`
+
+| Task | Story | Depends on |
+|---|---|---|
+| `clauditor-yng.1` | US-001 Repo-root detection helper | — |
+| `clauditor-yng.2` | US-002 Iteration workspace allocator | .1 |
+| `clauditor-yng.3` | US-003 Runner captures raw stream events | — |
+| `clauditor-yng.4` | US-004 Rewrite cmd_grade | .1, .2, .3 |
+| `clauditor-yng.5` | US-005 history.jsonl schema v3 | .2 |
+| `clauditor-yng.6` | US-006 compare auto-detect dirs | .1, .4 |
+| `clauditor-yng.7` | US-007 README update | .4, .6 |
+| `clauditor-yng.8` | Quality Gate | .4, .5, .6, .7 |
+| `clauditor-yng.9` | Patterns & Memory | .8 |
+
+Ready at devolve time: `.1`, `.3` (parallelizable immediately), plus the epic row.
