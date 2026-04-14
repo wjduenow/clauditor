@@ -93,12 +93,19 @@ def clauditor_runner(request: pytest.FixtureRequest) -> SkillRunner:
 
 
 @pytest.fixture
-def clauditor_spec(request: pytest.FixtureRequest):
+def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
     """Fixture factory for loading SkillSpecs.
 
     Usage:
         def test_skill(clauditor_spec):
             spec = clauditor_spec(".claude/commands/my-skill.md")
+
+    When the loaded spec declares non-empty ``eval_spec.input_files``, the
+    returned ``SkillSpec`` has its ``.run`` method transparently wrapped so
+    that calls without an explicit ``run_dir`` use a stable subdirectory
+    under pytest's ``tmp_path``. This causes the declared input files to be
+    staged automatically. Specs with no ``input_files`` are returned
+    unmodified (zero behavior change).
     """
     runner = SkillRunner(
         project_dir=request.config.getoption("--clauditor-project-dir"),
@@ -107,7 +114,23 @@ def clauditor_spec(request: pytest.FixtureRequest):
     )
 
     def _factory(skill_path: str | Path, eval_path: str | Path | None = None):
-        return SkillSpec.from_file(skill_path, eval_path=eval_path, runner=runner)
+        spec = SkillSpec.from_file(skill_path, eval_path=eval_path, runner=runner)
+        if spec.eval_spec is not None and spec.eval_spec.input_files:
+            original_run = spec.run
+            default_run_dir = tmp_path / "clauditor_run"
+
+            def _run_with_default_run_dir(
+                args: str | None = None,
+                *,
+                run_dir: Path | None = None,
+            ):
+                if run_dir is None:
+                    default_run_dir.mkdir(parents=True, exist_ok=True)
+                    run_dir = default_run_dir
+                return original_run(args, run_dir=run_dir)
+
+            spec.run = _run_with_default_run_dir  # type: ignore[method-assign]
+        return spec
 
     return _factory
 

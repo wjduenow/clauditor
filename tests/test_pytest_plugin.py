@@ -163,7 +163,7 @@ class TestPluginFunctionsDirect:
         assert runner.timeout == 60
         assert runner.claude_bin == "claude"
 
-    def test_spec_fixture_returns_callable(self):
+    def test_spec_fixture_returns_callable(self, tmp_path):
         """clauditor_spec fixture returns a callable factory."""
         request = MagicMock()
         request.config.getoption.side_effect = (
@@ -173,7 +173,7 @@ class TestPluginFunctionsDirect:
                 "--clauditor-claude-bin": "claude",
             }[opt]
         )
-        factory = clauditor_spec.__wrapped__(request)
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
         assert callable(factory)
 
     def test_capture_fixture_returns_path(self, tmp_path):
@@ -220,7 +220,7 @@ class TestPluginFunctionsDirect:
         with _pytest.raises(FileNotFoundError):
             path.read_text()
 
-    def test_spec_factory_calls_from_file(self):
+    def test_spec_factory_calls_from_file(self, tmp_path):
         """clauditor_spec factory delegates to SkillSpec.from_file."""
         from unittest.mock import patch
 
@@ -232,11 +232,148 @@ class TestPluginFunctionsDirect:
                 "--clauditor-claude-bin": "claude",
             }[opt]
         )
-        factory = clauditor_spec.__wrapped__(request)
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
         with patch(
             "clauditor.pytest_plugin.SkillSpec.from_file"
         ) as mock_from_file:
-            mock_from_file.return_value = MagicMock()
+            mock_spec = MagicMock()
+            mock_spec.eval_spec = None
+            mock_from_file.return_value = mock_spec
             result = factory("some/skill.md")
             mock_from_file.assert_called_once()
-            assert result is mock_from_file.return_value
+            assert result is mock_spec
+
+
+class TestClauditorSpecInputFiles:
+    """US-005: clauditor_spec fixture auto-stages input_files."""
+
+    def test_clauditor_spec_fixture_without_input_files_unchanged(self, tmp_path):
+        """When input_files is empty, spec.run is NOT wrapped."""
+        from unittest.mock import patch
+
+        from clauditor.spec import SkillSpec
+
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": 180,
+                "--clauditor-claude-bin": "claude",
+            }[opt]
+        )
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = mock_spec.run
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+
+        # spec.run was NOT replaced
+        assert result.run is original_run
+
+    def test_clauditor_spec_fixture_wraps_run_when_input_files_present(
+        self, tmp_path
+    ):
+        """When input_files is non-empty, spec.run is wrapped with default run_dir."""
+        from unittest.mock import patch
+
+        from clauditor.spec import SkillSpec
+
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": 180,
+                "--clauditor-claude-bin": "claude",
+            }[opt]
+        )
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = ["/abs/path/sales.csv"]
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = mock_spec.run
+        original_run.return_value = "RESULT"
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+
+        # spec.run WAS replaced
+        assert result.run is not original_run
+
+        # Calling with no run_dir injects the default + creates the dir
+        ret = result.run()
+        assert ret == "RESULT"
+        original_run.assert_called_once()
+        call_kwargs = original_run.call_args.kwargs
+        assert call_kwargs["run_dir"] == tmp_path / "clauditor_run"
+        assert (tmp_path / "clauditor_run").exists()
+
+        # Explicit run_dir passed by caller overrides the default
+        original_run.reset_mock()
+        custom = tmp_path / "custom_dir"
+        result.run("arg", run_dir=custom)
+        original_run.assert_called_once_with("arg", run_dir=custom)
+
+    def test_clauditor_spec_fixture_stages_input_files_transparently(
+        self, pytester
+    ):
+        """End-to-end: pytester test uses clauditor_spec and input_files get staged."""
+        skill_dir = pytester.path / "skill_pkg"
+        (skill_dir / ".claude" / "commands").mkdir(parents=True)
+        skill_md = skill_dir / ".claude" / "commands" / "my-skill.md"
+        skill_md.write_text("# My Skill\n\nDoes things.\n")
+
+        (skill_dir / ".claude" / "commands" / "sales.csv").write_text(
+            "a,b\n1,2\n"
+        )
+
+        eval_json = skill_dir / ".claude" / "commands" / "my-skill.eval.json"
+        eval_json.write_text(
+            '{"test_args": "--depth quick",'
+            ' "input_files": ["sales.csv"],'
+            ' "assertions": []}'
+        )
+
+        pytester.makepyfile(f"""
+            from unittest.mock import patch
+
+            from clauditor.runner import SkillResult
+
+            SKILL = r"{skill_md}"
+
+            def test_staging(clauditor_spec):
+                spec = clauditor_spec(SKILL)
+                assert spec.eval_spec is not None
+                assert spec.eval_spec.input_files
+                from clauditor.spec import SkillSpec
+                assert not (
+                    getattr(spec.run, '__func__', None) is SkillSpec.run
+                )
+
+                fake_result = SkillResult(
+                    output="Staged 1 input file(s) into /tmp/x\\nOK",
+                    exit_code=0,
+                    skill_name="my-skill",
+                    args="--depth quick",
+                )
+                with patch(
+                    "clauditor.spec.SkillRunner.run",
+                    return_value=fake_result,
+                ):
+                    result = spec.run()
+                assert result.exit_code == 0
+        """)
+        result = pytester.runpytest_inprocess("-v")
+        result.assert_outcomes(passed=1)
