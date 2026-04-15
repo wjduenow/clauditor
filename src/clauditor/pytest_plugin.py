@@ -189,6 +189,37 @@ def clauditor_capture(request: pytest.FixtureRequest):
 
 
 @pytest.fixture
+def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
+    """Fixture factory for blind A/B comparison of two skill outputs.
+
+    Returns a callable that loads a ``SkillSpec`` from ``skill_path`` and
+    runs :func:`clauditor.quality_grader.blind_compare_from_spec` on the
+    two caller-supplied output strings. The fixture does NOT read files —
+    outputs must be passed as strings (DEC-003). Raises ``ValueError`` if
+    the spec lacks an eval spec or ``test_args`` is empty; the exception
+    is propagated untouched so tests can assert on it (DEC-006).
+    """
+    import asyncio
+
+    from clauditor.quality_grader import BlindReport, blind_compare_from_spec
+
+    def _factory(
+        skill_path: str | Path,
+        output_a: str,
+        output_b: str,
+        eval_path: str | Path | None = None,
+        *,
+        model: str | None = None,
+    ) -> BlindReport:
+        spec = clauditor_spec(skill_path, eval_path)
+        return asyncio.run(
+            blind_compare_from_spec(spec, output_a, output_b, model=model)
+        )
+
+    return _factory
+
+
+@pytest.fixture
 def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
     """Fixture factory for trigger precision testing."""
     import asyncio

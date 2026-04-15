@@ -2,7 +2,8 @@
 
 Provides reusable fixtures for eval data, specs, temp skill files, and mock runners.
 IMPORTANT: Do NOT define fixtures named clauditor_runner, clauditor_spec,
-clauditor_grader, or clauditor_triggers -- those are defined by the pytest plugin.
+clauditor_grader, clauditor_blind_compare, or clauditor_triggers -- those
+are defined by the pytest plugin.
 """
 
 from __future__ import annotations
