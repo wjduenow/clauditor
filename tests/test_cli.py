@@ -4111,3 +4111,461 @@ class TestCmdValidateWorkspace:
         clauditor_dir = tmp_path / ".clauditor"
         assert not (clauditor_dir / "iteration-1").exists()
         assert not (clauditor_dir / "iteration-1-tmp").exists()
+
+
+class TestCmdSuggest:
+    """Tests for the suggest subcommand (US-005 / DEC-008 exit codes)."""
+
+    def _write_skill(self, tmp_path, text="# My Skill\n\nThis skill does things.\n"):
+        p = tmp_path / "my-skill.md"
+        p.write_text(text)
+        return p
+
+    def _write_grading_json(self, skill_dir, *, all_pass=True):
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        results = [
+            GradingResult(
+                id="c1",
+                criterion="Is the output correct?",
+                passed=all_pass,
+                score=0.9 if all_pass else 0.2,
+                evidence="e",
+                reasoning="r",
+            )
+        ]
+        report = GradingReport(
+            skill_name="my-skill",
+            model="claude-sonnet-4-6",
+            results=results,
+            duration_seconds=0.0,
+        )
+        (skill_dir / "grading.json").write_text(report.to_json())
+
+    def _write_passing_assertions(self, skill_dir):
+        # Schema mirrors cmd_grade at cli.py:849 — results nested under
+        # runs[].results so load_suggest_input exercises the real path.
+        payload = {
+            "schema_version": 1,
+            "skill": "my-skill",
+            "iteration": 1,
+            "runs": [
+                {
+                    "run": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "results": [
+                        {
+                            "id": "a1",
+                            "name": "contains hello",
+                            "passed": True,
+                            "kind": "contains",
+                            "message": "ok",
+                        }
+                    ],
+                }
+            ],
+        }
+        (skill_dir / "assertions.json").write_text(json.dumps(payload))
+
+    def _write_failing_assertions(self, skill_dir):
+        payload = {
+            "schema_version": 1,
+            "skill": "my-skill",
+            "iteration": 1,
+            "runs": [
+                {
+                    "run": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "results": [
+                        {
+                            "id": "a1",
+                            "name": "contains hello",
+                            "passed": False,
+                            "kind": "contains",
+                            "message": "no match",
+                        }
+                    ],
+                }
+            ],
+        }
+        (skill_dir / "assertions.json").write_text(json.dumps(payload))
+
+    def _fake_report(self, **overrides):
+        from clauditor.suggest import EditProposal, SuggestReport
+
+        defaults = dict(
+            skill_name="my-skill",
+            model="claude-sonnet-4-6",
+            generated_at="2026-01-01T00:00:00.000000Z",
+            source_iteration=1,
+            source_grading_path=".clauditor/iteration-1/my-skill/grading.json",
+            input_tokens=10,
+            output_tokens=20,
+            duration_seconds=0.5,
+            edit_proposals=[
+                EditProposal(
+                    id="edit-0",
+                    anchor="This skill does things.",
+                    replacement="This skill does things correctly.",
+                    rationale="clarity",
+                    confidence=0.9,
+                    motivated_by=["a1"],
+                )
+            ],
+            summary_rationale="make it clearer",
+            validation_errors=[],
+            parse_error=None,
+            api_error=None,
+        )
+        defaults.update(overrides)
+        return SuggestReport(**defaults)
+
+    def test_no_prior_grade_exits_1_with_message(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(["suggest", "my-skill.md"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "clauditor grade" in err
+        # No sidecar created on failure.
+        assert not (tmp_path / ".clauditor" / "suggestions").exists()
+
+    def test_zero_failures_exits_0_without_calling_sonnet(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=True)
+        self._write_passing_assertions(skill_dir)
+        monkeypatch.chdir(tmp_path)
+
+        sentinel = AsyncMock()
+        with patch("clauditor.cli.propose_edits", new=sentinel):
+            rc = main(["suggest", "my-skill.md"])
+
+        assert rc == 0
+        sentinel.assert_not_called()
+        err = capsys.readouterr().err
+        assert "No improvement suggestions" in err
+        assert not (tmp_path / ".clauditor" / "suggestions").exists()
+
+    def test_success_prints_diff_and_writes_sidecar(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        monkeypatch.chdir(tmp_path)
+
+        report = self._fake_report()
+        with patch(
+            "clauditor.cli.propose_edits",
+            new=AsyncMock(return_value=report),
+        ):
+            rc = main(["suggest", "my-skill.md"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "--- SKILL.md" in out
+        assert "+++ SKILL.md (proposed)" in out
+
+        sidecar_dir = tmp_path / ".clauditor" / "suggestions"
+        assert sidecar_dir.is_dir()
+        jsons = list(sidecar_dir.glob("my-skill-*.json"))
+        diffs = list(sidecar_dir.glob("my-skill-*.diff"))
+        assert len(jsons) == 1
+        assert len(diffs) == 1
+
+    def test_json_flag_prints_sidecar_json_to_stdout(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        monkeypatch.chdir(tmp_path)
+
+        report = self._fake_report()
+        with patch(
+            "clauditor.cli.propose_edits",
+            new=AsyncMock(return_value=report),
+        ):
+            rc = main(["suggest", "my-skill.md", "--json"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        data = json.loads(out)
+        assert list(data.keys())[0] == "schema_version"
+        assert data["schema_version"] == 1
+        assert data["skill_name"] == "my-skill"
+
+    def test_from_iteration_is_forwarded(self, tmp_path, monkeypatch):
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        # Create iteration-1 AND iteration-3; request iteration-1 explicitly.
+        skill_dir_1 = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir_1, all_pass=False)
+        self._write_failing_assertions(skill_dir_1)
+        skill_dir_3 = tmp_path / ".clauditor" / "iteration-3" / "my-skill"
+        self._write_grading_json(skill_dir_3, all_pass=False)
+        self._write_failing_assertions(skill_dir_3)
+        monkeypatch.chdir(tmp_path)
+
+        captured = {}
+
+        async def _fake_propose(suggest_input, *, model=None):
+            captured["source_iteration"] = suggest_input.source_iteration
+            return self._fake_report(source_iteration=suggest_input.source_iteration)
+
+        with patch("clauditor.cli.propose_edits", new=_fake_propose):
+            rc = main(["suggest", "my-skill.md", "--from-iteration", "1"])
+
+        assert rc == 0
+        assert captured["source_iteration"] == 1
+
+    def test_with_transcripts_forwarded(self, tmp_path, monkeypatch):
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        run_dir = skill_dir / "run-0"
+        run_dir.mkdir()
+        (run_dir / "output.jsonl").write_text(
+            json.dumps({"type": "assistant", "text": "hi"}) + "\n"
+        )
+        monkeypatch.chdir(tmp_path)
+
+        captured = {}
+
+        async def _fake_propose(suggest_input, *, model=None):
+            captured["transcripts"] = suggest_input.transcript_events
+            return self._fake_report()
+
+        with patch("clauditor.cli.propose_edits", new=_fake_propose):
+            rc = main(
+                ["suggest", "my-skill.md", "--with-transcripts"]
+            )
+
+        assert rc == 0
+        assert captured["transcripts"] is not None
+        assert len(captured["transcripts"]) == 1
+        assert len(captured["transcripts"][0]) == 1
+
+    def test_anthropic_error_exits_3(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        monkeypatch.chdir(tmp_path)
+
+        report = self._fake_report(
+            api_error="anthropic API error: RuntimeError('boom')",
+            edit_proposals=[],
+            summary_rationale="",
+        )
+        with patch(
+            "clauditor.cli.propose_edits",
+            new=AsyncMock(return_value=report),
+        ):
+            rc = main(["suggest", "my-skill.md"])
+
+        assert rc == 3
+        err = capsys.readouterr().err
+        assert "anthropic API error" in err
+        assert not (tmp_path / ".clauditor" / "suggestions").exists()
+
+    def test_parse_error_exits_1_no_sidecar(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        monkeypatch.chdir(tmp_path)
+
+        report = self._fake_report(
+            parse_error="ValueError: missing 'edits' key",
+            edit_proposals=[],
+            summary_rationale="",
+        )
+        with patch(
+            "clauditor.cli.propose_edits",
+            new=AsyncMock(return_value=report),
+        ):
+            rc = main(["suggest", "my-skill.md"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "unparseable JSON" in err
+        assert not (tmp_path / ".clauditor" / "suggestions").exists()
+
+    def test_anchor_validation_error_exits_2_no_sidecar(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        monkeypatch.chdir(tmp_path)
+
+        report = self._fake_report(
+            edit_proposals=[],
+            validation_errors=[
+                "edit-0 (motivated_by=['a1']): anchor not found in SKILL.md"
+            ],
+        )
+        with patch(
+            "clauditor.cli.propose_edits",
+            new=AsyncMock(return_value=report),
+        ):
+            rc = main(["suggest", "my-skill.md"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "anchor validation" in err
+        assert "edit-0" in err
+        assert not (tmp_path / ".clauditor" / "suggestions").exists()
+
+    def test_verbose_emits_stderr_bundle_summary(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        monkeypatch.chdir(tmp_path)
+
+        report = self._fake_report()
+        with patch(
+            "clauditor.cli.propose_edits",
+            new=AsyncMock(return_value=report),
+        ):
+            rc = main(["suggest", "my-skill.md", "-v"])
+
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "from iteration" in err
+        assert "failing_assertions=1" in err
+
+    def test_write_sidecar_oserror_exits_1_with_stderr(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Regression: an OSError from write_sidecar (disk full, read-only
+        # .clauditor, whatever) must exit 1 with a stderr message, not
+        # propagate a bare traceback through cmd_suggest.
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        monkeypatch.chdir(tmp_path)
+
+        report = self._fake_report()
+        with (
+            patch(
+                "clauditor.cli.propose_edits",
+                new=AsyncMock(return_value=report),
+            ),
+            patch(
+                "clauditor.cli.write_sidecar",
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            rc = main(["suggest", "my-skill.md"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "could not write sidecar" in err
+        assert "disk full" in err
+
+    def test_skill_file_not_found_exits_1_with_stderr(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Coverage: the early "skill file not found" short-circuit
+        # before any signal loading happens.
+        monkeypatch.chdir(tmp_path)
+        rc = main(["suggest", "nonexistent.md"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "skill file not found" in err
+
+    def test_invalid_skill_name_exits_1_with_stderr(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Regression (Copilot finding): a skill file whose stem fails
+        # workspace.validate_skill_name (leading dot, space, etc.) used
+        # to leak InvalidSkillNameError out of _cmd_suggest_impl as a
+        # bare traceback. Catch it and exit 1 with a clean stderr
+        # message.
+        (tmp_path / ".git").mkdir()
+        # Name with a leading dot — skill_path.stem is ".hidden" which
+        # validate_skill_name rejects. The file exists so the early
+        # file-not-found branch doesn't short-circuit.
+        bad = tmp_path / ".hidden.md"
+        bad.write_text("# Skill\n\nDo the thing.\n")
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(["suggest", str(bad.name)])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "invalid skill name" in err
+
+    def test_oserror_during_load_exits_1_with_stderr(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Regression: if grading.json (or SKILL.md) vanishes between the
+        # exists-check and the read, load_suggest_input raises
+        # FileNotFoundError. The CLI must catch OSError and exit 1
+        # instead of leaking a traceback.
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        monkeypatch.chdir(tmp_path)
+
+        with patch(
+            "clauditor.cli.load_suggest_input",
+            side_effect=FileNotFoundError(
+                "iteration-1/my-skill/grading.json vanished"
+            ),
+        ):
+            rc = main(["suggest", "my-skill.md"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "could not load grade-run signals" in err
+        assert "my-skill" in err
+
+    def test_non_utf8_skill_file_exits_1(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Regression: SKILL.md with invalid UTF-8 bytes must exit 1
+        # cleanly instead of propagating a UnicodeDecodeError traceback.
+        (tmp_path / ".git").mkdir()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        # Invalid UTF-8 sequence (lone continuation byte).
+        (tmp_path / "my-skill.md").write_bytes(b"# Skill\n\n\x80 bad\n")
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(["suggest", "my-skill.md"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "UTF-8" in err or "decode" in err
