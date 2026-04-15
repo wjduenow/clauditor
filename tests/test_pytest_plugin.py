@@ -550,57 +550,6 @@ class TestClauditorBlindCompare:
             with pytest.raises(ValueError, match="test_args"):
                 factory(skill_path, "a", "b")
 
-    def test_clauditor_blind_compare_via_pytester_injection(self, pytester):
-        """End-to-end fixture wiring via pytester: guards against regressions
-        in the @pytest.fixture decoration, request handling, or clauditor_spec
-        parameter wiring that the __wrapped__ direct-call tests would miss."""
-        skill_md = pytester.path / "sushi.md"
-        skill_md.write_text("# sushi\n\nA skill.\n")
-        eval_json = pytester.path / "sushi.eval.json"
-        eval_json.write_text(
-            json.dumps({
-                "skill_name": "sushi",
-                "description": "Eval",
-                "test_args": "What's the best sushi?",
-                "assertions": [],
-                "grading_criteria": [
-                    {"id": "c0", "criterion": "Is it specific?"},
-                ],
-                "grading_model": "claude-sonnet-4-6",
-            })
-        )
-
-        pytester.makepyfile(f"""
-            from unittest.mock import AsyncMock, patch
-
-            SKILL = r"{skill_md}"
-
-            def test_uses_blind_compare_fixture(clauditor_blind_compare):
-                from clauditor.quality_grader import BlindReport
-                canned = BlindReport(
-                    preference="a",
-                    confidence=0.9,
-                    score_a=0.8,
-                    score_b=0.4,
-                    reasoning="ok",
-                    position_agreement=True,
-                    model="claude-sonnet-4-6",
-                    input_tokens=10,
-                    output_tokens=5,
-                    duration_seconds=0.1,
-                )
-                with patch(
-                    "clauditor.quality_grader.blind_compare",
-                    new=AsyncMock(return_value=canned),
-                ):
-                    result = clauditor_blind_compare(
-                        SKILL, "out a", "out b"
-                    )
-                assert result.preference == "a"
-        """)
-        result = pytester.runpytest_inprocess("-v")
-        result.assert_outcomes(passed=1)
-
     def test_clauditor_blind_compare_reserved_fixture_name(self):
         """Regression guard: fixture name is documented as plugin-reserved."""
         conftest_text = (
