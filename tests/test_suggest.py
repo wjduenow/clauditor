@@ -21,8 +21,11 @@ from clauditor.suggest import (
     load_suggest_input,
     parse_suggest_response,
     propose_edits,
+    render_unified_diff,
     validate_anchors,
+    write_sidecar,
 )
+from clauditor.workspace import InvalidSkillNameError
 
 
 def _write_assertions(skill_dir: Path, results: list[dict]) -> None:
@@ -1046,3 +1049,146 @@ class TestProposeEdits:
         assert len(report.edit_proposals) == 1
         assert len(report.validation_errors) == 1
         assert "not found" in report.validation_errors[0]
+
+
+class TestRenderUnifiedDiff:
+    def test_single_edit_produces_expected_hunk(self) -> None:
+        skill_md = "Line one.\nDo the thing.\nLine three.\n"
+        report = _make_report(
+            proposals=[
+                _make_proposal(
+                    anchor="Do the thing.",
+                    replacement="Do the better thing.",
+                )
+            ]
+        )
+        diff = render_unified_diff(report, skill_md)
+        assert "-Do the thing." in diff
+        assert "+Do the better thing." in diff
+        assert "Line one." in diff
+
+    def test_multiple_edits_apply_in_declaration_order(self) -> None:
+        skill_md = "alpha\nbravo\ncharlie\n"
+        report = _make_report(
+            proposals=[
+                _make_proposal(
+                    pid="edit-0", anchor="alpha", replacement="ALPHA"
+                ),
+                _make_proposal(
+                    pid="edit-1", anchor="charlie", replacement="CHARLIE"
+                ),
+            ]
+        )
+        diff = render_unified_diff(report, skill_md)
+        assert "-alpha" in diff
+        assert "+ALPHA" in diff
+        assert "-charlie" in diff
+        assert "+CHARLIE" in diff
+
+    def test_render_does_not_mutate_input_skill_text(self) -> None:
+        skill_md = "Do the thing.\n"
+        original = skill_md
+        report = _make_report(
+            proposals=[
+                _make_proposal(
+                    anchor="Do the thing.",
+                    replacement="Do the better thing.",
+                )
+            ]
+        )
+        _ = render_unified_diff(report, skill_md)
+        assert skill_md == original
+
+    def test_empty_proposals_returns_empty_string(self) -> None:
+        report = _make_report(proposals=[])
+        assert render_unified_diff(report, "anything") == ""
+
+    def test_diff_uses_unified_format(self) -> None:
+        skill_md = "Do the thing.\n"
+        report = _make_report(
+            proposals=[
+                _make_proposal(
+                    anchor="Do the thing.",
+                    replacement="Do the better thing.",
+                )
+            ]
+        )
+        diff = render_unified_diff(report, skill_md)
+        assert "--- SKILL.md" in diff
+        assert "+++ SKILL.md (proposed)" in diff
+
+
+class TestWriteSidecar:
+    def test_creates_suggestions_dir_if_missing(
+        self, tmp_path: Path
+    ) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        assert not (clauditor_dir / "suggestions").exists()
+        report = _make_report(proposals=[_make_proposal()])
+        write_sidecar(report, "diff body", clauditor_dir)
+        assert (clauditor_dir / "suggestions").is_dir()
+
+    def test_writes_both_files(self, tmp_path: Path) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        report = _make_report(proposals=[_make_proposal()])
+        json_path, diff_path = write_sidecar(
+            report, "my diff text", clauditor_dir
+        )
+        assert json_path.exists()
+        assert diff_path.exists()
+        assert json_path.suffix == ".json"
+        assert diff_path.suffix == ".diff"
+
+    def test_json_sidecar_first_key_is_schema_version(
+        self, tmp_path: Path
+    ) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        report = _make_report(proposals=[_make_proposal()])
+        json_path, _ = write_sidecar(report, "", clauditor_dir)
+        data = json.loads(json_path.read_text())
+        assert list(data.keys())[0] == "schema_version"
+
+    def test_diff_file_contents_match_argument(
+        self, tmp_path: Path
+    ) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        report = _make_report(proposals=[_make_proposal()])
+        diff_text = "--- SKILL.md\n+++ SKILL.md (proposed)\n@@ -1 +1 @@\n-a\n+b\n"
+        _, diff_path = write_sidecar(report, diff_text, clauditor_dir)
+        assert diff_path.read_text() == diff_text
+
+    def test_filename_uses_microsecond_timestamp(
+        self, tmp_path: Path
+    ) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        report = _make_report(proposals=[_make_proposal()])
+        json_path, diff_path = write_sidecar(report, "", clauditor_dir)
+        import re as _re
+        # %Y%m%d (8) T %H%M%S%f (6+6) Z — microsecond precision.
+        pattern = _re.compile(r"^find-\d{8}T\d{12}Z$")
+        assert pattern.match(json_path.stem)
+        assert pattern.match(diff_path.stem)
+
+    def test_skill_name_validation_rejects_traversal(
+        self, tmp_path: Path
+    ) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        bad_report = SuggestReport(
+            skill_name="../evil",
+            model="claude-sonnet-4-6",
+            generated_at="2026-04-14T00:00:00.000000Z",
+            source_iteration=1,
+            source_grading_path="x",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+        )
+        with pytest.raises(InvalidSkillNameError):
+            write_sidecar(bad_report, "", clauditor_dir)
+
+    def test_returns_absolute_paths(self, tmp_path: Path) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        report = _make_report(proposals=[_make_proposal()])
+        json_path, diff_path = write_sidecar(report, "", clauditor_dir)
+        assert json_path.is_absolute()
+        assert diff_path.is_absolute()

@@ -17,6 +17,7 @@ event loop's own scheduler.
 from __future__ import annotations
 
 import datetime
+import difflib
 import json
 import re
 import sys
@@ -24,6 +25,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from clauditor import workspace
 from clauditor.assertions import AssertionResult
 from clauditor.quality_grader import GradingReport, GradingResult
 from clauditor.transcripts import redact
@@ -870,3 +872,71 @@ async def propose_edits(
         validation_errors=validation_errors,
         parse_error=None,
     )
+
+
+# --------------------------------------------------------------------------
+# US-004: Unified diff renderer + sidecar writer
+# --------------------------------------------------------------------------
+
+
+def render_unified_diff(
+    report: SuggestReport, skill_md_text: str
+) -> str:
+    """Render a unified diff of the proposed edits against SKILL.md.
+
+    Non-mutating per ``.claude/rules/non-mutating-scrub.md``: the input
+    ``skill_md_text`` is not modified. Each edit in declaration order is
+    applied to a local copy via :py:meth:`str.replace` with ``count=1``.
+    v1 assumes the anchor validator has already guaranteed that every
+    anchor is unique in the source text, so no overlap detection is
+    performed here.
+
+    An empty :attr:`SuggestReport.edit_proposals` list returns the empty
+    string (no hunks, nothing to diff).
+    """
+    if not report.edit_proposals:
+        return ""
+
+    proposed = skill_md_text
+    for edit in report.edit_proposals:
+        proposed = proposed.replace(edit.anchor, edit.replacement, 1)
+
+    diff_lines = difflib.unified_diff(
+        skill_md_text.splitlines(keepends=True),
+        proposed.splitlines(keepends=True),
+        fromfile="SKILL.md",
+        tofile="SKILL.md (proposed)",
+    )
+    return "".join(diff_lines)
+
+
+def write_sidecar(
+    report: SuggestReport,
+    diff_text: str,
+    clauditor_dir: Path,
+) -> tuple[Path, Path]:
+    """Persist the suggest report + diff to ``.clauditor/suggestions/``.
+
+    Returns ``(json_path, diff_path)`` as absolute paths. The skill name
+    is validated via :func:`clauditor.workspace.validate_skill_name`
+    before any filesystem operation so a traversal attempt fails loudly
+    before we create the ``suggestions/`` dir.
+
+    The filename stem is ``<skill>-<timestamp>`` where ``timestamp`` is
+    a microsecond-precision UTC ISO-ish string (``%Y%m%dT%H%M%S%fZ``),
+    matching the precedent in ``cli.py``. Two suggests in the same
+    microsecond would collide — acceptable for v1.
+    """
+    workspace.validate_skill_name(report.skill_name)
+
+    suggestions_dir = clauditor_dir / "suggestions"
+    suggestions_dir.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    json_path = suggestions_dir / f"{report.skill_name}-{ts}.json"
+    diff_path = suggestions_dir / f"{report.skill_name}-{ts}.diff"
+
+    json_path.write_text(report.to_json())
+    diff_path.write_text(diff_text)
+
+    return json_path.resolve(), diff_path.resolve()
