@@ -1331,6 +1331,16 @@ class TestBlindCompare:
     # Seed 1: random.Random(1).random() < 0.5 is True → "ab->12".
 
     @pytest.mark.asyncio
+    async def test_blind_compare_rejects_empty_user_prompt(self):
+        with pytest.raises(ValueError, match="user_prompt must be non-empty"):
+            await blind_compare("", "a-out", "b-out")
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_rejects_whitespace_user_prompt(self):
+        with pytest.raises(ValueError, match="user_prompt must be non-empty"):
+            await blind_compare("   \n", "a-out", "b-out")
+
+    @pytest.mark.asyncio
     async def test_blind_compare_rejects_empty_output_a(self):
         with pytest.raises(ValueError, match="non-empty"):
             await blind_compare("q", "", "b-out")

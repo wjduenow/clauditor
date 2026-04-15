@@ -1387,7 +1387,7 @@ class TestEvalSpecUserPrompt:
         assert spec.user_prompt == "What's the best sushi in Tokyo?"
 
     def test_from_file_user_prompt_absent_defaults_to_none(self, tmp_path):
-        """Backcompat: omitting user_prompt leaves the attribute None."""
+        """Omitting user_prompt leaves the attribute None."""
         data = {"skill_name": "s"}
         path = _write_json(tmp_path, data)
         spec = EvalSpec.from_file(path)
@@ -1399,7 +1399,18 @@ class TestEvalSpecUserPrompt:
         data = {"skill_name": "s", "user_prompt": ""}
         path = _write_json(tmp_path, data)
         with pytest.raises(
-            ValueError, match="user_prompt must be a non-empty string"
+            ValueError, match="user_prompt must be a non-empty"
+        ):
+            EvalSpec.from_file(path)
+
+    def test_from_file_user_prompt_whitespace_only_rejected(self, tmp_path):
+        """Whitespace-only user_prompt must be rejected at load time —
+        otherwise the failure only surfaces much later when the blind
+        judge is invoked."""
+        data = {"skill_name": "s", "user_prompt": "   \n\t"}
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError, match="user_prompt must be a non-empty, non-whitespace"
         ):
             EvalSpec.from_file(path)
 
@@ -1408,7 +1419,7 @@ class TestEvalSpecUserPrompt:
         data = {"skill_name": "s", "user_prompt": 42}
         path = _write_json(tmp_path, data)
         with pytest.raises(
-            ValueError, match="user_prompt must be a non-empty string"
+            ValueError, match="user_prompt must be a non-empty"
         ):
             EvalSpec.from_file(path)
 

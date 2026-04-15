@@ -296,7 +296,7 @@ Rubric-based grading can miss holistic regressions where two outputs pass every 
 clauditor compare before.txt after.txt --spec <skill.md> --blind
 ```
 
-The judge runs twice with the A/B positions swapped so position bias shows up as disagreement. Output includes a preference (`BEFORE` / `AFTER` / `TIE`), confidence, per-output holistic score, whether the two runs agreed on the winner, and the judge's reasoning. Currently only the file-pair form is supported (iteration refs like `--from/--to` are rejected); `--blind` requires `--spec` for the user prompt context and uses `grading_criteria` from the spec as an optional rubric hint to the judge.
+The judge runs twice with the A/B positions swapped so position bias shows up as disagreement. Output includes a preference (`BEFORE` / `AFTER` / `TIE`), confidence, per-output holistic score, whether the two runs agreed on the winner, and the judge's reasoning. Currently only the file-pair form is supported (iteration refs like `--from/--to` are rejected); `--blind` requires `--spec` with `eval_spec.user_prompt` set (the natural-language query the judge will see) and uses `grading_criteria` from the spec as an optional rubric hint to the judge.
 
 #### Variance Measurement
 

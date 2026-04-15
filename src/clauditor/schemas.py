@@ -329,10 +329,11 @@ class EvalSpec:
 
         user_prompt = data.get("user_prompt")
         if user_prompt is not None:
-            if not isinstance(user_prompt, str) or user_prompt == "":
+            if not isinstance(user_prompt, str) or not user_prompt.strip():
                 raise ValueError(
                     f"EvalSpec(skill_name={skill_name!r}): user_prompt "
-                    f"must be a non-empty string, got {user_prompt!r}"
+                    f"must be a non-empty, non-whitespace string, "
+                    f"got {user_prompt!r}"
                 )
 
         trigger_tests = None
@@ -382,6 +383,11 @@ class EvalSpec:
             "skill_name": self.skill_name,
             "description": self.description,
             "test_args": self.test_args,
+            **(
+                {"user_prompt": self.user_prompt}
+                if self.user_prompt is not None
+                else {}
+            ),
             "input_files": self.input_files,
             "assertions": self.assertions,
             "sections": [
@@ -423,8 +429,6 @@ class EvalSpec:
             "grading_criteria": self.grading_criteria,
             "grading_model": self.grading_model,
         }
-        if self.user_prompt is not None:
-            result["user_prompt"] = self.user_prompt
         if self.output_file is not None:
             result["output_file"] = self.output_file
         if self.output_files:

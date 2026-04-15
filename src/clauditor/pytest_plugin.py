@@ -196,7 +196,7 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
     runs :func:`clauditor.quality_grader.blind_compare_from_spec` on the
     two caller-supplied output strings. The fixture does NOT read files —
     outputs must be passed as strings. Raises ``ValueError`` if the spec
-    lacks an eval spec or ``test_args`` is empty; the exception is
+    lacks an eval spec or ``user_prompt`` is empty; the exception is
     propagated untouched so tests can assert on it.
 
     Model precedence (highest → lowest):
