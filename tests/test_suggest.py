@@ -29,11 +29,24 @@ from clauditor.workspace import InvalidSkillNameError
 
 
 def _write_assertions(skill_dir: Path, results: list[dict]) -> None:
+    """Write assertions.json using the production `runs` schema.
+
+    Mirrors the envelope built by cmd_grade at cli.py:849 so loaders
+    exercise the real on-disk shape, not a test-only shortcut.
+    """
     skill_dir.mkdir(parents=True, exist_ok=True)
     payload = {
-        "input_tokens": 0,
-        "output_tokens": 0,
-        "results": results,
+        "schema_version": 1,
+        "skill": skill_dir.name,
+        "iteration": 1,
+        "runs": [
+            {
+                "run": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "results": results,
+            }
+        ],
     }
     (skill_dir / "assertions.json").write_text(json.dumps(payload))
 
@@ -127,6 +140,19 @@ class TestFindLatestGrading:
         )
         idx, _ = find_latest_grading(clauditor, "find")
         assert idx == 4
+
+    def test_rejects_skill_name_with_path_traversal(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression (CodeRabbit finding): the skill argument is used
+        # to construct clauditor_dir / f"iteration-{N}" / skill. An
+        # unvalidated "../../etc/passwd" would escape the workspace.
+        # find_latest_grading reuses the same validator as
+        # write_sidecar so both ends of the pipeline are safe.
+        clauditor_dir = tmp_path / ".clauditor"
+        clauditor_dir.mkdir()
+        with pytest.raises(InvalidSkillNameError):
+            find_latest_grading(clauditor_dir, "../evil")
 
     def test_raises_no_prior_grade_error_when_none_exist(
         self, tmp_path: Path
@@ -471,12 +497,28 @@ class TestLoadSuggestInputMalformedJson:
         )
         assert si.failing_assertions == []
 
-    def test_non_list_results_is_skipped_not_crashed(
+    def test_non_list_runs_is_skipped_not_crashed(
         self, tmp_path: Path
     ) -> None:
-        # Regression: results key present but a dict instead of a list.
+        # Regression: runs key present but a dict instead of a list.
         clauditor_dir, skill_md = self._scaffold(
-            tmp_path, assertions_payload={"results": {"a1": "bogus"}}
+            tmp_path,
+            assertions_payload={"runs": {"0": "bogus"}},
+        )
+        si = load_suggest_input(
+            skill="s", clauditor_dir=clauditor_dir, skill_md_path=skill_md
+        )
+        assert si.failing_assertions == []
+
+    def test_non_list_results_inside_run_is_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression: a run entry's `results` field is a dict, not a list.
+        clauditor_dir, skill_md = self._scaffold(
+            tmp_path,
+            assertions_payload={
+                "runs": [{"run": 0, "results": {"a1": "bogus"}}]
+            },
         )
         si = load_suggest_input(
             skill="s", clauditor_dir=clauditor_dir, skill_md_path=skill_md
@@ -486,19 +528,25 @@ class TestLoadSuggestInputMalformedJson:
     def test_non_dict_result_entries_are_skipped(
         self, tmp_path: Path
     ) -> None:
-        # Regression: one entry in results is a scalar (partial write).
+        # Regression: one entry in a run's results list is a scalar
+        # (partial write). The valid entry is still picked up.
         clauditor_dir, skill_md = self._scaffold(
             tmp_path,
             assertions_payload={
-                "results": [
-                    "garbage string",
+                "runs": [
                     {
-                        "id": "a1",
-                        "name": "real one",
-                        "passed": False,
-                        "message": "missing",
-                        "kind": "presence",
-                    },
+                        "run": 0,
+                        "results": [
+                            "garbage string",
+                            {
+                                "id": "a1",
+                                "name": "real one",
+                                "passed": False,
+                                "message": "missing",
+                                "kind": "presence",
+                            },
+                        ],
+                    }
                 ]
             },
         )
@@ -507,6 +555,66 @@ class TestLoadSuggestInputMalformedJson:
         )
         assert len(si.failing_assertions) == 1
         assert si.failing_assertions[0].id == "a1"
+
+    def test_aggregates_and_dedupes_across_runs_by_stable_id(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression: the production schema has multiple runs from
+        # variance reps. _load_failing_assertions should aggregate
+        # across all runs and dedupe by stable id (first occurrence
+        # wins) so a flaky assertion that only fails in run-1 still
+        # surfaces, and the same assertion failing in both run-0 and
+        # run-1 is reported once.
+        clauditor_dir, skill_md = self._scaffold(
+            tmp_path,
+            assertions_payload={
+                "runs": [
+                    {
+                        "run": 0,
+                        "results": [
+                            {
+                                "id": "a1",
+                                "name": "first",
+                                "passed": False,
+                                "message": "fails in run 0",
+                                "kind": "presence",
+                            },
+                            {
+                                "id": "a2",
+                                "name": "passes",
+                                "passed": True,
+                                "message": "",
+                                "kind": "presence",
+                            },
+                        ],
+                    },
+                    {
+                        "run": 1,
+                        "results": [
+                            {
+                                "id": "a1",
+                                "name": "first",
+                                "passed": False,
+                                "message": "fails in run 1 too",
+                                "kind": "presence",
+                            },
+                            {
+                                "id": "a3",
+                                "name": "flaky",
+                                "passed": False,
+                                "message": "only fails in variance",
+                                "kind": "presence",
+                            },
+                        ],
+                    },
+                ]
+            },
+        )
+        si = load_suggest_input(
+            skill="s", clauditor_dir=clauditor_dir, skill_md_path=skill_md
+        )
+        ids = [r.id for r in si.failing_assertions]
+        assert ids == ["a1", "a3"]
 
 
 class TestLoadSuggestInputCRLF:
@@ -523,15 +631,25 @@ class TestLoadSuggestInputCRLF:
         (skill_dir / "assertions.json").write_text(
             json.dumps(
                 {
-                    "results": [
+                    "schema_version": 1,
+                    "skill": "s",
+                    "iteration": 1,
+                    "runs": [
                         {
-                            "id": "a1",
-                            "name": "has header",
-                            "passed": False,
-                            "message": "missing",
-                            "kind": "presence",
+                            "run": 0,
+                            "input_tokens": 0,
+                            "output_tokens": 0,
+                            "results": [
+                                {
+                                    "id": "a1",
+                                    "name": "has header",
+                                    "passed": False,
+                                    "message": "missing",
+                                    "kind": "presence",
+                                }
+                            ],
                         }
-                    ]
+                    ],
                 }
             ),
             encoding="utf-8",

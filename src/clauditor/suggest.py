@@ -91,9 +91,19 @@ def find_latest_grading(
     * Optional ``from_iteration`` override pins the search to a specific
       iteration (DEC-007 ``--from-iteration``).
 
+    The ``skill`` argument is validated with
+    :func:`clauditor.workspace.validate_skill_name` before any path is
+    constructed so a malicious value cannot escape ``clauditor_dir`` via
+    ``..`` traversal or an absolute path (per
+    ``.claude/rules/path-validation.md``). ``write_sidecar`` already
+    applies the same check at the opposite end of the pipeline.
+
     Raises :class:`NoPriorGradeError` if the requested iteration is
     missing ``grading.json`` or no iteration in the workspace has one.
+    Raises :class:`clauditor.workspace.InvalidSkillNameError` if
+    ``skill`` fails validation.
     """
+    workspace.validate_skill_name(skill)
     if from_iteration is not None:
         skill_dir = clauditor_dir / f"iteration-{from_iteration}" / skill
         if not (skill_dir / "grading.json").exists():
@@ -131,12 +141,29 @@ def find_latest_grading(
 
 
 def _load_failing_assertions(skill_dir: Path) -> list[AssertionResult]:
-    """Read ``assertions.json`` and return only the failing entries.
+    """Read ``assertions.json`` and return the failing entries.
 
-    Returns an empty list if the file does not exist (a grade run with
-    only L3 criteria is valid). Defensively type-guards the JSON shape
-    so a corrupt or partial file does not crash the whole suggest run
-    with an ``AttributeError`` from a non-dict / non-list payload.
+    The production schema written by ``cmd_grade`` (see
+    ``cli.py::assertions_payload`` around line 849) is::
+
+        {
+          "schema_version": 1,
+          "skill": "...",
+          "iteration": N,
+          "runs": [
+            {"run": 0, "input_tokens": ..., "output_tokens": ...,
+             "results": [...]},
+            {"run": 1, ..., "results": [...]},
+            ...
+          ]
+        }
+
+    We walk every run and aggregate failing results, de-duping by
+    stable assertion ``id`` (first occurrence wins). This surfaces
+    flaky assertions whose failure only shows up in a variance rep
+    without over-reporting the same failure twice. Returns an empty
+    list if the file is missing or the top-level shape is wrong —
+    corrupt sidecars must not crash the whole suggest run.
     """
     path = skill_dir / "assertions.json"
     if not path.exists():
@@ -144,16 +171,31 @@ def _load_failing_assertions(skill_dir: Path) -> list[AssertionResult]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         return []
-    results = data.get("results", [])
-    if not isinstance(results, list):
+    runs = data.get("runs", [])
+    if not isinstance(runs, list):
         return []
+
+    seen_ids: set[str] = set()
     failing: list[AssertionResult] = []
-    for entry in results:
-        if not isinstance(entry, dict):
+    for run in runs:
+        if not isinstance(run, dict):
             continue
-        if entry.get("passed"):
+        results = run.get("results", [])
+        if not isinstance(results, list):
             continue
-        failing.append(AssertionResult.from_json_dict(entry))
+        for entry in results:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("passed"):
+                continue
+            result = AssertionResult.from_json_dict(entry)
+            # Dedupe across runs by stable id from DEC-001. Entries
+            # without an id (pre-stable-id runs) are all kept.
+            if result.id:
+                if result.id in seen_ids:
+                    continue
+                seen_ids.add(result.id)
+            failing.append(result)
     return failing
 
 

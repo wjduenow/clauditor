@@ -4142,17 +4142,26 @@ class TestCmdSuggest:
         (skill_dir / "grading.json").write_text(report.to_json())
 
     def _write_passing_assertions(self, skill_dir):
+        # Schema mirrors cmd_grade at cli.py:849 — results nested under
+        # runs[].results so load_suggest_input exercises the real path.
         payload = {
             "schema_version": 1,
             "skill": "my-skill",
             "iteration": 1,
-            "results": [
+            "runs": [
                 {
-                    "id": "a1",
-                    "name": "contains hello",
-                    "passed": True,
-                    "kind": "contains",
-                    "message": "ok",
+                    "run": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "results": [
+                        {
+                            "id": "a1",
+                            "name": "contains hello",
+                            "passed": True,
+                            "kind": "contains",
+                            "message": "ok",
+                        }
+                    ],
                 }
             ],
         }
@@ -4163,13 +4172,20 @@ class TestCmdSuggest:
             "schema_version": 1,
             "skill": "my-skill",
             "iteration": 1,
-            "results": [
+            "runs": [
                 {
-                    "id": "a1",
-                    "name": "contains hello",
-                    "passed": False,
-                    "kind": "contains",
-                    "message": "no match",
+                    "run": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "results": [
+                        {
+                            "id": "a1",
+                            "name": "contains hello",
+                            "passed": False,
+                            "kind": "contains",
+                            "message": "no match",
+                        }
+                    ],
                 }
             ],
         }

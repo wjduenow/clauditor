@@ -2013,8 +2013,14 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
         )
         return 1
     except UnicodeDecodeError as exc:
+        # The decode could have come from SKILL.md, grading.json, an
+        # assertions.json run entry, or a transcript file. Report the
+        # exception without assuming skill_path was the offender so
+        # the user sees something actionable instead of a misleading
+        # "skill file could not be decoded" when the real culprit was
+        # e.g. iteration-7/my-skill/run-1/output.jsonl.
         print(
-            f"Error: could not decode {skill_path} as UTF-8: {exc}",
+            f"Error: could not decode input file as UTF-8: {exc}",
             file=sys.stderr,
         )
         return 1

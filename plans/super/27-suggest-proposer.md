@@ -103,10 +103,13 @@ returns scrubbed copies; canonical path for any I/O-bound sanitization.
 
 **No `workflow-project.md`** — use baseline ordering and review areas.
 
-### Open Scoping Questions
+### Scoping Questions
 
-(See "Phase 1 Questions for User" below — answers will be folded into
-Discovery and drive Phase 2 architecture review.)
+Answers have been folded into the Decisions section below
+(DEC-001..DEC-005). The original question set covered: direction
+(first-class vs experimental), edit scope (SKILL.md only vs broader),
+diff representation (text vs structured vs both), input bundle size
+(with or without transcripts), and persistence location.
 
 ---
 
@@ -497,8 +500,17 @@ no-op is an acceptable outcome if nothing genuinely reusable emerged.
 ## Phase 5 — Publish PR
 
 - **Commit:** `be77775` on `feature/27-suggest-proposer`
-- **PR:** https://github.com/wjduenow/clauditor/pull/36 (draft)
+- **PR:** https://github.com/wjduenow/clauditor/pull/36
 - **Base:** `dev`
+
+---
+
+## Phase 6 — Approval
+
+The breakdown above was reviewed and approved in the same session
+that produced it; no round-trip was needed, so this phase is a
+one-line marker rather than a log. Phase 6 is kept in the numbering
+for parity with the super-plan skeleton.
 
 ---
 
