@@ -208,9 +208,6 @@ def _primary_stats(values: list[float]) -> MetricStats:
     Single observation → stddev ``0.0`` (we sampled once, observed
     no variance). N>1 → :func:`statistics.stdev`.
     """
-    if not values:
-        # Should be guarded against at the call site; defensive only.
-        raise ValueError("cannot aggregate empty value list")
     mean = sum(values) / len(values)
     if len(values) == 1:
         return MetricStats(mean=mean, stddev=0.0)

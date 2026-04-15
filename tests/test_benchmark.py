@@ -273,6 +273,25 @@ class TestComputeBenchmarkErrors:
                 baseline_result=base,
             )
 
+    def test_compute_benchmark_rejects_primary_results_length_mismatch(self):
+        """primary_results length must match primary_reports length."""
+        r1 = _make_grading_report(pass_fractions=(True, False))
+        r2 = _make_grading_report(pass_fractions=(True, True))
+        baseline = _make_grading_report(pass_fractions=(True, False))
+        only_one = _make_skill_result()
+        base = _make_skill_result()
+        with pytest.raises(ValueError, match="2.*1|1.*2") as excinfo:
+            compute_benchmark(
+                skill_name="s",
+                primary_reports=[r1, r2],
+                baseline_report=baseline,
+                primary_results=[only_one],
+                baseline_result=base,
+            )
+        msg = str(excinfo.value)
+        assert "2" in msg
+        assert "1" in msg
+
     def test_empty_baseline_results_raises(self):
         """Case 8 (bonus): empty baseline results → ValueError 'baseline'."""
         primary = _make_grading_report(pass_fractions=(True, False))

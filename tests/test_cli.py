@@ -2523,6 +2523,36 @@ class TestBaselineFlag:
         err = capsys.readouterr().err
         assert "--min-baseline-delta requires --baseline" in err
 
+    def test_min_baseline_delta_with_output_errors(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--min-baseline-delta under --output → exit 2 + stderr diagnostic.
+
+        --output bypasses live subprocess metrics, so benchmark.delta cannot
+        be computed; silently skipping the gate would be a correctness bug.
+        """
+        monkeypatch.chdir(tmp_path)
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        output_file = tmp_path / "canned.txt"
+        output_file.write_text("skill output")
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--baseline",
+                    "--min-baseline-delta",
+                    "0.1",
+                ]
+            )
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--min-baseline-delta is incompatible with --output" in err
+
     def test_grade_without_min_baseline_delta_no_gate(
         self, tmp_path, monkeypatch
     ):

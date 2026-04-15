@@ -421,10 +421,20 @@ def cmd_grade(args: argparse.Namespace) -> int:
     # args alone, so validate early alongside other input-error exit-2 paths.
     if (
         getattr(args, "min_baseline_delta", None) is not None
+        and getattr(args, "output", None)
+    ):
+        print(
+            "ERROR: --min-baseline-delta is incompatible with --output "
+            "(benchmark delta requires live subprocess metrics)",
+            file=sys.stderr,
+        )
+        return 2
+    if (
+        getattr(args, "min_baseline_delta", None) is not None
         and not getattr(args, "baseline", False)
     ):
         print(
-            "error: --min-baseline-delta requires --baseline",
+            "ERROR: --min-baseline-delta requires --baseline",
             file=sys.stderr,
         )
         return 2
@@ -1057,7 +1067,7 @@ def _cmd_grade_with_workspace(
         observed = benchmark.run_summary.delta.pass_rate
         if observed < threshold:
             print(
-                f"error: baseline delta {observed:+.2f} below "
+                f"ERROR: baseline delta {observed:+.2f} below "
                 f"threshold {threshold:.2f}",
                 file=sys.stderr,
             )
@@ -2365,7 +2375,9 @@ def main(argv: list[str] | None = None) -> int:
             "After grading, run the test args through Claude without the "
             "skill prefix (baseline) and capture L1/L2/L3 sidecars. "
             "Roughly doubles LLM cost; never the default. Also writes "
-            "benchmark.json and prints a delta block on stdout."
+            "benchmark.json and prints a delta block on stdout "
+            "(skipped under --output, where subprocess metrics are "
+            "unavailable)."
         ),
     )
     p_grade.add_argument(

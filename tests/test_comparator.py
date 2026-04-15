@@ -1,4 +1,4 @@
-"""Tests for the A/B baseline comparator."""
+"""Tests for diff_assertion_sets and Flip."""
 
 from clauditor.assertions import AssertionResult, AssertionSet
 from clauditor.comparator import Flip, diff_assertion_sets

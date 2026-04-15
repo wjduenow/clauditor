@@ -3,7 +3,7 @@
 ## Meta
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/28
 - **Branch:** `feature/28-baseline-pair`
-- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/28-baseline-pair`
+- **Worktree:** `worktrees/clauditor/feature/28-baseline-pair`
 - **Phase:** `implemented`
 - **PR:** https://github.com/wjduenow/clauditor/pull/37
 - **Sessions:** 1
@@ -417,12 +417,10 @@ None — all items above are concerns (resolvable by picking an option) rather t
   and if it turns out to matter later it is a ~20-line follow-up
   against `GradingReport`. Removing the dead code now is strictly
   simpler than keeping it around "just in case."
-- **DEC-003 — Stdout delta block: TTY-aware format.** When stdout is a
-  TTY, print a 3-row `run_summary` table (`with_skill` / `without_skill`
-  / `delta`) with one column per metric. When stdout is piped/non-TTY,
-  print a compact one-liner: `delta: pass_rate +0.50, time_seconds
-  +13.0, tokens +1700`. Matches how other grade output already adapts to
-  TTY.
+- **DEC-003 — Superseded by DEC-010.** An earlier draft proposed
+  TTY-aware branching output for the stdout delta block, but that
+  decision was later walked back. Final implemented behavior is plain
+  unconditional stdout output with no TTY detection; see DEC-010.
 - **DEC-004 — `benchmark.json` lives at
   `iteration-N/<skill>/benchmark.json`.** Sibling of `grading.json`,
   `baseline.json`, etc. One benchmark per skill per iteration.
