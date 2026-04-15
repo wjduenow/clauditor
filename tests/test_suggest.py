@@ -429,6 +429,86 @@ def _make_suggest_input(
     )
 
 
+class TestLoadSuggestInputMalformedJson:
+    def _scaffold(
+        self, tmp_path: Path, assertions_payload: object
+    ) -> tuple[Path, Path]:
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "assertions.json").write_text(
+            json.dumps(assertions_payload), encoding="utf-8"
+        )
+        (skill_dir / "grading.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "skill_name": "s",
+                    "model": "claude-sonnet-4-6",
+                    "generated_at": "2026-01-01T00:00:00.000000Z",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "results": [],
+                    "raw_response": "",
+                }
+            ),
+            encoding="utf-8",
+        )
+        skill_md = tmp_path / "s.md"
+        skill_md.write_text("# Skill\n", encoding="utf-8")
+        return clauditor_dir, skill_md
+
+    def test_top_level_non_dict_is_skipped_not_crashed(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression: corrupt assertions.json with a list top-level used
+        # to hit AttributeError from data.get(...).
+        clauditor_dir, skill_md = self._scaffold(
+            tmp_path, assertions_payload=["not", "a", "dict"]
+        )
+        si = load_suggest_input(
+            skill="s", clauditor_dir=clauditor_dir, skill_md_path=skill_md
+        )
+        assert si.failing_assertions == []
+
+    def test_non_list_results_is_skipped_not_crashed(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression: results key present but a dict instead of a list.
+        clauditor_dir, skill_md = self._scaffold(
+            tmp_path, assertions_payload={"results": {"a1": "bogus"}}
+        )
+        si = load_suggest_input(
+            skill="s", clauditor_dir=clauditor_dir, skill_md_path=skill_md
+        )
+        assert si.failing_assertions == []
+
+    def test_non_dict_result_entries_are_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression: one entry in results is a scalar (partial write).
+        clauditor_dir, skill_md = self._scaffold(
+            tmp_path,
+            assertions_payload={
+                "results": [
+                    "garbage string",
+                    {
+                        "id": "a1",
+                        "name": "real one",
+                        "passed": False,
+                        "message": "missing",
+                        "kind": "presence",
+                    },
+                ]
+            },
+        )
+        si = load_suggest_input(
+            skill="s", clauditor_dir=clauditor_dir, skill_md_path=skill_md
+        )
+        assert len(si.failing_assertions) == 1
+        assert si.failing_assertions[0].id == "a1"
+
+
 class TestLoadSuggestInputCRLF:
     def test_crlf_skill_text_is_normalized_at_load_time(
         self, tmp_path: Path

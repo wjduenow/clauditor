@@ -2018,6 +2018,16 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    except OSError as exc:
+        # Catches FileNotFoundError from a TOCTOU race (e.g. grading.json
+        # was deleted between find_latest_grading and the loader read)
+        # plus any other disk / permission issue during signal load.
+        print(
+            f"Error: could not load grade-run signals for {skill_name}: "
+            f"{exc}",
+            file=sys.stderr,
+        )
+        return 1
 
     # DEC-008 row 2: zero failing signals — do NOT call Sonnet.
     if (

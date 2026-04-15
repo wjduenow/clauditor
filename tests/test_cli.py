@@ -4475,6 +4475,33 @@ class TestCmdSuggest:
         assert "could not write sidecar" in err
         assert "disk full" in err
 
+    def test_oserror_during_load_exits_1_with_stderr(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Regression: if grading.json (or SKILL.md) vanishes between the
+        # exists-check and the read, load_suggest_input raises
+        # FileNotFoundError. The CLI must catch OSError and exit 1
+        # instead of leaking a traceback.
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        monkeypatch.chdir(tmp_path)
+
+        with patch(
+            "clauditor.cli.load_suggest_input",
+            side_effect=FileNotFoundError(
+                "iteration-1/my-skill/grading.json vanished"
+            ),
+        ):
+            rc = main(["suggest", "my-skill.md"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "could not load grade-run signals" in err
+        assert "my-skill" in err
+
     def test_non_utf8_skill_file_exits_1(
         self, tmp_path, monkeypatch, capsys
     ):

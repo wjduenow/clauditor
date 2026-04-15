@@ -133,14 +133,23 @@ def _load_failing_assertions(skill_dir: Path) -> list[AssertionResult]:
     """Read ``assertions.json`` and return only the failing entries.
 
     Returns an empty list if the file does not exist (a grade run with
-    only L3 criteria is valid).
+    only L3 criteria is valid). Defensively type-guards the JSON shape
+    so a corrupt or partial file does not crash the whole suggest run
+    with an ``AttributeError`` from a non-dict / non-list payload.
     """
     path = skill_dir / "assertions.json"
     if not path.exists():
         return []
     data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        return []
+    results = data.get("results", [])
+    if not isinstance(results, list):
+        return []
     failing: list[AssertionResult] = []
-    for entry in data.get("results", []):
+    for entry in results:
+        if not isinstance(entry, dict):
+            continue
         if entry.get("passed"):
             continue
         failing.append(AssertionResult.from_json_dict(entry))
