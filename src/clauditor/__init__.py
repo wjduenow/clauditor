@@ -13,8 +13,6 @@ from clauditor.schemas import (
 from clauditor.spec import SkillSpec
 
 __all__ = [
-    "ABReport",
-    "ABResult",
     "AssertionResult",
     "AssertionSet",
     "EvalSpec",
@@ -41,8 +39,6 @@ def __getattr__(name: str):
         "GradingResult": "clauditor.quality_grader",
         "GradingReport": "clauditor.quality_grader",
         "VarianceReport": "clauditor.quality_grader",
-        "ABResult": "clauditor.comparator",
-        "ABReport": "clauditor.comparator",
         "TriggerResult": "clauditor.triggers",
         "TriggerReport": "clauditor.triggers",
     }
