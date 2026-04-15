@@ -114,9 +114,11 @@ def find_latest_grading(
         return from_iteration, skill_dir
 
     if not clauditor_dir.exists():
+        # Path-agnostic — the CLI layer prints the actionable
+        # `clauditor grade <path>` command using the original skill
+        # path argument, which is what `grade` actually consumes.
         raise NoPriorGradeError(
-            f"no clauditor workspace at {clauditor_dir} — "
-            f"run `clauditor grade {skill}` first"
+            f"no clauditor workspace at {clauditor_dir}"
         )
 
     candidates: list[int] = []
@@ -131,9 +133,10 @@ def find_latest_grading(
             candidates.append(idx)
 
     if not candidates:
+        # Path-agnostic — see note above; the CLI owns the actionable hint.
         raise NoPriorGradeError(
             f"no iteration under {clauditor_dir} contains "
-            f"{skill}/grading.json — run `clauditor grade {skill}` first"
+            f"{skill}/grading.json"
         )
 
     best = max(candidates)
@@ -168,7 +171,14 @@ def _load_failing_assertions(skill_dir: Path) -> list[AssertionResult]:
     path = skill_dir / "assertions.json"
     if not path.exists():
         return []
-    data = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        print(
+            f"warning: ignoring corrupt assertions sidecar {path}: {exc}",
+            file=sys.stderr,
+        )
+        return []
     if not isinstance(data, dict):
         return []
     runs = data.get("runs", [])
@@ -188,7 +198,18 @@ def _load_failing_assertions(skill_dir: Path) -> list[AssertionResult]:
                 continue
             if entry.get("passed"):
                 continue
-            result = AssertionResult.from_json_dict(entry)
+            # Per-entry guard: a partially written result entry (missing
+            # a required field like `passed`/`name`/`kind`) must not
+            # crash the whole suggest run. Skip and warn.
+            try:
+                result = AssertionResult.from_json_dict(entry)
+            except (KeyError, TypeError, ValueError) as exc:
+                print(
+                    f"warning: skipping malformed assertion entry in "
+                    f"{path}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
             # Dedupe across runs by stable id from DEC-001. Entries
             # without an id (pre-stable-id runs) are all kept.
             if result.id:
@@ -205,11 +226,22 @@ def _load_failing_grading_criteria(skill_dir: Path) -> list[GradingResult]:
     ``GradingResult.passed`` is the source of truth — the boolean is
     persisted alongside the score by :meth:`GradingReport.to_json` and
     reflects the per-criterion verdict the judge already rendered.
+
+    Corrupt or partially written sidecars must not crash the whole
+    suggest run, so malformed JSON or unexpected report shapes are
+    treated as an absent grading sidecar (with a stderr warning).
     """
     path = skill_dir / "grading.json"
     if not path.exists():
         return []
-    report = GradingReport.from_json(path.read_text(encoding="utf-8"))
+    try:
+        report = GradingReport.from_json(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, TypeError, KeyError, ValueError) as exc:
+        print(
+            f"warning: ignoring corrupt grading sidecar {path}: {exc}",
+            file=sys.stderr,
+        )
+        return []
     return [r for r in report.results if not r.passed]
 
 
@@ -807,6 +839,31 @@ def parse_suggest_response(
     return proposals, summary_rationale
 
 
+def _count_all_occurrences(text: str, anchor: str) -> int:
+    """Count all occurrences of ``anchor`` in ``text``, including overlapping.
+
+    :meth:`str.count` counts **non-overlapping** matches, which under-reports
+    ambiguity for anchors whose own prefix and suffix overlap (e.g.
+    ``"aba".count("aba")`` in ``"ababa"`` returns 1, but positions 0 and 2
+    are both valid matches). For the DEC-006 "exactly once" contract to
+    hold even under pathological anchors, we have to scan with
+    :meth:`str.find` in single-character steps.
+
+    An empty anchor is treated as zero matches — an empty ``replace``
+    target is nonsensical for edit proposals and must never be accepted.
+    """
+    if not anchor:
+        return 0
+    count = 0
+    start = 0
+    while True:
+        idx = text.find(anchor, start)
+        if idx == -1:
+            return count
+        count += 1
+        start = idx + 1
+
+
 def validate_anchors(
     proposals: list[EditProposal], skill_md_text: str
 ) -> list[str]:
@@ -823,11 +880,15 @@ def validate_anchors(
     either collides with an earlier edit's replacement text or was
     destroyed by one. A naive check against the original SKILL.md only
     would pass such proposals and produce a silently-wrong diff.
+
+    Uses :func:`_count_all_occurrences` so overlapping matches (e.g.
+    ``anchor='aba'`` against ``text='ababa'``) are detected as ambiguous
+    rather than silently accepted by :meth:`str.count`.
     """
     errors: list[str] = []
     proposed = skill_md_text
     for p in proposals:
-        count = proposed.count(p.anchor)
+        count = _count_all_occurrences(proposed, p.anchor)
         if count == 0:
             errors.append(
                 f"{p.id} (motivated_by={p.motivated_by}): anchor not "

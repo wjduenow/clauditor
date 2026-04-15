@@ -2008,8 +2008,24 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
         )
     except NoPriorGradeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        # `clauditor grade` consumes the skill .md path the same way
+        # `suggest` does, so echo args.skill (the path the user typed)
+        # rather than the bare stem.
         print(
-            f"Run 'clauditor grade {skill_name}' first.", file=sys.stderr
+            f"Run 'clauditor grade {args.skill}' first.",
+            file=sys.stderr,
+        )
+        return 1
+    except InvalidSkillNameError as exc:
+        # `find_latest_grading` rejects skill names containing path
+        # separators, leading dots, or other unsafe characters before
+        # constructing any on-disk path. Users can hit this with a
+        # stem like `..my-skill` or `my.skill.md` on a file whose
+        # base name confuses validate_skill_name. Surface it cleanly
+        # instead of leaking a traceback.
+        print(
+            f"Error: invalid skill name {skill_name!r}: {exc}",
+            file=sys.stderr,
         )
         return 1
     except UnicodeDecodeError as exc:

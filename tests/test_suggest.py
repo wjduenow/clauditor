@@ -141,6 +141,49 @@ class TestFindLatestGrading:
         idx, _ = find_latest_grading(clauditor, "find")
         assert idx == 4
 
+    def test_skips_non_directory_entries_and_unmatched_names(
+        self, tmp_path: Path
+    ) -> None:
+        # Coverage: find_latest_grading scans clauditor_dir.iterdir()
+        # and must skip regular files and names that don't match the
+        # iteration-N pattern without raising.
+        clauditor = tmp_path / ".clauditor"
+        clauditor.mkdir()
+        # Regular file sitting in .clauditor (not a dir) — skipped.
+        (clauditor / "README.md").write_text("notes")
+        # Directory with a non-matching name — skipped.
+        (clauditor / "scratch").mkdir()
+        # A real iteration with grading.
+        _write_grading(
+            clauditor / "iteration-2" / "find",
+            "find",
+            [_make_grading_result(rid="g1", criterion="c", passed=True)],
+        )
+        idx, _ = find_latest_grading(clauditor, "find")
+        assert idx == 2
+
+    def test_no_clauditor_workspace_raises_no_prior_grade(
+        self, tmp_path: Path
+    ) -> None:
+        # Coverage + regression: when .clauditor does not exist at all,
+        # find_latest_grading raises with a path-agnostic message so
+        # the CLI can print the actionable hint using args.skill.
+        with pytest.raises(NoPriorGradeError) as exc_info:
+            find_latest_grading(tmp_path / ".clauditor", "find")
+        assert "clauditor grade" not in str(exc_info.value)
+
+    def test_no_iteration_contains_grading_raises_path_agnostic(
+        self, tmp_path: Path
+    ) -> None:
+        # Coverage + regression: the "no iteration has grading.json"
+        # branch must not embed a misleading `clauditor grade <stem>`
+        # hint; the CLI owns the actionable message.
+        clauditor = tmp_path / ".clauditor"
+        (clauditor / "iteration-1" / "find").mkdir(parents=True)
+        with pytest.raises(NoPriorGradeError) as exc_info:
+            find_latest_grading(clauditor, "find")
+        assert "clauditor grade" not in str(exc_info.value)
+
     def test_rejects_skill_name_with_path_traversal(
         self, tmp_path: Path
     ) -> None:
@@ -556,6 +599,189 @@ class TestLoadSuggestInputMalformedJson:
         assert len(si.failing_assertions) == 1
         assert si.failing_assertions[0].id == "a1"
 
+    def test_corrupt_assertions_json_is_warned_and_skipped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Regression (Copilot finding): a truncated assertions.json
+        # used to raise JSONDecodeError out of load_suggest_input.
+        # The loader should warn to stderr and treat the sidecar as
+        # absent so the rest of the suggest pipeline keeps working.
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "assertions.json").write_text(
+            "{not valid json", encoding="utf-8"
+        )
+        (skill_dir / "grading.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "skill_name": "s",
+                    "model": "claude-sonnet-4-6",
+                    "generated_at": "2026-01-01T00:00:00.000000Z",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "results": [],
+                    "raw_response": "",
+                }
+            ),
+            encoding="utf-8",
+        )
+        skill_md = tmp_path / "s.md"
+        skill_md.write_text("# Skill\n", encoding="utf-8")
+
+        si = load_suggest_input(
+            skill="s", clauditor_dir=clauditor_dir, skill_md_path=skill_md
+        )
+        assert si.failing_assertions == []
+        err = capsys.readouterr().err
+        assert "corrupt assertions sidecar" in err
+
+    def test_malformed_assertion_entry_is_warned_and_skipped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Regression (Copilot finding): a partially written result
+        # entry (missing a required field) used to crash with a
+        # KeyError. It should be skipped with a stderr warning while
+        # valid entries in the same run are still collected.
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "assertions.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "skill": "s",
+                    "iteration": 1,
+                    "runs": [
+                        {
+                            "run": 0,
+                            "results": [
+                                {"id": "broken"},  # missing name/passed/kind
+                                {
+                                    "id": "good",
+                                    "name": "ok",
+                                    "passed": False,
+                                    "message": "msg",
+                                    "kind": "presence",
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (skill_dir / "grading.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "skill_name": "s",
+                    "model": "claude-sonnet-4-6",
+                    "generated_at": "2026-01-01T00:00:00.000000Z",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "results": [],
+                    "raw_response": "",
+                }
+            ),
+            encoding="utf-8",
+        )
+        skill_md = tmp_path / "s.md"
+        skill_md.write_text("# Skill\n", encoding="utf-8")
+
+        si = load_suggest_input(
+            skill="s", clauditor_dir=clauditor_dir, skill_md_path=skill_md
+        )
+        ids = [r.id for r in si.failing_assertions]
+        assert ids == ["good"]
+        err = capsys.readouterr().err
+        assert "malformed assertion entry" in err
+
+    def test_corrupt_grading_json_is_warned_and_skipped(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Regression (Copilot finding): a truncated grading.json used
+        # to raise out of GradingReport.from_json. The loader should
+        # warn to stderr and continue so anchor-validation and diff
+        # rendering still run against whatever assertions were loaded.
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        # A valid (empty) grading.json is required for
+        # find_latest_grading to pick the iteration. Write a valid
+        # envelope first, then overwrite with garbage so the search
+        # still finds the iteration but the loader hits the garbage.
+        (skill_dir / "grading.json").write_text(
+            "{partial json",
+            encoding="utf-8",
+        )
+        (skill_dir / "assertions.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "skill": "s",
+                    "iteration": 1,
+                    "runs": [
+                        {
+                            "run": 0,
+                            "results": [
+                                {
+                                    "id": "a1",
+                                    "name": "n",
+                                    "passed": False,
+                                    "message": "m",
+                                    "kind": "presence",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        skill_md = tmp_path / "s.md"
+        skill_md.write_text("# Skill\n", encoding="utf-8")
+
+        si = load_suggest_input(
+            skill="s", clauditor_dir=clauditor_dir, skill_md_path=skill_md
+        )
+        # Corrupt grading → empty grading list, but assertions still load.
+        assert si.failing_grading_criteria == []
+        assert len(si.failing_assertions) == 1
+        err = capsys.readouterr().err
+        assert "corrupt grading sidecar" in err
+
+    def test_non_dict_run_entries_are_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        # Coverage: a stray non-dict entry in the runs list (e.g. a
+        # stringified envelope from a partial write) must not crash.
+        clauditor_dir, skill_md = self._scaffold(
+            tmp_path,
+            assertions_payload={
+                "runs": [
+                    "garbage",
+                    {
+                        "run": 0,
+                        "results": [
+                            {
+                                "id": "a1",
+                                "name": "n",
+                                "passed": False,
+                                "message": "m",
+                                "kind": "presence",
+                            }
+                        ],
+                    },
+                ]
+            },
+        )
+        si = load_suggest_input(
+            skill="s", clauditor_dir=clauditor_dir, skill_md_path=skill_md
+        )
+        assert [r.id for r in si.failing_assertions] == ["a1"]
+
     def test_aggregates_and_dedupes_across_runs_by_stable_id(
         self, tmp_path: Path
     ) -> None:
@@ -615,6 +841,129 @@ class TestLoadSuggestInputMalformedJson:
         )
         ids = [r.id for r in si.failing_assertions]
         assert ids == ["a1", "a3"]
+
+
+class TestLoadSuggestInputLoaderBranches:
+    """Exercise defensive branches in the sub-loaders."""
+
+    def _scaffold(
+        self, tmp_path: Path
+    ) -> tuple[Path, Path, Path]:
+        clauditor = tmp_path / ".clauditor"
+        skill_dir = clauditor / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "grading.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "skill_name": "s",
+                    "model": "m",
+                    "generated_at": "t",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "results": [],
+                    "raw_response": "",
+                }
+            ),
+            encoding="utf-8",
+        )
+        skill_md = tmp_path / "s.md"
+        skill_md.write_text("# Skill\n", encoding="utf-8")
+        return clauditor, skill_dir, skill_md
+
+    def test_output_slices_skip_non_dir_and_unmatched_names(
+        self, tmp_path: Path
+    ) -> None:
+        # Coverage: _load_output_slices iterates the skill dir and must
+        # skip regular files and dirs that don't match run-N.
+        clauditor, skill_dir, skill_md = self._scaffold(tmp_path)
+        (skill_dir / "README").write_text("notes")
+        (skill_dir / "scratch").mkdir()  # not run-N
+        (skill_dir / "run-0").mkdir()
+        (skill_dir / "run-0" / "output.txt").write_text("primary")
+        si = load_suggest_input(
+            skill="s", clauditor_dir=clauditor, skill_md_path=skill_md
+        )
+        assert si.output_slices == ["primary"]
+
+    def test_output_slices_skip_run_dir_without_output_txt(
+        self, tmp_path: Path
+    ) -> None:
+        clauditor, skill_dir, skill_md = self._scaffold(tmp_path)
+        (skill_dir / "run-0").mkdir()  # no output.txt
+        (skill_dir / "run-1").mkdir()
+        (skill_dir / "run-1" / "output.txt").write_text("variance")
+        si = load_suggest_input(
+            skill="s", clauditor_dir=clauditor, skill_md_path=skill_md
+        )
+        assert si.output_slices == ["variance"]
+
+    def test_transcripts_skip_non_dir_and_unmatched(
+        self, tmp_path: Path
+    ) -> None:
+        clauditor, skill_dir, skill_md = self._scaffold(tmp_path)
+        (skill_dir / "README").write_text("notes")
+        (skill_dir / "scratch").mkdir()
+        (skill_dir / "run-0").mkdir()
+        (skill_dir / "run-0" / "output.jsonl").write_text(
+            '{"type": "assistant"}\n'
+        )
+        si = load_suggest_input(
+            skill="s",
+            clauditor_dir=clauditor,
+            skill_md_path=skill_md,
+            with_transcripts=True,
+        )
+        assert si.transcript_events is not None
+        assert len(si.transcript_events) == 1
+        assert si.transcript_events[0] == [{"type": "assistant"}]
+
+    def test_transcripts_empty_list_for_run_without_jsonl(
+        self, tmp_path: Path
+    ) -> None:
+        clauditor, skill_dir, skill_md = self._scaffold(tmp_path)
+        (skill_dir / "run-0").mkdir()  # no jsonl
+        (skill_dir / "run-1").mkdir()
+        (skill_dir / "run-1" / "output.jsonl").write_text('{"x": 1}\n')
+        si = load_suggest_input(
+            skill="s",
+            clauditor_dir=clauditor,
+            skill_md_path=skill_md,
+            with_transcripts=True,
+        )
+        assert si.transcript_events == [[], [{"x": 1}]]
+
+    def test_transcripts_skip_blank_lines(self, tmp_path: Path) -> None:
+        # Coverage: blank lines in output.jsonl are silently skipped.
+        clauditor, skill_dir, skill_md = self._scaffold(tmp_path)
+        (skill_dir / "run-0").mkdir()
+        (skill_dir / "run-0" / "output.jsonl").write_text(
+            '{"a": 1}\n\n   \n{"b": 2}\n'
+        )
+        si = load_suggest_input(
+            skill="s",
+            clauditor_dir=clauditor,
+            skill_md_path=skill_md,
+            with_transcripts=True,
+        )
+        assert si.transcript_events == [[{"a": 1}, {"b": 2}]]
+
+    def test_transcripts_skip_scalar_json_lines(
+        self, tmp_path: Path
+    ) -> None:
+        # Coverage: a line that parses but isn't a dict is skipped.
+        clauditor, skill_dir, skill_md = self._scaffold(tmp_path)
+        (skill_dir / "run-0").mkdir()
+        (skill_dir / "run-0" / "output.jsonl").write_text(
+            '42\n{"kept": true}\n'
+        )
+        si = load_suggest_input(
+            skill="s",
+            clauditor_dir=clauditor,
+            skill_md_path=skill_md,
+            with_transcripts=True,
+        )
+        assert si.transcript_events == [[{"kept": True}]]
 
 
 class TestLoadSuggestInputCRLF:
@@ -679,6 +1028,93 @@ class TestLoadSuggestInputCRLF:
         )
         assert "\r" not in si.skill_md_text
         assert si.skill_md_text == "# Skill\n\nDo the thing.\n"
+
+
+class TestPrivateLoaderHelpers:
+    """Direct unit tests for the private loaders.
+
+    The public ``load_suggest_input`` path always finds ``grading.json``
+    (because that's the iteration-selection key), so the "missing"
+    branches in the grading / output-slice / transcript loaders are
+    only reachable via direct invocation.
+    """
+
+    def test_load_failing_grading_returns_empty_when_file_missing(
+        self, tmp_path: Path
+    ) -> None:
+        from clauditor.suggest import _load_failing_grading_criteria
+
+        skill_dir = tmp_path / "s"
+        skill_dir.mkdir()
+        assert _load_failing_grading_criteria(skill_dir) == []
+
+    def test_load_output_slices_returns_empty_when_skill_dir_missing(
+        self, tmp_path: Path
+    ) -> None:
+        from clauditor.suggest import _load_output_slices
+
+        assert _load_output_slices(tmp_path / "missing") == []
+
+    def test_load_transcript_events_returns_empty_when_skill_dir_missing(
+        self, tmp_path: Path
+    ) -> None:
+        from clauditor.suggest import _load_transcript_events
+
+        assert _load_transcript_events(tmp_path / "missing") == []
+
+
+class TestStripJsonFence:
+    def test_bare_triple_backtick_fence_is_stripped(self) -> None:
+        # Coverage: _strip_json_fence handles the bare ``` form (no
+        # language tag) by splitting on triple-backticks.
+        from clauditor.suggest import _strip_json_fence
+
+        wrapped = 'text before\n```\n{"ok": true}\n```\nafter'
+        assert _strip_json_fence(wrapped) == '{"ok": true}'
+
+
+class TestFormatHelpers:
+    def test_assertion_with_evidence_and_transcript_path_included(
+        self,
+    ) -> None:
+        # Coverage: the conditional branches in _format_failing_assertion
+        # that emit evidence/transcript_path lines only fire when the
+        # assertion carries those fields.
+        si = _make_suggest_input(
+            failing_assertions=[
+                AssertionResult(
+                    id="a1",
+                    name="has fence",
+                    passed=False,
+                    message="missing",
+                    kind="presence",
+                    evidence="line 42: no fence",
+                    transcript_path=".clauditor/iter-1/s/run-0/output.jsonl",
+                )
+            ]
+        )
+        prompt = build_suggest_prompt(si)
+        assert "line 42: no fence" in prompt
+        assert "run-0/output.jsonl" in prompt
+
+
+class TestRepoRelativeFallback:
+    def test_path_outside_repo_root_falls_back_to_absolute(
+        self, tmp_path: Path
+    ) -> None:
+        # Coverage + regression: when the sidecar path lives outside
+        # clauditor_dir.parent (weird symlink / mount layout),
+        # _repo_relative must not raise — it falls back to str(path).
+        from clauditor.suggest import _repo_relative
+
+        clauditor_dir = tmp_path / "repo" / ".clauditor"
+        clauditor_dir.mkdir(parents=True)
+        outside = tmp_path / "elsewhere" / "grading.json"
+        outside.parent.mkdir()
+        outside.write_text("{}")
+        result = _repo_relative(clauditor_dir, outside)
+        # Falls back to the absolute path string rather than raising.
+        assert result == str(outside)
 
 
 class TestBuildSuggestPrompt:
@@ -1086,6 +1522,115 @@ class TestParseSuggestResponse:
         with pytest.raises(ValueError, match="confidence"):
             parse_suggest_response(json.dumps(bad), si)
 
+    def test_raises_on_edits_not_a_list(self) -> None:
+        si = _suggest_input_with_signals()
+        bad = {"summary_rationale": "x", "edits": "nope"}
+        with pytest.raises(ValueError, match="edits.*must be a list"):
+            parse_suggest_response(json.dumps(bad), si)
+
+    def test_raises_on_missing_summary_rationale(self) -> None:
+        si = _suggest_input_with_signals()
+        bad = {"edits": []}
+        with pytest.raises(ValueError, match="summary_rationale"):
+            parse_suggest_response(json.dumps(bad), si)
+
+    def test_raises_on_summary_rationale_wrong_type(self) -> None:
+        si = _suggest_input_with_signals()
+        bad = {"summary_rationale": 42, "edits": []}
+        with pytest.raises(ValueError, match="summary_rationale"):
+            parse_suggest_response(json.dumps(bad), si)
+
+    def test_raises_on_edit_entry_not_a_dict(self) -> None:
+        si = _suggest_input_with_signals()
+        bad = {"summary_rationale": "x", "edits": ["not-a-dict"]}
+        with pytest.raises(ValueError, match=r"edits\[0\] must be an object"):
+            parse_suggest_response(json.dumps(bad), si)
+
+    def test_raises_on_anchor_wrong_type(self) -> None:
+        si = _suggest_input_with_signals()
+        bad = {
+            "summary_rationale": "x",
+            "edits": [
+                {
+                    "anchor": 42,
+                    "replacement": "y",
+                    "rationale": "z",
+                    "confidence": 0.5,
+                    "motivated_by": ["a1"],
+                }
+            ],
+        }
+        with pytest.raises(ValueError, match=r"anchor must be"):
+            parse_suggest_response(json.dumps(bad), si)
+
+    def test_raises_on_replacement_wrong_type(self) -> None:
+        si = _suggest_input_with_signals()
+        bad = {
+            "summary_rationale": "x",
+            "edits": [
+                {
+                    "anchor": "Do the thing.",
+                    "replacement": 42,
+                    "rationale": "z",
+                    "confidence": 0.5,
+                    "motivated_by": ["a1"],
+                }
+            ],
+        }
+        with pytest.raises(ValueError, match=r"replacement must be"):
+            parse_suggest_response(json.dumps(bad), si)
+
+    def test_raises_on_rationale_wrong_type(self) -> None:
+        si = _suggest_input_with_signals()
+        bad = {
+            "summary_rationale": "x",
+            "edits": [
+                {
+                    "anchor": "Do the thing.",
+                    "replacement": "y",
+                    "rationale": 42,
+                    "confidence": 0.5,
+                    "motivated_by": ["a1"],
+                }
+            ],
+        }
+        with pytest.raises(ValueError, match=r"rationale must be"):
+            parse_suggest_response(json.dumps(bad), si)
+
+    def test_raises_on_confidence_wrong_type(self) -> None:
+        si = _suggest_input_with_signals()
+        bad = {
+            "summary_rationale": "x",
+            "edits": [
+                {
+                    "anchor": "Do the thing.",
+                    "replacement": "y",
+                    "rationale": "z",
+                    "confidence": "high",
+                    "motivated_by": ["a1"],
+                }
+            ],
+        }
+        with pytest.raises(ValueError, match=r"confidence must be a number"):
+            parse_suggest_response(json.dumps(bad), si)
+
+    def test_raises_on_motivated_by_wrong_type(self) -> None:
+        si = _suggest_input_with_signals()
+        bad = {
+            "summary_rationale": "x",
+            "edits": [
+                {
+                    "anchor": "Do the thing.",
+                    "replacement": "y",
+                    "rationale": "z",
+                    "confidence": 0.5,
+                    "motivated_by": "a1",
+                }
+            ],
+        }
+        with pytest.raises(ValueError, match=r"motivated_by"):
+            parse_suggest_response(json.dumps(bad), si)
+
     def test_clamps_confidence_to_unit_range(self) -> None:
         si = _suggest_input_with_signals()
         high, _ = parse_suggest_response(
@@ -1219,6 +1764,38 @@ class TestValidateAnchors:
             _make_proposal(pid="edit-1", anchor="bar"),
         ]
         assert validate_anchors(proposals, "foo and bar") == []
+
+    def test_overlapping_anchor_occurrences_are_detected_as_ambiguous(
+        self,
+    ) -> None:
+        # Regression (Copilot finding): str.count counts
+        # non-overlapping matches, so "ababa".count("aba") == 1 but
+        # positions 0 and 2 both match. The validator uses
+        # _count_all_occurrences to catch this and reject the edit
+        # as ambiguous.
+        proposals = [
+            _make_proposal(
+                pid="edit-0", anchor="aba", motivated_by=["a1"]
+            )
+        ]
+        errors = validate_anchors(proposals, "ababa")
+        assert len(errors) == 1
+        assert "edit-0" in errors[0]
+        assert "2 times" in errors[0]
+
+    def test_empty_anchor_is_rejected_as_not_found(self) -> None:
+        # Degenerate input: an empty anchor. str.count("") returns
+        # len(text)+1 which is nonsensical; _count_all_occurrences
+        # returns 0 so the edit is rejected with the "not found"
+        # message.
+        proposals = [
+            _make_proposal(
+                pid="edit-0", anchor="", motivated_by=["a1"]
+            )
+        ]
+        errors = validate_anchors(proposals, "# Skill\n\nDo it.\n")
+        assert len(errors) == 1
+        assert "not found" in errors[0]
 
     def test_later_anchor_destroyed_by_earlier_replacement_is_rejected(
         self,

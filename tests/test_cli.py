@@ -4491,6 +4491,39 @@ class TestCmdSuggest:
         assert "could not write sidecar" in err
         assert "disk full" in err
 
+    def test_skill_file_not_found_exits_1_with_stderr(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Coverage: the early "skill file not found" short-circuit
+        # before any signal loading happens.
+        monkeypatch.chdir(tmp_path)
+        rc = main(["suggest", "nonexistent.md"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "skill file not found" in err
+
+    def test_invalid_skill_name_exits_1_with_stderr(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Regression (Copilot finding): a skill file whose stem fails
+        # workspace.validate_skill_name (leading dot, space, etc.) used
+        # to leak InvalidSkillNameError out of _cmd_suggest_impl as a
+        # bare traceback. Catch it and exit 1 with a clean stderr
+        # message.
+        (tmp_path / ".git").mkdir()
+        # Name with a leading dot — skill_path.stem is ".hidden" which
+        # validate_skill_name rejects. The file exists so the early
+        # file-not-found branch doesn't short-circuit.
+        bad = tmp_path / ".hidden.md"
+        bad.write_text("# Skill\n\nDo the thing.\n")
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(["suggest", str(bad.name)])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "invalid skill name" in err
+
     def test_oserror_during_load_exits_1_with_stderr(
         self, tmp_path, monkeypatch, capsys
     ):
