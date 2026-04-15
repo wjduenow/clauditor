@@ -6,9 +6,14 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from clauditor import history
+
+if TYPE_CHECKING:
+    from clauditor.quality_grader import GradingReport
 from clauditor.assertions import AssertionSet, run_assertions
+from clauditor.benchmark import compute_benchmark
 from clauditor.paths import resolve_clauditor_dir
 from clauditor.runner import SkillResult, SkillRunner
 from clauditor.spec import SkillSpec
@@ -528,7 +533,7 @@ def _run_baseline_phase(
     skill_dir: Path,
     iteration: int,
     model: str,
-) -> None:
+) -> tuple[GradingReport, SkillResult]:
     """US-004: run the test args without the skill prefix and persist L1/L2/L3
     sidecars into ``skill_dir`` (the staging iteration dir).
 
@@ -540,6 +545,11 @@ def _run_baseline_phase(
     - ``baseline_grading.json`` — Layer 3 ``GradingReport``
 
     Strictly opt-in via ``--baseline``; roughly doubles LLM cost per run.
+
+    Returns the ``(GradingReport, SkillResult)`` pair from the baseline run
+    (DEC-011) so the caller can feed them to
+    :func:`clauditor.benchmark.compute_benchmark` without reloading sidecars
+    from disk.
     """
     import asyncio
 
@@ -614,6 +624,8 @@ def _run_baseline_phase(
         baseline_grading.to_json(), encoding="utf-8"
     )
 
+    return baseline_grading, baseline_result
+
 
 def _cmd_grade_with_workspace(
     *,
@@ -627,10 +639,7 @@ def _cmd_grade_with_workspace(
     import asyncio
 
     from clauditor.metrics import TokenUsage, build_metrics
-    from clauditor.quality_grader import (
-        GradingReport,
-        grade_quality,
-    )
+    from clauditor.quality_grader import grade_quality
 
     n_variance = int(args.variance) if args.variance else 0
     total_runs = 1 + n_variance
@@ -638,6 +647,10 @@ def _cmd_grade_with_workspace(
     # Collect a (output_text, stream_events) tuple per run plus the
     # corresponding skill-side token / duration totals.
     run_outputs: list[tuple[str, list[dict]]] = []
+    # Parallel list of SkillResult objects — None entries correspond to
+    # captured-text (--output) runs where no subprocess SkillResult exists.
+    # Used by compute_benchmark to build the with_skill arm (#28 US-002).
+    skill_results: list[SkillResult | None] = []
     skill_input_total = 0
     skill_output_total = 0
     skill_duration_total = 0.0
@@ -653,6 +666,7 @@ def _cmd_grade_with_workspace(
             )
         primary_text = Path(args.output).read_text()
         run_outputs.append((primary_text, []))
+        skill_results.append(None)
     else:
         print(
             f"Running /{spec.skill_name} {spec.eval_spec.test_args}..."
@@ -670,6 +684,7 @@ def _cmd_grade_with_workspace(
         run_outputs.append(
             (primary_text, list(primary_skill_result.stream_events))
         )
+        skill_results.append(primary_skill_result)
         skill_input_total += primary_skill_result.input_tokens
         skill_output_total += primary_skill_result.output_tokens
         skill_duration_total += primary_skill_result.duration_seconds
@@ -694,6 +709,7 @@ def _cmd_grade_with_workspace(
         run_outputs.append(
             (variance_result.output, list(variance_result.stream_events))
         )
+        skill_results.append(variance_result)
         skill_input_total += variance_result.input_tokens
         skill_output_total += variance_result.output_tokens
         skill_duration_total += variance_result.duration_seconds
@@ -875,12 +891,31 @@ def _cmd_grade_with_workspace(
             )
 
         if getattr(args, "baseline", False):
-            _run_baseline_phase(
+            baseline_grading, baseline_skill_result = _run_baseline_phase(
                 spec=spec,
                 skill_dir=skill_dir,
                 iteration=workspace.iteration,
                 model=model,
             )
+
+            # #28 US-002: compute the pair-run benchmark delta and persist
+            # it alongside the baseline_*.json sidecars. Skipped in
+            # captured-text mode (--output) because there is no primary
+            # SkillResult to supply duration / token metrics for the
+            # with_skill arm.
+            if all(sr is not None for sr in skill_results):
+                benchmark = compute_benchmark(
+                    skill_name=spec.skill_name,
+                    primary_reports=reports,
+                    baseline_report=baseline_grading,
+                    primary_results=[
+                        sr for sr in skill_results if sr is not None
+                    ],
+                    baseline_result=baseline_skill_result,
+                )
+                (skill_dir / "benchmark.json").write_text(
+                    benchmark.to_json(), encoding="utf-8"
+                )
 
     if not only_criterion:
         timing_payload: dict = {

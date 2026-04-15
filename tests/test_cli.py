@@ -1901,6 +1901,102 @@ class TestBaselineFlag:
         assert (skill_dir / "baseline_grading.json").exists()
         assert not (skill_dir / "baseline_extraction.json").exists()
 
+    def test_grade_with_baseline_flag_writes_benchmark_sidecar(
+        self, tmp_path, monkeypatch
+    ):
+        """#28 US-002: --baseline also writes benchmark.json with the delta."""
+        monkeypatch.chdir(tmp_path)
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        # Non --output mode: mock spec.run() so the primary arm has a real
+        # SkillResult that compute_benchmark can read duration / tokens from.
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="hello world",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[{"type": "assistant", "text": "hello world"}],
+                input_tokens=100,
+                output_tokens=50,
+                duration_seconds=2.5,
+            )
+        )
+        grading_report = self._make_grading_report()
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--baseline"])
+
+        assert rc == 0
+        spec.runner.run_raw.assert_called_once()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        benchmark_path = skill_dir / "benchmark.json"
+        assert benchmark_path.exists()
+        benchmark = json.loads(benchmark_path.read_text())
+        assert benchmark["schema_version"] == 1
+        assert benchmark["skill_name"] == "test-skill"
+        assert "run_summary" in benchmark
+        run_summary = benchmark["run_summary"]
+        assert "with_skill" in run_summary
+        assert "without_skill" in run_summary
+        assert "delta" in run_summary
+        assert isinstance(run_summary["delta"]["pass_rate"], float)
+
+    def test_grade_without_baseline_flag_writes_no_benchmark_sidecar(
+        self, tmp_path, monkeypatch
+    ):
+        """#28 US-002: benchmark.json is absent when --baseline is not passed."""
+        monkeypatch.chdir(tmp_path)
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="hello world",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[{"type": "assistant", "text": "hello world"}],
+                input_tokens=100,
+                output_tokens=50,
+                duration_seconds=2.5,
+            )
+        )
+        grading_report = self._make_grading_report()
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        spec.runner.run_raw.assert_not_called()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assert not (skill_dir / "benchmark.json").exists()
+
     def test_run_baseline_phase_threads_cwd_to_run_raw(
         self, tmp_path, monkeypatch
     ):
