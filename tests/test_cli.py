@@ -2922,7 +2922,7 @@ class TestCmdCompareBlind:
 
     def test_compare_blind_happy_path(self, tmp_path, capsys):
         before, after = self._write_pair(tmp_path)
-        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
         spec = _make_spec(eval_spec=eval_spec)
         report = self._make_blind_report(
             preference="b",
@@ -2957,7 +2957,7 @@ class TestCmdCompareBlind:
 
     def test_compare_blind_tie_output(self, tmp_path, capsys):
         before, after = self._write_pair(tmp_path)
-        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
         spec = _make_spec(eval_spec=eval_spec)
         report = self._make_blind_report(preference="tie")
         with patch(
@@ -2982,7 +2982,7 @@ class TestCmdCompareBlind:
 
     def test_compare_blind_surfaces_position_bias(self, tmp_path, capsys):
         before, after = self._write_pair(tmp_path)
-        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
         spec = _make_spec(eval_spec=eval_spec)
         report = self._make_blind_report(position_agreement=False)
         with patch(
@@ -3049,7 +3049,7 @@ class TestCmdCompareBlind:
             before_text="UNIQUE_BEFORE_CONTENT_XYZ",
             after_text="UNIQUE_AFTER_CONTENT_XYZ",
         )
-        eval_spec = _make_eval_spec(test_args="Do a thing")
+        eval_spec = _make_eval_spec(user_prompt="Do a thing")
         spec = _make_spec(eval_spec=eval_spec)
         report = self._make_blind_report()
         mock_blind = AsyncMock(return_value=report)
@@ -3078,7 +3078,7 @@ class TestCmdCompareBlind:
 
     def test_compare_blind_before_branch(self, tmp_path, capsys):
         before, after = self._write_pair(tmp_path)
-        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
         spec = _make_spec(eval_spec=eval_spec)
         report = self._make_blind_report(preference="a")
         with patch(
@@ -3106,7 +3106,7 @@ class TestCmdCompareBlind:
         after = tmp_path / "after.txt"
         before.write_text("ok")
         # after intentionally not created
-        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
         spec = _make_spec(eval_spec=eval_spec)
         with patch(
             "clauditor.cli.SkillSpec.from_file", return_value=spec
@@ -3131,7 +3131,7 @@ class TestCmdCompareBlind:
         after = tmp_path / "after.txt"
         before.write_bytes(b"\xff\xfe\xfd")
         after.write_text("ok")
-        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
         spec = _make_spec(eval_spec=eval_spec)
         with patch(
             "clauditor.cli.SkillSpec.from_file", return_value=spec
@@ -3157,7 +3157,7 @@ class TestCmdCompareBlind:
         before, _ = self._write_pair(tmp_path)
         after = tmp_path / "after.txt"
         after.write_bytes(b"\xff\xfe\xfd")
-        eval_spec = _make_eval_spec(test_args="Write a hello world")
+        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
         spec = _make_spec(eval_spec=eval_spec)
         with patch(
             "clauditor.cli.SkillSpec.from_file", return_value=spec
@@ -3200,10 +3200,10 @@ class TestCmdCompareBlind:
         # "ERROR: ..." with the helper's message substring.
         assert "No eval spec" in err
 
-    def test_compare_blind_empty_test_args_errors(self, tmp_path, capsys):
-        # Covers the whitespace-only test_args branch (cli.py lines 752-759).
+    def test_compare_blind_empty_user_prompt_errors(self, tmp_path, capsys):
+        # Covers the whitespace-only user_prompt branch (cli.py lines 752-759).
         before, after = self._write_pair(tmp_path)
-        eval_spec = _make_eval_spec(test_args="   \n")
+        eval_spec = _make_eval_spec(user_prompt="   \n")
         spec = _make_spec(eval_spec=eval_spec)
         with patch(
             "clauditor.cli.SkillSpec.from_file", return_value=spec
@@ -3220,7 +3220,7 @@ class TestCmdCompareBlind:
             )
         assert rc == 2
         err = capsys.readouterr().err
-        assert "test_args" in err
+        assert "user_prompt" in err
         # Fail-fast: the "Running blind A/B judge" progress line must NOT
         # appear when validation fails. Previously the CLI printed the
         # progress message before validating, misleading users into

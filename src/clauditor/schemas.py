@@ -134,6 +134,11 @@ class EvalSpec:
     skill_name: str
     description: str = ""
     test_args: str = ""  # Pre-filled args to skip interactive Q&A
+    # Natural-language user-query context handed to the blind A/B judge
+    # (see `blind_compare_from_spec`). Distinct from `test_args`, which is
+    # the skill-runner CLI arg string. Optional at load time, but required
+    # by the blind-compare helper when that code path is used.
+    user_prompt: str | None = None
     input_files: list[str] = field(default_factory=list)  # Resolved absolute paths
     assertions: list[dict] = field(default_factory=list)  # Layer 1 checks
     sections: list[SectionRequirement] = field(default_factory=list)  # Layer 2 schema
@@ -322,6 +327,14 @@ class EvalSpec:
                     f"grading_criteria[{i}]: 'criterion' must be a non-empty string"
                 )
 
+        user_prompt = data.get("user_prompt")
+        if user_prompt is not None:
+            if not isinstance(user_prompt, str) or user_prompt == "":
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): user_prompt "
+                    f"must be a non-empty string, got {user_prompt!r}"
+                )
+
         trigger_tests = None
         if "trigger_tests" in data:
             tt = data["trigger_tests"]
@@ -350,6 +363,7 @@ class EvalSpec:
             skill_name=skill_name,
             description=data.get("description", ""),
             test_args=data.get("test_args", ""),
+            user_prompt=user_prompt,
             input_files=resolved_input_files,
             assertions=data.get("assertions", []),
             sections=sections,
@@ -409,6 +423,8 @@ class EvalSpec:
             "grading_criteria": self.grading_criteria,
             "grading_model": self.grading_model,
         }
+        if self.user_prompt is not None:
+            result["user_prompt"] = self.user_prompt
         if self.output_file is not None:
             result["output_file"] = self.output_file
         if self.output_files:
