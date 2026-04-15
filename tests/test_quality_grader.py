@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from clauditor.quality_grader import (
     parse_grading_response,
 )
 from clauditor.schemas import EvalSpec, GradeThresholds, VarianceConfig
+from clauditor.spec import SkillSpec
 
 
 def _make_spec() -> EvalSpec:
@@ -1821,10 +1823,6 @@ class TestBlindCompareFromSpec:
         *,
         eval_spec: EvalSpec | None = None,
     ):
-        from pathlib import Path
-
-        from clauditor.spec import SkillSpec
-
         return SkillSpec(skill_path=Path("dummy.md"), eval_spec=eval_spec)
 
     def _make_eval_spec(
@@ -1894,7 +1892,7 @@ class TestBlindCompareFromSpec:
         from clauditor.quality_grader import blind_compare_from_spec
 
         spec = self._make_skill_spec(eval_spec=None)
-        with pytest.raises(ValueError, match="(?i)eval_spec"):
+        with pytest.raises(ValueError, match="No eval spec"):
             await blind_compare_from_spec(spec, "A", "B")
 
     @pytest.mark.asyncio

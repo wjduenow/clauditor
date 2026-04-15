@@ -195,9 +195,9 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
     Returns a callable that loads a ``SkillSpec`` from ``skill_path`` and
     runs :func:`clauditor.quality_grader.blind_compare_from_spec` on the
     two caller-supplied output strings. The fixture does NOT read files —
-    outputs must be passed as strings (DEC-003). Raises ``ValueError`` if
-    the spec lacks an eval spec or ``test_args`` is empty; the exception
-    is propagated untouched so tests can assert on it (DEC-006).
+    outputs must be passed as strings. Raises ``ValueError`` if the spec
+    lacks an eval spec or ``test_args`` is empty; the exception is
+    propagated untouched so tests can assert on it.
     """
     import asyncio
 

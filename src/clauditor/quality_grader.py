@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from clauditor.schemas import EvalSpec, GradeThresholds
+from clauditor.schemas import EvalSpec, GradeThresholds, criterion_text
 
 if TYPE_CHECKING:
     from clauditor.spec import SkillSpec
@@ -512,7 +512,8 @@ async def blind_compare_from_spec(
     """
     if spec.eval_spec is None:
         raise ValueError(
-            "blind_compare_from_spec: spec has no eval_spec"
+            "No eval spec found (blind_compare_from_spec requires "
+            "spec.eval_spec to be set)"
         )
 
     user_prompt = spec.eval_spec.test_args or ""
@@ -525,7 +526,6 @@ async def blind_compare_from_spec(
     rubric_hint: str | None = None
     criteria = spec.eval_spec.grading_criteria
     if criteria:
-        from clauditor.schemas import criterion_text
         rubric_hint = "\n".join(
             f"- {criterion_text(c)}" for c in criteria
         )

@@ -424,6 +424,7 @@ def _write_skill_with_eval(
     test_args: str = "What's the best sushi?",
     criteria: list[str] | None = None,
     eval_filename: str | None = None,
+    grading_model: str = "claude-sonnet-4-6",
 ) -> tuple[Path, Path]:
     skill_path = tmp_path / f"{name}.md"
     skill_path.write_text(f"# {name}\n\nA skill.")
@@ -441,7 +442,7 @@ def _write_skill_with_eval(
                 ]
             )
         ],
-        "grading_model": "claude-sonnet-4-6",
+        "grading_model": grading_model,
     }
     eval_path = tmp_path / (eval_filename or f"{name}.eval.json")
     eval_path.write_text(json.dumps(eval_data))
@@ -517,7 +518,11 @@ class TestClauditorBlindCompare:
 
     def test_clauditor_blind_compare_model_override(self, tmp_path):
         """Explicit model kwarg beats the spec's grading_model."""
-        skill_path, _ = _write_skill_with_eval(tmp_path, name="udon")
+        skill_path, _ = _write_skill_with_eval(
+            tmp_path,
+            name="udon",
+            grading_model="WRONG-SHOULD-NOT-BE-USED",
+        )
         factory = _blind_compare_factory(tmp_path)
         canned = _make_blind_report(model="claude-opus-4-6")
 
@@ -529,6 +534,7 @@ class TestClauditorBlindCompare:
 
         call = mock_bc.await_args
         assert call.kwargs["model"] == "claude-opus-4-6"
+        assert call.kwargs["model"] != "WRONG-SHOULD-NOT-BE-USED"
 
     def test_clauditor_blind_compare_raises_on_empty_test_args(self, tmp_path):
         """Empty test_args in the spec propagates as ValueError."""
@@ -543,6 +549,57 @@ class TestClauditorBlindCompare:
         ):
             with pytest.raises(ValueError, match="test_args"):
                 factory(skill_path, "a", "b")
+
+    def test_clauditor_blind_compare_via_pytester_injection(self, pytester):
+        """End-to-end fixture wiring via pytester: guards against regressions
+        in the @pytest.fixture decoration, request handling, or clauditor_spec
+        parameter wiring that the __wrapped__ direct-call tests would miss."""
+        skill_md = pytester.path / "sushi.md"
+        skill_md.write_text("# sushi\n\nA skill.\n")
+        eval_json = pytester.path / "sushi.eval.json"
+        eval_json.write_text(
+            json.dumps({
+                "skill_name": "sushi",
+                "description": "Eval",
+                "test_args": "What's the best sushi?",
+                "assertions": [],
+                "grading_criteria": [
+                    {"id": "c0", "criterion": "Is it specific?"},
+                ],
+                "grading_model": "claude-sonnet-4-6",
+            })
+        )
+
+        pytester.makepyfile(f"""
+            from unittest.mock import AsyncMock, patch
+
+            SKILL = r"{skill_md}"
+
+            def test_uses_blind_compare_fixture(clauditor_blind_compare):
+                from clauditor.quality_grader import BlindReport
+                canned = BlindReport(
+                    preference="a",
+                    confidence=0.9,
+                    score_a=0.8,
+                    score_b=0.4,
+                    reasoning="ok",
+                    position_agreement=True,
+                    model="claude-sonnet-4-6",
+                    input_tokens=10,
+                    output_tokens=5,
+                    duration_seconds=0.1,
+                )
+                with patch(
+                    "clauditor.quality_grader.blind_compare",
+                    new=AsyncMock(return_value=canned),
+                ):
+                    result = clauditor_blind_compare(
+                        SKILL, "out a", "out b"
+                    )
+                assert result.preference == "a"
+        """)
+        result = pytester.runpytest_inprocess("-v")
+        result.assert_outcomes(passed=1)
 
     def test_clauditor_blind_compare_reserved_fixture_name(self):
         """Regression guard: fixture name is documented as plugin-reserved."""
