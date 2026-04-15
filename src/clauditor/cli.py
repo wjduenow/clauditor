@@ -12,6 +12,13 @@ from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.paths import resolve_clauditor_dir
 from clauditor.runner import SkillResult, SkillRunner
 from clauditor.spec import SkillSpec
+from clauditor.suggest import (
+    NoPriorGradeError,
+    load_suggest_input,
+    propose_edits,
+    render_unified_diff,
+    write_sidecar,
+)
 from clauditor.workspace import (
     InvalidSkillNameError,
     IterationExistsError,
@@ -1962,6 +1969,135 @@ def cmd_audit(args: argparse.Namespace) -> int:
     return 1 if any(v.is_flagged for v in verdicts) else 0
 
 
+def cmd_suggest(args: argparse.Namespace) -> int:
+    """Propose minimal edits to SKILL.md based on the latest grade run.
+
+    Sync entrypoint that delegates to :func:`_cmd_suggest_impl` via
+    ``asyncio.run``. Exit codes follow DEC-008.
+    """
+    import asyncio
+
+    return asyncio.run(_cmd_suggest_impl(args))
+
+
+async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
+    """Async orchestration for ``clauditor suggest``.
+
+    Implements the DEC-008 exit-code table:
+
+    - exit 0 on zero failing signals (Sonnet NOT called) and on success.
+    - exit 1 when no prior grading.json exists or the proposer returns
+      unparseable JSON (no sidecar).
+    - exit 2 when any proposal anchor fails validation (no sidecar).
+    - exit 3 on Anthropic API errors (no sidecar).
+    """
+    skill_path = Path(args.skill)
+    if not skill_path.exists():
+        print(f"Error: skill file not found: {skill_path}", file=sys.stderr)
+        return 1
+    skill_name = skill_path.stem
+    skill_md_text = skill_path.read_text()
+
+    clauditor_dir = resolve_clauditor_dir()
+
+    try:
+        suggest_input = load_suggest_input(
+            skill=skill_name,
+            clauditor_dir=clauditor_dir,
+            with_transcripts=args.with_transcripts,
+            from_iteration=args.from_iteration,
+            skill_md_path=skill_path,
+        )
+    except NoPriorGradeError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        print(
+            f"Run 'clauditor grade {skill_name}' first.", file=sys.stderr
+        )
+        return 1
+
+    # DEC-008 row 2: zero failing signals — do NOT call Sonnet.
+    if (
+        not suggest_input.failing_assertions
+        and not suggest_input.failing_grading_criteria
+    ):
+        print(
+            f"No improvement suggestions: all signals passed for "
+            f"{skill_name} in iteration {suggest_input.source_iteration}.",
+            file=sys.stderr,
+        )
+        return 0
+
+    if args.verbose:
+        print(
+            f"[suggest] skill={skill_name} from iteration "
+            f"{suggest_input.source_iteration}",
+            file=sys.stderr,
+        )
+        print(
+            f"[suggest] failing_assertions="
+            f"{len(suggest_input.failing_assertions)} "
+            f"failing_criteria="
+            f"{len(suggest_input.failing_grading_criteria)}",
+            file=sys.stderr,
+        )
+        print(
+            f"[suggest] with_transcripts={args.with_transcripts} "
+            f"model={args.model}",
+            file=sys.stderr,
+        )
+
+    # propose_edits never raises — API/parse errors surface via
+    # SuggestReport.parse_error; anchor errors via validation_errors.
+    report = await propose_edits(suggest_input, model=args.model)
+
+    # DEC-008 row 3 / row 4: API errors vs parse errors.
+    if report.parse_error is not None:
+        if "anthropic API error" in report.parse_error:
+            print(f"Error: {report.parse_error}", file=sys.stderr)
+            return 3
+        print(
+            f"Error: Proposer returned unparseable JSON: "
+            f"{report.parse_error}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # DEC-008 row 5: anchor validation errors — no sidecar.
+    if report.validation_errors:
+        print(
+            f"Error: {len(report.validation_errors)} edit(s) failed "
+            f"anchor validation:",
+            file=sys.stderr,
+        )
+        for msg in report.validation_errors:
+            print(f"  - {msg}", file=sys.stderr)
+        return 2
+
+    # DEC-008 row 6: success — render diff, write sidecar, print.
+    diff_text = render_unified_diff(report, skill_md_text)
+    json_path, diff_path = write_sidecar(report, diff_text, clauditor_dir)
+
+    if args.verbose:
+        print(
+            f"[suggest] input_tokens={report.input_tokens} "
+            f"output_tokens={report.output_tokens}",
+            file=sys.stderr,
+        )
+        print(
+            f"[suggest] duration_seconds={report.duration_seconds:.2f}",
+            file=sys.stderr,
+        )
+        print(f"[suggest] sidecar: {json_path}", file=sys.stderr)
+        print(f"[suggest] diff:    {diff_path}", file=sys.stderr)
+
+    if args.json:
+        print(report.to_json(), end="")
+    else:
+        print(diff_text, end="")
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="clauditor",
@@ -2300,6 +2436,47 @@ def main(argv: list[str] | None = None) -> int:
         help="(US-006) directory to write audit reports",
     )
 
+    # suggest
+    p_suggest = subparsers.add_parser(
+        "suggest",
+        help=(
+            "Propose minimal edits to a skill .md based on the latest "
+            "grade run's failing signals"
+        ),
+    )
+    p_suggest.add_argument("skill", help="Path to skill .md file")
+    p_suggest.add_argument(
+        "--from-iteration",
+        type=_positive_int,
+        default=None,
+        metavar="N",
+        help=(
+            "Source grade run iteration number (default: latest "
+            "iteration containing grading.json)"
+        ),
+    )
+    p_suggest.add_argument(
+        "--with-transcripts",
+        action="store_true",
+        help="Include per-run stream-json transcripts in the proposer prompt",
+    )
+    p_suggest.add_argument(
+        "--model",
+        default="claude-sonnet-4-6",
+        help="Proposer model (default: claude-sonnet-4-6)",
+    )
+    p_suggest.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the sidecar JSON to stdout instead of a unified diff",
+    )
+    p_suggest.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Log extra bundle/token details to stderr",
+    )
+
     # doctor
     subparsers.add_parser(
         "doctor",
@@ -2347,6 +2524,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_trend(parsed)
     elif parsed.command == "audit":
         return cmd_audit(parsed)
+    elif parsed.command == "suggest":
+        return cmd_suggest(parsed)
 
     return 1
 
