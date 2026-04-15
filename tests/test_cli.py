@@ -2135,6 +2135,98 @@ class TestBaselineFlag:
         ts_line = out[ts_idx:ts_line_end]
         assert "+" in ts_line
 
+    def test_grade_with_baseline_and_json_routes_delta_block_to_stderr(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """#28: --baseline + --json routes delta block to stderr so stdout
+        stays parseable JSON (same pattern as --diff routing)."""
+        monkeypatch.chdir(tmp_path)
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="hello world",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[{"type": "assistant", "text": "hello world"}],
+                input_tokens=100,
+                output_tokens=50,
+                duration_seconds=2.5,
+            )
+        )
+        primary_report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c1",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                ),
+            ],
+            duration_seconds=1.0,
+        )
+        baseline_report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c1",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                ),
+                GradingResult(
+                    criterion="c2",
+                    passed=False,
+                    score=0.3,
+                    evidence="no",
+                    reasoning="no",
+                ),
+            ],
+            duration_seconds=0.5,
+        )
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                side_effect=[primary_report, baseline_report],
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--baseline", "--json"])
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        # stdout still carries the JSON grade payload — the delta block
+        # must NOT leak into it or it would corrupt JSON consumers.
+        assert "baseline delta:" not in captured.out
+        # Slice from the first '{' to skip the unrelated progress
+        # messages ("Running ...") that the runner prints ahead of the
+        # JSON payload. What we care about is that the JSON body is
+        # intact and the delta block isn't mixed in.
+        brace = captured.out.find("{")
+        assert brace != -1, "no JSON payload on stdout"
+        payload = json.loads(captured.out[brace:])
+        assert payload["skill"] == "test-skill"
+        # stderr carries the delta block (routed there under --json
+        # so stdout stays parseable by automated consumers).
+        assert "baseline delta:" in captured.err
+        assert "pass_rate" in captured.err
+        assert "time_seconds" in captured.err
+        assert "tokens" in captured.err
+
     def test_grade_without_baseline_flag_prints_no_delta_block(
         self, tmp_path, monkeypatch, capsys
     ):

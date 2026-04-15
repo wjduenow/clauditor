@@ -1012,12 +1012,14 @@ def _cmd_grade_with_workspace(
                 file=sys.stderr,
             )
 
-    # #28 US-003: plain, unconditional baseline delta block on stdout.
+    # #28 US-003: plain, unconditional baseline delta block.
     # Gated on --baseline AND a computed Benchmark (skipped in --output
     # mode where primary SkillResult metrics are unavailable). DEC-010
-    # — no TTY branching, no color, one format always.
+    # — no TTY branching, no color, one format always. In --json mode
+    # the block routes to stderr (same pattern as --diff) so stdout
+    # stays parseable JSON for automated consumers.
     if getattr(args, "baseline", False) and benchmark is not None:
-        _print_baseline_delta_block(benchmark, out=sys.stdout)
+        _print_baseline_delta_block(benchmark, out=diff_out)
 
     # Append a history record for trendability (US-006). Skip when
     # --only-criterion is set: partial-criterion runs would silently
