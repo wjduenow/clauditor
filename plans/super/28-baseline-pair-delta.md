@@ -4,8 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/28
 - **Branch:** `feature/28-baseline-pair`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/28-baseline-pair`
-- **Phase:** `detailing`
-- **PR:** (not yet opened)
+- **Phase:** `implemented`
+- **PR:** https://github.com/wjduenow/clauditor/pull/37
 - **Sessions:** 1
 - **Last session:** 2026-04-15
 
@@ -763,3 +763,47 @@ Total additive LOC: ~500 LOC added, ~300 LOC deleted, net ~+200.
 ## Beads Manifest
 
 *(Phase 7.)*
+
+---
+
+## Session memories
+
+Captured during `clauditor-0qb.7` (Patterns & Memory). These are
+candidate `bd remember` entries the orchestrator can promote post-hoc;
+the plan doc is the durable record in the meantime.
+
+- **Plan contradictions are a STOP signal, not a workaround prompt.**
+  #28 US-005's first worker found that `Flip`/`FlipKind` were used by
+  both `compare_ab` (delete target) and `diff_assertion_sets`
+  (preserve list), contradicting the plan's "unique to pair-run path"
+  claim. The worker correctly produced a zero-line diff + report; the
+  orchestrator reissued with a corrected delete list. Promoted to
+  `.claude/rules/plan-contradiction-stop.md`.
+
+- **Mocks called twice need `side_effect`, not `return_value`.** Pass 3
+  of code review found a baseline delta-block test that used
+  `return_value=report` for the twice-called grader, reducing the
+  delta under test to `x - x = 0` and masking any sign-handling or
+  format-specifier bug. Fixed to `side_effect=[primary, baseline]`.
+  Promoted to `.claude/rules/mock-side-effect-for-distinct-calls.md`.
+
+- **Pure compute + separate I/O is the right shape for a new schema-
+  versioned sidecar.** `benchmark.py::compute_benchmark` returns a
+  dataclass; `cli.py` calls `to_json()` + `write_text()`. Unit tests
+  skip `tmp_path` entirely. Contrast with `_run_baseline_phase` which
+  bundles run + grade + write and is harder to test. Promoted to
+  `.claude/rules/pure-compute-vs-io-split.md`.
+
+- **agentskills.io field names are spec-locked.** `with_skill`,
+  `without_skill`, `delta`, `pass_rate`, `time_seconds`, `tokens`,
+  `run_summary`, `mean`, `stddev` — do not rename for internal
+  consistency, do not pluralize, do not idiomize. Not promoted to a
+  rule (one-off constraint), but future edits to `benchmark.py` should
+  preserve these literals.
+
+- **No TTY branching in stdout printers.** DEC-010 walked back DEC-003
+  because the codebase has zero existing `isatty` usage and
+  introducing it for one printer would add a cross-cutting test
+  pattern. The delta block prints plain text unconditionally. Not
+  promoted to a rule (one-off), but future renderers should follow.
+
