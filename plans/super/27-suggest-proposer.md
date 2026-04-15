@@ -4,7 +4,7 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/27
 - **Branch:** `feature/27-suggest-proposer`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/27-suggest-proposer`
-- **Phase:** `devolved`
+- **Phase:** `implemented`
 - **PR:** https://github.com/wjduenow/clauditor/pull/36
 - **Sessions:** 1
 - **Last session:** 2026-04-15
