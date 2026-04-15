@@ -198,6 +198,14 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
     outputs must be passed as strings. Raises ``ValueError`` if the spec
     lacks an eval spec or ``test_args`` is empty; the exception is
     propagated untouched so tests can assert on it.
+
+    Model precedence (highest → lowest):
+
+    1. Explicit ``model=`` kwarg on this factory call.
+    2. ``--clauditor-model`` pytest CLI option (matches
+       ``clauditor_grader`` / ``clauditor_triggers``).
+    3. ``spec.eval_spec.grading_model`` (resolved inside
+       :func:`blind_compare_from_spec`).
     """
     import asyncio
 
@@ -212,8 +220,11 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
         model: str | None = None,
     ) -> BlindReport:
         spec = clauditor_spec(skill_path, eval_path)
+        effective_model = model or request.config.getoption("--clauditor-model")
         return asyncio.run(
-            blind_compare_from_spec(spec, output_a, output_b, model=model)
+            blind_compare_from_spec(
+                spec, output_a, output_b, model=effective_model
+            )
         )
 
     return _factory

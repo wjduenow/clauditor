@@ -403,15 +403,20 @@ def _make_blind_report(**overrides):
     return BlindReport(**defaults)
 
 
-def _blind_compare_factory(tmp_path: Path):
-    """Build the clauditor_blind_compare factory directly (no pytest injection)."""
+def _blind_compare_factory(tmp_path: Path, *, cli_model: str | None = None):
+    """Build the clauditor_blind_compare factory directly (no pytest injection).
+
+    ``cli_model`` simulates the value of the ``--clauditor-model`` plugin
+    option as if a user had passed it on the pytest CLI. Defaults to None
+    so existing tests are unaffected.
+    """
     request = MagicMock()
     request.config.getoption.side_effect = (
         lambda opt: {
             "--clauditor-project-dir": None,
             "--clauditor-timeout": 180,
             "--clauditor-claude-bin": "claude",
-            "--clauditor-model": None,
+            "--clauditor-model": cli_model,
         }[opt]
     )
     spec_factory = clauditor_spec.__wrapped__(request, tmp_path)
@@ -535,6 +540,54 @@ class TestClauditorBlindCompare:
         call = mock_bc.await_args
         assert call.kwargs["model"] == "claude-opus-4-6"
         assert call.kwargs["model"] != "WRONG-SHOULD-NOT-BE-USED"
+
+    def test_clauditor_blind_compare_respects_cli_model_option(self, tmp_path):
+        """--clauditor-model CLI option beats the spec's grading_model.
+
+        Precedence: explicit kwarg > --clauditor-model > spec.grading_model.
+        Matches the behavior of clauditor_grader / clauditor_triggers, which
+        also default to the CLI option when no explicit model is supplied.
+        """
+        skill_path, _ = _write_skill_with_eval(
+            tmp_path,
+            name="cli_model",
+            grading_model="spec-model-should-lose",
+        )
+        factory = _blind_compare_factory(
+            tmp_path, cli_model="claude-opus-4-6"
+        )
+        canned = _make_blind_report(model="claude-opus-4-6")
+
+        with patch(
+            "clauditor.quality_grader.blind_compare",
+            new=AsyncMock(return_value=canned),
+        ) as mock_bc:
+            factory(skill_path, "a", "b")  # no explicit model kwarg
+
+        call = mock_bc.await_args
+        assert call.kwargs["model"] == "claude-opus-4-6"
+        assert call.kwargs["model"] != "spec-model-should-lose"
+
+    def test_clauditor_blind_compare_kwarg_beats_cli_model_option(self, tmp_path):
+        """Explicit model= kwarg still wins over --clauditor-model CLI option."""
+        skill_path, _ = _write_skill_with_eval(
+            tmp_path,
+            name="kwarg_wins",
+            grading_model="spec-model-should-lose",
+        )
+        factory = _blind_compare_factory(
+            tmp_path, cli_model="cli-model-should-also-lose"
+        )
+        canned = _make_blind_report(model="claude-opus-4-6")
+
+        with patch(
+            "clauditor.quality_grader.blind_compare",
+            new=AsyncMock(return_value=canned),
+        ) as mock_bc:
+            factory(skill_path, "a", "b", model="claude-opus-4-6")
+
+        call = mock_bc.await_args
+        assert call.kwargs["model"] == "claude-opus-4-6"
 
     def test_clauditor_blind_compare_raises_on_empty_test_args(self, tmp_path):
         """Empty test_args in the spec propagates as ValueError."""

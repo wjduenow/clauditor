@@ -1942,3 +1942,29 @@ class TestBlindCompareFromSpec:
             await blind_compare_from_spec(spec, "A", "B", rng=rng)
 
         assert mock_bc.await_args.kwargs["rng"] is rng
+
+    def test_validate_blind_compare_spec_raises_on_missing_eval_spec(self):
+        """validate_blind_compare_spec raises with a clear message when
+        eval_spec is missing — same shape as blind_compare_from_spec, but
+        sync and network-free so callers can fail-fast."""
+        from clauditor.quality_grader import validate_blind_compare_spec
+
+        spec = self._make_skill_spec(eval_spec=None)
+        with pytest.raises(ValueError, match="No eval spec"):
+            validate_blind_compare_spec(spec)
+
+    def test_validate_blind_compare_spec_raises_on_empty_test_args(self):
+        """validate_blind_compare_spec raises when test_args is empty/whitespace."""
+        from clauditor.quality_grader import validate_blind_compare_spec
+
+        spec = self._make_skill_spec(
+            eval_spec=self._make_eval_spec(test_args="")
+        )
+        with pytest.raises(ValueError, match="test_args"):
+            validate_blind_compare_spec(spec)
+
+        spec_ws = self._make_skill_spec(
+            eval_spec=self._make_eval_spec(test_args="   \n ")
+        )
+        with pytest.raises(ValueError, match="test_args"):
+            validate_blind_compare_spec(spec_ws)

@@ -123,9 +123,10 @@ later. Resolution today is via `EvalSpec.test_args` (`schemas.py:136`).
   `side_effect=[...]` not `return_value`, per the rule added in #28
   US-007.
 - **pure-compute-vs-io-split** — APPLIES. The new shared helper is a
-  pure function (takes spec + two strings, returns a `BlindReport`);
-  the CLI and the fixture are its only callers. Exactly the shape the
-  rule describes.
+  composition wrapper (takes spec + two strings, resolves model /
+  rubric / user_prompt with no I/O, then delegates to `blind_compare`
+  for the network call); the CLI and the fixture are its only
+  callers. Exactly the shape the rule describes.
 - **llm-judge-prompt-injection** — N/A. Reuses `build_blind_prompt`
   unchanged.
 - All other rules: N/A (no new JSON sidecars, no new subprocess
@@ -320,11 +321,13 @@ through DEC-006). All scoping questions resolved with the user's
 
 ### US-001 — Add `blind_compare_from_spec` helper
 
-**Description:** New pure async helper in
+**Description:** New composition async helper in
 `src/clauditor/quality_grader.py` that takes a `SkillSpec` and two
 pre-loaded output strings, resolves `user_prompt` / `rubric_hint` /
 `model` from the spec exactly as the CLI does today, and awaits
-`blind_compare`. Pure logic — no file I/O, no stdout/stderr prints.
+`blind_compare`. No file I/O, no stdout/stderr prints (the helper
+delegates network I/O to `blind_compare` — it is not a pure function,
+just an I/O-free resolution + LLM judge dispatch wrapper).
 
 **Traces to:** DEC-001, DEC-006.
 

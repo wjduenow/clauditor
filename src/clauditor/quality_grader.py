@@ -490,6 +490,26 @@ async def blind_compare(
     )
 
 
+def validate_blind_compare_spec(spec: SkillSpec) -> None:
+    """Raise ``ValueError`` if ``spec`` is unusable with the blind helper.
+
+    Same validation the full helper runs at its entry, extracted so callers
+    that want to fail-fast before printing progress messages or doing other
+    I/O can validate without making any network calls.
+    """
+    if spec.eval_spec is None:
+        raise ValueError(
+            "No eval spec found (blind_compare_from_spec requires "
+            "spec.eval_spec to be set)"
+        )
+    user_prompt = spec.eval_spec.test_args or ""
+    if not user_prompt.strip():
+        raise ValueError(
+            "blind_compare_from_spec: eval_spec.test_args must be set "
+            "(used as the user prompt context for the judge)"
+        )
+
+
 async def blind_compare_from_spec(
     spec: SkillSpec,
     output_a: str,
@@ -498,7 +518,7 @@ async def blind_compare_from_spec(
     model: str | None = None,
     rng: random.Random | None = None,
 ) -> BlindReport:
-    """Pure helper that resolves judge inputs from a :class:`SkillSpec`.
+    """Composition helper that resolves judge inputs from a :class:`SkillSpec`.
 
     Extracted from the CLI's ``_run_blind_compare`` so the same resolution
     logic can be shared between the CLI wrapper and the ``clauditor_blind_compare``
@@ -510,18 +530,10 @@ async def blind_compare_from_spec(
     ``eval_spec.test_args`` is empty/whitespace (it is used as the user prompt
     context for the judge). Does not print to stdout or stderr (DEC-006).
     """
-    if spec.eval_spec is None:
-        raise ValueError(
-            "No eval spec found (blind_compare_from_spec requires "
-            "spec.eval_spec to be set)"
-        )
+    validate_blind_compare_spec(spec)
+    assert spec.eval_spec is not None  # for type-checker; validator enforces
 
     user_prompt = spec.eval_spec.test_args or ""
-    if not user_prompt.strip():
-        raise ValueError(
-            "blind_compare_from_spec: eval_spec.test_args must be set "
-            "(used as the user prompt context for the judge)"
-        )
 
     rubric_hint: str | None = None
     criteria = spec.eval_spec.grading_criteria

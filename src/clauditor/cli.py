@@ -1308,9 +1308,22 @@ def _run_blind_compare(
     """
     import asyncio
 
-    from clauditor.quality_grader import blind_compare_from_spec
+    from clauditor.quality_grader import (
+        blind_compare_from_spec,
+        validate_blind_compare_spec,
+    )
 
     skill_spec = SkillSpec.from_file(spec_path, eval_path=eval_path)
+
+    # Fail-fast on invalid specs BEFORE any progress messages or file I/O:
+    # the prior shape printed "Running blind A/B judge..." even when validation
+    # would immediately raise, which misled users into thinking API calls had
+    # happened.
+    try:
+        validate_blind_compare_spec(skill_spec)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
     for path in (before_path, after_path):
         if not path.is_file():
@@ -1342,24 +1355,22 @@ def _run_blind_compare(
     # US-002: all spec/test_args/rubric/model resolution happens inside
     # blind_compare_from_spec (shared with the pytest fixture from US-003).
     # We read the spec's model for the stderr progress line; the helper
-    # resolves its own effective model internally.
-    try:
-        if skill_spec.eval_spec is not None:
-            print(
-                f"Running blind A/B judge ({skill_spec.eval_spec.grading_model}) "
-                "— 2 API calls...",
-                file=sys.stderr,
-            )
-        report = asyncio.run(
-            blind_compare_from_spec(
-                skill_spec,
-                output_a,
-                output_b,
-            )
+    # resolves its own effective model internally. Validation already ran
+    # above (fail-fast), so the progress message now reliably means
+    # "actual API calls are about to happen".
+    assert skill_spec.eval_spec is not None  # validate_blind_compare_spec enforced
+    print(
+        f"Running blind A/B judge ({skill_spec.eval_spec.grading_model}) "
+        "— 2 API calls...",
+        file=sys.stderr,
+    )
+    report = asyncio.run(
+        blind_compare_from_spec(
+            skill_spec,
+            output_a,
+            output_b,
         )
-    except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 2
+    )
     _print_blind_report(report, before_path, after_path)
     return 0
 
