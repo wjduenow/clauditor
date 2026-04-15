@@ -417,6 +417,18 @@ def cmd_grade(args: argparse.Namespace) -> int:
         print("ERROR: No grading_criteria defined in eval spec", file=sys.stderr)
         return 1
 
+    # #28 US-004: --min-baseline-delta depends on --baseline. Knowable from
+    # args alone, so validate early alongside other input-error exit-2 paths.
+    if (
+        getattr(args, "min_baseline_delta", None) is not None
+        and not getattr(args, "baseline", False)
+    ):
+        print(
+            "error: --min-baseline-delta requires --baseline",
+            file=sys.stderr,
+        )
+        return 2
+
     # --only-criterion: filter criteria before LLM call (token savings).
     # Partial runs produce a subset grading.json and must not publish an
     # iteration workspace (the partial report would later be misused as a
@@ -1029,6 +1041,26 @@ def _cmd_grade_with_workspace(
     passed = primary_report.passed
     if variance_report:
         passed = passed and variance_report.passed
+
+    # #28 US-004: --min-baseline-delta gate (DEC-008: exit 1 for
+    # gate violation; DEC-009: equality passes). Runs after history
+    # is recorded so the failing iteration is still published for
+    # inspection. The delta block was already printed above, so the
+    # user sees the observed delta before this diagnostic.
+    if (
+        getattr(args, "min_baseline_delta", None) is not None
+        and benchmark is not None
+    ):
+        threshold = args.min_baseline_delta
+        observed = benchmark.run_summary.delta.pass_rate
+        if observed < threshold:
+            print(
+                f"error: baseline delta {observed:+.2f} below "
+                f"threshold {threshold:.2f}",
+                file=sys.stderr,
+            )
+            return 1
+
     return 0 if passed else 1
 
 
@@ -2333,6 +2365,17 @@ def main(argv: list[str] | None = None) -> int:
             "After grading, run the test args through Claude without the "
             "skill prefix (baseline) and capture L1/L2/L3 sidecars. "
             "Roughly doubles LLM cost; never the default."
+        ),
+    )
+    p_grade.add_argument(
+        "--min-baseline-delta",
+        type=_unit_float,
+        default=None,
+        help=(
+            "(#28) Fail with exit 1 if the with-skill vs without-skill "
+            "pass_rate delta is below this threshold (0.0-1.0). Requires "
+            "--baseline. Equality passes: --min-baseline-delta 0.0 is a "
+            "strict no-regression gate."
         ),
     )
     p_grade.add_argument(
