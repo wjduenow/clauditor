@@ -615,6 +615,12 @@ the count failure and any per-entry failures.
 - **`history.jsonl` is now schema v3** with `iteration` and `workspace_path` fields on `grade` records. Mixed v2/v3 files continue to load.
 - **`.clauditor/` is anchored at the repo root** (walking up for `.git/` or `.claude/`), so running `grade` from a subdirectory writes to the same workspace as running it from the top.
 
+## Reference docs
+
+- [`docs/stream-json-schema.md`](docs/stream-json-schema.md) — authoritative
+  reference for the `claude` stream-json NDJSON fields clauditor parses,
+  with examples and error-handling rules.
+
 ## License
 
 Apache 2.0

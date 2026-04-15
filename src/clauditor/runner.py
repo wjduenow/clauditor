@@ -1,28 +1,13 @@
 """Skill runner — executes Claude Code skills and captures output.
 
-Stream-JSON parser notes
-------------------------
-This module invokes the Claude CLI with
-``--output-format stream-json --verbose`` and parses its NDJSON output
-line-by-line. Each line is a JSON object with a ``type`` field. The schema
-below reflects the Anthropic CLI streaming format (verified live against
-``claude`` 2.1.x):
+Invokes the Claude CLI with ``--output-format stream-json --verbose`` and
+parses the NDJSON stream in :meth:`SkillRunner._invoke`. The parser is
+intentionally permissive: malformed lines are skipped with a stderr
+warning and every field is tolerated-if-missing.
 
-- ``{"type": "system", ...}``                 — init / hook / misc events
-- ``{"type": "assistant", "message": {..., "content": [blocks]}}``
-    Each block in ``message.content`` has a ``type``. For ``type == "text"``
-    the block carries a ``text`` field. Tool-use blocks and other block
-    types are ignored for the purposes of ``SkillResult.output``.
-- ``{"type": "result", ..., "usage": {"input_tokens": N, "output_tokens": M}}``
-    The final line of a successful run. Carries aggregate token usage.
-
-Malformed lines (``json.JSONDecodeError``) are logged to stderr and
-skipped, never aborting the run. A missing ``result`` message leaves
-token counts at 0 and emits a warning but still yields a ``SkillResult``.
-
-Every exit path from ``_invoke`` is wrapped in ``try/finally`` so that
-``SkillResult.duration_seconds`` is set for success, timeout, missing
-binary, and any other error path (DEC-005).
+See ``docs/stream-json-schema.md`` (human-readable reference with
+concrete examples) and ``.claude/rules/stream-json-schema.md`` (agent
+rule: pattern, rationale, canonical implementation pointer).
 """
 
 from __future__ import annotations

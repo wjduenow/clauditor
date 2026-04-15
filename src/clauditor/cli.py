@@ -49,39 +49,21 @@ def _positive_int(value: str) -> int:
     return ivalue
 
 
-def cmd_validate(args: argparse.Namespace) -> int:
-    """Validate a skill's output against its eval spec (Layer 1 only)."""
-    spec = SkillSpec.from_file(args.skill, eval_path=args.eval)
+def _append_validate_history(
+    skill_name: str,
+    *,
+    pass_rate: float,
+    skill_result: SkillResult | None,
+    iteration: int | None,
+    workspace_path: str | None,
+) -> None:
+    """Append a ``command="validate"`` row to ``history.jsonl``.
 
-    if not spec.eval_spec:
-        print(f"ERROR: No eval spec found for {args.skill}", file=sys.stderr)
-        print(
-            f"Create {Path(args.skill).with_suffix('.eval.json')}",
-            file=sys.stderr,
-        )
-        return 1
-
-    skill_result = None
-    if args.output:
-        # Validate against provided output file
-        output = Path(args.output).read_text()
-    else:
-        # Run the skill to get output
-        print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
-        skill_result = spec.run()
-        if not skill_result.succeeded:
-            print(
-                f"ERROR: Skill failed to run: {skill_result.error}",
-                file=sys.stderr,
-            )
-            return 1
-        output = skill_result.output
-        print(f"Skill completed in {skill_result.duration_seconds:.1f}s")
-
-    # Run Layer 1 assertions
-    results = run_assertions(output, spec.eval_spec.assertions)
-
-    # Record history (US-005). Layer 1 only — no grader/quality/triggers.
+    Called on both the success and skill-failure paths of ``cmd_validate``
+    so failed live validates stay visible to trend/audit tooling. On the
+    failure path ``iteration`` / ``workspace_path`` are ``None`` (the
+    workspace was aborted) and ``pass_rate`` is ``0.0``.
+    """
     from clauditor.metrics import TokenUsage, build_metrics
 
     skill_tokens = TokenUsage(
@@ -95,14 +77,151 @@ def cmd_validate(args: argparse.Namespace) -> int:
     )
     try:
         history.append_record(
-            skill=spec.skill_name,
-            pass_rate=results.pass_rate,
+            skill=skill_name,
+            pass_rate=pass_rate,
             mean_score=None,
             metrics=metrics_dict,
             command="validate",
+            iteration=iteration,
+            workspace_path=workspace_path,
         )
     except Exception as e:  # pragma: no cover - defensive
         print(f"WARNING: failed to append history: {e}", file=sys.stderr)
+
+
+def cmd_validate(args: argparse.Namespace) -> int:
+    """Validate a skill's output against its eval spec (Layer 1 only).
+
+    Live runs (no ``--output``) publish a per-iteration workspace under
+    ``.clauditor/iteration-N/<skill>/`` containing ``run-0/output.jsonl``,
+    ``run-0/output.txt`` and ``assertions.json`` (with ``transcript_path``
+    wired onto every assertion result). No ``grading.json`` or
+    ``timing.json`` is written — validate has no Layer 3. Shares the
+    iteration counter with ``clauditor grade``. ``--no-transcript``
+    suppresses the ``run-0/`` stream-json write and leaves
+    ``transcript_path`` unset on assertion rows (US-006).
+    """
+    spec = SkillSpec.from_file(args.skill, eval_path=args.eval)
+
+    if not spec.eval_spec:
+        print(f"ERROR: No eval spec found for {args.skill}", file=sys.stderr)
+        print(
+            f"Create {Path(args.skill).with_suffix('.eval.json')}",
+            file=sys.stderr,
+        )
+        return 1
+
+    skill_result: SkillResult | None = None
+    workspace: IterationWorkspace | None = None
+    workspace_rel: str | None = None
+    iteration_index: int | None = None
+
+    if args.output:
+        # Validate against a pre-captured output file. This path is
+        # intentionally NOT wrapped in a workspace: there is no skill
+        # subprocess to capture a transcript from, so there's nothing
+        # to persist under ``run-0/``. Preserve pre-US-006 behavior.
+        output = Path(args.output).read_text()
+        results = run_assertions(output, spec.eval_spec.assertions)
+    else:
+        # Live-run path: allocate an iteration workspace, run the skill
+        # into ``workspace.tmp_path / run-0``, persist sidecars, and
+        # finalize atomically. On any exception, abort the staging dir.
+        clauditor_dir = resolve_clauditor_dir()
+        try:
+            workspace = allocate_iteration(clauditor_dir, spec.skill_name)
+        except InvalidSkillNameError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+
+        try:
+            print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
+            skill_result = spec.run(run_dir=workspace.tmp_path / "run-0")
+            if not skill_result.succeeded:
+                print(
+                    f"ERROR: Skill failed to run: {skill_result.error}",
+                    file=sys.stderr,
+                )
+                workspace.abort()
+                # Still record history so failed live-validates remain
+                # visible in trend/audit tooling. No iteration is
+                # published, so iteration/workspace fields stay None.
+                _append_validate_history(
+                    spec.skill_name,
+                    pass_rate=0.0,
+                    skill_result=skill_result,
+                    iteration=None,
+                    workspace_path=None,
+                )
+                return 1
+            output = skill_result.output
+            print(f"Skill completed in {skill_result.duration_seconds:.1f}s")
+
+            results = run_assertions(output, spec.eval_spec.assertions)
+
+            skill_dir = workspace.tmp_path
+            verbose = bool(getattr(args, "verbose", False))
+            no_transcript = bool(getattr(args, "no_transcript", False))
+
+            if verbose and results.failed:
+                _print_failing_transcript_slice(
+                    0, list(skill_result.stream_events), sys.stderr
+                )
+
+            if not no_transcript:
+                _write_run_dir(
+                    skill_dir / "run-0",
+                    output,
+                    list(skill_result.stream_events),
+                    verbose=verbose,
+                )
+                transcript_rel = _relative_to_repo(
+                    clauditor_dir,
+                    workspace.final_path / "run-0" / "output.jsonl",
+                )
+                for r in results.results:
+                    r.transcript_path = transcript_rel
+            else:
+                # Scrub any `run-0/` subtree the skill already wrote
+                # during staging (e.g. `inputs/` copies), so --no-transcript
+                # does not leak a half-populated run-0 dir into the
+                # published iteration.
+                import shutil
+
+                shutil.rmtree(skill_dir / "run-0", ignore_errors=True)
+
+            assertions_payload = {
+                "schema_version": 1,
+                "skill": spec.skill_name,
+                "iteration": workspace.iteration,
+                "runs": [{"run": 0, **results.to_json()}],
+            }
+            (skill_dir / "assertions.json").write_text(
+                json.dumps(assertions_payload, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            workspace.finalize()
+            iteration_index = workspace.iteration
+            workspace_rel = _relative_to_repo(
+                clauditor_dir, workspace.final_path
+            )
+        except Exception:
+            if workspace is not None and not workspace.finalized:
+                workspace.abort()
+            raise
+
+    # Record history (US-005). Layer 1 only — no grader/quality/triggers.
+    _append_validate_history(
+        spec.skill_name,
+        pass_rate=results.pass_rate,
+        skill_result=skill_result,
+        iteration=iteration_index,
+        workspace_path=workspace_rel,
+    )
 
     if args.json:
         print(
@@ -135,6 +254,80 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return 0 if results.passed else 1
 
 
+_TRANSCRIPT_SLICE_BLOCK_CAP_BYTES = 2048
+_TRANSCRIPT_SLICE_TRUNC_MARKER = "... [truncated]"
+
+
+def _print_failing_transcript_slice(
+    run_idx: int,
+    stream_events: list[dict],
+    out,
+) -> None:
+    """Print the last 5 ``assistant`` text blocks from ``stream_events``.
+
+    Pure helper — no filesystem or argparse access, so it is cheap to test
+    in isolation. The caller is responsible for gating invocation on
+    ``args.verbose`` and a non-empty ``AssertionSet.failed()`` for the run.
+
+    Each ``assistant`` event's ``message.content`` list is walked for
+    ``type == "text"`` blocks (in event order); the last 5 across all
+    events are kept. Each text is passed through
+    :func:`clauditor.transcripts.redact` before printing so that in-memory
+    ``stream_events`` stays untouched (DEC-010) while the printed output
+    is still scrubbed. Individual text blocks are capped at 2 KB by byte
+    count on the UTF-8 encoding (per-block, post-redaction); overflow is
+    truncated with a trailing ``... [truncated]`` marker.
+    """
+    from . import transcripts
+
+    text_blocks: list[str] = []
+    for event in stream_events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message") or {}
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content") or []
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "text":
+                continue
+            text_val = block.get("text")
+            if isinstance(text_val, str):
+                text_blocks.append(text_val)
+
+    slice_blocks = text_blocks[-5:]
+    scrubbed_slice, redaction_count = transcripts.redact(slice_blocks)
+
+    def _cap(text: str) -> str:
+        encoded = text.encode("utf-8")
+        if len(encoded) <= _TRANSCRIPT_SLICE_BLOCK_CAP_BYTES:
+            return text
+        # Decode the first N bytes tolerating split codepoints at the edge.
+        truncated = encoded[:_TRANSCRIPT_SLICE_BLOCK_CAP_BYTES].decode(
+            "utf-8", errors="ignore"
+        )
+        return truncated + _TRANSCRIPT_SLICE_TRUNC_MARKER
+
+    header = (
+        f"--- transcript slice (run-{run_idx}, last 5 assistant blocks) ---"
+    )
+    print(header, file=out)
+    for i, text in enumerate(scrubbed_slice):
+        if i > 0:
+            print("", file=out)
+        print(_cap(text), file=out)
+    if redaction_count > 0:
+        # Match the audit-breadcrumb that `_write_run_dir` prints under
+        # verbose mode, so users can see the slice printer also scrubbed.
+        print(f"[{redaction_count} redactions applied]", file=out)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """Run a skill and print its output."""
     runner = SkillRunner(
@@ -153,18 +346,45 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def _write_run_dir(
-    run_dir: Path, output_text: str, stream_events: list[dict]
+    run_dir: Path,
+    output_text: str,
+    stream_events: list[dict],
+    *,
+    verbose: bool = False,
 ) -> None:
     """Write ``output.txt`` and ``output.jsonl`` to a ``run-K/`` subdir.
 
     ``stream_events`` is one JSON object per line. Empty list yields an
     empty ``output.jsonl`` (the file still exists for layout consistency).
+
+    Both the stream events and the output text are passed through
+    :func:`clauditor.transcripts.redact` before being serialized to disk
+    so that secrets captured in skill execution traces never land in the
+    iteration workspace (DEC-003, DEC-007, DEC-010). The in-memory
+    ``stream_events`` list is not mutated — ``redact()`` returns a fresh
+    copy. Under ``verbose=True``, the total redaction count for this run
+    is always logged to stderr (including when the count is zero) so
+    that users can audit what the scrubber matched.
     """
+    from . import transcripts
+
     run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "output.txt").write_text(output_text, encoding="utf-8")
-    lines = [json.dumps(ev) for ev in stream_events]
+
+    scrubbed_events, events_count = transcripts.redact(stream_events)
+    scrubbed_text_wrap, text_count = transcripts.redact({"output": output_text})
+    scrubbed_text = scrubbed_text_wrap["output"]
+    total = events_count + text_count
+
+    (run_dir / "output.txt").write_text(scrubbed_text, encoding="utf-8")
+    lines = [json.dumps(ev) for ev in scrubbed_events]
     body = ("\n".join(lines) + "\n") if lines else ""
     (run_dir / "output.jsonl").write_text(body, encoding="utf-8")
+
+    if verbose:
+        print(
+            f"clauditor.transcripts: redacted {total} matches in {run_dir.name}",
+            file=sys.stderr,
+        )
 
 
 def cmd_grade(args: argparse.Namespace) -> int:
@@ -557,25 +777,75 @@ def _cmd_grade_with_workspace(
 
     if not only_criterion:
         skill_dir = workspace.tmp_path
-        for idx, (text, events) in enumerate(run_outputs):
-            _write_run_dir(skill_dir / f"run-{idx}", text, events)
+        verbose = bool(getattr(args, "verbose", False))
+        no_transcript = bool(getattr(args, "no_transcript", False))
+        if not no_transcript:
+            for idx, (text, events) in enumerate(run_outputs):
+                _write_run_dir(
+                    skill_dir / f"run-{idx}", text, events, verbose=verbose
+                )
+        else:
+            # Scrub any `run-K/` subtrees the skill already staged
+            # (e.g. `inputs/` copies from input_files), so --no-transcript
+            # does not leak half-populated run dirs into the published
+            # iteration. Mirrors the same fix on the validate side.
+            import shutil as _shutil
+
+            for idx in range(len(run_outputs)):
+                _shutil.rmtree(skill_dir / f"run-{idx}", ignore_errors=True)
 
         (skill_dir / "grading.json").write_text(
             primary_report.to_json(), encoding="utf-8"
         )
+
+        # US-004: thread transcript_path onto every assertion result so
+        # the auditor can jump from a failing row to the stream-json that
+        # produced it. Captured-text mode (--output) has no run subprocess,
+        # so no transcript file exists — transcript_path stays None.
+        def _assertions_with_transcript(
+            text: str, run_idx: int
+        ) -> AssertionSet:
+            result = run_assertions(text, spec.eval_spec.assertions)
+            if args.output:
+                return result
+            if no_transcript:
+                # US-005: --no-transcript suppresses the stream-json write,
+                # so there's no file to point at. Leave transcript_path=None.
+                return result
+            # Path is computed against workspace.final_path (the post-
+            # finalize iteration-N/<skill>/ dir), NOT the staging dir,
+            # so readers of assertions.json see a stable repo-relative
+            # path after the atomic rename.
+            transcript_rel = _relative_to_repo(
+                clauditor_dir,
+                workspace.final_path / f"run-{run_idx}" / "output.jsonl",
+            )
+            for r in result.results:
+                r.transcript_path = transcript_rel
+            return result
+
+        per_run_assertions: list[tuple[int, AssertionSet]] = [
+            (idx, _assertions_with_transcript(text, idx))
+            for idx, (text, _events) in enumerate(run_outputs)
+        ]
+
+        # US-007: verbose transcript slice for any run whose assertions
+        # failed. Runs against in-memory stream_events (no disk read)
+        # and routes to stderr so grading JSON stdout stays clean.
+        if verbose:
+            for idx, aset in per_run_assertions:
+                if aset.failed:
+                    _print_failing_transcript_slice(
+                        idx, run_outputs[idx][1], sys.stderr
+                    )
 
         assertions_payload = {
             "schema_version": 1,
             "skill": spec.skill_name,
             "iteration": workspace.iteration,
             "runs": [
-                {
-                    "run": idx,
-                    **run_assertions(
-                        text, spec.eval_spec.assertions
-                    ).to_json(),
-                }
-                for idx, (text, _events) in enumerate(run_outputs)
+                {"run": idx, **aset.to_json()}
+                for idx, aset in per_run_assertions
             ],
         }
         (skill_dir / "assertions.json").write_text(
@@ -1713,6 +1983,17 @@ def main(argv: list[str] | None = None) -> int:
     p_validate.add_argument(
         "--json", action="store_true", help="Output results as JSON"
     )
+    p_validate.add_argument(
+        "--no-transcript",
+        action="store_true",
+        help="Skip writing per-run stream-json transcripts",
+    )
+    p_validate.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="On assertion failure, print the last 5 assistant text blocks to stderr",
+    )
 
     # run
     p_run = subparsers.add_parser("run", help="Run a skill and print output")
@@ -1776,6 +2057,22 @@ def main(argv: list[str] | None = None) -> int:
             "skill prefix (baseline) and capture L1/L2/L3 sidecars. "
             "Roughly doubles LLM cost; never the default."
         ),
+    )
+    p_grade.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help=(
+            "Log verbose grading details to stderr, including per-run "
+            "transcript redaction counts "
+            "(clauditor.transcripts: redacted N matches in run-K) and "
+            "failing transcript slices when assertions fail"
+        ),
+    )
+    p_grade.add_argument(
+        "--no-transcript",
+        action="store_true",
+        help="Skip writing per-run stream-json transcripts",
     )
     p_grade.add_argument(
         "--only-criterion",
