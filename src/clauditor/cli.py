@@ -1996,8 +1996,6 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
         print(f"Error: skill file not found: {skill_path}", file=sys.stderr)
         return 1
     skill_name = skill_path.stem
-    skill_md_text = skill_path.read_text()
-
     clauditor_dir = resolve_clauditor_dir()
 
     try:
@@ -2012,6 +2010,12 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         print(
             f"Run 'clauditor grade {skill_name}' first.", file=sys.stderr
+        )
+        return 1
+    except UnicodeDecodeError as exc:
+        print(
+            f"Error: could not decode {skill_path} as UTF-8: {exc}",
+            file=sys.stderr,
         )
         return 1
 
@@ -2046,15 +2050,19 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    # propose_edits never raises — API/parse errors surface via
-    # SuggestReport.parse_error; anchor errors via validation_errors.
+    # propose_edits never raises — API / prompt-build errors surface via
+    # SuggestReport.api_error; response-parse errors via parse_error;
+    # anchor errors via validation_errors. Distinct fields avoid the
+    # brittle substring-match routing an earlier reviewer flagged.
     report = await propose_edits(suggest_input, model=args.model)
 
-    # DEC-008 row 3 / row 4: API errors vs parse errors.
+    # DEC-008 row 3: API / prompt-build failure.
+    if report.api_error is not None:
+        print(f"Error: {report.api_error}", file=sys.stderr)
+        return 3
+
+    # DEC-008 row 4: response-parse failure.
     if report.parse_error is not None:
-        if "anthropic API error" in report.parse_error:
-            print(f"Error: {report.parse_error}", file=sys.stderr)
-            return 3
         print(
             f"Error: Proposer returned unparseable JSON: "
             f"{report.parse_error}",
@@ -2074,8 +2082,19 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
         return 2
 
     # DEC-008 row 6: success — render diff, write sidecar, print.
-    diff_text = render_unified_diff(report, skill_md_text)
-    json_path, diff_path = write_sidecar(report, diff_text, clauditor_dir)
+    diff_text = render_unified_diff(report, suggest_input.skill_md_text)
+    try:
+        json_path, diff_path = write_sidecar(
+            report, diff_text, clauditor_dir
+        )
+    except OSError as exc:
+        # Disk full, permission denied, suggestions/ is a regular file.
+        # Don't leak a bare traceback to the user.
+        print(
+            f"Error: could not write sidecar to {clauditor_dir}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.verbose:
         print(

@@ -4200,6 +4200,7 @@ class TestCmdSuggest:
             summary_rationale="make it clearer",
             validation_errors=[],
             parse_error=None,
+            api_error=None,
         )
         defaults.update(overrides)
         return SuggestReport(**defaults)
@@ -4352,7 +4353,7 @@ class TestCmdSuggest:
         monkeypatch.chdir(tmp_path)
 
         report = self._fake_report(
-            parse_error="anthropic API error: RuntimeError('boom')",
+            api_error="anthropic API error: RuntimeError('boom')",
             edit_proposals=[],
             summary_rationale="",
         )
@@ -4442,3 +4443,53 @@ class TestCmdSuggest:
         err = capsys.readouterr().err
         assert "from iteration" in err
         assert "failing_assertions=1" in err
+
+    def test_write_sidecar_oserror_exits_1_with_stderr(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Regression: an OSError from write_sidecar (disk full, read-only
+        # .clauditor, whatever) must exit 1 with a stderr message, not
+        # propagate a bare traceback through cmd_suggest.
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        monkeypatch.chdir(tmp_path)
+
+        report = self._fake_report()
+        with (
+            patch(
+                "clauditor.cli.propose_edits",
+                new=AsyncMock(return_value=report),
+            ),
+            patch(
+                "clauditor.cli.write_sidecar",
+                side_effect=OSError("disk full"),
+            ),
+        ):
+            rc = main(["suggest", "my-skill.md"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "could not write sidecar" in err
+        assert "disk full" in err
+
+    def test_non_utf8_skill_file_exits_1(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        # Regression: SKILL.md with invalid UTF-8 bytes must exit 1
+        # cleanly instead of propagating a UnicodeDecodeError traceback.
+        (tmp_path / ".git").mkdir()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        # Invalid UTF-8 sequence (lone continuation byte).
+        (tmp_path / "my-skill.md").write_bytes(b"# Skill\n\n\x80 bad\n")
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(["suggest", "my-skill.md"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "UTF-8" in err or "decode" in err

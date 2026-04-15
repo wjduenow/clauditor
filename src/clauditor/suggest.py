@@ -138,7 +138,7 @@ def _load_failing_assertions(skill_dir: Path) -> list[AssertionResult]:
     path = skill_dir / "assertions.json"
     if not path.exists():
         return []
-    data = json.loads(path.read_text())
+    data = json.loads(path.read_text(encoding="utf-8"))
     failing: list[AssertionResult] = []
     for entry in data.get("results", []):
         if entry.get("passed"):
@@ -157,7 +157,7 @@ def _load_failing_grading_criteria(skill_dir: Path) -> list[GradingResult]:
     path = skill_dir / "grading.json"
     if not path.exists():
         return []
-    report = GradingReport.from_json(path.read_text())
+    report = GradingReport.from_json(path.read_text(encoding="utf-8"))
     return [r for r in report.results if not r.passed]
 
 
@@ -179,7 +179,7 @@ def _load_output_slices(skill_dir: Path) -> list[str]:
     for _idx, run_dir in runs:
         out_txt = run_dir / "output.txt"
         if out_txt.exists():
-            slices.append(out_txt.read_text())
+            slices.append(out_txt.read_text(encoding="utf-8"))
     return slices
 
 
@@ -211,7 +211,7 @@ def _load_transcript_events(skill_dir: Path) -> list[list[dict]]:
             all_events.append([])
             continue
         events: list[dict] = []
-        for raw_line in jsonl.read_text().splitlines():
+        for raw_line in jsonl.read_text(encoding="utf-8").splitlines():
             line = raw_line.strip()
             if not line:
                 continue
@@ -276,7 +276,13 @@ def load_suggest_input(
         skill_name=skill,
         source_iteration=iteration,
         source_grading_path=_repo_relative(clauditor_dir, grading_path),
-        skill_md_text=skill_md_path.read_text(),
+        # Normalize CRLF → LF at load so downstream anchor validation,
+        # sequential apply, and unified-diff rendering all agree on the
+        # canonical LF substrate. Sonnet's replacement strings will be
+        # LF-only regardless of the source file's line endings.
+        skill_md_text=skill_md_path.read_text(encoding="utf-8")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n"),
         failing_assertions=failing_assertions,
         failing_grading_criteria=failing_grading_criteria,
         output_slices=output_slices,
@@ -534,8 +540,11 @@ class SuggestReport:
     Per DEC-005 and ``.claude/rules/json-schema-version.md`` the
     ``schema_version`` field is the FIRST top-level key in the JSON
     serialization. ``parse_error`` is set when the Sonnet response was
-    unparseable (or when the API call itself failed); the CLI layer in
-    US-005 maps that field to its exit code.
+    unparseable; ``api_error`` is set when the underlying Anthropic
+    call (or the prompt-build step) itself failed. The CLI layer in
+    US-005 maps each field to a distinct exit code (DEC-008 rows 3
+    and 4) — keeping them as separate fields avoids the brittle
+    substring-match routing the first reviewer flagged.
     """
 
     skill_name: str
@@ -550,6 +559,7 @@ class SuggestReport:
     summary_rationale: str = ""
     validation_errors: list[str] = field(default_factory=list)
     parse_error: str | None = None
+    api_error: str | None = None
     schema_version: int = _SCHEMA_VERSION
 
     def to_json(self) -> str:
@@ -579,6 +589,7 @@ class SuggestReport:
             ],
             "validation_errors": list(self.validation_errors),
             "parse_error": self.parse_error,
+            "api_error": self.api_error,
         }
         return json.dumps(payload, indent=2) + "\n"
 
@@ -784,10 +795,13 @@ async def propose_edits(
 ) -> SuggestReport:
     """Call Sonnet, parse the response, validate anchors, return a report.
 
-    NEVER raises. API errors land in :attr:`SuggestReport.parse_error`,
-    parse errors land in the same field, and anchor-validation errors
+    NEVER raises. API / prompt-build errors land in
+    :attr:`SuggestReport.api_error`, response-parse errors land in
+    :attr:`SuggestReport.parse_error`, and anchor-validation errors
     land in :attr:`SuggestReport.validation_errors`. The CLI layer in
-    US-005 is the single place that maps those fields to exit codes.
+    US-005 is the single place that maps those fields to exit codes —
+    keeping the failure categories in distinct fields avoids the
+    brittle substring-match routing that an early reviewer flagged.
     """
     start = _monotonic()
     generated_at = datetime.datetime.now(datetime.UTC).strftime(
@@ -796,7 +810,8 @@ async def propose_edits(
 
     def _empty_report(
         *,
-        parse_error: str | None,
+        parse_error: str | None = None,
+        api_error: str | None = None,
         input_tokens: int = 0,
         output_tokens: int = 0,
     ) -> SuggestReport:
@@ -813,11 +828,12 @@ async def propose_edits(
             summary_rationale="",
             validation_errors=[],
             parse_error=parse_error,
+            api_error=api_error,
         )
 
     if AsyncAnthropic is None:  # pragma: no cover - import-guard branch
         return _empty_report(
-            parse_error=(
+            api_error=(
                 "anthropic SDK not installed — "
                 "install with: pip install clauditor[grader]"
             )
@@ -826,7 +842,7 @@ async def propose_edits(
     try:
         prompt = build_suggest_prompt(suggest_input)
     except Exception as exc:  # noqa: BLE001 — never raise out of propose_edits
-        return _empty_report(parse_error=f"prompt build error: {exc!r}")
+        return _empty_report(api_error=f"prompt build error: {exc!r}")
 
     try:
         client = AsyncAnthropic()
@@ -836,7 +852,7 @@ async def propose_edits(
             messages=[{"role": "user", "content": prompt}],
         )
     except Exception as exc:  # noqa: BLE001 — never raise out of propose_edits
-        return _empty_report(parse_error=f"anthropic API error: {exc!r}")
+        return _empty_report(api_error=f"anthropic API error: {exc!r}")
 
     input_tokens = int(getattr(response.usage, "input_tokens", 0) or 0)
     output_tokens = int(getattr(response.usage, "output_tokens", 0) or 0)
@@ -942,7 +958,7 @@ def write_sidecar(
     json_path = suggestions_dir / f"{report.skill_name}-{ts}.json"
     diff_path = suggestions_dir / f"{report.skill_name}-{ts}.diff"
 
-    json_path.write_text(report.to_json())
-    diff_path.write_text(diff_text)
+    json_path.write_text(report.to_json(), encoding="utf-8")
+    diff_path.write_text(diff_text, encoding="utf-8")
 
     return json_path.resolve(), diff_path.resolve()

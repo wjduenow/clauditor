@@ -429,6 +429,60 @@ def _make_suggest_input(
     )
 
 
+class TestLoadSuggestInputCRLF:
+    def test_crlf_skill_text_is_normalized_at_load_time(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression: SKILL.md on a Windows checkout arrives with
+        # CRLF endings. The loader must normalize to LF so anchor
+        # validation, render_unified_diff, and Sonnet's LF-only
+        # replacement strings all agree on one substrate.
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "assertions.json").write_text(
+            json.dumps(
+                {
+                    "results": [
+                        {
+                            "id": "a1",
+                            "name": "has header",
+                            "passed": False,
+                            "message": "missing",
+                            "kind": "presence",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        (skill_dir / "grading.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "skill_name": "s",
+                    "model": "claude-sonnet-4-6",
+                    "generated_at": "2026-01-01T00:00:00.000000Z",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "results": [],
+                    "raw_response": "",
+                }
+            ),
+            encoding="utf-8",
+        )
+        skill_md = tmp_path / "s.md"
+        skill_md.write_bytes(b"# Skill\r\n\r\nDo the thing.\r\n")
+
+        si = load_suggest_input(
+            skill="s",
+            clauditor_dir=clauditor_dir,
+            skill_md_path=skill_md,
+        )
+        assert "\r" not in si.skill_md_text
+        assert si.skill_md_text == "# Skill\n\nDo the thing.\n"
+
+
 class TestBuildSuggestPrompt:
     def test_framing_sentence_appears_before_first_untrusted_tag(self) -> None:
         si = _make_suggest_input(
@@ -1009,7 +1063,7 @@ class TestProposeEdits:
         assert report.duration_seconds == pytest.approx(1.25)
 
     @pytest.mark.asyncio
-    async def test_api_exception_captured_in_parse_error_not_raised(
+    async def test_api_exception_captured_in_api_error_not_raised(
         self,
     ) -> None:
         si = _suggest_input_with_signals()
@@ -1022,8 +1076,10 @@ class TestProposeEdits:
         ):
             report = await propose_edits(si)
         assert report.edit_proposals == []
-        assert report.parse_error is not None
-        assert "boom" in report.parse_error
+        assert report.parse_error is None
+        assert report.api_error is not None
+        assert "anthropic API error" in report.api_error
+        assert "boom" in report.api_error
 
     @pytest.mark.asyncio
     async def test_malformed_json_response_sets_parse_error(self) -> None:
@@ -1088,7 +1144,7 @@ class TestProposeEdits:
     @pytest.mark.asyncio
     async def test_prompt_build_exception_captured_not_raised(self) -> None:
         # propose_edits promises to never raise. A failure inside
-        # build_suggest_prompt must flow into parse_error, not propagate.
+        # build_suggest_prompt must flow into api_error, not propagate.
         si = _suggest_input_with_signals()
         with patch(
             "clauditor.suggest.build_suggest_prompt",
@@ -1096,9 +1152,10 @@ class TestProposeEdits:
         ):
             report = await propose_edits(si)
         assert report.edit_proposals == []
-        assert report.parse_error is not None
-        assert "prompt build error" in report.parse_error
-        assert "prompt kaboom" in report.parse_error
+        assert report.parse_error is None
+        assert report.api_error is not None
+        assert "prompt build error" in report.api_error
+        assert "prompt kaboom" in report.api_error
 
 
 class TestRenderUnifiedDiff:
