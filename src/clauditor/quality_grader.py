@@ -490,6 +490,58 @@ async def blind_compare(
     )
 
 
+async def blind_compare_from_spec(
+    spec: SkillSpec,
+    output_a: str,
+    output_b: str,
+    *,
+    model: str | None = None,
+    rng: random.Random | None = None,
+) -> BlindReport:
+    """Pure helper that resolves judge inputs from a :class:`SkillSpec`.
+
+    Extracted from the CLI's ``_run_blind_compare`` so the same resolution
+    logic can be shared between the CLI wrapper and the ``clauditor_blind_compare``
+    pytest fixture. The helper validates the spec, builds the rubric hint from
+    ``grading_criteria``, resolves the grading model, and forwards everything
+    to :func:`blind_compare`.
+
+    Raises :class:`ValueError` if ``spec.eval_spec`` is missing or if
+    ``eval_spec.test_args`` is empty/whitespace (it is used as the user prompt
+    context for the judge). Does not print to stdout or stderr (DEC-006).
+    """
+    if spec.eval_spec is None:
+        raise ValueError(
+            "blind_compare_from_spec: spec has no eval_spec"
+        )
+
+    user_prompt = spec.eval_spec.test_args or ""
+    if not user_prompt.strip():
+        raise ValueError(
+            "blind_compare_from_spec: eval_spec.test_args must be set "
+            "(used as the user prompt context for the judge)"
+        )
+
+    rubric_hint: str | None = None
+    criteria = spec.eval_spec.grading_criteria
+    if criteria:
+        from clauditor.schemas import criterion_text
+        rubric_hint = "\n".join(
+            f"- {criterion_text(c)}" for c in criteria
+        )
+
+    effective_model = model if model is not None else spec.eval_spec.grading_model
+
+    return await blind_compare(
+        user_prompt,
+        output_a,
+        output_b,
+        rubric_hint,
+        model=effective_model,
+        rng=rng,
+    )
+
+
 def build_grading_prompt(eval_spec: EvalSpec) -> str:
     """Build a prompt that asks the LLM to grade output against rubric criteria."""
     from clauditor.schemas import criterion_text
