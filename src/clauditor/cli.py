@@ -1158,8 +1158,6 @@ def _print_baseline_delta_block(benchmark, out=sys.stdout) -> None:
     Signs are explicit on every delta row so the reader can scan a column
     of ``+``/``-`` without decoding column positions.
     """
-    from clauditor.benchmark import Benchmark  # noqa: F401 — type hint only
-
     rs = benchmark.run_summary
     pr_delta = rs.delta.pass_rate
     pr_w = rs.with_skill.pass_rate.mean
@@ -2364,7 +2362,8 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "After grading, run the test args through Claude without the "
             "skill prefix (baseline) and capture L1/L2/L3 sidecars. "
-            "Roughly doubles LLM cost; never the default."
+            "Roughly doubles LLM cost; never the default. Also writes "
+            "benchmark.json and prints a delta block on stdout."
         ),
     )
     p_grade.add_argument(
@@ -2375,7 +2374,8 @@ def main(argv: list[str] | None = None) -> int:
             "(#28) Fail with exit 1 if the with-skill vs without-skill "
             "pass_rate delta is below this threshold (0.0-1.0). Requires "
             "--baseline. Equality passes: --min-baseline-delta 0.0 is a "
-            "strict no-regression gate."
+            "strict no-regression gate (default: no gate). Without "
+            "--baseline, the flag is an input error (exit 2)."
         ),
     )
     p_grade.add_argument(

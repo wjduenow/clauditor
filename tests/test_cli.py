@@ -1922,7 +1922,44 @@ class TestBaselineFlag:
                 duration_seconds=2.5,
             )
         )
-        grading_report = self._make_grading_report()
+        # side_effect: primary arm passes 1.0, baseline arm passes 0.5 →
+        # delta.pass_rate == +0.50. Exercises real arithmetic in the
+        # persisted benchmark.json.
+        primary_report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c1",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                ),
+            ],
+            duration_seconds=1.0,
+        )
+        baseline_report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c1",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                ),
+                GradingResult(
+                    criterion="c2",
+                    passed=False,
+                    score=0.3,
+                    evidence="no",
+                    reasoning="no",
+                ),
+            ],
+            duration_seconds=0.5,
+        )
         extraction_report = self._make_extraction_report()
 
         with (
@@ -1930,7 +1967,7 @@ class TestBaselineFlag:
             patch(
                 "clauditor.quality_grader.grade_quality",
                 new_callable=AsyncMock,
-                return_value=grading_report,
+                side_effect=[primary_report, baseline_report],
             ),
             patch(
                 "clauditor.grader.extract_and_report",
@@ -1954,6 +1991,7 @@ class TestBaselineFlag:
         assert "without_skill" in run_summary
         assert "delta" in run_summary
         assert isinstance(run_summary["delta"]["pass_rate"], float)
+        assert run_summary["delta"]["pass_rate"] == pytest.approx(0.5)
 
     def test_grade_without_baseline_flag_writes_no_benchmark_sidecar(
         self, tmp_path, monkeypatch
@@ -2016,7 +2054,43 @@ class TestBaselineFlag:
                 duration_seconds=2.5,
             )
         )
-        grading_report = self._make_grading_report()
+        # Use side_effect so primary and baseline arms differ — exercises
+        # the signed delta and the format specifiers in the delta block.
+        primary_report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c1",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                ),
+            ],
+            duration_seconds=1.0,
+        )
+        baseline_report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c1",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                ),
+                GradingResult(
+                    criterion="c2",
+                    passed=False,
+                    score=0.3,
+                    evidence="no",
+                    reasoning="no",
+                ),
+            ],
+            duration_seconds=0.5,
+        )
         extraction_report = self._make_extraction_report()
 
         with (
@@ -2024,7 +2098,7 @@ class TestBaselineFlag:
             patch(
                 "clauditor.quality_grader.grade_quality",
                 new_callable=AsyncMock,
-                return_value=grading_report,
+                side_effect=[primary_report, baseline_report],
             ),
             patch(
                 "clauditor.grader.extract_and_report",
@@ -2049,6 +2123,17 @@ class TestBaselineFlag:
         assert header_idx < pr_idx < ts_idx < tk_idx
         assert "with_skill" in out[header_idx:]
         assert "without_skill" in out[header_idx:]
+        # Non-zero signed delta: pass_rate primary=1.0, baseline=0.5 →
+        # delta=+0.50, rendered with explicit + sign per DEC-010.
+        pr_line_end = out.find("\n", pr_idx)
+        pr_line = out[pr_idx:pr_line_end]
+        assert "+0.50" in pr_line
+        # time_seconds: delta is sourced from SkillResult duration
+        # (primary 2.5 vs baseline 0.75) → positive, rendered under
+        # "{:+.1f}" so a literal "+" must appear in the value slot.
+        ts_line_end = out.find("\n", ts_idx)
+        ts_line = out[ts_idx:ts_line_end]
+        assert "+" in ts_line
 
     def test_grade_without_baseline_flag_prints_no_delta_block(
         self, tmp_path, monkeypatch, capsys
@@ -2352,7 +2437,8 @@ class TestBaselineFlag:
         """--baseline without --min-baseline-delta → gate not applied."""
         monkeypatch.chdir(tmp_path)
         spec = self._prepare_gate_spec()
-        # Huge regression (-1.0) would fail any gate, but no gate is set.
+        # Identical pass rates (delta = 0.0) — without --min-baseline-delta
+        # no gate is applied, so the run still exits 0.
         primary = self._make_report_with_pass_rate(10, 10)
         baseline = self._make_report_with_pass_rate(10, 10)
         extraction_report = self._make_extraction_report()

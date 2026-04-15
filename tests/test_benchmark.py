@@ -287,3 +287,37 @@ class TestComputeBenchmarkErrors:
                 primary_results=[pr],
                 baseline_result=base,
             )
+
+    def test_from_json_rejects_wrong_schema_version(self, capsys):
+        """Benchmark.from_json hard-fails on schema_version != 1 per
+        .claude/rules/json-schema-version.md. The underlying
+        _check_schema_version also emits a stderr warning so operators
+        can triage the mismatch."""
+        payload = json.dumps(
+            {
+                "schema_version": 2,
+                "skill_name": "test-skill",
+                "run_summary": {
+                    "with_skill": {
+                        "pass_rate": {"mean": 1.0, "stddev": 0.0},
+                        "time_seconds": {"mean": 1.0, "stddev": 0.0},
+                        "tokens": {"mean": 100, "stddev": 0.0},
+                    },
+                    "without_skill": {
+                        "pass_rate": {"mean": 0.5, "stddev": None},
+                        "time_seconds": {"mean": 0.5, "stddev": None},
+                        "tokens": {"mean": 50, "stddev": None},
+                    },
+                    "delta": {
+                        "pass_rate": 0.5,
+                        "time_seconds": 0.5,
+                        "tokens": 50,
+                    },
+                },
+            }
+        )
+        with pytest.raises(ValueError, match="schema_version"):
+            Benchmark.from_json(payload)
+        err = capsys.readouterr().err
+        assert "schema_version" in err
+        assert "2" in err

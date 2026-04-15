@@ -431,7 +431,7 @@ None — all items above are concerns (resolvable by picking an option) rather t
   workspace shape ever changes to eval-slug keying.
 - **DEC-005 — `--min-baseline-delta FLOAT`, default off, gates on
   `delta.pass_rate`.** When unset, `--baseline` just reports. When set,
-  `grade` exits with code 2 if `delta.pass_rate < min_baseline_delta`.
+  `grade` exits with code 1 (per DEC-008) if `delta.pass_rate < min_baseline_delta`.
   Only `pass_rate` is gated — a skill can legitimately be slower or
   token-heavier; the core contract is "the skill helps the model pass
   more criteria." The failure message must name the observed delta and
