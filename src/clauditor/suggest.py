@@ -16,6 +16,7 @@ event loop's own scheduler.
 
 from __future__ import annotations
 
+import datetime
 import json
 import re
 import sys
@@ -26,6 +27,11 @@ from pathlib import Path
 from clauditor.assertions import AssertionResult
 from clauditor.quality_grader import GradingReport, GradingResult
 from clauditor.transcripts import redact
+
+try:  # Optional dep — only required when actually calling Sonnet.
+    from anthropic import AsyncAnthropic
+except ImportError:  # pragma: no cover - exercised via patch in tests
+    AsyncAnthropic = None  # type: ignore[assignment,misc]
 
 # Module-level alias so tests can patch this without clobbering the
 # asyncio event loop's own time.monotonic() calls. See
@@ -481,3 +487,386 @@ def build_suggest_prompt(suggest_input: SuggestInput) -> str:
     parts.append("}")
 
     return "\n".join(parts) + "\n"
+
+
+# --------------------------------------------------------------------------
+# US-003: Sonnet call + parse + anchor validation
+# --------------------------------------------------------------------------
+
+DEFAULT_SUGGEST_MODEL = "claude-sonnet-4-6"
+
+_SCHEMA_VERSION = 1
+
+
+def _check_schema_version(data: dict, source: Path) -> bool:
+    """Verify a suggest sidecar advertises ``schema_version == 1``.
+
+    Mirrors :func:`clauditor.audit._check_schema_version`. Returns True
+    on a match; on mismatch (or absence), prints a one-line stderr
+    warning and returns False so the caller can skip the file rather
+    than crash mid-load. Per ``.claude/rules/json-schema-version.md``.
+    """
+    version = data.get("schema_version")
+    if version == _SCHEMA_VERSION:
+        return True
+    print(
+        f"clauditor.suggest: skipping {source} — "
+        f"schema_version={version!r} (expected {_SCHEMA_VERSION})",
+        file=sys.stderr,
+    )
+    return False
+
+
+@dataclass
+class EditProposal:
+    """One proposed edit to ``SKILL.md``.
+
+    ``id`` is positional (``edit-0``, ``edit-1``, …) and stable for the
+    lifetime of one :class:`SuggestReport`. ``confidence`` is clamped to
+    ``[0.0, 1.0]`` at parse time.
+    """
+
+    id: str
+    anchor: str
+    replacement: str
+    rationale: str
+    confidence: float
+    motivated_by: list[str]
+    applies_to_file: str = "SKILL.md"
+
+
+@dataclass
+class SuggestReport:
+    """Envelope for one ``clauditor suggest`` invocation.
+
+    Per DEC-005 and ``.claude/rules/json-schema-version.md`` the
+    ``schema_version`` field is the FIRST top-level key in the JSON
+    serialization. ``parse_error`` is set when the Sonnet response was
+    unparseable (or when the API call itself failed); the CLI layer in
+    US-005 maps that field to its exit code.
+    """
+
+    skill_name: str
+    model: str
+    generated_at: str
+    source_iteration: int
+    source_grading_path: str
+    input_tokens: int
+    output_tokens: int
+    duration_seconds: float
+    edit_proposals: list[EditProposal] = field(default_factory=list)
+    summary_rationale: str = ""
+    validation_errors: list[str] = field(default_factory=list)
+    parse_error: str | None = None
+    schema_version: int = _SCHEMA_VERSION
+
+    def to_json(self) -> str:
+        """Serialize to JSON with ``schema_version`` as the first key."""
+        payload: dict = {
+            "schema_version": self.schema_version,
+            "skill_name": self.skill_name,
+            "model": self.model,
+            "generated_at": self.generated_at,
+            "source_iteration": self.source_iteration,
+            "source_grading_path": self.source_grading_path,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "duration_seconds": self.duration_seconds,
+            "summary_rationale": self.summary_rationale,
+            "edit_proposals": [
+                {
+                    "id": p.id,
+                    "anchor": p.anchor,
+                    "replacement": p.replacement,
+                    "rationale": p.rationale,
+                    "confidence": p.confidence,
+                    "motivated_by": list(p.motivated_by),
+                    "applies_to_file": p.applies_to_file,
+                }
+                for p in self.edit_proposals
+            ],
+            "validation_errors": list(self.validation_errors),
+            "parse_error": self.parse_error,
+        }
+        return json.dumps(payload, indent=2) + "\n"
+
+
+def _strip_json_fence(text: str) -> str:
+    """Strip a leading ```json (or bare ```) markdown fence if present.
+
+    Mirrors :func:`clauditor.grader` / :func:`clauditor.quality_grader`
+    handling. Returns the (possibly unchanged) string ready for
+    :func:`json.loads`.
+    """
+    s = text
+    if "```" in s:
+        if "```json" in s:
+            s = s.split("```json", 1)[1].split("```", 1)[0]
+        else:
+            parts = s.split("```")
+            if len(parts) >= 3:
+                s = parts[1]
+    return s.strip()
+
+
+def parse_suggest_response(
+    text: str, suggest_input: SuggestInput
+) -> tuple[list[EditProposal], str]:
+    """Parse Sonnet's JSON envelope into ``EditProposal`` objects.
+
+    Raises :class:`ValueError` on any structural problem: non-dict top
+    level, missing ``edits``/``summary_rationale``, missing per-edit
+    fields, or a ``motivated_by`` id that does not appear in either of
+    the input's failing-signal lists. The caller (:func:`propose_edits`)
+    catches and routes failures into :attr:`SuggestReport.parse_error`.
+
+    The cross-check on ``motivated_by`` ids is the
+    ``positional-id-zip-validation`` rule applied to a different shape:
+    rather than zip a positional list with a spec, we verify every
+    judge-supplied id was actually emitted by the prior grade run.
+    """
+    json_str = _strip_json_fence(text)
+    try:
+        data = json.loads(json_str)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"parse_suggest_response: response was not valid JSON: {exc}"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            "parse_suggest_response: top-level JSON value must be an "
+            f"object, got {type(data).__name__}"
+        )
+
+    if "edits" not in data:
+        raise ValueError(
+            "parse_suggest_response: response missing required 'edits' key"
+        )
+    edits_raw = data["edits"]
+    if not isinstance(edits_raw, list):
+        raise ValueError(
+            "parse_suggest_response: 'edits' must be a list, got "
+            f"{type(edits_raw).__name__}"
+        )
+
+    summary_rationale = data.get("summary_rationale")
+    if not isinstance(summary_rationale, str):
+        raise ValueError(
+            "parse_suggest_response: 'summary_rationale' must be a string"
+        )
+
+    valid_ids: set[str] = set()
+    for a in suggest_input.failing_assertions:
+        if a.id:
+            valid_ids.add(a.id)
+    for g in suggest_input.failing_grading_criteria:
+        if g.id:
+            valid_ids.add(g.id)
+
+    proposals: list[EditProposal] = []
+    for idx, raw in enumerate(edits_raw):
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"parse_suggest_response: edits[{idx}] must be an "
+                f"object, got {type(raw).__name__}"
+            )
+        for required in (
+            "anchor",
+            "replacement",
+            "rationale",
+            "confidence",
+            "motivated_by",
+        ):
+            if required not in raw:
+                raise ValueError(
+                    f"parse_suggest_response: edits[{idx}] missing "
+                    f"required field {required!r}"
+                )
+
+        anchor = raw["anchor"]
+        replacement = raw["replacement"]
+        rationale = raw["rationale"]
+        if not isinstance(anchor, str):
+            raise ValueError(
+                f"parse_suggest_response: edits[{idx}].anchor must be "
+                f"a string, got {type(anchor).__name__}"
+            )
+        if not isinstance(replacement, str):
+            raise ValueError(
+                f"parse_suggest_response: edits[{idx}].replacement must "
+                f"be a string, got {type(replacement).__name__}"
+            )
+        if not isinstance(rationale, str):
+            raise ValueError(
+                f"parse_suggest_response: edits[{idx}].rationale must "
+                f"be a string, got {type(rationale).__name__}"
+            )
+
+        try:
+            confidence = float(raw["confidence"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"parse_suggest_response: edits[{idx}].confidence must "
+                f"be a number: {exc}"
+            ) from exc
+        # Silent clamp to [0.0, 1.0] per spec.
+        if confidence < 0.0:
+            confidence = 0.0
+        elif confidence > 1.0:
+            confidence = 1.0
+
+        motivated_by_raw = raw["motivated_by"]
+        if not isinstance(motivated_by_raw, list) or not all(
+            isinstance(m, str) for m in motivated_by_raw
+        ):
+            raise ValueError(
+                f"parse_suggest_response: edits[{idx}].motivated_by "
+                "must be a list of strings"
+            )
+        for mid in motivated_by_raw:
+            if mid not in valid_ids:
+                raise ValueError(
+                    f"parse_suggest_response: edits[{idx}].motivated_by "
+                    f"references unknown id {mid!r} — valid ids are "
+                    f"{sorted(valid_ids)!r}"
+                )
+
+        proposals.append(
+            EditProposal(
+                id=f"edit-{idx}",
+                anchor=anchor,
+                replacement=replacement,
+                rationale=rationale,
+                confidence=confidence,
+                motivated_by=list(motivated_by_raw),
+            )
+        )
+
+    return proposals, summary_rationale
+
+
+def validate_anchors(
+    proposals: list[EditProposal], skill_md_text: str
+) -> list[str]:
+    """Check that every proposal anchor appears exactly once in SKILL.md.
+
+    Per DEC-006 (the anchor contract). Returns a list of human-readable
+    error strings — empty list means every proposal is valid. The caller
+    populates :attr:`SuggestReport.validation_errors` with the result.
+    """
+    errors: list[str] = []
+    for p in proposals:
+        count = skill_md_text.count(p.anchor)
+        if count == 0:
+            errors.append(
+                f"{p.id} (motivated_by={p.motivated_by}): anchor not "
+                "found in SKILL.md"
+            )
+        elif count > 1:
+            errors.append(
+                f"{p.id} (motivated_by={p.motivated_by}): anchor "
+                f"appears {count} times in SKILL.md (must be exactly "
+                "once)"
+            )
+    return errors
+
+
+async def propose_edits(
+    suggest_input: SuggestInput,
+    *,
+    model: str = DEFAULT_SUGGEST_MODEL,
+    max_tokens: int = 4096,
+) -> SuggestReport:
+    """Call Sonnet, parse the response, validate anchors, return a report.
+
+    NEVER raises. API errors land in :attr:`SuggestReport.parse_error`,
+    parse errors land in the same field, and anchor-validation errors
+    land in :attr:`SuggestReport.validation_errors`. The CLI layer in
+    US-005 is the single place that maps those fields to exit codes.
+    """
+    start = _monotonic()
+    generated_at = datetime.datetime.now(datetime.UTC).strftime(
+        "%Y-%m-%dT%H:%M:%S.%fZ"
+    )
+    prompt = build_suggest_prompt(suggest_input)
+
+    def _empty_report(
+        *,
+        parse_error: str | None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+    ) -> SuggestReport:
+        return SuggestReport(
+            skill_name=suggest_input.skill_name,
+            model=model,
+            generated_at=generated_at,
+            source_iteration=suggest_input.source_iteration,
+            source_grading_path=suggest_input.source_grading_path,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            duration_seconds=_monotonic() - start,
+            edit_proposals=[],
+            summary_rationale="",
+            validation_errors=[],
+            parse_error=parse_error,
+        )
+
+    if AsyncAnthropic is None:  # pragma: no cover - import-guard branch
+        return _empty_report(
+            parse_error=(
+                "anthropic SDK not installed — "
+                "install with: pip install clauditor[grader]"
+            )
+        )
+
+    try:
+        client = AsyncAnthropic()
+        response = await client.messages.create(
+            model=model,
+            max_tokens=max_tokens,
+            messages=[{"role": "user", "content": prompt}],
+        )
+    except Exception as exc:  # noqa: BLE001 — never raise out of propose_edits
+        return _empty_report(parse_error=f"anthropic API error: {exc!r}")
+
+    input_tokens = int(getattr(response.usage, "input_tokens", 0) or 0)
+    output_tokens = int(getattr(response.usage, "output_tokens", 0) or 0)
+
+    text_blocks = [
+        b.text
+        for b in (response.content or [])
+        if getattr(b, "type", None) == "text" and hasattr(b, "text")
+    ]
+    response_text = "".join(text_blocks)
+
+    try:
+        proposals, summary_rationale = parse_suggest_response(
+            response_text, suggest_input
+        )
+    except (ValueError, json.JSONDecodeError) as exc:
+        report = _empty_report(
+            parse_error=f"{type(exc).__name__}: {exc}",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+        return report
+
+    validation_errors = validate_anchors(
+        proposals, suggest_input.skill_md_text
+    )
+
+    return SuggestReport(
+        skill_name=suggest_input.skill_name,
+        model=model,
+        generated_at=generated_at,
+        source_iteration=suggest_input.source_iteration,
+        source_grading_path=suggest_input.source_grading_path,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        duration_seconds=_monotonic() - start,
+        edit_proposals=proposals,
+        summary_rationale=summary_rationale,
+        validation_errors=validation_errors,
+        parse_error=None,
+    )

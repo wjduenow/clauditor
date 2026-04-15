@@ -4,17 +4,24 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from clauditor.assertions import AssertionResult
 from clauditor.quality_grader import GradingResult
 from clauditor.suggest import (
+    EditProposal,
     NoPriorGradeError,
     SuggestInput,
+    SuggestReport,
+    _check_schema_version,
     build_suggest_prompt,
     find_latest_grading,
     load_suggest_input,
+    parse_suggest_response,
+    propose_edits,
+    validate_anchors,
 )
 
 
@@ -614,3 +621,428 @@ class TestBuildSuggestPrompt:
         assert isinstance(prompt, str)
         assert "<skill_md>" in prompt
         assert "exactly once" in prompt
+
+
+# --------------------------------------------------------------------------
+# US-003 tests: SuggestReport.to_json, _check_schema_version,
+# parse_suggest_response, validate_anchors, propose_edits.
+# --------------------------------------------------------------------------
+
+
+def _make_proposal(
+    *,
+    pid: str = "edit-0",
+    anchor: str = "Do the thing.",
+    replacement: str = "Do the better thing.",
+    rationale: str = "improves clarity",
+    confidence: float = 0.9,
+    motivated_by: list[str] | None = None,
+) -> EditProposal:
+    return EditProposal(
+        id=pid,
+        anchor=anchor,
+        replacement=replacement,
+        rationale=rationale,
+        confidence=confidence,
+        motivated_by=motivated_by or ["a1"],
+    )
+
+
+def _make_report(
+    *,
+    proposals: list[EditProposal] | None = None,
+    parse_error: str | None = None,
+    validation_errors: list[str] | None = None,
+    summary_rationale: str = "overall summary",
+) -> SuggestReport:
+    return SuggestReport(
+        skill_name="find",
+        model="claude-sonnet-4-6",
+        generated_at="2026-04-14T00:00:00.000000Z",
+        source_iteration=3,
+        source_grading_path=".clauditor/iteration-3/find/grading.json",
+        input_tokens=10,
+        output_tokens=20,
+        duration_seconds=1.5,
+        edit_proposals=proposals or [],
+        summary_rationale=summary_rationale,
+        validation_errors=validation_errors or [],
+        parse_error=parse_error,
+    )
+
+
+class TestSuggestReportToJson:
+    def test_schema_version_is_first_key(self) -> None:
+        report = _make_report(proposals=[_make_proposal()])
+        text = report.to_json()
+        data = json.loads(text)
+        assert list(data.keys())[0] == "schema_version"
+        assert data["schema_version"] == 1
+
+    def test_round_trip_preserves_fields(self) -> None:
+        report = _make_report(
+            proposals=[
+                _make_proposal(pid="edit-0", motivated_by=["a1", "g1"]),
+                _make_proposal(
+                    pid="edit-1",
+                    anchor="other",
+                    replacement="rep",
+                    confidence=0.4,
+                ),
+            ],
+            validation_errors=["edit-0: oops"],
+            parse_error=None,
+        )
+        text = report.to_json()
+        data = json.loads(text)
+        assert data["skill_name"] == "find"
+        assert data["model"] == "claude-sonnet-4-6"
+        assert data["source_iteration"] == 3
+        assert (
+            data["source_grading_path"]
+            == ".clauditor/iteration-3/find/grading.json"
+        )
+        assert data["input_tokens"] == 10
+        assert data["output_tokens"] == 20
+        assert data["duration_seconds"] == 1.5
+        assert data["summary_rationale"] == "overall summary"
+        assert data["validation_errors"] == ["edit-0: oops"]
+        assert data["parse_error"] is None
+        assert len(data["edit_proposals"]) == 2
+        first = data["edit_proposals"][0]
+        assert first["id"] == "edit-0"
+        assert first["motivated_by"] == ["a1", "g1"]
+        assert first["applies_to_file"] == "SKILL.md"
+
+
+class TestCheckSchemaVersion:
+    def test_accepts_matching_version(self, tmp_path: Path) -> None:
+        assert (
+            _check_schema_version({"schema_version": 1}, tmp_path / "s.json")
+            is True
+        )
+
+    def test_rejects_mismatched_version_and_warns_stderr(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        assert (
+            _check_schema_version({"schema_version": 2}, tmp_path / "s.json")
+            is False
+        )
+        captured = capsys.readouterr()
+        assert "schema_version=2" in captured.err
+        assert "expected 1" in captured.err
+
+
+def _suggest_input_with_signals() -> SuggestInput:
+    return SuggestInput(
+        skill_name="find",
+        source_iteration=3,
+        source_grading_path=".clauditor/iteration-3/find/grading.json",
+        skill_md_text="# Skill\n\nDo the thing.\n",
+        failing_assertions=[
+            AssertionResult(
+                id="a1",
+                name="needs-fence",
+                passed=False,
+                message="missing fence",
+                kind="presence",
+            ),
+        ],
+        failing_grading_criteria=[
+            GradingResult(
+                id="g1",
+                criterion="explains why",
+                passed=False,
+                score=0.3,
+                evidence="ev",
+                reasoning="missing rationale",
+            ),
+        ],
+    )
+
+
+def _good_envelope_text(
+    *,
+    anchor: str = "Do the thing.",
+    motivated_by: list[str] | None = None,
+    confidence: float = 0.8,
+) -> str:
+    payload = {
+        "summary_rationale": "tighten the prompt",
+        "edits": [
+            {
+                "anchor": anchor,
+                "replacement": "Do the better thing.",
+                "rationale": "improves clarity",
+                "confidence": confidence,
+                "motivated_by": motivated_by or ["a1"],
+            }
+        ],
+    }
+    return json.dumps(payload)
+
+
+class TestParseSuggestResponse:
+    def test_parses_well_formed_envelope(self) -> None:
+        si = _suggest_input_with_signals()
+        proposals, summary = parse_suggest_response(
+            _good_envelope_text(motivated_by=["a1", "g1"]), si
+        )
+        assert summary == "tighten the prompt"
+        assert len(proposals) == 1
+        assert proposals[0].id == "edit-0"
+        assert proposals[0].anchor == "Do the thing."
+        assert proposals[0].motivated_by == ["a1", "g1"]
+        assert proposals[0].applies_to_file == "SKILL.md"
+
+    def test_strips_markdown_json_fence(self) -> None:
+        si = _suggest_input_with_signals()
+        wrapped = "```json\n" + _good_envelope_text() + "\n```"
+        proposals, _ = parse_suggest_response(wrapped, si)
+        assert len(proposals) == 1
+
+    def test_raises_on_non_dict_top_level(self) -> None:
+        si = _suggest_input_with_signals()
+        with pytest.raises(ValueError, match="object"):
+            parse_suggest_response("[]", si)
+
+    def test_raises_on_missing_edits_key(self) -> None:
+        si = _suggest_input_with_signals()
+        with pytest.raises(ValueError, match="edits"):
+            parse_suggest_response(
+                json.dumps({"summary_rationale": "x"}), si
+            )
+
+    def test_raises_on_edit_missing_required_field(self) -> None:
+        si = _suggest_input_with_signals()
+        bad = {
+            "summary_rationale": "x",
+            "edits": [
+                {
+                    "anchor": "Do the thing.",
+                    "replacement": "y",
+                    "rationale": "z",
+                    # missing confidence
+                    "motivated_by": ["a1"],
+                }
+            ],
+        }
+        with pytest.raises(ValueError, match="confidence"):
+            parse_suggest_response(json.dumps(bad), si)
+
+    def test_clamps_confidence_to_unit_range(self) -> None:
+        si = _suggest_input_with_signals()
+        high, _ = parse_suggest_response(
+            _good_envelope_text(confidence=1.5), si
+        )
+        assert high[0].confidence == 1.0
+        low, _ = parse_suggest_response(
+            _good_envelope_text(confidence=-0.3), si
+        )
+        assert low[0].confidence == 0.0
+
+    def test_rejects_invented_motivated_by_ids(self) -> None:
+        si = _suggest_input_with_signals()
+        with pytest.raises(ValueError, match="unknown id"):
+            parse_suggest_response(
+                _good_envelope_text(motivated_by=["nope-99"]), si
+            )
+
+    def test_accepts_motivated_by_ids_from_either_list(self) -> None:
+        si = _suggest_input_with_signals()
+        # a1 is an assertion id, g1 is a grading-criterion id.
+        proposals, _ = parse_suggest_response(
+            _good_envelope_text(motivated_by=["a1", "g1"]), si
+        )
+        assert proposals[0].motivated_by == ["a1", "g1"]
+
+    def test_assigns_positional_edit_ids(self) -> None:
+        si = _suggest_input_with_signals()
+        payload = {
+            "summary_rationale": "x",
+            "edits": [
+                {
+                    "anchor": f"anchor-{i}",
+                    "replacement": "r",
+                    "rationale": "r",
+                    "confidence": 0.5,
+                    "motivated_by": ["a1"],
+                }
+                for i in range(3)
+            ],
+        }
+        proposals, _ = parse_suggest_response(json.dumps(payload), si)
+        assert [p.id for p in proposals] == ["edit-0", "edit-1", "edit-2"]
+
+
+class TestValidateAnchors:
+    def test_valid_when_anchor_appears_exactly_once(self) -> None:
+        proposals = [_make_proposal(anchor="Do the thing.")]
+        text = "# Skill\n\nDo the thing.\n"
+        assert validate_anchors(proposals, text) == []
+
+    def test_records_error_when_anchor_missing(self) -> None:
+        proposals = [
+            _make_proposal(
+                pid="edit-0", anchor="missing", motivated_by=["a1"]
+            )
+        ]
+        errors = validate_anchors(proposals, "# Skill\n\nelsewhere\n")
+        assert len(errors) == 1
+        assert "edit-0" in errors[0]
+        assert "['a1']" in errors[0]
+        assert "not found" in errors[0]
+
+    def test_records_error_when_anchor_appears_multiple_times(
+        self,
+    ) -> None:
+        proposals = [
+            _make_proposal(
+                pid="edit-0", anchor="dup", motivated_by=["a1"]
+            )
+        ]
+        errors = validate_anchors(proposals, "dup dup dup")
+        assert len(errors) == 1
+        assert "3 times" in errors[0]
+        assert "edit-0" in errors[0]
+
+    def test_returns_empty_list_when_all_valid(self) -> None:
+        proposals = [
+            _make_proposal(pid="edit-0", anchor="foo"),
+            _make_proposal(pid="edit-1", anchor="bar"),
+        ]
+        assert validate_anchors(proposals, "foo and bar") == []
+
+
+def _mock_anthropic_response(
+    *,
+    text: str,
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+) -> MagicMock:
+    block = MagicMock()
+    block.type = "text"
+    block.text = text
+    response = MagicMock()
+    response.content = [block]
+    response.usage = MagicMock(
+        input_tokens=input_tokens, output_tokens=output_tokens
+    )
+    return response
+
+
+class TestProposeEdits:
+    @pytest.mark.asyncio
+    async def test_calls_sonnet_with_built_prompt(self) -> None:
+        si = _suggest_input_with_signals()
+        response = _mock_anthropic_response(
+            text=_good_envelope_text(motivated_by=["a1"])
+        )
+        client = AsyncMock()
+        client.messages.create = AsyncMock(return_value=response)
+        with patch(
+            "clauditor.suggest.AsyncAnthropic", return_value=client
+        ):
+            report = await propose_edits(si)
+        client.messages.create.assert_awaited_once()
+        kwargs = client.messages.create.await_args.kwargs
+        assert kwargs["model"] == "claude-sonnet-4-6"
+        assert kwargs["max_tokens"] == 4096
+        assert len(kwargs["messages"]) == 1
+        assert kwargs["messages"][0]["role"] == "user"
+        assert "exactly once" in kwargs["messages"][0]["content"]
+        assert report.parse_error is None
+
+    @pytest.mark.asyncio
+    async def test_uses_monotonic_alias_for_duration(self) -> None:
+        si = _suggest_input_with_signals()
+        response = _mock_anthropic_response(
+            text=_good_envelope_text(motivated_by=["a1"])
+        )
+        client = AsyncMock()
+        client.messages.create = AsyncMock(return_value=response)
+        with patch(
+            "clauditor.suggest.AsyncAnthropic", return_value=client
+        ), patch(
+            "clauditor.suggest._monotonic", side_effect=[0.0, 1.25]
+        ):
+            report = await propose_edits(si)
+        assert report.duration_seconds == pytest.approx(1.25)
+
+    @pytest.mark.asyncio
+    async def test_api_exception_captured_in_parse_error_not_raised(
+        self,
+    ) -> None:
+        si = _suggest_input_with_signals()
+        client = AsyncMock()
+        client.messages.create = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        with patch(
+            "clauditor.suggest.AsyncAnthropic", return_value=client
+        ):
+            report = await propose_edits(si)
+        assert report.edit_proposals == []
+        assert report.parse_error is not None
+        assert "boom" in report.parse_error
+
+    @pytest.mark.asyncio
+    async def test_malformed_json_response_sets_parse_error(self) -> None:
+        si = _suggest_input_with_signals()
+        response = _mock_anthropic_response(text="this is not json {{{")
+        client = AsyncMock()
+        client.messages.create = AsyncMock(return_value=response)
+        with patch(
+            "clauditor.suggest.AsyncAnthropic", return_value=client
+        ):
+            report = await propose_edits(si)
+        assert report.edit_proposals == []
+        assert report.parse_error is not None
+        assert report.input_tokens == 100
+        assert report.output_tokens == 50
+
+    @pytest.mark.asyncio
+    async def test_successful_response_populates_report(self) -> None:
+        si = _suggest_input_with_signals()
+        response = _mock_anthropic_response(
+            text=_good_envelope_text(motivated_by=["a1", "g1"]),
+            input_tokens=200,
+            output_tokens=80,
+        )
+        client = AsyncMock()
+        client.messages.create = AsyncMock(return_value=response)
+        with patch(
+            "clauditor.suggest.AsyncAnthropic", return_value=client
+        ):
+            report = await propose_edits(si)
+        assert report.parse_error is None
+        assert report.validation_errors == []
+        assert len(report.edit_proposals) == 1
+        assert report.edit_proposals[0].id == "edit-0"
+        assert report.input_tokens == 200
+        assert report.output_tokens == 80
+        assert report.summary_rationale == "tighten the prompt"
+        assert report.source_iteration == 3
+        assert report.skill_name == "find"
+
+    @pytest.mark.asyncio
+    async def test_anchor_validation_errors_flow_into_report(self) -> None:
+        si = _suggest_input_with_signals()
+        # anchor that does NOT exist in skill_md_text
+        response = _mock_anthropic_response(
+            text=_good_envelope_text(
+                anchor="this string is not in skill md",
+                motivated_by=["a1"],
+            )
+        )
+        client = AsyncMock()
+        client.messages.create = AsyncMock(return_value=response)
+        with patch(
+            "clauditor.suggest.AsyncAnthropic", return_value=client
+        ):
+            report = await propose_edits(si)
+        assert report.parse_error is None
+        assert len(report.edit_proposals) == 1
+        assert len(report.validation_errors) == 1
+        assert "not found" in report.validation_errors[0]
