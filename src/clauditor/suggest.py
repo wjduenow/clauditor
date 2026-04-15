@@ -305,20 +305,10 @@ def _format_failing_assertion(a: AssertionResult) -> str:
 
 
 def _format_failing_criterion(g: GradingResult) -> str:
-    """Render one failing grading criterion as a fenced block.
-
-    The L3 ``GradingResult`` schema does not currently carry a separate
-    ``verdict`` field — the boolean ``passed`` and the numeric ``score``
-    together stand in for the verdict, and ``reasoning`` is the
-    rationale text. ``getattr`` is used for ``verdict`` so a future
-    schema bump that adds it lights up automatically.
-    """
+    """Render one failing grading criterion as a fenced block."""
     lines = [f'<failing_criterion id="{g.id or ""}">']
     lines.append(f"criterion: {g.criterion}")
     lines.append(f"score: {g.score}")
-    verdict = getattr(g, "verdict", None)
-    if verdict is not None:
-        lines.append(f"verdict: {verdict}")
     lines.append(f"rationale: {g.reasoning}")
     if g.evidence:
         lines.append(f"evidence: {g.evidence}")
@@ -751,26 +741,38 @@ def parse_suggest_response(
 def validate_anchors(
     proposals: list[EditProposal], skill_md_text: str
 ) -> list[str]:
-    """Check that every proposal anchor appears exactly once in SKILL.md.
+    """Check that every proposal anchor applies cleanly in declaration order.
 
     Per DEC-006 (the anchor contract). Returns a list of human-readable
     error strings — empty list means every proposal is valid. The caller
     populates :attr:`SuggestReport.validation_errors` with the result.
+
+    The check **simulates the sequential apply** used by
+    :func:`render_unified_diff`: each edit's anchor must appear exactly
+    once in the state of the text *after* prior edits in the same list
+    have been applied. This catches the case where edit[k]'s anchor
+    either collides with an earlier edit's replacement text or was
+    destroyed by one. A naive check against the original SKILL.md only
+    would pass such proposals and produce a silently-wrong diff.
     """
     errors: list[str] = []
+    proposed = skill_md_text
     for p in proposals:
-        count = skill_md_text.count(p.anchor)
+        count = proposed.count(p.anchor)
         if count == 0:
             errors.append(
                 f"{p.id} (motivated_by={p.motivated_by}): anchor not "
                 "found in SKILL.md"
             )
-        elif count > 1:
+            continue
+        if count > 1:
             errors.append(
                 f"{p.id} (motivated_by={p.motivated_by}): anchor "
                 f"appears {count} times in SKILL.md (must be exactly "
                 "once)"
             )
+            continue
+        proposed = proposed.replace(p.anchor, p.replacement, 1)
     return errors
 
 
@@ -791,7 +793,6 @@ async def propose_edits(
     generated_at = datetime.datetime.now(datetime.UTC).strftime(
         "%Y-%m-%dT%H:%M:%S.%fZ"
     )
-    prompt = build_suggest_prompt(suggest_input)
 
     def _empty_report(
         *,
@@ -821,6 +822,11 @@ async def propose_edits(
                 "install with: pip install clauditor[grader]"
             )
         )
+
+    try:
+        prompt = build_suggest_prompt(suggest_input)
+    except Exception as exc:  # noqa: BLE001 — never raise out of propose_edits
+        return _empty_report(parse_error=f"prompt build error: {exc!r}")
 
     try:
         client = AsyncAnthropic()

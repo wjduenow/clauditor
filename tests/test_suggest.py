@@ -917,6 +917,41 @@ class TestValidateAnchors:
         ]
         assert validate_anchors(proposals, "foo and bar") == []
 
+    def test_later_anchor_destroyed_by_earlier_replacement_is_rejected(
+        self,
+    ) -> None:
+        # edit-0 deletes "alpha" → after apply, "alpha beta" becomes
+        # " beta". edit-1's anchor "alpha beta" is now gone. The
+        # sequential simulation must catch this even though both
+        # anchors appear exactly once in the *original* text.
+        proposals = [
+            _make_proposal(pid="edit-0", anchor="alpha", replacement=""),
+            _make_proposal(
+                pid="edit-1", anchor="alpha beta", motivated_by=["a1"]
+            ),
+        ]
+        errors = validate_anchors(proposals, "alpha beta")
+        assert len(errors) == 1
+        assert "edit-1" in errors[0]
+        assert "not found" in errors[0]
+
+    def test_later_anchor_duplicated_by_earlier_replacement_is_rejected(
+        self,
+    ) -> None:
+        # edit-0 replaces "x" with "foo", creating two occurrences of
+        # "foo". edit-1's anchor "foo" appeared exactly once in the
+        # original but twice after edit-0 applies.
+        proposals = [
+            _make_proposal(pid="edit-0", anchor="x", replacement="foo"),
+            _make_proposal(
+                pid="edit-1", anchor="foo", motivated_by=["a1"]
+            ),
+        ]
+        errors = validate_anchors(proposals, "x and foo")
+        assert len(errors) == 1
+        assert "edit-1" in errors[0]
+        assert "2 times" in errors[0]
+
 
 def _mock_anthropic_response(
     *,
@@ -1049,6 +1084,21 @@ class TestProposeEdits:
         assert len(report.edit_proposals) == 1
         assert len(report.validation_errors) == 1
         assert "not found" in report.validation_errors[0]
+
+    @pytest.mark.asyncio
+    async def test_prompt_build_exception_captured_not_raised(self) -> None:
+        # propose_edits promises to never raise. A failure inside
+        # build_suggest_prompt must flow into parse_error, not propagate.
+        si = _suggest_input_with_signals()
+        with patch(
+            "clauditor.suggest.build_suggest_prompt",
+            side_effect=RuntimeError("prompt kaboom"),
+        ):
+            report = await propose_edits(si)
+        assert report.edit_proposals == []
+        assert report.parse_error is not None
+        assert "prompt build error" in report.parse_error
+        assert "prompt kaboom" in report.parse_error
 
 
 class TestRenderUnifiedDiff:
