@@ -1300,39 +1300,17 @@ def _run_blind_compare(
 ) -> int:
     """Dispatch blind A/B comparison for a pair of ``.txt`` outputs.
 
-    Resolves the user-prompt context from ``EvalSpec.test_args`` and the
-    rubric hint from ``EvalSpec.grading_criteria``. Both files are read as
+    Delegates spec/test_args/rubric/model resolution to
+    :func:`blind_compare_from_spec`; this wrapper handles file I/O, stderr
+    reporting, and the ``_print_blind_report`` call. Both files are read as
     plain UTF-8. Returns 0 regardless of which side wins — blind compare is
     informational, not a pass/fail gate.
     """
     import asyncio
 
-    from clauditor.quality_grader import blind_compare
+    from clauditor.quality_grader import blind_compare_from_spec
 
     skill_spec = SkillSpec.from_file(spec_path, eval_path=eval_path)
-    if not skill_spec.eval_spec:
-        print(
-            f"ERROR: No eval spec found for {spec_path}",
-            file=sys.stderr,
-        )
-        return 2
-
-    user_prompt = skill_spec.eval_spec.test_args or ""
-    if not user_prompt.strip():
-        print(
-            "ERROR: --blind requires the eval spec's test_args field to be "
-            "set (used as the user prompt context for the judge)",
-            file=sys.stderr,
-        )
-        return 2
-
-    rubric_hint: str | None = None
-    criteria = skill_spec.eval_spec.grading_criteria
-    if criteria:
-        from clauditor.schemas import criterion_text
-        rubric_hint = "\n".join(
-            f"- {criterion_text(c)}" for c in criteria
-        )
 
     for path in (before_path, after_path):
         if not path.is_file():
@@ -1361,20 +1339,27 @@ def _run_blind_compare(
         )
         return 2
 
-    model = skill_spec.eval_spec.grading_model
-    print(
-        f"Running blind A/B judge ({model}) — 2 API calls...",
-        file=sys.stderr,
-    )
-    report = asyncio.run(
-        blind_compare(
-            user_prompt,
-            output_a,
-            output_b,
-            rubric_hint,
-            model=model,
+    # US-002: all spec/test_args/rubric/model resolution happens inside
+    # blind_compare_from_spec (shared with the pytest fixture from US-003).
+    # We read the spec's model for the stderr progress line; the helper
+    # resolves its own effective model internally.
+    try:
+        if skill_spec.eval_spec is not None:
+            print(
+                f"Running blind A/B judge ({skill_spec.eval_spec.grading_model}) "
+                "— 2 API calls...",
+                file=sys.stderr,
+            )
+        report = asyncio.run(
+            blind_compare_from_spec(
+                skill_spec,
+                output_a,
+                output_b,
+            )
         )
-    )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     _print_blind_report(report, before_path, after_path)
     return 0
 

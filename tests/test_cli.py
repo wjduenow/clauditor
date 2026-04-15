@@ -3196,7 +3196,9 @@ class TestCmdCompareBlind:
             )
         assert rc == 2
         err = capsys.readouterr().err
-        assert "No eval spec" in err
+        # Helper (blind_compare_from_spec) raises ValueError; CLI maps to
+        # "ERROR: ..." with the helper's message substring.
+        assert "no eval_spec" in err
 
     def test_compare_blind_empty_test_args_errors(self, tmp_path, capsys):
         # Covers the whitespace-only test_args branch (cli.py lines 752-759).
