@@ -1901,6 +1901,373 @@ class TestBaselineFlag:
         assert (skill_dir / "baseline_grading.json").exists()
         assert not (skill_dir / "baseline_extraction.json").exists()
 
+    def test_grade_with_baseline_flag_writes_benchmark_sidecar(
+        self, tmp_path, monkeypatch
+    ):
+        """#28 US-002: --baseline also writes benchmark.json with the delta."""
+        monkeypatch.chdir(tmp_path)
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        # Non --output mode: mock spec.run() so the primary arm has a real
+        # SkillResult that compute_benchmark can read duration / tokens from.
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="hello world",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[{"type": "assistant", "text": "hello world"}],
+                input_tokens=100,
+                output_tokens=50,
+                duration_seconds=2.5,
+            )
+        )
+        # side_effect: primary arm passes 1.0, baseline arm passes 0.5 →
+        # delta.pass_rate == +0.50. Exercises real arithmetic in the
+        # persisted benchmark.json.
+        primary_report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c1",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                ),
+            ],
+            duration_seconds=1.0,
+        )
+        baseline_report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c1",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                ),
+                GradingResult(
+                    criterion="c2",
+                    passed=False,
+                    score=0.3,
+                    evidence="no",
+                    reasoning="no",
+                ),
+            ],
+            duration_seconds=0.5,
+        )
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                side_effect=[primary_report, baseline_report],
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--baseline"])
+
+        assert rc == 0
+        spec.runner.run_raw.assert_called_once()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        benchmark_path = skill_dir / "benchmark.json"
+        assert benchmark_path.exists()
+        benchmark = json.loads(benchmark_path.read_text())
+        assert benchmark["schema_version"] == 1
+        assert benchmark["skill_name"] == "test-skill"
+        assert "run_summary" in benchmark
+        run_summary = benchmark["run_summary"]
+        assert "with_skill" in run_summary
+        assert "without_skill" in run_summary
+        assert "delta" in run_summary
+        assert isinstance(run_summary["delta"]["pass_rate"], float)
+        assert run_summary["delta"]["pass_rate"] == pytest.approx(0.5)
+
+    def test_grade_without_baseline_flag_writes_no_benchmark_sidecar(
+        self, tmp_path, monkeypatch
+    ):
+        """#28 US-002: benchmark.json is absent when --baseline is not passed."""
+        monkeypatch.chdir(tmp_path)
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="hello world",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[{"type": "assistant", "text": "hello world"}],
+                input_tokens=100,
+                output_tokens=50,
+                duration_seconds=2.5,
+            )
+        )
+        grading_report = self._make_grading_report()
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        spec.runner.run_raw.assert_not_called()
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
+        assert not (skill_dir / "benchmark.json").exists()
+
+    def test_grade_with_baseline_flag_prints_delta_block(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """#28 US-003: --baseline prints the plain delta block on stdout."""
+        monkeypatch.chdir(tmp_path)
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="hello world",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[{"type": "assistant", "text": "hello world"}],
+                input_tokens=100,
+                output_tokens=50,
+                duration_seconds=2.5,
+            )
+        )
+        # Use side_effect so primary and baseline arms differ — exercises
+        # the signed delta and the format specifiers in the delta block.
+        primary_report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c1",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                ),
+            ],
+            duration_seconds=1.0,
+        )
+        baseline_report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c1",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                ),
+                GradingResult(
+                    criterion="c2",
+                    passed=False,
+                    score=0.3,
+                    evidence="no",
+                    reasoning="no",
+                ),
+            ],
+            duration_seconds=0.5,
+        )
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                side_effect=[primary_report, baseline_report],
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--baseline"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        # DEC-010 format: header then three labelled metric rows, each
+        # with a per-arm mean pair.
+        header_idx = out.find("baseline delta:")
+        assert header_idx != -1
+        pr_idx = out.find("pass_rate", header_idx)
+        ts_idx = out.find("time_seconds", pr_idx)
+        tk_idx = out.find("tokens", ts_idx)
+        assert pr_idx != -1
+        assert ts_idx != -1
+        assert tk_idx != -1
+        assert header_idx < pr_idx < ts_idx < tk_idx
+        assert "with_skill" in out[header_idx:]
+        assert "without_skill" in out[header_idx:]
+        # Non-zero signed delta: pass_rate primary=1.0, baseline=0.5 →
+        # delta=+0.50, rendered with explicit + sign per DEC-010.
+        pr_line_end = out.find("\n", pr_idx)
+        pr_line = out[pr_idx:pr_line_end]
+        assert "+0.50" in pr_line
+        # time_seconds: delta is sourced from SkillResult duration
+        # (primary 2.5 vs baseline 0.75) → positive, rendered under
+        # "{:+.1f}" so a literal "+" must appear in the value slot.
+        ts_line_end = out.find("\n", ts_idx)
+        ts_line = out[ts_idx:ts_line_end]
+        assert "+" in ts_line
+
+    def test_grade_with_baseline_and_json_routes_delta_block_to_stderr(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """#28: --baseline + --json routes delta block to stderr so stdout
+        stays parseable JSON (same pattern as --diff routing)."""
+        monkeypatch.chdir(tmp_path)
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="hello world",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[{"type": "assistant", "text": "hello world"}],
+                input_tokens=100,
+                output_tokens=50,
+                duration_seconds=2.5,
+            )
+        )
+        primary_report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c1",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                ),
+            ],
+            duration_seconds=1.0,
+        )
+        baseline_report = GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    criterion="c1",
+                    passed=True,
+                    score=0.9,
+                    evidence="ok",
+                    reasoning="ok",
+                ),
+                GradingResult(
+                    criterion="c2",
+                    passed=False,
+                    score=0.3,
+                    evidence="no",
+                    reasoning="no",
+                ),
+            ],
+            duration_seconds=0.5,
+        )
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                side_effect=[primary_report, baseline_report],
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--baseline", "--json"])
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        # stdout still carries the JSON grade payload — the delta block
+        # must NOT leak into it or it would corrupt JSON consumers.
+        assert "baseline delta:" not in captured.out
+        # Slice from the first '{' to skip the unrelated progress
+        # messages ("Running ...") that the runner prints ahead of the
+        # JSON payload. What we care about is that the JSON body is
+        # intact and the delta block isn't mixed in.
+        brace = captured.out.find("{")
+        assert brace != -1, "no JSON payload on stdout"
+        payload = json.loads(captured.out[brace:])
+        assert payload["skill"] == "test-skill"
+        # stderr carries the delta block (routed there under --json
+        # so stdout stays parseable by automated consumers).
+        assert "baseline delta:" in captured.err
+        assert "pass_rate" in captured.err
+        assert "time_seconds" in captured.err
+        assert "tokens" in captured.err
+
+    def test_grade_without_baseline_flag_prints_no_delta_block(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """#28 US-003: no --baseline => no 'baseline delta:' line on stdout."""
+        monkeypatch.chdir(tmp_path)
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="hello world",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[{"type": "assistant", "text": "hello world"}],
+                input_tokens=100,
+                output_tokens=50,
+                duration_seconds=2.5,
+            )
+        )
+        grading_report = self._make_grading_report()
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "baseline delta:" not in out
+
     def test_run_baseline_phase_threads_cwd_to_run_raw(
         self, tmp_path, monkeypatch
     ):
@@ -1939,6 +2306,295 @@ class TestBaselineFlag:
         assert (
             skill_dir / "baseline-run" / "inputs" / "fixture.txt"
         ).is_file()
+
+    # ---- #28 US-004: --min-baseline-delta gate ----
+
+    def _make_report_with_pass_rate(
+        self, num_passing: int, total: int
+    ) -> GradingReport:
+        """Build a GradingReport whose pass_rate == num_passing/total.
+
+        Score is 0.9 on passing results and 0.8 on failing results so
+        mean_score stays above the default 0.5 threshold — the primary
+        report must still satisfy ``passed`` in tests where we want
+        the gate (not the grade) to drive the exit code.
+        """
+        results = []
+        for i in range(total):
+            passed = i < num_passing
+            results.append(
+                GradingResult(
+                    criterion=f"criterion-{i}",
+                    passed=passed,
+                    score=0.9 if passed else 0.8,
+                    evidence="ok",
+                    reasoning="ok",
+                )
+            )
+        return GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
+            results=results,
+            duration_seconds=1.0,
+        )
+
+    def _prepare_gate_spec(self):
+        """Spec used by gate tests — non-``--output`` path with a real
+        primary SkillResult (benchmark requires it to be non-None)."""
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="hello world",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[{"type": "assistant", "text": "hello world"}],
+                input_tokens=100,
+                output_tokens=50,
+                duration_seconds=2.5,
+            )
+        )
+        return spec
+
+    def test_grade_min_baseline_delta_above_threshold_passes(
+        self, tmp_path, monkeypatch
+    ):
+        """Observed delta 0.50 >= threshold 0.40 → exit 0."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._prepare_gate_spec()
+        primary = self._make_report_with_pass_rate(2, 2)  # pass_rate=1.0
+        baseline = self._make_report_with_pass_rate(1, 2)  # pass_rate=0.5
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                side_effect=[primary, baseline],
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--baseline",
+                    "--min-baseline-delta",
+                    "0.4",
+                ]
+            )
+
+        assert rc == 0
+
+    def test_grade_min_baseline_delta_below_threshold_fails(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Observed delta 0.30 < threshold 0.40 → exit 1 + stderr."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._prepare_gate_spec()
+        primary = self._make_report_with_pass_rate(10, 10)  # 1.0
+        baseline = self._make_report_with_pass_rate(7, 10)  # 0.7
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                side_effect=[primary, baseline],
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--baseline",
+                    "--min-baseline-delta",
+                    "0.4",
+                ]
+            )
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "baseline delta" in err
+        assert "0.30" in err
+        assert "0.40" in err
+
+    def test_grade_min_baseline_delta_zero_equality_passes(
+        self, tmp_path, monkeypatch
+    ):
+        """DEC-009: --min-baseline-delta 0.0 with observed delta 0.0 → exit 0."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._prepare_gate_spec()
+        primary = self._make_report_with_pass_rate(2, 2)
+        baseline = self._make_report_with_pass_rate(2, 2)
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                side_effect=[primary, baseline],
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--baseline",
+                    "--min-baseline-delta",
+                    "0.0",
+                ]
+            )
+
+        assert rc == 0
+
+    def test_grade_min_baseline_delta_zero_regression_fails(
+        self, tmp_path, monkeypatch
+    ):
+        """DEC-009: observed delta -0.05 with threshold 0.0 → exit 1."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._prepare_gate_spec()
+        # primary 19/20 = 0.95; baseline 20/20 = 1.0; delta = -0.05.
+        # Primary still passes default thresholds (pass_rate >= 0.7).
+        primary = self._make_report_with_pass_rate(19, 20)
+        baseline = self._make_report_with_pass_rate(20, 20)
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                side_effect=[primary, baseline],
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--baseline",
+                    "--min-baseline-delta",
+                    "0.0",
+                ]
+            )
+
+        assert rc == 1
+
+    def test_min_baseline_delta_without_baseline_errors(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--min-baseline-delta without --baseline → exit 2 + stderr."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--min-baseline-delta",
+                    "0.5",
+                ]
+            )
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--min-baseline-delta requires --baseline" in err
+
+    def test_min_baseline_delta_with_output_errors(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--min-baseline-delta under --output → exit 2 + stderr diagnostic.
+
+        --output bypasses live subprocess metrics, so benchmark.delta cannot
+        be computed; silently skipping the gate would be a correctness bug.
+        """
+        monkeypatch.chdir(tmp_path)
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        output_file = tmp_path / "canned.txt"
+        output_file.write_text("skill output")
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output",
+                    str(output_file),
+                    "--baseline",
+                    "--min-baseline-delta",
+                    "0.1",
+                ]
+            )
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--min-baseline-delta is incompatible with --output" in err
+
+    def test_grade_without_min_baseline_delta_no_gate(
+        self, tmp_path, monkeypatch
+    ):
+        """--baseline without --min-baseline-delta → gate not applied."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._prepare_gate_spec()
+        # Identical pass rates (delta = 0.0) — without --min-baseline-delta
+        # no gate is applied, so the run still exits 0.
+        primary = self._make_report_with_pass_rate(10, 10)
+        baseline = self._make_report_with_pass_rate(10, 10)
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                side_effect=[primary, baseline],
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--baseline"])
+
+        assert rc == 0
+
+    def test_min_baseline_delta_argparse_rejects_out_of_range(self):
+        """_unit_float rejects values outside [0.0, 1.0] via argparse."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--baseline",
+                    "--min-baseline-delta",
+                    "1.5",
+                ]
+            )
+        assert exc_info.value.code == 2
 
 
 class TestCmdCompare:

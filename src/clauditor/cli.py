@@ -6,9 +6,14 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from clauditor import history
+
+if TYPE_CHECKING:
+    from clauditor.quality_grader import GradingReport
 from clauditor.assertions import AssertionSet, run_assertions
+from clauditor.benchmark import compute_benchmark
 from clauditor.paths import resolve_clauditor_dir
 from clauditor.runner import SkillResult, SkillRunner
 from clauditor.spec import SkillSpec
@@ -412,6 +417,28 @@ def cmd_grade(args: argparse.Namespace) -> int:
         print("ERROR: No grading_criteria defined in eval spec", file=sys.stderr)
         return 1
 
+    # #28 US-004: --min-baseline-delta depends on --baseline. Knowable from
+    # args alone, so validate early alongside other input-error exit-2 paths.
+    if (
+        getattr(args, "min_baseline_delta", None) is not None
+        and getattr(args, "output", None)
+    ):
+        print(
+            "ERROR: --min-baseline-delta is incompatible with --output "
+            "(benchmark delta requires live subprocess metrics)",
+            file=sys.stderr,
+        )
+        return 2
+    if (
+        getattr(args, "min_baseline_delta", None) is not None
+        and not getattr(args, "baseline", False)
+    ):
+        print(
+            "ERROR: --min-baseline-delta requires --baseline",
+            file=sys.stderr,
+        )
+        return 2
+
     # --only-criterion: filter criteria before LLM call (token savings).
     # Partial runs produce a subset grading.json and must not publish an
     # iteration workspace (the partial report would later be misused as a
@@ -528,7 +555,7 @@ def _run_baseline_phase(
     skill_dir: Path,
     iteration: int,
     model: str,
-) -> None:
+) -> tuple[GradingReport, SkillResult]:
     """US-004: run the test args without the skill prefix and persist L1/L2/L3
     sidecars into ``skill_dir`` (the staging iteration dir).
 
@@ -540,6 +567,11 @@ def _run_baseline_phase(
     - ``baseline_grading.json`` — Layer 3 ``GradingReport``
 
     Strictly opt-in via ``--baseline``; roughly doubles LLM cost per run.
+
+    Returns the ``(GradingReport, SkillResult)`` pair from the baseline run
+    (DEC-011) so the caller can feed them to
+    :func:`clauditor.benchmark.compute_benchmark` without reloading sidecars
+    from disk.
     """
     import asyncio
 
@@ -614,6 +646,8 @@ def _run_baseline_phase(
         baseline_grading.to_json(), encoding="utf-8"
     )
 
+    return baseline_grading, baseline_result
+
 
 def _cmd_grade_with_workspace(
     *,
@@ -627,10 +661,7 @@ def _cmd_grade_with_workspace(
     import asyncio
 
     from clauditor.metrics import TokenUsage, build_metrics
-    from clauditor.quality_grader import (
-        GradingReport,
-        grade_quality,
-    )
+    from clauditor.quality_grader import grade_quality
 
     n_variance = int(args.variance) if args.variance else 0
     total_runs = 1 + n_variance
@@ -638,6 +669,10 @@ def _cmd_grade_with_workspace(
     # Collect a (output_text, stream_events) tuple per run plus the
     # corresponding skill-side token / duration totals.
     run_outputs: list[tuple[str, list[dict]]] = []
+    # Parallel list of SkillResult objects — None entries correspond to
+    # captured-text (--output) runs where no subprocess SkillResult exists.
+    # Used by compute_benchmark to build the with_skill arm (#28 US-002).
+    skill_results: list[SkillResult | None] = []
     skill_input_total = 0
     skill_output_total = 0
     skill_duration_total = 0.0
@@ -653,6 +688,7 @@ def _cmd_grade_with_workspace(
             )
         primary_text = Path(args.output).read_text()
         run_outputs.append((primary_text, []))
+        skill_results.append(None)
     else:
         print(
             f"Running /{spec.skill_name} {spec.eval_spec.test_args}..."
@@ -670,6 +706,7 @@ def _cmd_grade_with_workspace(
         run_outputs.append(
             (primary_text, list(primary_skill_result.stream_events))
         )
+        skill_results.append(primary_skill_result)
         skill_input_total += primary_skill_result.input_tokens
         skill_output_total += primary_skill_result.output_tokens
         skill_duration_total += primary_skill_result.duration_seconds
@@ -694,6 +731,7 @@ def _cmd_grade_with_workspace(
         run_outputs.append(
             (variance_result.output, list(variance_result.stream_events))
         )
+        skill_results.append(variance_result)
         skill_input_total += variance_result.input_tokens
         skill_output_total += variance_result.output_tokens
         skill_duration_total += variance_result.duration_seconds
@@ -781,6 +819,13 @@ def _cmd_grade_with_workspace(
     # it up as a misleading baseline. Skip the entire write+finalize step;
     # the outer finally block will abort() the staging dir.
     only_criterion = bool(getattr(args, "only_criterion", None))
+
+    # Hoisted so the stdout delta printer (US-003) can see the computed
+    # Benchmark after workspace.finalize(). Stays None in --output mode
+    # where compute_benchmark is skipped.
+    from clauditor.benchmark import Benchmark
+
+    benchmark: Benchmark | None = None
 
     if not only_criterion:
         skill_dir = workspace.tmp_path
@@ -875,12 +920,31 @@ def _cmd_grade_with_workspace(
             )
 
         if getattr(args, "baseline", False):
-            _run_baseline_phase(
+            baseline_grading, baseline_skill_result = _run_baseline_phase(
                 spec=spec,
                 skill_dir=skill_dir,
                 iteration=workspace.iteration,
                 model=model,
             )
+
+            # #28 US-002: compute the pair-run benchmark delta and persist
+            # it alongside the baseline_*.json sidecars. Skipped in
+            # captured-text mode (--output) because there is no primary
+            # SkillResult to supply duration / token metrics for the
+            # with_skill arm.
+            if all(sr is not None for sr in skill_results):
+                benchmark = compute_benchmark(
+                    skill_name=spec.skill_name,
+                    primary_reports=reports,
+                    baseline_report=baseline_grading,
+                    primary_results=[
+                        sr for sr in skill_results if sr is not None
+                    ],
+                    baseline_result=baseline_skill_result,
+                )
+                (skill_dir / "benchmark.json").write_text(
+                    benchmark.to_json(), encoding="utf-8"
+                )
 
     if not only_criterion:
         timing_payload: dict = {
@@ -958,6 +1022,15 @@ def _cmd_grade_with_workspace(
                 file=sys.stderr,
             )
 
+    # #28 US-003: plain, unconditional baseline delta block.
+    # Gated on --baseline AND a computed Benchmark (skipped in --output
+    # mode where primary SkillResult metrics are unavailable). DEC-010
+    # — no TTY branching, no color, one format always. In --json mode
+    # the block routes to stderr (same pattern as --diff) so stdout
+    # stays parseable JSON for automated consumers.
+    if getattr(args, "baseline", False) and benchmark is not None:
+        _print_baseline_delta_block(benchmark, out=diff_out)
+
     # Append a history record for trendability (US-006). Skip when
     # --only-criterion is set: partial-criterion runs would silently
     # corrupt longitudinal pass_rate/mean_score trends.
@@ -980,6 +1053,26 @@ def _cmd_grade_with_workspace(
     passed = primary_report.passed
     if variance_report:
         passed = passed and variance_report.passed
+
+    # #28 US-004: --min-baseline-delta gate (DEC-008: exit 1 for
+    # gate violation; DEC-009: equality passes). Runs after history
+    # is recorded so the failing iteration is still published for
+    # inspection. The delta block was already printed above, so the
+    # user sees the observed delta before this diagnostic.
+    if (
+        getattr(args, "min_baseline_delta", None) is not None
+        and benchmark is not None
+    ):
+        threshold = args.min_baseline_delta
+        observed = benchmark.run_summary.delta.pass_rate
+        if observed < threshold:
+            print(
+                f"ERROR: baseline delta {observed:+.2f} below "
+                f"threshold {threshold:.2f}",
+                file=sys.stderr,
+            )
+            return 1
+
     return 0 if passed else 1
 
 
@@ -1067,6 +1160,45 @@ def _print_grade_diff(prior_path: Path, current_report, out) -> None:
         print(f"\n  {len(regressions)} regression(s) detected.", file=out)
     else:
         print("\n  No regressions detected.", file=out)
+
+
+def _print_baseline_delta_block(benchmark, out=sys.stdout) -> None:
+    """Print the #28 US-003 baseline delta block to ``out``.
+
+    DEC-010: plain unconditional output — no TTY detection, no ANSI color,
+    no table / one-liner branching. One printer, one format, always.
+    Signs are explicit on every delta row so the reader can scan a column
+    of ``+``/``-`` without decoding column positions.
+    """
+    rs = benchmark.run_summary
+    pr_delta = rs.delta.pass_rate
+    pr_w = rs.with_skill.pass_rate.mean
+    pr_wo = rs.without_skill.pass_rate.mean
+
+    t_delta = rs.delta.time_seconds
+    t_w = rs.with_skill.time_seconds.mean
+    t_wo = rs.without_skill.time_seconds.mean
+
+    tk_delta = int(round(rs.delta.tokens))
+    tk_w = int(round(rs.with_skill.tokens.mean))
+    tk_wo = int(round(rs.without_skill.tokens.mean))
+
+    print("baseline delta:", file=out)
+    print(
+        f"  {'pass_rate':<12} {pr_delta:+.2f}  "
+        f"(with_skill {pr_w:.2f}, without_skill {pr_wo:.2f})",
+        file=out,
+    )
+    print(
+        f"  {'time_seconds':<12} {t_delta:+.1f}  "
+        f"(with_skill {t_w:.1f}, without_skill {t_wo:.1f})",
+        file=out,
+    )
+    print(
+        f"  {'tokens':<12} {tk_delta:+d}  "
+        f"(with_skill {tk_w:d}, without_skill {tk_wo:d})",
+        file=out,
+    )
 
 
 def _load_assertion_set(
@@ -2242,7 +2374,22 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "After grading, run the test args through Claude without the "
             "skill prefix (baseline) and capture L1/L2/L3 sidecars. "
-            "Roughly doubles LLM cost; never the default."
+            "Roughly doubles LLM cost; never the default. Also writes "
+            "benchmark.json and prints a delta block on stdout "
+            "(skipped under --output, where subprocess metrics are "
+            "unavailable)."
+        ),
+    )
+    p_grade.add_argument(
+        "--min-baseline-delta",
+        type=_unit_float,
+        default=None,
+        help=(
+            "(#28) Fail with exit 1 if the with-skill vs without-skill "
+            "pass_rate delta is below this threshold (0.0-1.0). Requires "
+            "--baseline. Equality passes: --min-baseline-delta 0.0 is a "
+            "strict no-regression gate (default: no gate). Without "
+            "--baseline, the flag is an input error (exit 2)."
         ),
     )
     p_grade.add_argument(

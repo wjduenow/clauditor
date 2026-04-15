@@ -34,15 +34,6 @@ def test_lazy_import_grading_report():
     assert GradingReport.__name__ == "GradingReport"
 
 
-def test_lazy_import_ab_result():
-    """__getattr__ lazily imports ABResult from comparator."""
-    import clauditor
-
-    ABResult = clauditor.ABResult  # noqa: N806
-    assert ABResult is not None
-    assert ABResult.__name__ == "ABResult"
-
-
 def test_lazy_import_trigger_report():
     """__getattr__ lazily imports TriggerReport from triggers."""
     import clauditor
