@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime
 import difflib
 import json
+import math
 import re
 import sys
 import time
@@ -722,6 +723,12 @@ def parse_suggest_response(
                 f"parse_suggest_response: edits[{idx}].confidence must "
                 f"be a number: {exc}"
             ) from exc
+        # NaN / Infinity bypass the ordered clamp below (all NaN
+        # comparisons are False, and json.dumps emits `NaN` as a bare
+        # token that strict JSON parsers reject). Treat any non-finite
+        # value as "model confused" and coerce to 0.0 before clamping.
+        if not math.isfinite(confidence):
+            confidence = 0.0
         # Silent clamp to [0.0, 1.0] per spec.
         if confidence < 0.0:
             confidence = 0.0

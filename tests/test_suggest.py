@@ -979,6 +979,57 @@ class TestParseSuggestResponse:
         )
         assert low[0].confidence == 0.0
 
+    def test_nan_confidence_is_coerced_to_zero(self) -> None:
+        # Regression: NaN bypasses all ordered comparisons, so it used
+        # to sail through the clamp and land in the sidecar as the bare
+        # token `NaN` which strict JSON parsers reject.
+        si = _suggest_input_with_signals()
+        # json.dumps emits `NaN` for float('nan') by default and
+        # json.loads accepts it; feed the raw text to bypass the
+        # float() round-trip in the helper.
+        payload_text = (
+            '{"summary_rationale": "x", "edits": [{'
+            '"anchor": "Do the thing.", '
+            '"replacement": "Do the better thing.", '
+            '"rationale": "r", '
+            '"confidence": NaN, '
+            '"motivated_by": ["a1"]}]}'
+        )
+        proposals, _ = parse_suggest_response(payload_text, si)
+        assert proposals[0].confidence == 0.0
+        # And the resulting sidecar JSON round-trips through
+        # strict json parsers without choking on `NaN`.
+        report = SuggestReport(
+            skill_name="s",
+            model="m",
+            generated_at="t",
+            source_iteration=1,
+            source_grading_path="p",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+            edit_proposals=proposals,
+            summary_rationale="x",
+            validation_errors=[],
+        )
+        reloaded = json.loads(report.to_json())  # strict mode
+        assert reloaded["edit_proposals"][0]["confidence"] == 0.0
+
+    def test_infinity_confidence_is_coerced_to_zero(self) -> None:
+        # Infinity happens to clamp to 1.0 via > 1.0 already, but
+        # treat non-finite uniformly as "model confused → 0.0".
+        si = _suggest_input_with_signals()
+        payload_text = (
+            '{"summary_rationale": "x", "edits": [{'
+            '"anchor": "Do the thing.", '
+            '"replacement": "Do the better thing.", '
+            '"rationale": "r", '
+            '"confidence": Infinity, '
+            '"motivated_by": ["a1"]}]}'
+        )
+        proposals, _ = parse_suggest_response(payload_text, si)
+        assert proposals[0].confidence == 0.0
+
     def test_rejects_invented_motivated_by_ids(self) -> None:
         si = _suggest_input_with_signals()
         with pytest.raises(ValueError, match="unknown id"):
