@@ -1,7 +1,7 @@
 ---
 ticket: "#39 (clauditor-iag)"
 title: Add EvalSpec.user_prompt field
-phase: detailing
+phase: devolved
 branch: feature/39-user-prompt
 worktree: /home/wesd/dev/worktrees/clauditor/feature/39-user-prompt
 sessions: 1
@@ -255,4 +255,11 @@ covers this case.
 
 ## 5. Beads Manifest
 
-_Pending devolve._
+- **Epic:** `clauditor-1qd` — #39: Add EvalSpec.user_prompt field
+- **US-001:** `clauditor-49m` — Add user_prompt field + require it in blind_compare_from_spec
+- **Quality Gate:** `clauditor-am6` — code review x4 + CodeRabbit (blocked by clauditor-49m)
+- **Patterns & Memory:** `clauditor-x8y` — verify pure-compute-vs-io-split anchor (blocked by clauditor-am6)
+
+Worktree: `/home/wesd/dev/worktrees/clauditor/feature/39-user-prompt`
+Branch: `feature/39-user-prompt`
+Plan PR: https://github.com/wjduenow/clauditor/pull/40
