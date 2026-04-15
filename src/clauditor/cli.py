@@ -2063,8 +2063,10 @@ def main(argv: list[str] | None = None) -> int:
         "--verbose",
         action="store_true",
         help=(
-            "Log per-run transcript redaction counts to stderr "
-            "(clauditor.transcripts: redacted N matches in run-K)"
+            "Log verbose grading details to stderr, including per-run "
+            "transcript redaction counts "
+            "(clauditor.transcripts: redacted N matches in run-K) and "
+            "failing transcript slices when assertions fail"
         ),
     )
     p_grade.add_argument(

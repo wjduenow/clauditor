@@ -20,6 +20,7 @@ from clauditor.cli import (
     _TRANSCRIPT_SLICE_BLOCK_CAP_BYTES,
     _TRANSCRIPT_SLICE_TRUNC_MARKER,
     _print_failing_transcript_slice,
+    main,
 )
 
 # A fake secret that matches one of the ``clauditor.transcripts`` regexes.
@@ -147,65 +148,174 @@ class TestPrintFailingTranscriptSlice:
         assert x_count == _TRANSCRIPT_SLICE_BLOCK_CAP_BYTES
 
 
-class TestGradeVerboseGate:
-    """Gate-condition integration around ``_cmd_grade_with_workspace``.
-
-    We don't drive the full grade pipeline here — it depends on Haiku /
-    Sonnet calls. Instead we patch ``_print_failing_transcript_slice``
-    and exercise the small gating expression in situ by calling it
-    directly the way the call site does.
+class TestGradeVerboseInvocation:
+    """Drive ``main(['grade', ...])`` end-to-end with mocked runner +
+    grader, and assert the real call site inside
+    ``_cmd_grade_with_workspace`` (cli.py ~835-840) invokes
+    ``_print_failing_transcript_slice`` under the verbose + failing gate.
     """
 
-    def test_gate_printed_when_verbose_and_failed(self) -> None:
-        aset = AssertionSet(
-            results=[
-                AssertionResult(
-                    name="x", passed=False, message="no", kind="custom"
-                )
-            ]
+    def _make_spec(self, eval_spec):
+        from unittest.mock import MagicMock
+
+        from clauditor.spec import SkillSpec
+
+        spec = MagicMock(spec=SkillSpec)
+        spec.skill_name = "test-skill"
+        spec.eval_spec = eval_spec
+        return spec
+
+    def _make_eval_spec(self):
+        from clauditor.schemas import EvalSpec
+
+        return EvalSpec(
+            skill_name="test-skill",
+            description="T",
+            test_args="--depth quick",
+            # Assertion deliberately fails against the mocked output.
+            assertions=[{"type": "contains", "value": "WILL_NOT_MATCH"}],
+            sections=[],
+            grading_criteria=["Is it relevant?"],
+            grading_model="claude-sonnet-4-6",
+            trigger_tests=None,
+            variance=None,
         )
-        verbose = True
-        out = io.StringIO()
-        events = [_assistant_event("ctx")]
 
-        if verbose and aset.failed:
-            _print_failing_transcript_slice(0, events, out)
+    def _skill_result(self, *, text: str):
+        from clauditor.runner import SkillResult
 
-        assert "ctx" in out.getvalue()
-
-    def test_gate_suppressed_when_verbose_off(self) -> None:
-        aset = AssertionSet(
-            results=[
-                AssertionResult(
-                    name="x", passed=False, message="no", kind="custom"
-                )
-            ]
+        return SkillResult(
+            output=text,
+            exit_code=0,
+            skill_name="test-skill",
+            args="",
+            duration_seconds=0.5,
+            stream_events=[_assistant_event("assistant ctx line")],
         )
-        verbose = False
-        out = io.StringIO()
-        events = [_assistant_event("ctx")]
 
-        if verbose and aset.failed:  # pragma: no cover - gate false
-            _print_failing_transcript_slice(0, events, out)
+    def _grading_report(self):
+        from clauditor.quality_grader import GradingReport, GradingResult
 
-        assert out.getvalue() == ""
-
-    def test_gate_suppressed_when_no_failures(self) -> None:
-        aset = AssertionSet(
+        return GradingReport(
+            skill_name="test-skill",
+            model="claude-sonnet-4-6",
             results=[
-                AssertionResult(
-                    name="x", passed=True, message="ok", kind="custom"
+                GradingResult(
+                    criterion="Is it relevant?",
+                    passed=True,
+                    score=1.0,
+                    evidence="",
+                    reasoning="",
                 )
-            ]
+            ],
+            duration_seconds=1.0,
         )
-        verbose = True
-        out = io.StringIO()
-        events = [_assistant_event("ctx")]
 
-        if verbose and aset.failed:  # pragma: no cover - gate false
-            _print_failing_transcript_slice(0, events, out)
+    def test_grade_verbose_invokes_slice_on_failure(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """-v + at least one failing assertion triggers the slice printer
+        from inside _cmd_grade_with_workspace."""
+        from unittest.mock import AsyncMock
 
-        assert out.getvalue() == ""
+        monkeypatch.chdir(tmp_path)
+        spec = self._make_spec(self._make_eval_spec())
+        spec.run.return_value = self._skill_result(text="not the target word")
+        report = self._grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch(
+                "clauditor.cli._print_failing_transcript_slice"
+            ) as mock_slice,
+        ):
+            # Grade's exit code is driven by Layer 3 (grading criteria),
+            # not Layer 1 assertions — so rc is 0 here even though the
+            # contains-assertion fails. The invariant under test is that
+            # the slice printer fires whenever -v is set AND any
+            # assertion in a run failed.
+            rc = main(["grade", "skill.md", "-v"])
+
+        assert rc == 0
+        assert mock_slice.call_count == 1
+        # The helper is called with (run_idx, stream_events, stderr).
+        args_, _ = mock_slice.call_args
+        assert args_[0] == 0  # primary run index
+
+    def test_grade_no_verbose_suppresses_slice(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Without -v, the slice printer is never invoked even on
+        assertion failure."""
+        from unittest.mock import AsyncMock
+
+        monkeypatch.chdir(tmp_path)
+        spec = self._make_spec(self._make_eval_spec())
+        spec.run.return_value = self._skill_result(text="not the target word")
+        report = self._grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch(
+                "clauditor.cli._print_failing_transcript_slice"
+            ) as mock_slice,
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        assert mock_slice.call_count == 0
+
+    def test_grade_verbose_all_pass_suppresses_slice(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """-v with all-passing assertions does NOT invoke the slice
+        printer — the inner `if aset.failed` gate must fail closed."""
+        from unittest.mock import AsyncMock
+
+        from clauditor.schemas import EvalSpec
+
+        monkeypatch.chdir(tmp_path)
+        # Assertion now MATCHES the mocked output.
+        eval_spec = EvalSpec(
+            skill_name="test-skill",
+            description="T",
+            test_args="--depth quick",
+            assertions=[{"type": "contains", "value": "hello"}],
+            sections=[],
+            grading_criteria=["Is it relevant?"],
+            grading_model="claude-sonnet-4-6",
+            trigger_tests=None,
+            variance=None,
+        )
+        spec = self._make_spec(eval_spec)
+        spec.run.return_value = self._skill_result(text="hello world")
+        report = self._grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch(
+                "clauditor.cli._print_failing_transcript_slice"
+            ) as mock_slice,
+        ):
+            rc = main(["grade", "skill.md", "-v"])
+
+        assert rc == 0
+        assert mock_slice.call_count == 0
 
 
 class TestValidateVerboseInvocation:

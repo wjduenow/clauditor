@@ -9,8 +9,10 @@ Two complementary scrub strategies run during the walk:
 
 1. **Key-based scrubbing.** When a dict key (case-insensitive) matches one
    of the sensitive suffixes — ``*_KEY``, ``*_TOKEN``, ``*_SECRET``,
-   ``*_PASSWORD``, ``*_PASSPHRASE``, ``*_CREDENTIAL`` — or is exactly
-   ``AUTH`` / ``API_KEY``, the entire value is replaced.
+   ``*_PASSWORD``, ``*_PASSPHRASE``, ``*_CREDENTIAL`` — or is exactly one
+   of ``AUTH``, ``API_KEY``, ``KEY``, ``TOKEN``, ``SECRET``, ``PASSWORD``,
+   ``PASSPHRASE``, ``CREDENTIAL``, or ``CREDENTIALS``, the entire value
+   is replaced.
 
 2. **Regex-based scrubbing inside string values.** String leaves are
    scanned for known secret shapes and only the matched span is replaced.

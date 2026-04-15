@@ -4038,3 +4038,76 @@ class TestCmdValidateWorkspace:
         # Neither a staging dir nor a finalized iteration should remain.
         assert not (clauditor_dir / "iteration-1").exists()
         assert not (clauditor_dir / "iteration-1-tmp").exists()
+
+    def test_validate_invalid_skill_name_returns_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """allocate_iteration raising InvalidSkillNameError returns exit 2."""
+        from clauditor.workspace import InvalidSkillNameError
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.cli.allocate_iteration",
+                side_effect=InvalidSkillNameError("bad/name"),
+            ),
+        ):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 2
+        assert "ERROR" in capsys.readouterr().err
+
+    def test_validate_allocate_value_error_returns_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """allocate_iteration raising ValueError returns exit 2."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.cli.allocate_iteration",
+                side_effect=ValueError("boom"),
+            ),
+        ):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 2
+        assert "ERROR" in capsys.readouterr().err
+
+    def test_validate_staging_exception_aborts_and_reraises(
+        self, tmp_path, monkeypatch
+    ):
+        """A raise inside the staging block calls workspace.abort() and
+        re-raises, leaving no iteration published and no iteration-N-tmp
+        dir behind. Exercises the generic except branch."""
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.return_value = SkillResult(
+            output="hello world",
+            exit_code=0,
+            skill_name="test-skill",
+            args="",
+            duration_seconds=0.5,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.cli.run_assertions",
+                side_effect=RuntimeError("boom in staging"),
+            ),
+            pytest.raises(RuntimeError, match="boom in staging"),
+        ):
+            main(["validate", "skill.md"])
+
+        clauditor_dir = tmp_path / ".clauditor"
+        assert not (clauditor_dir / "iteration-1").exists()
+        assert not (clauditor_dir / "iteration-1-tmp").exists()
