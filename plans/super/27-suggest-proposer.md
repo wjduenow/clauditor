@@ -4,7 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/27
 - **Branch:** `feature/27-suggest-proposer`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/27-suggest-proposer`
-- **Phase:** `approved`
+- **Phase:** `devolved`
+- **PR:** https://github.com/wjduenow/clauditor/pull/36
 - **Sessions:** 1
 - **Last session:** 2026-04-15
 
@@ -495,5 +496,26 @@ no-op is an acceptable outcome if nothing genuinely reusable emerged.
 
 ## Phase 5 — Publish PR
 
-(Pending story review.)
+- **Commit:** `be77775` on `feature/27-suggest-proposer`
+- **PR:** https://github.com/wjduenow/clauditor/pull/36 (draft)
+- **Base:** `dev`
+
+---
+
+## Phase 7 — Beads Manifest (devolved 2026-04-15)
+
+| ID | Title | Depends on |
+|---|---|---|
+| `clauditor-dlb` | #27 epic: LLM-driven skill improvement proposer | — |
+| `clauditor-dlb.1` | US-001 — Latest-run loader + SuggestInput dataclass | — |
+| `clauditor-dlb.2` | US-002 — Proposer prompt builder (XML fence + anchor contract) | `.1` |
+| `clauditor-dlb.3` | US-003 — Sonnet call, response parse, anchor validation | `.2` |
+| `clauditor-dlb.4` | US-004 — Unified diff renderer + sidecar writer | `.3` |
+| `clauditor-dlb.5` | US-005 — `cmd_suggest` CLI wiring + DEC-008 exit codes | `.4` |
+| `clauditor-dlb.6` | US-006 — Quality Gate (code review x4 + CodeRabbit) | `.5` |
+| `clauditor-dlb.7` | US-007 — Patterns & Memory | `.6` |
+
+**Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/27-suggest-proposer`
+**Branch:** `feature/27-suggest-proposer`
+
 
