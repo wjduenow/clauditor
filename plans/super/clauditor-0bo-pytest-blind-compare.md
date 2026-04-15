@@ -4,8 +4,8 @@
 - **Ticket:** `clauditor-0bo` (beads) — #24 follow-up
 - **Branch:** `feature/pytest-blind-compare`
 - **Worktree:** `worktrees/clauditor/feature/pytest-blind-compare`
-- **Phase:** `detailing`
-- **PR:** (not yet opened)
+- **Phase:** `implemented`
+- **PR:** https://github.com/wjduenow/clauditor/pull/38
 - **Priority:** P3
 - **Sessions:** 1
 - **Last session:** 2026-04-15
@@ -540,4 +540,40 @@ may benefit from a second `file:line` anchor pointing at
 
 ## Beads Manifest
 
-*(Phase 7.)*
+- **Epic:** `clauditor-5x5` (all children closed)
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/pytest-blind-compare`
+- **PR:** https://github.com/wjduenow/clauditor/pull/38
+
+| Task | Title | Commit |
+|---|---|---|
+| `clauditor-5x5.1` | US-001: `blind_compare_from_spec` helper + 7 TDD tests | `4c3f5a8` |
+| `clauditor-5x5.2` | US-002: refactor `_run_blind_compare` to call helper | `81c527e` |
+| `clauditor-5x5.3` | US-003: `clauditor_blind_compare` pytest fixture | `3db4a65` |
+| `clauditor-5x5.4` | Quality Gate: code review + CodeRabbit | `dc96c17`, `925fa63` |
+| `clauditor-5x5.5` | Patterns & Memory | (this commit) |
+
+## Session notes
+
+- **Quality Gate segfault incident.** During the QG fix commit
+  (`dc96c17`) a new integration test
+  `test_clauditor_blind_compare_via_pytester_injection` was added to
+  guard the fixture's pytest wiring via
+  `pytester.runpytest_inprocess`. The inner test used
+  `mock.patch("clauditor.quality_grader.blind_compare", ...)`. Under
+  `pytest --cov=clauditor`, that combination triggered
+  order-dependent segfaults in unrelated test files (argparse init,
+  `unittest.mock` entry, `pkgutil.resolve_name`). The test was
+  removed in commit `925fa63` after confirming the existing 5
+  `__wrapped__`-based tests cover the factory body adequately. The
+  lesson is codified in
+  `.claude/rules/pytester-inprocess-coverage-hazard.md`.
+- **`pure-compute-vs-io-split` second anchor.** This epic is the
+  second canonical application of the rule (first was
+  `compute_benchmark` in #28 US-007). The rule was augmented with a
+  new "Second anchor" section citing `blind_compare_from_spec` +
+  its two callers (`cli.py::_run_blind_compare` and
+  `pytest_plugin.py::clauditor_blind_compare`) to demonstrate the
+  "same pure function, dissimilar callers" compose-ability benefit
+  that `compute_benchmark` alone did not surface.
+- **Final numbers:** 1137 passing, 96.03% total coverage, ruff clean
+  on `src/` and `tests/`.
