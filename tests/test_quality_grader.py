@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import random
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -21,6 +22,7 @@ from clauditor.quality_grader import (
     parse_grading_response,
 )
 from clauditor.schemas import EvalSpec, GradeThresholds, VarianceConfig
+from clauditor.spec import SkillSpec
 
 
 def _make_spec() -> EvalSpec:
@@ -1797,3 +1799,172 @@ class TestParseBlindResponse:
         text = "```\n" + json.dumps(data) + "\n```"
         result = _parse_blind_response(text)
         assert result == data
+
+
+class TestBlindCompareFromSpec:
+    """Tests for the pure blind_compare_from_spec helper (clauditor-5x5.1)."""
+
+    def _canned_report(self) -> BlindReport:
+        return BlindReport(
+            preference="a",
+            confidence=0.9,
+            score_a=0.9,
+            score_b=0.3,
+            reasoning="canned",
+            position_agreement=True,
+            model="claude-sonnet-4-6",
+            input_tokens=10,
+            output_tokens=5,
+            duration_seconds=0.1,
+        )
+
+    def _make_skill_spec(
+        self,
+        *,
+        eval_spec: EvalSpec | None = None,
+    ):
+        return SkillSpec(skill_path=Path("dummy.md"), eval_spec=eval_spec)
+
+    def _make_eval_spec(
+        self,
+        *,
+        test_args: str = "What's the best sushi in Tokyo?",
+        grading_criteria=None,
+        grading_model: str = "claude-sonnet-4-6",
+    ) -> EvalSpec:
+        if grading_criteria is None:
+            grading_criteria = [
+                "Output contains actionable recommendations",
+                "Tone is professional and clear",
+            ]
+        return EvalSpec(
+            skill_name="test-skill",
+            description="test",
+            test_args=test_args,
+            grading_criteria=grading_criteria,
+            grading_model=grading_model,
+        )
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_from_spec_happy_path(self):
+        from clauditor.quality_grader import blind_compare_from_spec
+
+        eval_spec = self._make_eval_spec()
+        spec = self._make_skill_spec(eval_spec=eval_spec)
+        canned = self._canned_report()
+        mock_bc = AsyncMock(return_value=canned)
+
+        with patch("clauditor.quality_grader.blind_compare", mock_bc):
+            result = await blind_compare_from_spec(spec, "A", "B")
+
+        assert result is canned
+        assert mock_bc.await_count == 1
+        call = mock_bc.await_args
+        # blind_compare(user_prompt, output_a, output_b, rubric_hint, *,
+        # model=..., rng=...)
+        assert call.args[0] == "What's the best sushi in Tokyo?"
+        assert call.args[1] == "A"
+        assert call.args[2] == "B"
+        assert call.args[3] == (
+            "- Output contains actionable recommendations\n"
+            "- Tone is professional and clear"
+        )
+        assert call.kwargs["model"] == "claude-sonnet-4-6"
+        assert call.kwargs["rng"] is None
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_from_spec_model_override(self):
+        from clauditor.quality_grader import blind_compare_from_spec
+
+        eval_spec = self._make_eval_spec(grading_model="claude-sonnet-4-6")
+        spec = self._make_skill_spec(eval_spec=eval_spec)
+        mock_bc = AsyncMock(return_value=self._canned_report())
+
+        with patch("clauditor.quality_grader.blind_compare", mock_bc):
+            await blind_compare_from_spec(
+                spec, "A", "B", model="claude-opus-4-6"
+            )
+
+        assert mock_bc.await_args.kwargs["model"] == "claude-opus-4-6"
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_from_spec_raises_on_missing_eval_spec(self):
+        from clauditor.quality_grader import blind_compare_from_spec
+
+        spec = self._make_skill_spec(eval_spec=None)
+        with pytest.raises(ValueError, match="No eval spec"):
+            await blind_compare_from_spec(spec, "A", "B")
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_from_spec_raises_on_empty_test_args(self):
+        from clauditor.quality_grader import blind_compare_from_spec
+
+        spec = self._make_skill_spec(
+            eval_spec=self._make_eval_spec(test_args="")
+        )
+        with pytest.raises(ValueError, match="test_args"):
+            await blind_compare_from_spec(spec, "A", "B")
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_from_spec_raises_on_whitespace_test_args(self):
+        from clauditor.quality_grader import blind_compare_from_spec
+
+        spec = self._make_skill_spec(
+            eval_spec=self._make_eval_spec(test_args="   \n  ")
+        )
+        with pytest.raises(ValueError, match="test_args"):
+            await blind_compare_from_spec(spec, "A", "B")
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_from_spec_no_criteria_passes_none_rubric(self):
+        from clauditor.quality_grader import blind_compare_from_spec
+
+        spec = self._make_skill_spec(
+            eval_spec=self._make_eval_spec(grading_criteria=[])
+        )
+        mock_bc = AsyncMock(return_value=self._canned_report())
+
+        with patch("clauditor.quality_grader.blind_compare", mock_bc):
+            await blind_compare_from_spec(spec, "A", "B")
+
+        # Positional rubric_hint arg (index 3) must be None, not "".
+        assert mock_bc.await_args.args[3] is None
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_from_spec_rng_pass_through(self):
+        from clauditor.quality_grader import blind_compare_from_spec
+
+        spec = self._make_skill_spec(eval_spec=self._make_eval_spec())
+        rng = random.Random(42)
+        mock_bc = AsyncMock(return_value=self._canned_report())
+
+        with patch("clauditor.quality_grader.blind_compare", mock_bc):
+            await blind_compare_from_spec(spec, "A", "B", rng=rng)
+
+        assert mock_bc.await_args.kwargs["rng"] is rng
+
+    def test_validate_blind_compare_spec_raises_on_missing_eval_spec(self):
+        """validate_blind_compare_spec raises with a clear message when
+        eval_spec is missing — same shape as blind_compare_from_spec, but
+        sync and network-free so callers can fail-fast."""
+        from clauditor.quality_grader import validate_blind_compare_spec
+
+        spec = self._make_skill_spec(eval_spec=None)
+        with pytest.raises(ValueError, match="No eval spec"):
+            validate_blind_compare_spec(spec)
+
+    def test_validate_blind_compare_spec_raises_on_empty_test_args(self):
+        """validate_blind_compare_spec raises when test_args is empty/whitespace."""
+        from clauditor.quality_grader import validate_blind_compare_spec
+
+        spec = self._make_skill_spec(
+            eval_spec=self._make_eval_spec(test_args="")
+        )
+        with pytest.raises(ValueError, match="test_args"):
+            validate_blind_compare_spec(spec)
+
+        spec_ws = self._make_skill_spec(
+            eval_spec=self._make_eval_spec(test_args="   \n ")
+        )
+        with pytest.raises(ValueError, match="test_args"):
+            validate_blind_compare_spec(spec_ws)

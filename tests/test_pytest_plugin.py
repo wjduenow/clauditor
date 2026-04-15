@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import importlib
-from unittest.mock import MagicMock
+import json
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 import clauditor.pytest_plugin as _plugin_mod
 from clauditor.pytest_plugin import (
+    clauditor_blind_compare,
     clauditor_capture,
     clauditor_runner,
     clauditor_spec,
@@ -377,3 +382,233 @@ class TestClauditorSpecInputFiles:
         """)
         result = pytester.runpytest_inprocess("-v")
         result.assert_outcomes(passed=1)
+
+
+def _make_blind_report(**overrides):
+    from clauditor.quality_grader import BlindReport
+
+    defaults = dict(
+        preference="a",
+        confidence=0.9,
+        score_a=0.85,
+        score_b=0.65,
+        reasoning="a is more complete",
+        model="claude-sonnet-4-6",
+        position_agreement=True,
+        input_tokens=100,
+        output_tokens=50,
+        duration_seconds=1.25,
+    )
+    defaults.update(overrides)
+    return BlindReport(**defaults)
+
+
+def _blind_compare_factory(tmp_path: Path, *, cli_model: str | None = None):
+    """Build the clauditor_blind_compare factory directly (no pytest injection).
+
+    ``cli_model`` simulates the value of the ``--clauditor-model`` plugin
+    option as if a user had passed it on the pytest CLI. Defaults to None
+    so existing tests are unaffected.
+    """
+    request = MagicMock()
+    request.config.getoption.side_effect = (
+        lambda opt: {
+            "--clauditor-project-dir": None,
+            "--clauditor-timeout": 180,
+            "--clauditor-claude-bin": "claude",
+            "--clauditor-model": cli_model,
+        }[opt]
+    )
+    spec_factory = clauditor_spec.__wrapped__(request, tmp_path)
+    return clauditor_blind_compare.__wrapped__(request, spec_factory)
+
+
+def _write_skill_with_eval(
+    tmp_path: Path,
+    name: str = "sushi",
+    test_args: str = "What's the best sushi?",
+    criteria: list[str] | None = None,
+    eval_filename: str | None = None,
+    grading_model: str = "claude-sonnet-4-6",
+) -> tuple[Path, Path]:
+    skill_path = tmp_path / f"{name}.md"
+    skill_path.write_text(f"# {name}\n\nA skill.")
+    eval_data = {
+        "skill_name": name,
+        "description": f"Eval for {name}",
+        "test_args": test_args,
+        "assertions": [],
+        "grading_criteria": [
+            {"id": f"c{i}", "criterion": c}
+            for i, c in enumerate(
+                criteria or [
+                    "Is the recommendation specific?",
+                    "Does it cite prices?",
+                ]
+            )
+        ],
+        "grading_model": grading_model,
+    }
+    eval_path = tmp_path / (eval_filename or f"{name}.eval.json")
+    eval_path.write_text(json.dumps(eval_data))
+    return skill_path, eval_path
+
+
+class TestClauditorBlindCompare:
+    """US-003: clauditor_blind_compare pytest fixture."""
+
+    def test_clauditor_blind_compare_happy_path(self, tmp_path):
+        """Factory loads spec, invokes blind_compare, returns the report."""
+        skill_path, _ = _write_skill_with_eval(tmp_path)
+        factory = _blind_compare_factory(tmp_path)
+        canned = _make_blind_report()
+
+        with patch(
+            "clauditor.quality_grader.blind_compare",
+            new=AsyncMock(return_value=canned),
+        ) as mock_bc:
+            result = factory(skill_path, "output A", "output B")
+
+        assert result is canned
+        mock_bc.assert_awaited_once()
+        call = mock_bc.await_args
+        # Positional args: user_prompt, output_a, output_b, rubric_hint
+        assert call.args[0] == "What's the best sushi?"
+        assert call.args[1] == "output A"
+        assert call.args[2] == "output B"
+        rubric_hint = call.args[3]
+        assert "Is the recommendation specific?" in rubric_hint
+        assert "Does it cite prices?" in rubric_hint
+        assert call.kwargs["model"] == "claude-sonnet-4-6"
+
+    def test_clauditor_blind_compare_eval_path_override(self, tmp_path):
+        """Explicit eval_path overrides sibling auto-discovery."""
+        # Sibling eval: different test_args than the override we'll pass.
+        skill_path, _ = _write_skill_with_eval(
+            tmp_path,
+            name="ramen",
+            test_args="sibling prompt",
+            criteria=["sibling criterion"],
+        )
+        # Override eval in a different location with distinct content.
+        override_dir = tmp_path / "overrides"
+        override_dir.mkdir()
+        override_eval = override_dir / "ramen.eval.json"
+        override_eval.write_text(
+            json.dumps({
+                "skill_name": "ramen",
+                "description": "override",
+                "test_args": "override prompt",
+                "assertions": [],
+                "grading_criteria": [
+                    {"id": "ov1", "criterion": "override criterion"},
+                ],
+                "grading_model": "claude-sonnet-4-6",
+            })
+        )
+
+        factory = _blind_compare_factory(tmp_path)
+        canned = _make_blind_report()
+
+        with patch(
+            "clauditor.quality_grader.blind_compare",
+            new=AsyncMock(return_value=canned),
+        ) as mock_bc:
+            factory(skill_path, "a", "b", eval_path=override_eval)
+
+        call = mock_bc.await_args
+        assert call.args[0] == "override prompt"
+        assert "override criterion" in call.args[3]
+        assert "sibling criterion" not in call.args[3]
+
+    def test_clauditor_blind_compare_model_override(self, tmp_path):
+        """Explicit model kwarg beats the spec's grading_model."""
+        skill_path, _ = _write_skill_with_eval(
+            tmp_path,
+            name="udon",
+            grading_model="WRONG-SHOULD-NOT-BE-USED",
+        )
+        factory = _blind_compare_factory(tmp_path)
+        canned = _make_blind_report(model="claude-opus-4-6")
+
+        with patch(
+            "clauditor.quality_grader.blind_compare",
+            new=AsyncMock(return_value=canned),
+        ) as mock_bc:
+            factory(skill_path, "a", "b", model="claude-opus-4-6")
+
+        call = mock_bc.await_args
+        assert call.kwargs["model"] == "claude-opus-4-6"
+        assert call.kwargs["model"] != "WRONG-SHOULD-NOT-BE-USED"
+
+    def test_clauditor_blind_compare_respects_cli_model_option(self, tmp_path):
+        """--clauditor-model CLI option beats the spec's grading_model.
+
+        Precedence: explicit kwarg > --clauditor-model > spec.grading_model.
+        Matches the behavior of clauditor_grader / clauditor_triggers, which
+        also default to the CLI option when no explicit model is supplied.
+        """
+        skill_path, _ = _write_skill_with_eval(
+            tmp_path,
+            name="cli_model",
+            grading_model="spec-model-should-lose",
+        )
+        factory = _blind_compare_factory(
+            tmp_path, cli_model="claude-opus-4-6"
+        )
+        canned = _make_blind_report(model="claude-opus-4-6")
+
+        with patch(
+            "clauditor.quality_grader.blind_compare",
+            new=AsyncMock(return_value=canned),
+        ) as mock_bc:
+            factory(skill_path, "a", "b")  # no explicit model kwarg
+
+        call = mock_bc.await_args
+        assert call.kwargs["model"] == "claude-opus-4-6"
+        assert call.kwargs["model"] != "spec-model-should-lose"
+
+    def test_clauditor_blind_compare_kwarg_beats_cli_model_option(self, tmp_path):
+        """Explicit model= kwarg still wins over --clauditor-model CLI option."""
+        skill_path, _ = _write_skill_with_eval(
+            tmp_path,
+            name="kwarg_wins",
+            grading_model="spec-model-should-lose",
+        )
+        factory = _blind_compare_factory(
+            tmp_path, cli_model="cli-model-should-also-lose"
+        )
+        canned = _make_blind_report(model="claude-opus-4-6")
+
+        with patch(
+            "clauditor.quality_grader.blind_compare",
+            new=AsyncMock(return_value=canned),
+        ) as mock_bc:
+            factory(skill_path, "a", "b", model="claude-opus-4-6")
+
+        call = mock_bc.await_args
+        assert call.kwargs["model"] == "claude-opus-4-6"
+
+    def test_clauditor_blind_compare_raises_on_empty_test_args(self, tmp_path):
+        """Empty test_args in the spec propagates as ValueError."""
+        skill_path, _ = _write_skill_with_eval(
+            tmp_path, name="empty", test_args=""
+        )
+        factory = _blind_compare_factory(tmp_path)
+
+        with patch(
+            "clauditor.quality_grader.blind_compare",
+            new=AsyncMock(return_value=_make_blind_report()),
+        ):
+            with pytest.raises(ValueError, match="test_args"):
+                factory(skill_path, "a", "b")
+
+    def test_clauditor_blind_compare_reserved_fixture_name(self):
+        """Regression guard: fixture name is documented as plugin-reserved."""
+        conftest_text = (
+            Path(__file__).parent / "conftest.py"
+        ).read_text()
+        assert "clauditor_blind_compare" in conftest_text
+        # And the fixture itself is a pytest fixture callable
+        assert callable(clauditor_blind_compare)
+        assert hasattr(clauditor_blind_compare, "__wrapped__")

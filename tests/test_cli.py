@@ -3196,6 +3196,8 @@ class TestCmdCompareBlind:
             )
         assert rc == 2
         err = capsys.readouterr().err
+        # Helper (blind_compare_from_spec) raises ValueError; CLI maps to
+        # "ERROR: ..." with the helper's message substring.
         assert "No eval spec" in err
 
     def test_compare_blind_empty_test_args_errors(self, tmp_path, capsys):
@@ -3219,6 +3221,11 @@ class TestCmdCompareBlind:
         assert rc == 2
         err = capsys.readouterr().err
         assert "test_args" in err
+        # Fail-fast: the "Running blind A/B judge" progress line must NOT
+        # appear when validation fails. Previously the CLI printed the
+        # progress message before validating, misleading users into
+        # thinking API calls had happened.
+        assert "Running blind A/B judge" not in err
 
 
 class TestCmdGradeCompareFlagRemoved:

@@ -14,7 +14,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
-from clauditor.schemas import EvalSpec, GradeThresholds
+from clauditor.schemas import EvalSpec, GradeThresholds, criterion_text
 
 if TYPE_CHECKING:
     from clauditor.spec import SkillSpec
@@ -487,6 +487,70 @@ async def blind_compare(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         duration_seconds=duration,
+    )
+
+
+def validate_blind_compare_spec(spec: SkillSpec) -> None:
+    """Raise ``ValueError`` if ``spec`` is unusable with the blind helper.
+
+    Same validation the full helper runs at its entry, extracted so callers
+    that want to fail-fast before printing progress messages or doing other
+    I/O can validate without making any network calls.
+    """
+    if spec.eval_spec is None:
+        raise ValueError(
+            "No eval spec found (blind_compare_from_spec requires "
+            "spec.eval_spec to be set)"
+        )
+    user_prompt = spec.eval_spec.test_args or ""
+    if not user_prompt.strip():
+        raise ValueError(
+            "blind_compare_from_spec: eval_spec.test_args must be set "
+            "(used as the user prompt context for the judge)"
+        )
+
+
+async def blind_compare_from_spec(
+    spec: SkillSpec,
+    output_a: str,
+    output_b: str,
+    *,
+    model: str | None = None,
+    rng: random.Random | None = None,
+) -> BlindReport:
+    """Composition helper that resolves judge inputs from a :class:`SkillSpec`.
+
+    Extracted from the CLI's ``_run_blind_compare`` so the same resolution
+    logic can be shared between the CLI wrapper and the ``clauditor_blind_compare``
+    pytest fixture. The helper validates the spec, builds the rubric hint from
+    ``grading_criteria``, resolves the grading model, and forwards everything
+    to :func:`blind_compare`.
+
+    Raises :class:`ValueError` if ``spec.eval_spec`` is missing or if
+    ``eval_spec.test_args`` is empty/whitespace (it is used as the user prompt
+    context for the judge). Does not print to stdout or stderr (DEC-006).
+    """
+    validate_blind_compare_spec(spec)
+    assert spec.eval_spec is not None  # for type-checker; validator enforces
+
+    user_prompt = spec.eval_spec.test_args or ""
+
+    rubric_hint: str | None = None
+    criteria = spec.eval_spec.grading_criteria
+    if criteria:
+        rubric_hint = "\n".join(
+            f"- {criterion_text(c)}" for c in criteria
+        )
+
+    effective_model = model if model is not None else spec.eval_spec.grading_model
+
+    return await blind_compare(
+        user_prompt,
+        output_a,
+        output_b,
+        rubric_hint,
+        model=effective_model,
+        rng=rng,
     )
 
 
