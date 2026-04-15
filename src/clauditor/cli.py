@@ -798,6 +798,13 @@ def _cmd_grade_with_workspace(
     # the outer finally block will abort() the staging dir.
     only_criterion = bool(getattr(args, "only_criterion", None))
 
+    # Hoisted so the stdout delta printer (US-003) can see the computed
+    # Benchmark after workspace.finalize(). Stays None in --output mode
+    # where compute_benchmark is skipped.
+    from clauditor.benchmark import Benchmark
+
+    benchmark: Benchmark | None = None
+
     if not only_criterion:
         skill_dir = workspace.tmp_path
         verbose = bool(getattr(args, "verbose", False))
@@ -993,6 +1000,13 @@ def _cmd_grade_with_workspace(
                 file=sys.stderr,
             )
 
+    # #28 US-003: plain, unconditional baseline delta block on stdout.
+    # Gated on --baseline AND a computed Benchmark (skipped in --output
+    # mode where primary SkillResult metrics are unavailable). DEC-010
+    # — no TTY branching, no color, one format always.
+    if getattr(args, "baseline", False) and benchmark is not None:
+        _print_baseline_delta_block(benchmark, out=sys.stdout)
+
     # Append a history record for trendability (US-006). Skip when
     # --only-criterion is set: partial-criterion runs would silently
     # corrupt longitudinal pass_rate/mean_score trends.
@@ -1102,6 +1116,47 @@ def _print_grade_diff(prior_path: Path, current_report, out) -> None:
         print(f"\n  {len(regressions)} regression(s) detected.", file=out)
     else:
         print("\n  No regressions detected.", file=out)
+
+
+def _print_baseline_delta_block(benchmark, out=sys.stdout) -> None:
+    """Print the #28 US-003 baseline delta block to ``out``.
+
+    DEC-010: plain unconditional output — no TTY detection, no ANSI color,
+    no table / one-liner branching. One printer, one format, always.
+    Signs are explicit on every delta row so the reader can scan a column
+    of ``+``/``-`` without decoding column positions.
+    """
+    from clauditor.benchmark import Benchmark  # noqa: F401 — type hint only
+
+    rs = benchmark.run_summary
+    pr_delta = rs.delta.pass_rate
+    pr_w = rs.with_skill.pass_rate.mean
+    pr_wo = rs.without_skill.pass_rate.mean
+
+    t_delta = rs.delta.time_seconds
+    t_w = rs.with_skill.time_seconds.mean
+    t_wo = rs.without_skill.time_seconds.mean
+
+    tk_delta = int(round(rs.delta.tokens))
+    tk_w = int(round(rs.with_skill.tokens.mean))
+    tk_wo = int(round(rs.without_skill.tokens.mean))
+
+    print("baseline delta:", file=out)
+    print(
+        f"  {'pass_rate':<12} {pr_delta:+.2f}  "
+        f"(with_skill {pr_w:.2f}, without_skill {pr_wo:.2f})",
+        file=out,
+    )
+    print(
+        f"  {'time_seconds':<12} {t_delta:+.1f}  "
+        f"(with_skill {t_w:.1f}, without_skill {t_wo:.1f})",
+        file=out,
+    )
+    print(
+        f"  {'tokens':<12} {tk_delta:+d}  "
+        f"(with_skill {tk_w:d}, without_skill {tk_wo:d})",
+        file=out,
+    )
 
 
 def _load_assertion_set(

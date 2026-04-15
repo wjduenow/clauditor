@@ -1997,6 +1997,100 @@ class TestBaselineFlag:
         skill_dir = tmp_path / ".clauditor" / "iteration-1" / "test-skill"
         assert not (skill_dir / "benchmark.json").exists()
 
+    def test_grade_with_baseline_flag_prints_delta_block(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """#28 US-003: --baseline prints the plain delta block on stdout."""
+        monkeypatch.chdir(tmp_path)
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="hello world",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[{"type": "assistant", "text": "hello world"}],
+                input_tokens=100,
+                output_tokens=50,
+                duration_seconds=2.5,
+            )
+        )
+        grading_report = self._make_grading_report()
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--baseline"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        # DEC-010 format: header then three labelled metric rows, each
+        # with a per-arm mean pair.
+        header_idx = out.find("baseline delta:")
+        assert header_idx != -1
+        pr_idx = out.find("pass_rate", header_idx)
+        ts_idx = out.find("time_seconds", pr_idx)
+        tk_idx = out.find("tokens", ts_idx)
+        assert pr_idx != -1
+        assert ts_idx != -1
+        assert tk_idx != -1
+        assert header_idx < pr_idx < ts_idx < tk_idx
+        assert "with_skill" in out[header_idx:]
+        assert "without_skill" in out[header_idx:]
+
+    def test_grade_without_baseline_flag_prints_no_delta_block(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """#28 US-003: no --baseline => no 'baseline delta:' line on stdout."""
+        monkeypatch.chdir(tmp_path)
+
+        spec = self._prepare_spec(self._make_sectioned_eval_spec())
+        spec.run = MagicMock(
+            return_value=SkillResult(
+                output="hello world",
+                exit_code=0,
+                skill_name="test-skill",
+                args="",
+                stream_events=[{"type": "assistant", "text": "hello world"}],
+                input_tokens=100,
+                output_tokens=50,
+                duration_seconds=2.5,
+            )
+        )
+        grading_report = self._make_grading_report()
+        extraction_report = self._make_extraction_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "baseline delta:" not in out
+
     def test_run_baseline_phase_threads_cwd_to_run_raw(
         self, tmp_path, monkeypatch
     ):
