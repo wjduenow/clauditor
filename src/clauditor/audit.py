@@ -159,7 +159,7 @@ def _records_from_assertions(
     records: list[IterationRecord] = []
     for run in data.get("runs", []) or []:
         for result in run.get("results", []) or []:
-            rid = result["id"]
+            rid = result.get("id")
             if not rid:
                 continue
             records.append(
@@ -189,6 +189,8 @@ def _records_from_extraction(
     records: list[IterationRecord] = []
     for field_id, entries in (data.get("fields") or {}).items():
         for entry in entries or []:
+            if "passed" not in entry:
+                continue
             passed = bool(entry["passed"])
             records.append(
                 IterationRecord(

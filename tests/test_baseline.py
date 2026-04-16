@@ -85,7 +85,7 @@ def _make_eval_spec(*, with_sections: bool = False) -> EvalSpec:
 class TestBaselineReportsToJsonMap:
     """Verify the to_json_map serialization contract."""
 
-    def test_always_emits_four_files_without_sections(self) -> None:
+    def test_always_emits_three_files_without_sections(self) -> None:
         reports = BaselineReports(
             skill_name="test-skill",
             iteration=1,

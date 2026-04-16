@@ -74,7 +74,6 @@ def _default_path() -> Path:
 
 SPARK_GLYPHS = "_.-=#"
 SCHEMA_VERSION = 3
-_SCHEMA_VERSION = 3
 
 _FLOCK_UNSUPPORTED_WARNED = False
 
@@ -180,10 +179,10 @@ def _check_schema_version(data: dict, source: Path, lineno: int) -> bool:
     ``.claude/rules/json-schema-version.md``.
     """
     version = data.get("schema_version")
-    if version != _SCHEMA_VERSION:
+    if version != SCHEMA_VERSION:
         print(
             f"warning: {source} line {lineno} has schema_version={version!r}, "
-            f"expected {_SCHEMA_VERSION} — skipping",
+            f"expected {SCHEMA_VERSION} — skipping",
             file=sys.stderr,
         )
         return False
