@@ -55,20 +55,16 @@ class GradingReport:
     skill_name: str
     results: list[GradingResult]
     model: str
+    thresholds: GradeThresholds
+    metrics: dict
     duration_seconds: float = 0.0
-    thresholds: GradeThresholds | None = None
     input_tokens: int = 0
     output_tokens: int = 0
-    metrics: dict | None = None
 
     @property
     def passed(self) -> bool:
-        """Whether grading meets threshold requirements.
-
-        Uses provided thresholds or defaults (min_pass_rate=0.7,
-        min_mean_score=0.5) when no thresholds are set.
-        """
-        t = self.thresholds if self.thresholds is not None else GradeThresholds()
+        """Whether grading meets threshold requirements."""
+        t = self.thresholds
         return (
             self.pass_rate >= t.min_pass_rate
             and self.mean_score >= t.min_mean_score
@@ -110,12 +106,11 @@ class GradingReport:
                 for r in self.results
             ],
         }
-        if self.thresholds is not None:
-            data["thresholds"] = {
-                "min_pass_rate": self.thresholds.min_pass_rate,
-                "min_mean_score": self.thresholds.min_mean_score,
-            }
-        if self.metrics is not None:
+        data["thresholds"] = {
+            "min_pass_rate": self.thresholds.min_pass_rate,
+            "min_mean_score": self.thresholds.min_mean_score,
+        }
+        if self.metrics:
             data["metrics"] = self.metrics
         return json.dumps(data, indent=2)
 
@@ -134,22 +129,20 @@ class GradingReport:
             )
             for item in parsed.get("results", [])
         ]
-        thresholds = None
-        if "thresholds" in parsed:
-            t = parsed["thresholds"]
-            thresholds = GradeThresholds(
-                min_pass_rate=float(t.get("min_pass_rate", 0.7)),
-                min_mean_score=float(t.get("min_mean_score", 0.5)),
-            )
+        t = parsed.get("thresholds") or {}
+        thresholds = GradeThresholds(
+            min_pass_rate=float(t.get("min_pass_rate", 0.7)),
+            min_mean_score=float(t.get("min_mean_score", 0.5)),
+        )
         return cls(
             skill_name=parsed.get("skill_name", ""),
             results=results,
             model=parsed.get("model", ""),
-            duration_seconds=float(parsed.get("duration_seconds", 0.0)),
             thresholds=thresholds,
+            metrics=parsed.get("metrics") or {},
+            duration_seconds=float(parsed.get("duration_seconds", 0.0)),
             input_tokens=int(parsed.get("input_tokens", 0)),
             output_tokens=int(parsed.get("output_tokens", 0)),
-            metrics=parsed.get("metrics"),
         )
 
     def summary(self) -> str:
@@ -714,6 +707,7 @@ async def grade_quality(
 
     Requires the 'grader' extra: pip install clauditor[grader]
     """
+    thresholds = thresholds if thresholds is not None else GradeThresholds()
     try:
         from anthropic import AsyncAnthropic
     except ImportError:
@@ -764,8 +758,9 @@ async def grade_quality(
                 )
             ],
             model=model,
-            duration_seconds=duration,
             thresholds=thresholds,
+            metrics={},
+            duration_seconds=duration,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
@@ -787,8 +782,9 @@ async def grade_quality(
                 )
             ],
             model=model,
-            duration_seconds=duration,
             thresholds=thresholds,
+            metrics={},
+            duration_seconds=duration,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
@@ -807,8 +803,9 @@ async def grade_quality(
                 )
             ],
             model=model,
-            duration_seconds=duration,
             thresholds=thresholds,
+            metrics={},
+            duration_seconds=duration,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
@@ -817,8 +814,9 @@ async def grade_quality(
         skill_name=eval_spec.skill_name,
         results=results,
         model=model,
-        duration_seconds=duration,
         thresholds=thresholds,
+        metrics={},
+        duration_seconds=duration,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
     )

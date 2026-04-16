@@ -58,11 +58,22 @@ def _make_results(
 
 
 class TestGradingReport:
+    def test_thresholds_and_metrics_required(self):
+        """GradingReport() without thresholds/metrics raises TypeError (DEC-005)."""
+        with pytest.raises(TypeError):
+            GradingReport(
+                skill_name="test",
+                results=[],
+                model="claude-sonnet-4-6",
+            )
+
     def test_passed_all_true(self):
         report = GradingReport(
             skill_name="test",
             results=_make_results([True, True, True]),
             model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         assert report.passed is True
 
@@ -71,6 +82,8 @@ class TestGradingReport:
             skill_name="test",
             results=_make_results([True, False, True]),
             model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         assert report.passed is False
 
@@ -79,6 +92,8 @@ class TestGradingReport:
             skill_name="test",
             results=_make_results([True, True, True]),
             model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         assert report.pass_rate == pytest.approx(1.0)
 
@@ -87,12 +102,16 @@ class TestGradingReport:
             skill_name="test",
             results=_make_results([True, False, True]),
             model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         assert report.pass_rate == pytest.approx(2 / 3)
 
     def test_pass_rate_empty(self):
         report = GradingReport(
-            skill_name="test", results=[], model="claude-sonnet-4-6"
+            skill_name="test", results=[], model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         assert report.pass_rate == 0.0
 
@@ -101,13 +120,17 @@ class TestGradingReport:
             skill_name="test",
             results=_make_results([True, False, True]),
             model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         # Two at 0.9, one at 0.2 => (0.9 + 0.2 + 0.9) / 3
         assert report.mean_score == pytest.approx(2.0 / 3)
 
     def test_mean_score_empty(self):
         report = GradingReport(
-            skill_name="test", results=[], model="claude-sonnet-4-6"
+            skill_name="test", results=[], model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         assert report.mean_score == 0.0
 
@@ -116,6 +139,8 @@ class TestGradingReport:
             skill_name="test",
             results=_make_results([True, False, True]),
             model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         s = report.summary()
         assert "2/3 criteria passed" in s
@@ -126,6 +151,8 @@ class TestGradingReport:
             skill_name="test",
             results=_make_results([True, False, True]),
             model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         s = report.summary()
         assert "PASS: Output contains actionable" in s
@@ -139,6 +166,8 @@ class TestGradingReportSerialization:
             results=_make_results([True, False, True]),
             model="claude-sonnet-4-6",
             duration_seconds=1.5,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         raw = report.to_json()
         data = json.loads(raw)
@@ -159,6 +188,8 @@ class TestGradingReportSerialization:
             results=_make_results([True, False, True]),
             model="claude-sonnet-4-6",
             duration_seconds=2.3,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         raw = original.to_json()
         restored = GradingReport.from_json(raw)
@@ -187,6 +218,8 @@ class TestGradingReportSerialization:
             ],
             model="claude-sonnet-4-6",
             duration_seconds=3.14159,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         restored = GradingReport.from_json(report.to_json())
         assert restored.results[0].score == pytest.approx(0.8765)
@@ -214,6 +247,8 @@ class TestGradingReportSerialization:
             skill_name="ts-test",
             results=[],
             model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         raw = report.to_json()
         data = json.loads(raw)
@@ -228,6 +263,7 @@ class TestGradingReportSerialization:
             results=_make_results([True, False]),
             model="claude-sonnet-4-6",
             thresholds=thresholds,
+            metrics={},
         )
         raw = original.to_json()
         data = json.loads(raw)
@@ -248,6 +284,8 @@ class TestGradingReportSerialization:
             model="claude-sonnet-4-6",
             input_tokens=500,
             output_tokens=200,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         raw = original.to_json()
         data = json.loads(raw)
@@ -269,19 +307,23 @@ class TestGradingReportSerialization:
         assert restored.input_tokens == 0
         assert restored.output_tokens == 0
 
-    def test_no_thresholds_roundtrip(self):
-        """Report without thresholds omits them from JSON."""
+    def test_default_thresholds_roundtrip(self):
+        """Default thresholds survive JSON round-trip."""
         original = GradingReport(
-            skill_name="no-thresh",
+            skill_name="default-thresh",
             results=_make_results([True]),
             model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         raw = original.to_json()
         data = json.loads(raw)
-        assert "thresholds" not in data
+        assert data["thresholds"]["min_pass_rate"] == 0.7
+        assert data["thresholds"]["min_mean_score"] == 0.5
 
         restored = GradingReport.from_json(raw)
-        assert restored.thresholds is None
+        assert restored.thresholds.min_pass_rate == pytest.approx(0.7)
+        assert restored.thresholds.min_mean_score == pytest.approx(0.5)
 
 
 class TestParseGradingResponse:
@@ -827,7 +869,9 @@ def _make_grading_report(
             ),
         ]
     return GradingReport(
-        skill_name="test-skill", results=results, model="claude-sonnet-4-6"
+        skill_name="test-skill", results=results, model="claude-sonnet-4-6",
+        thresholds=GradeThresholds(),
+        metrics={},
     )
 
 
@@ -900,6 +944,8 @@ class TestVarianceReport:
                         )
                     ],
                     model="claude-sonnet-4-6",
+                    thresholds=GradeThresholds(),
+                    metrics={},
                 )
             )
 
@@ -983,6 +1029,8 @@ class TestMeasureVariance:
                 )
             ],
             model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         mock_result = MagicMock()
@@ -1030,6 +1078,8 @@ class TestMeasureVariance:
                 )
             ],
             model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         mock_result = MagicMock()
@@ -1070,6 +1120,8 @@ class TestMeasureVariance:
             model="claude-sonnet-4-6",
             input_tokens=100,
             output_tokens=50,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         # Use real attrs (not MagicMock defaults) so skill-side token
@@ -1127,6 +1179,7 @@ class TestGradeThresholdsOnReport:
         scores: list[float],
         thresholds: GradeThresholds | None = None,
     ) -> GradingReport:
+        thresholds = thresholds if thresholds is not None else GradeThresholds()
         results = [
             GradingResult(
                 criterion=f"c{i}",
@@ -1142,6 +1195,7 @@ class TestGradeThresholdsOnReport:
             results=results,
             model="claude-sonnet-4-6",
             thresholds=thresholds,
+            metrics={},
         )
 
     def test_all_above_threshold_passes(self):

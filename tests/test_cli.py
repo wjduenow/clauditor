@@ -15,6 +15,7 @@ from clauditor.runner import SkillResult
 from clauditor.schemas import (
     EvalSpec,
     FieldRequirement,
+    GradeThresholds,
     SectionRequirement,
     TierRequirement,
     TriggerTests,
@@ -191,6 +192,8 @@ class TestCmdGrade:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def test_grade_with_output(self, tmp_path, monkeypatch):
@@ -290,6 +293,8 @@ class TestCmdGradeInputFilesStaging:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def _staging_spec(self, eval_spec, outputs):
@@ -464,6 +469,8 @@ class TestOnlyCriterion:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def _run(self, tmp_path, criteria, extra_args, monkeypatch=None):
@@ -643,6 +650,8 @@ class TestCmdGradeSaveDiff:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def _patch_grade(self, spec, report):
@@ -1437,6 +1446,8 @@ class TestCmdGradeLayer2Persistence:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def _make_sectioned_eval_spec(self):
@@ -1631,6 +1642,8 @@ class TestBaselineFlag:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def _make_baseline_skill_result(self, output="baseline output"):
@@ -1930,6 +1943,8 @@ class TestBaselineFlag:
                 ),
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         baseline_report = GradingReport(
             skill_name="test-skill",
@@ -1951,6 +1966,8 @@ class TestBaselineFlag:
                 ),
             ],
             duration_seconds=0.5,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         extraction_report = self._make_extraction_report()
 
@@ -2061,6 +2078,8 @@ class TestBaselineFlag:
                 ),
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         baseline_report = GradingReport(
             skill_name="test-skill",
@@ -2082,6 +2101,8 @@ class TestBaselineFlag:
                 ),
             ],
             duration_seconds=0.5,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         extraction_report = self._make_extraction_report()
 
@@ -2160,6 +2181,8 @@ class TestBaselineFlag:
                 ),
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         baseline_report = GradingReport(
             skill_name="test-skill",
@@ -2181,6 +2204,8 @@ class TestBaselineFlag:
                 ),
             ],
             duration_seconds=0.5,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         extraction_report = self._make_extraction_report()
 
@@ -2328,6 +2353,8 @@ class TestBaselineFlag:
             model="claude-sonnet-4-6",
             results=results,
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def _prepare_gate_spec(self):
@@ -2611,6 +2638,8 @@ class TestCmdCompare:
             model="test-model",
             results=results,
             duration_seconds=0.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         path = tmp_path / f"{name}.grade.json"
         path.write_text(report.to_json())
@@ -2728,6 +2757,8 @@ class TestCmdCompareIterationDirs:
             model="test-model",
             results=results,
             duration_seconds=0.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         (dir_path / "grading.json").write_text(report.to_json())
         return dir_path
@@ -2778,6 +2809,8 @@ class TestCmdCompareNumericRefs:
             model="test-model",
             results=results,
             duration_seconds=0.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         (dir_path / "grading.json").write_text(report.to_json())
 
@@ -2809,6 +2842,8 @@ class TestCmdCompareNumericRefs:
             model="m",
             results=[],
             duration_seconds=0.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         before.write_text(report.to_json())
         after.write_text(report.to_json())
@@ -4055,6 +4090,8 @@ class TestCmdGradeHistory:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         with (
@@ -4103,6 +4140,8 @@ class TestCmdGradeHistory:
             duration_seconds=1.0,
             input_tokens=500,
             output_tokens=200,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         with (
@@ -4173,6 +4212,8 @@ class TestCmdGradeHistory:
             duration_seconds=1.0,
             input_tokens=200,
             output_tokens=100,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         with (
@@ -4239,6 +4280,8 @@ class TestCmdGradeHistory:
             duration_seconds=1.0,
             input_tokens=300,
             output_tokens=100,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         with (
@@ -4288,6 +4331,8 @@ class TestCmdGradeHistory:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         with (
@@ -4336,6 +4381,8 @@ class TestCmdGradeHistory:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         with (
@@ -4766,6 +4813,8 @@ class TestCmdSuggest:
             model="claude-sonnet-4-6",
             results=results,
             duration_seconds=0.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         (skill_dir / "grading.json").write_text(report.to_json())
 

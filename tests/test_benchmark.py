@@ -15,6 +15,7 @@ import pytest
 from clauditor.benchmark import Benchmark, compute_benchmark
 from clauditor.quality_grader import GradingReport, GradingResult
 from clauditor.runner import SkillResult
+from clauditor.schemas import GradeThresholds
 
 
 def _make_grading_report(
@@ -43,6 +44,8 @@ def _make_grading_report(
         duration_seconds=duration,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        thresholds=GradeThresholds(),
+        metrics={},
     )
 
 
