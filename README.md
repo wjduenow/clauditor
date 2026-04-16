@@ -38,7 +38,7 @@ clauditor implements (and in places extends) the skill evaluation workflow descr
 | With-skill vs without-skill baseline | `compare_ab()` Python API (`clauditor.comparator`) |
 | Regression diff between runs | `clauditor compare <before> <after>` |
 | Timing + token capture | `SkillResult.input_tokens/output_tokens/duration_seconds`, persisted to `history.jsonl` and `.clauditor/iteration-N/<skill>/grading.json` under nested bucket keys (`skill`, `grader`, `quality`, `triggers`, `total`) |
-| Longitudinal history | `.clauditor/history.jsonl` schema v3 + `clauditor trend --metric <dotted.path>` with ASCII sparklines |
+| Longitudinal history | `.clauditor/history.jsonl` + `clauditor trend --metric <dotted.path>` with ASCII sparklines |
 | Per-iteration workspace | `.clauditor/iteration-N/<skill>/` with `grading.json`, `timing.json`, and `run-*/output.{txt,jsonl}` captures |
 
 **Beyond the spec**, clauditor adds: trigger precision testing (`triggers.py`), a strict/extract `FORMAT_REGISTRY` invariant for canonical types, tiered section extraction (top-3 restaurants require more fields than the next 7), a reusable pytest plugin, an `AssertionResult.kind` enum for programmatic filtering, `input_files` staging into per-run CWDs, a blind A/B judge with position-swap debiasing (`clauditor compare --blind`), automated with/without baseline pair runs (`clauditor.comparator.compare_ab`), always-pass assertion auditing, execution-transcript capture for root-cause analysis, and an LLM-driven skill improvement proposer (`clauditor suggest`).
@@ -403,7 +403,7 @@ clauditor doctor                       # Report environment diagnostics
 
 ### Persistent metric history
 
-Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.clauditor/history.jsonl`. Records use schema v3 with a `command` discriminator, a nested `metrics` dict, and (for `grade`) the `iteration` slot and on-disk `workspace_path`. The reader requires `schema_version: 3` and skips older records with a warning.
+Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.clauditor/history.jsonl`. Each record carries a `command` discriminator, a nested `metrics` dict, and (for `grade`) the `iteration` slot and on-disk `workspace_path`.
 
 ```json
 {
@@ -604,7 +604,6 @@ the count failure and any per-entry failures.
 
 ## Notes
 
-- **`history.jsonl` uses schema v3** with `iteration` and `workspace_path` fields on `grade` records. The reader requires `schema_version: 3`; records with a different version are skipped with a warning.
 - **`.clauditor/` is anchored at the repo root** (walking up for `.git/` or `.claude/`), so running `grade` from a subdirectory writes to the same workspace as running it from the top.
 
 ## Reference docs
