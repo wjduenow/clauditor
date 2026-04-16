@@ -111,11 +111,26 @@ change in `blind_compare_from_spec` (switching from `test_args` to
 caller and the pytest fixture picked up the new resolution
 automatically, validating the rule's prediction.
 
-## Grandfathered counter-example
+### Third anchor (baseline phase split)
 
-`src/clauditor/cli.py::_run_baseline_phase` does "run + grade + write
-`baseline_*.json`" internally. That pattern predates this rule and is
-grandfathered; do NOT copy it for new resolve-and-compose helpers.
+`src/clauditor/baseline.py::compute_baseline` — pure function that
+takes an already-run `SkillResult` + `EvalSpec` and returns a
+`BaselineReports` dataclass containing L1 assertions, L2 extraction
+(when sections declared), and L3 grading. The dataclass provides
+`to_json_map()` returning `{filename: json_str}` for all baseline
+sidecars, with `schema_version` as the first key in each payload.
+
+Single caller: `src/clauditor/cli.py::_run_baseline_phase` — thin
+wrapper that handles subprocess invocation (`run_raw`), input-file
+staging, stderr progress, and `write_text()` for each sidecar.
+
+Before the extraction (pre-#41), `_run_baseline_phase` bundled
+subprocess invocation, grading, assertion evaluation, extraction,
+JSON serialization, and file writes in a single 98-line function —
+the grandfathered counter-example previously cited by this rule. The
+refactored split makes the grading logic unit-testable without
+`tmp_path` or subprocess mocks, and positions the pure helper for
+reuse from a future pytest fixture.
 
 ## When this rule applies
 
