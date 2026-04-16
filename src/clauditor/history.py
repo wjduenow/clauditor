@@ -22,10 +22,9 @@ top-level keys:
 The two new v3 fields (``iteration``, ``workspace_path``) are always
 written, even when ``None``, so the on-disk record shape is predictable.
 
-v2 records (``schema_version: 2``, no iteration/workspace_path) and v1
-records (no ``schema_version``, no ``command``) may still exist on disk
-and are returned as-is by :func:`read_records`. Callers must use
-``record.get("iteration")``-style access to tolerate missing keys.
+All history records are schema v3. :func:`read_records` hard-skips any
+record whose ``schema_version`` is not ``3``, emitting a stderr warning
+per ``.claude/rules/json-schema-version.md``.
 
 Concurrent appends from multiple processes are serialized via a
 ``fcntl.flock`` exclusive lock on ``<history_dir>/.lock``.
@@ -173,6 +172,23 @@ def append_record(
             f.write(line)
 
 
+def _check_schema_version(data: dict, source: Path, lineno: int) -> bool:
+    """Return ``True`` if ``data`` has the expected schema version.
+
+    Non-v3 records are skipped with a stderr warning per
+    ``.claude/rules/json-schema-version.md``.
+    """
+    version = data.get("schema_version")
+    if version != SCHEMA_VERSION:
+        print(
+            f"warning: {source} line {lineno} has schema_version={version!r}, "
+            f"expected {SCHEMA_VERSION} — skipping",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
 def read_records(
     skill: str | None = None,
     path: Path | None = None,
@@ -180,7 +196,8 @@ def read_records(
     """Read all history records, optionally filtered by skill.
 
     Missing file -> empty list. Corrupt lines are skipped with a warning to
-    stderr. ``path`` defaults to :data:`_DEFAULT_PATH` resolved at call
+    stderr. Records with ``schema_version`` other than 3 are skipped with a
+    warning. ``path`` defaults to :data:`_DEFAULT_PATH` resolved at call
     time so tests can monkeypatch the module attribute.
     """
     if path is None:
@@ -209,6 +226,8 @@ def read_records(
                     f"in {path}",
                     file=sys.stderr,
                 )
+                continue
+            if not _check_schema_version(record, path, lineno):
                 continue
             if skill is not None and record.get("skill") != skill:
                 continue

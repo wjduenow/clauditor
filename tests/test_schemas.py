@@ -31,22 +31,32 @@ SAMPLE_EVAL = {
     "sections": [
         {
             "name": "Venues",
-            "min_entries": 3,
-            "fields": [
-                {"id": "v_name", "name": "name", "required": True},
-                {"id": "v_address", "name": "address", "required": True},
-                {"id": "v_hours", "name": "hours", "required": True},
-                {"id": "v_website", "name": "website", "required": True},
-                {"id": "v_phone", "name": "phone", "required": False},
+            "tiers": [
+                {
+                    "label": "default",
+                    "min_entries": 3,
+                    "fields": [
+                        {"id": "v_name", "name": "name", "required": True},
+                        {"id": "v_address", "name": "address", "required": True},
+                        {"id": "v_hours", "name": "hours", "required": True},
+                        {"id": "v_website", "name": "website", "required": True},
+                        {"id": "v_phone", "name": "phone", "required": False},
+                    ],
+                }
             ],
         },
         {
             "name": "Events",
-            "min_entries": 0,
-            "fields": [
-                {"id": "e_name", "name": "name", "required": True},
-                {"id": "e_date", "name": "date", "required": True},
-                {"id": "e_url", "name": "event_url", "required": True},
+            "tiers": [
+                {
+                    "label": "default",
+                    "min_entries": 0,
+                    "fields": [
+                        {"id": "e_name", "name": "name", "required": True},
+                        {"id": "e_date", "name": "date", "required": True},
+                        {"id": "e_url", "name": "event_url", "required": True},
+                    ],
+                }
             ],
         },
     ],
@@ -70,7 +80,6 @@ class TestEvalSpecFromFile:
         assert len(spec.assertions) == 2
         assert len(spec.sections) == 2
         assert spec.sections[0].name == "Venues"
-        # Legacy fields normalized to single default tier
         assert len(spec.sections[0].tiers) == 1
         tier = spec.sections[0].tiers[0]
         assert tier.label == "default"
@@ -142,20 +151,25 @@ class TestFormatFieldRoundTrip:
             "sections": [
                 {
                     "name": "Items",
-                    "min_entries": 1,
-                    "fields": [
+                    "tiers": [
                         {
-                            "id": "f_phone",
-                            "name": "phone",
-                            "required": True,
-                            "format": "phone_us",
-                        },
-                        {
-                            "id": "f_email",
-                            "name": "email",
-                            "required": False,
-                            "format": "email",
-                        },
+                            "label": "default",
+                            "min_entries": 1,
+                            "fields": [
+                                {
+                                    "id": "f_phone",
+                                    "name": "phone",
+                                    "required": True,
+                                    "format": "phone_us",
+                                },
+                                {
+                                    "id": "f_email",
+                                    "name": "email",
+                                    "required": False,
+                                    "format": "email",
+                                },
+                            ],
+                        }
                     ],
                 }
             ],
@@ -182,9 +196,14 @@ class TestFormatFieldRoundTrip:
             "sections": [
                 {
                     "name": "Items",
-                    "min_entries": 1,
-                    "fields": [
-                        {"id": "f_name", "name": "name", "required": True},
+                    "tiers": [
+                        {
+                            "label": "default",
+                            "min_entries": 1,
+                            "fields": [
+                                {"id": "f_name", "name": "name", "required": True},
+                            ],
+                        }
                     ],
                 }
             ],
@@ -352,11 +371,21 @@ FULL_EVAL_DATA = {
     "sections": [
         {
             "name": "Places",
-            "min_entries": 2,
-            "fields": [
-                {"id": "p_name", "name": "name", "required": True},
-                {"id": "p_address", "name": "address", "required": True},
-                {"id": "p_zip", "name": "zip", "required": False, "format": r"^\d{5}$"},
+            "tiers": [
+                {
+                    "label": "default",
+                    "min_entries": 2,
+                    "fields": [
+                        {"id": "p_name", "name": "name", "required": True},
+                        {"id": "p_address", "name": "address", "required": True},
+                        {
+                            "id": "p_zip",
+                            "name": "zip",
+                            "required": False,
+                            "format": r"^\d{5}$",
+                        },
+                    ],
+                }
             ],
         },
     ],
@@ -448,7 +477,17 @@ class TestFromFile:
         data = {
             "skill_name": "test",
             "sections": [
-                {"name": "S", "fields": [{"id": "f1", "name": "f1", "required": True}]}
+                {
+                    "name": "S",
+                    "tiers": [
+                        {
+                            "label": "default",
+                            "fields": [
+                                {"id": "f1", "name": "f1", "required": True}
+                            ],
+                        }
+                    ],
+                }
             ],
         }
         path = _write_json(tmp_path, data)
@@ -509,8 +548,8 @@ class TestFromFile:
         ):
             EvalSpec.from_file(path)
 
-    def test_field_requirement_legacy_missing_id_rejected(self, tmp_path):
-        """Legacy (no-tiers) field shape also requires explicit ids."""
+    def test_flat_fields_without_tiers_rejected(self, tmp_path):
+        """Section with flat fields (no tiers) raises ValueError."""
         data = {
             "skill_name": "s",
             "sections": [
@@ -522,7 +561,7 @@ class TestFromFile:
         }
         path = _write_json(tmp_path, data)
         with pytest.raises(
-            ValueError, match=r"sections\[0\]\.fields\[0\]: missing 'id'"
+            ValueError, match="flat .fields. without .tiers"
         ):
             EvalSpec.from_file(path)
 
@@ -672,22 +711,6 @@ class TestFromFile:
         with pytest.raises(ValueError, match=r"duplicate id 'shared'"):
             EvalSpec.from_file(path)
 
-    def test_from_file_legacy_pattern_key_rejected(self, tmp_path):
-        """DEC-006: legacy 'pattern' key is rejected with a migration message."""
-        data = {
-            "skill_name": "test",
-            "sections": [
-                {
-                    "name": "S",
-                    "fields": [
-                        {"id": "f1", "name": "f1", "required": True, "pattern": r"\d+"},
-                    ],
-                }
-            ],
-        }
-        path = _write_json(tmp_path, data)
-        with pytest.raises(ValueError, match="no longer supported"):
-            EvalSpec.from_file(path)
 
 
 class TestToDict:
@@ -705,7 +728,7 @@ class TestToDict:
         assert d["assertions"] == FULL_EVAL_DATA["assertions"]
         assert d["grading_criteria"] == FULL_EVAL_DATA["grading_criteria"]
         assert d["grading_model"] == FULL_EVAL_DATA["grading_model"]
-        # Sections structure matches (legacy normalized to tiers)
+        # Sections structure matches
         assert len(d["sections"]) == 1
         assert d["sections"][0]["name"] == "Places"
         tier = d["sections"][0]["tiers"][0]
@@ -1001,9 +1024,8 @@ class TestTierRequirement:
         tier_out = out["sections"][0]["tiers"][0]
         assert tier_out["max_entries"] == 3
 
-    def test_max_entries_propagates_through_legacy_section_shape(self, tmp_path):
-        """Legacy (no-tiers) section shape must propagate max_entries into
-        the synthesized default tier — otherwise the cap is silently ignored."""
+    def test_flat_fields_with_max_entries_rejected(self, tmp_path):
+        """Flat fields at section level are rejected even with max_entries."""
         data = {
             "skill_name": "legacy-skill",
             "sections": [
@@ -1017,11 +1039,8 @@ class TestTierRequirement:
         }
         path = tmp_path / "spec.eval.json"
         path.write_text(json.dumps(data))
-        spec = EvalSpec.from_file(path)
-        default_tier = spec.sections[0].tiers[0]
-        assert default_tier.label == "default"
-        assert default_tier.min_entries == 1
-        assert default_tier.max_entries == 3
+        with pytest.raises(ValueError, match="flat .fields. without .tiers"):
+            EvalSpec.from_file(path)
 
     def test_max_entries_none_omitted_from_dict(self, tmp_path):
         """When max_entries is None, it is omitted from serialized output."""
@@ -1119,8 +1138,8 @@ class TestTieredSections:
         assert section.tiers[1].min_entries == 1
         assert len(section.tiers[1].fields) == 4
 
-    def test_legacy_fields_normalized_to_default_tier(self, tmp_path):
-        """Legacy fields-style JSON is normalized to a single default tier."""
+    def test_from_file_rejects_flat_fields_shape(self, tmp_path):
+        """Flat fields (without tiers) raises ValueError."""
         legacy_data = {
             "skill_name": "legacy",
             "sections": [
@@ -1135,17 +1154,8 @@ class TestTieredSections:
             ],
         }
         path = _write_json(tmp_path, legacy_data)
-        spec = EvalSpec.from_file(path)
-
-        section = spec.sections[0]
-        assert len(section.tiers) == 1
-        tier = section.tiers[0]
-        assert tier.label == "default"
-        assert tier.description == ""
-        assert tier.min_entries == 5
-        assert len(tier.fields) == 2
-        assert tier.fields[0].name == "title"
-        assert tier.fields[1].required is False
+        with pytest.raises(ValueError, match="flat .fields. without .tiers"):
+            EvalSpec.from_file(path)
 
     def test_tiered_roundtrip(self, tmp_path):
         """from_file -> to_dict -> from_file preserves tiered structure."""
@@ -1169,8 +1179,8 @@ class TestTieredSections:
         assert spec2.sections[0].tiers[1].label == "detailed"
         assert len(spec2.sections[0].tiers[1].fields) == 4
 
-    def test_legacy_roundtrip(self, tmp_path):
-        """Legacy format -> load -> to_dict -> reload produces consistent tiers."""
+    def test_flat_fields_rejected_even_with_min_entries(self, tmp_path):
+        """Flat fields at section level are rejected regardless of other keys."""
         legacy_data = {
             "skill_name": "legacy-rt",
             "sections": [
@@ -1181,20 +1191,42 @@ class TestTieredSections:
                 }
             ],
         }
-        path1 = _write_json(tmp_path, legacy_data, name="first.json")
-        spec1 = EvalSpec.from_file(path1)
-        d = spec1.to_dict()
+        path = _write_json(tmp_path, legacy_data, name="first.json")
+        with pytest.raises(ValueError, match="flat .fields. without .tiers"):
+            EvalSpec.from_file(path)
 
-        # Output always uses tiers form
-        assert "tiers" in d["sections"][0]
-        assert d["sections"][0]["tiers"][0]["label"] == "default"
+    def test_pattern_key_rejected(self, tmp_path):
+        """Field entries using 'pattern' instead of 'format' are rejected."""
+        data = {
+            "skill_name": "test",
+            "sections": [
+                {
+                    "name": "S",
+                    "tiers": [
+                        {
+                            "label": "required",
+                            "fields": [
+                                {"id": "f1", "name": "f1", "required": True,
+                                 "pattern": r"\d+"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(ValueError, match="use 'format', not 'pattern'"):
+            EvalSpec.from_file(path)
 
-        # Reload produces same structure
-        path2 = _write_json(tmp_path, d, name="second.json")
-        spec2 = EvalSpec.from_file(path2)
-        assert spec2.sections[0].tiers[0].label == "default"
-        assert spec2.sections[0].tiers[0].min_entries == 2
-        assert len(spec2.sections[0].tiers[0].fields) == 1
+    def test_section_missing_tiers_rejected(self, tmp_path):
+        """Section with neither 'tiers' nor 'fields' raises ValueError."""
+        data = {
+            "skill_name": "test",
+            "sections": [{"name": "S"}],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(ValueError, match="missing 'tiers'"):
+            EvalSpec.from_file(path)
 
     def test_tier_description_preserved_through_roundtrip(self, tmp_path):
         """Tier description field survives from_file -> to_dict -> from_file."""

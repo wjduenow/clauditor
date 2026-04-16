@@ -556,33 +556,21 @@ def _run_baseline_phase(
     iteration: int,
     model: str,
 ) -> tuple[GradingReport, SkillResult]:
-    """US-004: run the test args without the skill prefix and persist L1/L2/L3
-    sidecars into ``skill_dir`` (the staging iteration dir).
+    """Run the baseline (no skill prefix) and persist sidecars.
 
-    Four files are written alongside the primary sidecars:
-    - ``baseline.json`` — run metadata (output, tokens, duration, exit_code)
-    - ``baseline_assertions.json`` — Layer 1 results against baseline output
-    - ``baseline_extraction.json`` — Layer 2 extraction (only when the spec
-      declares sections)
-    - ``baseline_grading.json`` — Layer 3 ``GradingReport``
+    Thin I/O wrapper around :func:`clauditor.baseline.compute_baseline`:
+    handles subprocess invocation, input-file staging, stderr progress,
+    and sidecar writes into ``skill_dir`` (the staging iteration dir).
 
-    Strictly opt-in via ``--baseline``; roughly doubles LLM cost per run.
-
-    Returns the ``(GradingReport, SkillResult)`` pair from the baseline run
-    (DEC-011) so the caller can feed them to
-    :func:`clauditor.benchmark.compute_benchmark` without reloading sidecars
-    from disk.
+    Returns ``(GradingReport, SkillResult)`` so the caller can feed
+    them to :func:`clauditor.benchmark.compute_benchmark`.
     """
-    import asyncio
-
-    from clauditor.grader import extract_and_report
-    from clauditor.quality_grader import grade_quality
+    from clauditor.baseline import compute_baseline
     from clauditor.workspace import stage_inputs
 
     test_args = spec.eval_spec.test_args or ""
     # FIX-15: mirror the primary run's staging so baseline finds input
-    # files in the same relative layout. Without this, a spec with
-    # ``input_files`` would run the baseline against an empty CWD.
+    # files in the same relative layout.
     effective_cwd: Path | None = None
     if spec.eval_spec.input_files:
         baseline_run_dir = skill_dir / "baseline-run"
@@ -592,61 +580,18 @@ def _run_baseline_phase(
     print(f"Running baseline (no skill prefix) {test_args}...")
     baseline_result = spec.runner.run_raw(test_args, cwd=effective_cwd)
 
-    baseline_text = baseline_result.output
-
-    baseline_meta = {
-        "schema_version": 1,
-        "skill": spec.skill_name,
-        "iteration": iteration,
-        "output": baseline_text,
-        "exit_code": baseline_result.exit_code,
-        "input_tokens": baseline_result.input_tokens,
-        "output_tokens": baseline_result.output_tokens,
-        "duration_seconds": baseline_result.duration_seconds,
-    }
-    (skill_dir / "baseline.json").write_text(
-        json.dumps(baseline_meta, indent=2) + "\n", encoding="utf-8"
+    reports = compute_baseline(
+        skill_result=baseline_result,
+        eval_spec=spec.eval_spec,
+        skill_name=spec.skill_name,
+        iteration=iteration,
+        model=model,
     )
 
-    baseline_assertion_set = run_assertions(
-        baseline_text, spec.eval_spec.assertions
-    )
-    baseline_assertions_payload = {
-        "schema_version": 1,
-        "skill": spec.skill_name,
-        "iteration": iteration,
-        **baseline_assertion_set.to_json(),
-    }
-    (skill_dir / "baseline_assertions.json").write_text(
-        json.dumps(baseline_assertions_payload, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    for filename, content in reports.to_json_map().items():
+        (skill_dir / filename).write_text(content, encoding="utf-8")
 
-    if spec.eval_spec.sections:
-        baseline_extraction = asyncio.run(
-            extract_and_report(
-                baseline_text,
-                spec.eval_spec,
-                skill_name=spec.skill_name,
-            )
-        )
-        (skill_dir / "baseline_extraction.json").write_text(
-            baseline_extraction.to_json(), encoding="utf-8"
-        )
-
-    baseline_grading = asyncio.run(
-        grade_quality(
-            baseline_text,
-            spec.eval_spec,
-            model,
-            thresholds=spec.eval_spec.grade_thresholds,
-        )
-    )
-    (skill_dir / "baseline_grading.json").write_text(
-        baseline_grading.to_json(), encoding="utf-8"
-    )
-
-    return baseline_grading, baseline_result
+    return reports.grading_report, reports.skill_result
 
 
 def _cmd_grade_with_workspace(

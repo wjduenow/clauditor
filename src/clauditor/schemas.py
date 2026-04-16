@@ -109,17 +109,10 @@ def criterion_text(entry: object) -> str:
 
 
 def _resolve_field_format(field_dict: dict) -> str | None:
-    """Resolve the ``format`` value for a field entry during spec load.
-
-    Rejects the legacy ``pattern`` key with a clear migration message
-    (DEC-006/DEC-007): eval specs should use ``format`` which now accepts
-    either a registered format name or an inline regex.
-    """
+    """Resolve the ``format`` value for a field entry during spec load."""
     if "pattern" in field_dict:
         raise ValueError(
-            f"Field {field_dict.get('name')!r}: the 'pattern' key is no "
-            f"longer supported. Use 'format' instead — it accepts either "
-            f"a registered format name (e.g. 'phone_us') or an inline regex."
+            f"Field {field_dict.get('name')!r}: use 'format', not 'pattern'"
         )
     return field_dict.get("format")
 
@@ -287,29 +280,17 @@ class EvalSpec:
                             fields=tier_fields,
                         )
                     )
+            elif "fields" in s:
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"sections[{si}] has flat 'fields' without 'tiers' — "
+                    "wrap fields inside a tiers[] entry"
+                )
             else:
-                # Legacy fields-style: normalize to single default tier
-                legacy_fields = []
-                for fi, f in enumerate(s.get("fields", [])):
-                    fid = _require_id(
-                        f, f"sections[{si}].fields[{fi}]"
-                    )
-                    legacy_fields.append(
-                        FieldRequirement(
-                            name=f["name"],
-                            required=f.get("required", True),
-                            format=_resolve_field_format(f),
-                            id=fid,
-                        )
-                    )
-                tiers = [
-                    TierRequirement(
-                        label="default",
-                        min_entries=s.get("min_entries", 1),
-                        max_entries=s.get("max_entries"),
-                        fields=legacy_fields,
-                    )
-                ]
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"sections[{si}] is missing 'tiers'"
+                )
             sections.append(
                 SectionRequirement(
                     name=s["name"],

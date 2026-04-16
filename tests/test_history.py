@@ -218,14 +218,13 @@ class TestAppendV3:
         assert rec["workspace_path"] is None
 
 
-class TestReadMixedSchema:
-    """Reading mixed v2 and v3 history files (US-005)."""
+class TestSchemaVersionEnforcement:
+    """read_records hard-requires schema_version=3 (DEC-003)."""
 
-    def test_read_mixed_v2_v3_records(self, tmp_path):
+    def test_v2_record_skipped_with_warning(self, tmp_path, capsys):
         import json as _json
 
         path = tmp_path / "history.jsonl"
-        path.parent.mkdir(parents=True, exist_ok=True)
         v2_record = {
             "schema_version": 2,
             "command": "grade",
@@ -235,29 +234,84 @@ class TestReadMixedSchema:
             "mean_score": 0.6,
             "metrics": {},
         }
-        with path.open("w", encoding="utf-8") as f:
-            f.write(_json.dumps(v2_record) + "\n")
+        path.write_text(_json.dumps(v2_record) + "\n")
 
-        # Append a v3 record via the API.
+        records = read_records(path=path)
+        assert len(records) == 0
+        err = capsys.readouterr().err
+        assert "schema_version=2" in err
+        assert "expected 3" in err
+
+    def test_v1_record_skipped_with_warning(self, tmp_path, capsys):
+        import json as _json
+
+        path = tmp_path / "history.jsonl"
+        # v1 records have no schema_version key at all
+        v1_record = {
+            "ts": "2025-01-01T00:00:00+00:00",
+            "skill": "skill-a",
+            "pass_rate": 0.5,
+            "mean_score": 0.6,
+            "metrics": {},
+        }
+        path.write_text(_json.dumps(v1_record) + "\n")
+
+        records = read_records(path=path)
+        assert len(records) == 0
+        err = capsys.readouterr().err
+        assert "schema_version=None" in err
+        assert "expected 3" in err
+
+    def test_v3_record_passes(self, tmp_path, capsys):
+        path = tmp_path / "history.jsonl"
         append_record(
-            "skill-a",
-            0.9,
-            0.85,
-            {},
-            command="grade",
-            path=path,
-            iteration=2,
-            workspace_path="ws/2",
+            "skill-a", 0.9, 0.85, {}, command="grade", path=path,
+            iteration=2, workspace_path="ws/2",
         )
 
         records = read_records(path=path)
-        assert len(records) == 2
-        assert records[0]["schema_version"] == 2
-        assert records[0].get("iteration") is None
-        assert records[0].get("workspace_path") is None
-        assert records[1]["schema_version"] == 3
-        assert records[1]["iteration"] == 2
-        assert records[1]["workspace_path"] == "ws/2"
+        assert len(records) == 1
+        assert records[0]["schema_version"] == 3
+        assert records[0]["iteration"] == 2
+        # No warnings emitted
+        err = capsys.readouterr().err
+        assert "schema_version" not in err
+
+    def test_mixed_file_only_v3_returned(self, tmp_path, capsys):
+        import json as _json
+
+        path = tmp_path / "history.jsonl"
+        v1 = {"schema_version": 1, "skill": "a", "pass_rate": 0.1}
+        v2 = {
+            "schema_version": 2,
+            "skill": "a",
+            "pass_rate": 0.5,
+            "metrics": {},
+        }
+        v3 = {
+            "schema_version": 3,
+            "command": "grade",
+            "ts": "t",
+            "skill": "a",
+            "pass_rate": 0.9,
+            "mean_score": None,
+            "metrics": {},
+            "iteration": None,
+            "workspace_path": None,
+        }
+        lines = [
+            _json.dumps(v1),
+            _json.dumps(v2),
+            _json.dumps(v3),
+        ]
+        path.write_text("\n".join(lines) + "\n")
+
+        records = read_records(path=path)
+        assert len(records) == 1
+        assert records[0]["schema_version"] == 3
+        err = capsys.readouterr().err
+        assert "schema_version=1" in err
+        assert "schema_version=2" in err
 
 
 def _concurrent_writer(args):

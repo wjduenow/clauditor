@@ -195,6 +195,7 @@ class TestGradeVerboseInvocation:
 
     def _grading_report(self):
         from clauditor.quality_grader import GradingReport, GradingResult
+        from clauditor.schemas import GradeThresholds
 
         return GradingReport(
             skill_name="test-skill",
@@ -209,6 +210,8 @@ class TestGradeVerboseInvocation:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def test_grade_verbose_invokes_slice_on_failure(

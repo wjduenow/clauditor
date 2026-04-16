@@ -159,7 +159,7 @@ def _records_from_assertions(
     records: list[IterationRecord] = []
     for run in data.get("runs", []) or []:
         for result in run.get("results", []) or []:
-            rid = result.get("id") or result.get("name")
+            rid = result.get("id")
             if not rid:
                 continue
             records.append(
@@ -189,15 +189,9 @@ def _records_from_extraction(
     records: list[IterationRecord] = []
     for field_id, entries in (data.get("fields") or {}).items():
         for entry in entries or []:
-            # The on-disk shape stores pre-computed ``passed`` combining
-            # presence + format; prefer that, fall back to presence only.
-            if "passed" in entry:
-                passed = bool(entry["passed"])
-            else:
-                passed = bool(entry.get("presence_passed", False))
-                fmt_passed = entry.get("format_passed")
-                if fmt_passed is False:
-                    passed = False
+            if "passed" not in entry:
+                continue
+            passed = bool(entry["passed"])
             records.append(
                 IterationRecord(
                     iteration=iteration,

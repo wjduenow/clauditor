@@ -63,9 +63,9 @@ def _records_from_sidecar(data: dict, source: Path) -> list[Record]:
 
 Writers: `src/clauditor/quality_grader.py::GradingReport.to_json`,
 `src/clauditor/grader.py::ExtractionReport.to_json`,
-`src/clauditor/audit.py::render_json`, and the sidecar envelopes in
-`src/clauditor/cli.py::_cmd_grade_with_workspace` /
-`_run_baseline_phase`.
+`src/clauditor/audit.py::render_json`,
+`src/clauditor/baseline.py::BaselineReports.to_json_map`, and the
+sidecar envelopes in `src/clauditor/cli.py::_cmd_grade_with_workspace`.
 
 Loaders: `src/clauditor/audit.py::_check_schema_version` and its call sites
 in `_records_from_assertions`, `_records_from_extraction`,

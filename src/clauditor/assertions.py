@@ -61,14 +61,13 @@ class AssertionResult:
 
     @classmethod
     def from_json_dict(cls, data: dict) -> AssertionResult:
-        """Inverse of :meth:`to_json_dict` — tolerates missing keys for
-        older on-disk fixtures that predate newly added fields."""
+        """Inverse of :meth:`to_json_dict`."""
         return cls(
             id=data.get("id"),
-            name=data.get("name", ""),
+            name=data["name"],
             passed=bool(data["passed"]),
-            message=data.get("message", ""),
-            kind=data.get("kind", "custom"),
+            message=data["message"],
+            kind=data["kind"],
             evidence=data.get("evidence"),
             raw_data=data.get("raw_data"),
             transcript_path=data.get("transcript_path"),

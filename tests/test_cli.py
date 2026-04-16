@@ -15,6 +15,7 @@ from clauditor.runner import SkillResult
 from clauditor.schemas import (
     EvalSpec,
     FieldRequirement,
+    GradeThresholds,
     SectionRequirement,
     TierRequirement,
     TriggerTests,
@@ -191,6 +192,8 @@ class TestCmdGrade:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def test_grade_with_output(self, tmp_path, monkeypatch):
@@ -290,6 +293,8 @@ class TestCmdGradeInputFilesStaging:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def _staging_spec(self, eval_spec, outputs):
@@ -464,6 +469,8 @@ class TestOnlyCriterion:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def _run(self, tmp_path, criteria, extra_args, monkeypatch=None):
@@ -643,6 +650,8 @@ class TestCmdGradeSaveDiff:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def _patch_grade(self, spec, report):
@@ -1331,14 +1340,6 @@ class TestCmdGradeSaveDiff:
         assert "score_mean" in payload["variance"]
         assert "stability" in payload["variance"]
 
-    def test_grade_save_flag_removed(self, tmp_path, monkeypatch, capsys):
-        """argparse rejects --save with an unrecognized argument error."""
-        monkeypatch.chdir(tmp_path)
-        with pytest.raises(SystemExit):
-            main(["grade", "skill.md", "--save"])
-        err = capsys.readouterr().err
-        assert "--save" in err or "unrecognized" in err
-
     def test_grade_crash_leaves_no_iteration_dir(self, tmp_path, monkeypatch):
         """An exception mid-write must not leave a finalized iteration-N/."""
         monkeypatch.chdir(tmp_path)
@@ -1445,6 +1446,8 @@ class TestCmdGradeLayer2Persistence:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def _make_sectioned_eval_spec(self):
@@ -1639,6 +1642,8 @@ class TestBaselineFlag:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def _make_baseline_skill_result(self, output="baseline output"):
@@ -1938,6 +1943,8 @@ class TestBaselineFlag:
                 ),
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         baseline_report = GradingReport(
             skill_name="test-skill",
@@ -1959,6 +1966,8 @@ class TestBaselineFlag:
                 ),
             ],
             duration_seconds=0.5,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         extraction_report = self._make_extraction_report()
 
@@ -2069,6 +2078,8 @@ class TestBaselineFlag:
                 ),
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         baseline_report = GradingReport(
             skill_name="test-skill",
@@ -2090,6 +2101,8 @@ class TestBaselineFlag:
                 ),
             ],
             duration_seconds=0.5,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         extraction_report = self._make_extraction_report()
 
@@ -2168,6 +2181,8 @@ class TestBaselineFlag:
                 ),
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         baseline_report = GradingReport(
             skill_name="test-skill",
@@ -2189,6 +2204,8 @@ class TestBaselineFlag:
                 ),
             ],
             duration_seconds=0.5,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         extraction_report = self._make_extraction_report()
 
@@ -2336,6 +2353,8 @@ class TestBaselineFlag:
             model="claude-sonnet-4-6",
             results=results,
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
     def _prepare_gate_spec(self):
@@ -2619,6 +2638,8 @@ class TestCmdCompare:
             model="test-model",
             results=results,
             duration_seconds=0.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         path = tmp_path / f"{name}.grade.json"
         path.write_text(report.to_json())
@@ -2736,6 +2757,8 @@ class TestCmdCompareIterationDirs:
             model="test-model",
             results=results,
             duration_seconds=0.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         (dir_path / "grading.json").write_text(report.to_json())
         return dir_path
@@ -2786,6 +2809,8 @@ class TestCmdCompareNumericRefs:
             model="test-model",
             results=results,
             duration_seconds=0.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         (dir_path / "grading.json").write_text(report.to_json())
 
@@ -2817,6 +2842,8 @@ class TestCmdCompareNumericRefs:
             model="m",
             results=[],
             duration_seconds=0.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         before.write_text(report.to_json())
         after.write_text(report.to_json())
@@ -2864,34 +2891,6 @@ class TestCmdCompareNumericRefs:
         err = capsys.readouterr().err
         assert "invalid skill name" in err
 
-    def test_compare_legacy_grade_json_files(self, tmp_path, capsys):
-        """Regression: legacy two .grade.json file form still works."""
-        before = tmp_path / "before.grade.json"
-        after = tmp_path / "after.grade.json"
-        for p, passes in [
-            (before, {"c1": True}),
-            (after, {"c1": True}),
-        ]:
-            report = GradingReport(
-                skill_name=p.stem,
-                model="test-model",
-                results=[
-                    GradingResult(
-                        criterion=c,
-                        passed=v,
-                        score=0.9 if v else 0.3,
-                        evidence="",
-                        reasoning="",
-                    )
-                    for c, v in passes.items()
-                ],
-                duration_seconds=0.0,
-            )
-            p.write_text(report.to_json())
-        rc = main(["compare", str(before), str(after)])
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "no flips" in out
 
 
 class TestCmdCompareBlind:
@@ -3805,8 +3804,8 @@ class TestCmdTrend:
         data_lines = [ln for ln in out.splitlines() if "\t" in ln]
         assert len(data_lines) == 5
 
-    def test_trend_over_mixed_schema(self, tmp_path, monkeypatch, capsys):
-        """cmd_trend renders cleanly over mixed v2 and v3 history (US-005)."""
+    def test_trend_skips_v2_records(self, tmp_path, monkeypatch, capsys):
+        """cmd_trend skips v2 records; only v3 records appear (DEC-003)."""
         import json as _json
 
         from clauditor import history
@@ -3815,7 +3814,7 @@ class TestCmdTrend:
         path = tmp_path / ".clauditor" / "history.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        # One v2 record (no iteration/workspace_path).
+        # One v2 record — should be skipped by the reader.
         v2_rec = {
             "schema_version": 2,
             "command": "grade",
@@ -3843,8 +3842,8 @@ class TestCmdTrend:
         rc = main(["trend", "test-skill", "--metric", "pass_rate"])
         assert rc == 0
         out = capsys.readouterr().out
-        # Both records should appear in the trend output.
-        assert "0.4" in out
+        # v2 record skipped, only v3 record appears.
+        assert "0.4" not in out
         assert "0.9" in out
 
 
@@ -4091,6 +4090,8 @@ class TestCmdGradeHistory:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         with (
@@ -4139,6 +4140,8 @@ class TestCmdGradeHistory:
             duration_seconds=1.0,
             input_tokens=500,
             output_tokens=200,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         with (
@@ -4209,6 +4212,8 @@ class TestCmdGradeHistory:
             duration_seconds=1.0,
             input_tokens=200,
             output_tokens=100,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         with (
@@ -4275,6 +4280,8 @@ class TestCmdGradeHistory:
             duration_seconds=1.0,
             input_tokens=300,
             output_tokens=100,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         with (
@@ -4324,6 +4331,8 @@ class TestCmdGradeHistory:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         with (
@@ -4372,6 +4381,8 @@ class TestCmdGradeHistory:
                 )
             ],
             duration_seconds=1.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
 
         with (
@@ -4802,6 +4813,8 @@ class TestCmdSuggest:
             model="claude-sonnet-4-6",
             results=results,
             duration_seconds=0.0,
+            thresholds=GradeThresholds(),
+            metrics={},
         )
         (skill_dir / "grading.json").write_text(report.to_json())
 
@@ -4824,6 +4837,7 @@ class TestCmdSuggest:
                             "passed": True,
                             "kind": "contains",
                             "message": "ok",
+                            "transcript_path": None,
                         }
                     ],
                 }
@@ -4848,6 +4862,7 @@ class TestCmdSuggest:
                             "passed": False,
                             "kind": "contains",
                             "message": "no match",
+                            "transcript_path": None,
                         }
                     ],
                 }

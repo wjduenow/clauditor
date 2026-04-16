@@ -238,7 +238,7 @@ clauditor grade .claude/commands/my-skill.md --iteration 5 --force  # Overwrite 
 clauditor grade .claude/commands/my-skill.md --diff         # Compare against prior iteration
 ```
 
-Every `grade` run is persisted to `.clauditor/iteration-N/<skill>/` — there is no opt-in `--save`. By default the iteration number auto-increments to the next free slot. Pass `--iteration N` to target a specific slot; if `iteration-N/` already exists the command errors unless you also pass `--force` to overwrite.
+Every `grade` run is persisted to `.clauditor/iteration-N/<skill>/` automatically. By default the iteration number auto-increments to the next free slot. Pass `--iteration N` to target a specific slot; if `iteration-N/` already exists the command errors unless you also pass `--force` to overwrite.
 
 Each criterion gets a pass/fail, score (0.0-1.0), evidence (quoted output), and reasoning. Use `--diff` to compare against a prior iteration (flags regressions where a criterion's score drops by more than 0.1).
 
@@ -279,7 +279,7 @@ clauditor compare --skill my-skill --from 1 --to 2
 # 2. Iteration directory paths
 clauditor compare .clauditor/iteration-1/my-skill .clauditor/iteration-2/my-skill
 
-# 3. Legacy grade-report files
+# 3. Saved grade-report files
 clauditor compare before.grade.json after.grade.json
 
 # Or re-grade two raw captures against a spec:
@@ -392,7 +392,6 @@ clauditor grade <skill.md> --iteration 5 --force       # Overwrite an existing i
 clauditor grade <skill.md> --diff                      # Compare against prior iteration
 clauditor compare --skill <skill> --from 1 --to 2      # Diff two iterations by number
 clauditor compare .clauditor/iteration-1/<skill> .clauditor/iteration-2/<skill>  # Diff by directory
-clauditor compare before.grade.json after.grade.json   # Diff two legacy grade reports
 clauditor compare before.txt after.txt --spec <skill.md>  # Re-grade two captures
 clauditor trend <skill> --metric total.total     # Tab-separated history + ASCII sparkline
 clauditor trend <skill> --list-metrics           # List available metric paths
@@ -404,7 +403,7 @@ clauditor doctor                       # Report environment diagnostics
 
 ### Persistent metric history
 
-Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.clauditor/history.jsonl`. Records are schema v3 with a `command` discriminator, a nested `metrics` dict, and (for `grade`) the `iteration` slot and on-disk `workspace_path`. Legacy v2 records still read cleanly.
+Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.clauditor/history.jsonl`. Records use schema v3 with a `command` discriminator, a nested `metrics` dict, and (for `grade`) the `iteration` slot and on-disk `workspace_path`. The reader requires `schema_version: 3` and skips older records with a warning.
 
 ```json
 {
@@ -603,16 +602,9 @@ bare hostnames too.
 Field-level checks still run over all extracted entries so you see both
 the count failure and any per-entry failures.
 
-> **Migration note (April 2026):** The legacy `"pattern"` key on
-> `FieldRequirement` has been removed. Migrate by renaming `pattern` to
-> `format` — inline regexes work as before; registered names are now the
-> preferred ergonomics.
+## Notes
 
-## Migration notes
-
-- **`clauditor grade --save` has been removed.** Every `grade` run is now persisted to `.clauditor/iteration-N/<skill>/` automatically. Drop `--save` from scripts and CI; use `--iteration N` / `--force` if you need to target a specific slot.
-- **Legacy `.clauditor/<skill>.grade.json` files are ignored by auto-discovery.** The canonical grade report is `.clauditor/iteration-N/<skill>/grading.json`, and `grade --diff` / `cmd_trend` only look at the new layout. You can still pass a legacy `.grade.json` explicitly to `clauditor compare` (e.g. `compare old.grade.json new.grade.json`), but clauditor no longer writes that format.
-- **`history.jsonl` is now schema v3** with `iteration` and `workspace_path` fields on `grade` records. Mixed v2/v3 files continue to load.
+- **`history.jsonl` uses schema v3** with `iteration` and `workspace_path` fields on `grade` records. The reader requires `schema_version: 3`; records with a different version are skipped with a warning.
 - **`.clauditor/` is anchored at the repo root** (walking up for `.git/` or `.claude/`), so running `grade` from a subdirectory writes to the same workspace as running it from the top.
 
 ## Reference docs
