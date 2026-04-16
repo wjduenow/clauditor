@@ -403,7 +403,7 @@ clauditor doctor                       # Report environment diagnostics
 
 ### Persistent metric history
 
-Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.clauditor/history.jsonl`. Records are schema v3 with a `command` discriminator, a nested `metrics` dict, and (for `grade`) the `iteration` slot and on-disk `workspace_path`. Legacy v2 records still read cleanly.
+Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.clauditor/history.jsonl`. All history records are schema v3 with a `command` discriminator, a nested `metrics` dict, and (for `grade`) the `iteration` slot and on-disk `workspace_path`.
 
 ```json
 {
@@ -604,7 +604,7 @@ the count failure and any per-entry failures.
 
 ## Migration notes
 
-- **`history.jsonl` is now schema v3** with `iteration` and `workspace_path` fields on `grade` records. Mixed v2/v3 files continue to load.
+- **`history.jsonl` is schema v3** with `iteration` and `workspace_path` fields on `grade` records. The reader hard-requires `schema_version: 3`; older records are skipped with a warning.
 - **`.clauditor/` is anchored at the repo root** (walking up for `.git/` or `.claude/`), so running `grade` from a subdirectory writes to the same workspace as running it from the top.
 
 ## Reference docs

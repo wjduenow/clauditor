@@ -3769,8 +3769,8 @@ class TestCmdTrend:
         data_lines = [ln for ln in out.splitlines() if "\t" in ln]
         assert len(data_lines) == 5
 
-    def test_trend_over_mixed_schema(self, tmp_path, monkeypatch, capsys):
-        """cmd_trend renders cleanly over mixed v2 and v3 history (US-005)."""
+    def test_trend_skips_v2_records(self, tmp_path, monkeypatch, capsys):
+        """cmd_trend skips v2 records; only v3 records appear (DEC-003)."""
         import json as _json
 
         from clauditor import history
@@ -3779,7 +3779,7 @@ class TestCmdTrend:
         path = tmp_path / ".clauditor" / "history.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        # One v2 record (no iteration/workspace_path).
+        # One v2 record — should be skipped by the reader.
         v2_rec = {
             "schema_version": 2,
             "command": "grade",
@@ -3807,8 +3807,8 @@ class TestCmdTrend:
         rc = main(["trend", "test-skill", "--metric", "pass_rate"])
         assert rc == 0
         out = capsys.readouterr().out
-        # Both records should appear in the trend output.
-        assert "0.4" in out
+        # v2 record skipped, only v3 record appears.
+        assert "0.4" not in out
         assert "0.9" in out
 
 
