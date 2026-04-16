@@ -1967,6 +1967,20 @@ class TestBlindCompareFromSpec:
         assert mock_bc.await_args.args[0] != "--depth quick"
 
     @pytest.mark.asyncio
+    async def test_blind_compare_from_spec_rejects_non_string_user_prompt(
+        self,
+    ):
+        """In-memory construction cannot smuggle a non-string user_prompt
+        past the validator — it raises ValueError, not AttributeError."""
+        from clauditor.quality_grader import blind_compare_from_spec
+
+        eval_spec = self._make_eval_spec(user_prompt=None)
+        eval_spec.user_prompt = 42  # type: ignore[assignment]
+        spec = self._make_skill_spec(eval_spec=eval_spec)
+        with pytest.raises(ValueError, match="must be a string, got int"):
+            await blind_compare_from_spec(spec, "A", "B")
+
+    @pytest.mark.asyncio
     async def test_blind_compare_from_spec_no_criteria_passes_none_rubric(self):
         from clauditor.quality_grader import blind_compare_from_spec
 

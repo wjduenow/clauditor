@@ -3,7 +3,7 @@ ticket: "#39 (clauditor-iag)"
 title: Add EvalSpec.user_prompt field
 phase: devolved
 branch: feature/39-user-prompt
-worktree: /home/wesd/dev/worktrees/clauditor/feature/39-user-prompt
+worktree: feature/39-user-prompt
 sessions: 1
 ---
 
@@ -55,9 +55,9 @@ Files to touch:
 | File | Change |
 | --- | --- |
 | `src/clauditor/schemas.py` | Add `user_prompt: str \| None = None` field on `EvalSpec`; load it in `from_file`; emit in `to_dict` when set |
-| `src/clauditor/quality_grader.py` | Update `validate_blind_compare_spec` + `blind_compare_from_spec` to prefer `spec.eval_spec.user_prompt`, fall back to `test_args` |
+| `src/clauditor/quality_grader.py` | Update `validate_blind_compare_spec` + `blind_compare_from_spec` to read `spec.eval_spec.user_prompt` (no fallback — DEC-001) |
 | `tests/test_schemas.py` | Round-trip load/save tests for the new field |
-| `tests/test_quality_grader.py` | Resolution tests for `blind_compare_from_spec`: user_prompt wins, test_args fallback, both empty still raises |
+| `tests/test_quality_grader.py` | Resolution tests for `blind_compare_from_spec`: `user_prompt` required; missing `user_prompt` raises even when `test_args` is set |
 
 Files NOT touched (important negative scope):
 

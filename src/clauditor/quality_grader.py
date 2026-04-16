@@ -504,7 +504,13 @@ def validate_blind_compare_spec(spec: SkillSpec) -> None:
             "No eval spec found (blind_compare_from_spec requires "
             "spec.eval_spec to be set)"
         )
-    user_prompt = spec.eval_spec.user_prompt or ""
+    raw = spec.eval_spec.user_prompt
+    if raw is not None and not isinstance(raw, str):
+        raise ValueError(
+            "blind_compare_from_spec: eval_spec.user_prompt must be a "
+            f"string, got {type(raw).__name__}"
+        )
+    user_prompt = raw or ""
     if not user_prompt.strip():
         raise ValueError(
             "blind_compare_from_spec: eval_spec.user_prompt must be a "

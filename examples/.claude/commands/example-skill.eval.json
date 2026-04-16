@@ -2,6 +2,7 @@
   "skill_name": "find-kid-activities",
   "description": "Validates /find-kid-activities produces venues and events with required fields",
   "test_args": "\"Cupertino, CA\" --dates today --distance 15mi --ages 4-6 --cost \"Free, $\" --type both --category any --count 5 --depth quick",
+  "user_prompt": "Find free or low-cost kid activities in Cupertino, CA today within 15 miles for ages 4-6.",
   "input_files": [
     "sample-input.txt"
   ],

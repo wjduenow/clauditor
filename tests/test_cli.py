@@ -3201,7 +3201,8 @@ class TestCmdCompareBlind:
         assert "No eval spec" in err
 
     def test_compare_blind_empty_user_prompt_errors(self, tmp_path, capsys):
-        # Covers the whitespace-only user_prompt branch (cli.py lines 752-759).
+        # Covers the whitespace-only user_prompt path through
+        # validate_blind_compare_spec for `clauditor compare --blind`.
         before, after = self._write_pair(tmp_path)
         eval_spec = _make_eval_spec(user_prompt="   \n")
         spec = _make_spec(eval_spec=eval_spec)
