@@ -276,29 +276,14 @@ class EvalSpec:
                             fields=tier_fields,
                         )
                     )
+            elif "fields" in s:
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"sections[{si}] has flat 'fields' without 'tiers' — "
+                    "wrap fields inside a tiers[] entry"
+                )
             else:
-                # Legacy fields-style: normalize to single default tier
-                legacy_fields = []
-                for fi, f in enumerate(s.get("fields", [])):
-                    fid = _require_id(
-                        f, f"sections[{si}].fields[{fi}]"
-                    )
-                    legacy_fields.append(
-                        FieldRequirement(
-                            name=f["name"],
-                            required=f.get("required", True),
-                            format=_resolve_field_format(f),
-                            id=fid,
-                        )
-                    )
-                tiers = [
-                    TierRequirement(
-                        label="default",
-                        min_entries=s.get("min_entries", 1),
-                        max_entries=s.get("max_entries"),
-                        fields=legacy_fields,
-                    )
-                ]
+                tiers = []
             sections.append(
                 SectionRequirement(
                     name=s["name"],
