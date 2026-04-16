@@ -1331,6 +1331,16 @@ class TestBlindCompare:
     # Seed 1: random.Random(1).random() < 0.5 is True → "ab->12".
 
     @pytest.mark.asyncio
+    async def test_blind_compare_rejects_empty_user_prompt(self):
+        with pytest.raises(ValueError, match="user_prompt must be non-empty"):
+            await blind_compare("", "a-out", "b-out")
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_rejects_whitespace_user_prompt(self):
+        with pytest.raises(ValueError, match="user_prompt must be non-empty"):
+            await blind_compare("   \n", "a-out", "b-out")
+
+    @pytest.mark.asyncio
     async def test_blind_compare_rejects_empty_output_a(self):
         with pytest.raises(ValueError, match="non-empty"):
             await blind_compare("q", "", "b-out")
@@ -1828,7 +1838,8 @@ class TestBlindCompareFromSpec:
     def _make_eval_spec(
         self,
         *,
-        test_args: str = "What's the best sushi in Tokyo?",
+        user_prompt: str | None = "What's the best sushi in Tokyo?",
+        test_args: str = "",
         grading_criteria=None,
         grading_model: str = "claude-sonnet-4-6",
     ) -> EvalSpec:
@@ -1841,6 +1852,7 @@ class TestBlindCompareFromSpec:
             skill_name="test-skill",
             description="test",
             test_args=test_args,
+            user_prompt=user_prompt,
             grading_criteria=grading_criteria,
             grading_model=grading_model,
         )
@@ -1896,23 +1908,76 @@ class TestBlindCompareFromSpec:
             await blind_compare_from_spec(spec, "A", "B")
 
     @pytest.mark.asyncio
-    async def test_blind_compare_from_spec_raises_on_empty_test_args(self):
+    async def test_blind_compare_from_spec_raises_on_missing_user_prompt(self):
         from clauditor.quality_grader import blind_compare_from_spec
 
         spec = self._make_skill_spec(
-            eval_spec=self._make_eval_spec(test_args="")
+            eval_spec=self._make_eval_spec(user_prompt=None)
         )
-        with pytest.raises(ValueError, match="test_args"):
+        with pytest.raises(ValueError, match="user_prompt"):
             await blind_compare_from_spec(spec, "A", "B")
 
     @pytest.mark.asyncio
-    async def test_blind_compare_from_spec_raises_on_whitespace_test_args(self):
+    async def test_blind_compare_from_spec_raises_on_whitespace_user_prompt(self):
         from clauditor.quality_grader import blind_compare_from_spec
 
         spec = self._make_skill_spec(
-            eval_spec=self._make_eval_spec(test_args="   \n  ")
+            eval_spec=self._make_eval_spec(user_prompt="   \n  ")
         )
-        with pytest.raises(ValueError, match="test_args"):
+        with pytest.raises(ValueError, match="user_prompt"):
+            await blind_compare_from_spec(spec, "A", "B")
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_from_spec_requires_user_prompt_even_if_test_args_set(
+        self,
+    ):
+        """Core behavior change: test_args no longer substitutes for user_prompt.
+
+        A spec with runner CLI args set but no user_prompt must still
+        raise — the two fields now have distinct semantics.
+        """
+        from clauditor.quality_grader import blind_compare_from_spec
+
+        spec = self._make_skill_spec(
+            eval_spec=self._make_eval_spec(
+                user_prompt=None, test_args="--depth quick --limit 10"
+            )
+        )
+        with pytest.raises(ValueError, match="user_prompt"):
+            await blind_compare_from_spec(spec, "A", "B")
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_from_spec_forwards_user_prompt_not_test_args(
+        self,
+    ):
+        """Forwards eval_spec.user_prompt (not test_args) to blind_compare."""
+        from clauditor.quality_grader import blind_compare_from_spec
+
+        eval_spec = self._make_eval_spec(
+            user_prompt="Is sushi good?",
+            test_args="--depth quick",
+        )
+        spec = self._make_skill_spec(eval_spec=eval_spec)
+        mock_bc = AsyncMock(return_value=self._canned_report())
+
+        with patch("clauditor.quality_grader.blind_compare", mock_bc):
+            await blind_compare_from_spec(spec, "A", "B")
+
+        assert mock_bc.await_args.args[0] == "Is sushi good?"
+        assert mock_bc.await_args.args[0] != "--depth quick"
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_from_spec_rejects_non_string_user_prompt(
+        self,
+    ):
+        """In-memory construction cannot smuggle a non-string user_prompt
+        past the validator — it raises ValueError, not AttributeError."""
+        from clauditor.quality_grader import blind_compare_from_spec
+
+        eval_spec = self._make_eval_spec(user_prompt=None)
+        eval_spec.user_prompt = 42  # type: ignore[assignment]
+        spec = self._make_skill_spec(eval_spec=eval_spec)
+        with pytest.raises(ValueError, match="must be a string, got int"):
             await blind_compare_from_spec(spec, "A", "B")
 
     @pytest.mark.asyncio
@@ -1953,18 +2018,33 @@ class TestBlindCompareFromSpec:
         with pytest.raises(ValueError, match="No eval spec"):
             validate_blind_compare_spec(spec)
 
-    def test_validate_blind_compare_spec_raises_on_empty_test_args(self):
-        """validate_blind_compare_spec raises when test_args is empty/whitespace."""
+    def test_validate_blind_compare_spec_raises_on_missing_user_prompt(self):
+        """validate_blind_compare_spec raises when user_prompt is missing/whitespace."""
         from clauditor.quality_grader import validate_blind_compare_spec
 
         spec = self._make_skill_spec(
-            eval_spec=self._make_eval_spec(test_args="")
+            eval_spec=self._make_eval_spec(user_prompt=None)
         )
-        with pytest.raises(ValueError, match="test_args"):
+        with pytest.raises(ValueError, match="user_prompt"):
             validate_blind_compare_spec(spec)
 
         spec_ws = self._make_skill_spec(
-            eval_spec=self._make_eval_spec(test_args="   \n ")
+            eval_spec=self._make_eval_spec(user_prompt="   \n ")
         )
-        with pytest.raises(ValueError, match="test_args"):
+        with pytest.raises(ValueError, match="user_prompt"):
             validate_blind_compare_spec(spec_ws)
+
+    def test_validate_blind_compare_spec_requires_user_prompt_even_if_test_args_set(
+        self,
+    ):
+        """Core behavior change: having test_args set no longer satisfies
+        the blind-compare validator. user_prompt is the only source."""
+        from clauditor.quality_grader import validate_blind_compare_spec
+
+        spec = self._make_skill_spec(
+            eval_spec=self._make_eval_spec(
+                user_prompt=None, test_args="--depth quick --limit 10"
+            )
+        )
+        with pytest.raises(ValueError, match="user_prompt"):
+            validate_blind_compare_spec(spec)

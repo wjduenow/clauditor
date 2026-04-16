@@ -104,9 +104,12 @@ Before the extraction (pre-#clauditor-0bo), the CLI had 15 lines of
 inline `spec.eval_spec.test_args` / `grading_criteria` / `grading_model`
 resolution that would have had to be duplicated verbatim in the
 fixture — with no mechanism to keep them in lockstep. The extracted
-helper eliminates that drift risk and makes the next ticket
-(`clauditor-iag`, add `EvalSpec.user_prompt`) a single-file change
-that both callers pick up automatically.
+helper eliminated that drift risk, and when #39 / `clauditor-iag`
+added `EvalSpec.user_prompt`, the corresponding resolution-logic
+change in `blind_compare_from_spec` (switching from `test_args` to
+`user_prompt`) was isolated to `quality_grader.py`: both the CLI
+caller and the pytest fixture picked up the new resolution
+automatically, validating the rule's prediction.
 
 ## Grandfathered counter-example
 

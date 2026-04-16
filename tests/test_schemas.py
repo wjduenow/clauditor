@@ -1371,3 +1371,77 @@ class TestEvalSpecInputFiles:
         spec_path = self._write_spec(tmp_path, {"input_files": ["."]})
         with pytest.raises(ValueError, match="not a regular file"):
             EvalSpec.from_file(spec_path)
+
+
+class TestEvalSpecUserPrompt:
+    """Tests for the optional ``user_prompt`` field (#39)."""
+
+    def test_from_file_loads_user_prompt(self, tmp_path):
+        """A spec with user_prompt set parses into the dataclass."""
+        data = {
+            "skill_name": "s",
+            "user_prompt": "What's the best sushi in Tokyo?",
+        }
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+        assert spec.user_prompt == "What's the best sushi in Tokyo?"
+
+    def test_from_file_user_prompt_absent_defaults_to_none(self, tmp_path):
+        """Omitting user_prompt leaves the attribute None."""
+        data = {"skill_name": "s"}
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+        assert spec.user_prompt is None
+
+    def test_from_file_user_prompt_empty_string_rejected(self, tmp_path):
+        """An empty-string user_prompt must be rejected — callers should
+        not have to disambiguate ``None`` vs ``""``."""
+        data = {"skill_name": "s", "user_prompt": ""}
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError, match="user_prompt must be a non-empty"
+        ):
+            EvalSpec.from_file(path)
+
+    def test_from_file_user_prompt_whitespace_only_rejected(self, tmp_path):
+        """Whitespace-only user_prompt must be rejected at load time —
+        otherwise the failure only surfaces much later when the blind
+        judge is invoked."""
+        data = {"skill_name": "s", "user_prompt": "   \n\t"}
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError, match="user_prompt must be a non-empty, non-whitespace"
+        ):
+            EvalSpec.from_file(path)
+
+    def test_from_file_user_prompt_non_string_rejected(self, tmp_path):
+        """A non-string user_prompt (e.g. a number) is rejected."""
+        data = {"skill_name": "s", "user_prompt": 42}
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError, match="user_prompt must be a non-empty"
+        ):
+            EvalSpec.from_file(path)
+
+    def test_to_dict_omits_user_prompt_when_unset(self):
+        """Round-tripping a spec without user_prompt does not inject the key."""
+        spec = EvalSpec(skill_name="s")
+        d = spec.to_dict()
+        assert "user_prompt" not in d
+
+    def test_to_dict_emits_user_prompt_when_set(self):
+        spec = EvalSpec(skill_name="s", user_prompt="hello there?")
+        d = spec.to_dict()
+        assert d["user_prompt"] == "hello there?"
+
+    def test_user_prompt_round_trip(self, tmp_path):
+        """to_dict -> JSON file -> from_file preserves user_prompt."""
+        original = EvalSpec(
+            skill_name="s",
+            description="d",
+            user_prompt="Is ramen good?",
+        )
+        path = tmp_path / "roundtrip.eval.json"
+        path.write_text(json.dumps(original.to_dict()))
+        loaded = EvalSpec.from_file(path)
+        assert loaded.user_prompt == "Is ramen good?"

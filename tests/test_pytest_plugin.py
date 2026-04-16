@@ -426,17 +426,16 @@ def _blind_compare_factory(tmp_path: Path, *, cli_model: str | None = None):
 def _write_skill_with_eval(
     tmp_path: Path,
     name: str = "sushi",
-    test_args: str = "What's the best sushi?",
+    user_prompt: str | None = "What's the best sushi?",
     criteria: list[str] | None = None,
     eval_filename: str | None = None,
     grading_model: str = "claude-sonnet-4-6",
 ) -> tuple[Path, Path]:
     skill_path = tmp_path / f"{name}.md"
     skill_path.write_text(f"# {name}\n\nA skill.")
-    eval_data = {
+    eval_data: dict = {
         "skill_name": name,
         "description": f"Eval for {name}",
-        "test_args": test_args,
         "assertions": [],
         "grading_criteria": [
             {"id": f"c{i}", "criterion": c}
@@ -449,6 +448,8 @@ def _write_skill_with_eval(
         ],
         "grading_model": grading_model,
     }
+    if user_prompt is not None:
+        eval_data["user_prompt"] = user_prompt
     eval_path = tmp_path / (eval_filename or f"{name}.eval.json")
     eval_path.write_text(json.dumps(eval_data))
     return skill_path, eval_path
@@ -483,11 +484,11 @@ class TestClauditorBlindCompare:
 
     def test_clauditor_blind_compare_eval_path_override(self, tmp_path):
         """Explicit eval_path overrides sibling auto-discovery."""
-        # Sibling eval: different test_args than the override we'll pass.
+        # Sibling eval: different user_prompt than the override we'll pass.
         skill_path, _ = _write_skill_with_eval(
             tmp_path,
             name="ramen",
-            test_args="sibling prompt",
+            user_prompt="sibling prompt",
             criteria=["sibling criterion"],
         )
         # Override eval in a different location with distinct content.
@@ -498,7 +499,7 @@ class TestClauditorBlindCompare:
             json.dumps({
                 "skill_name": "ramen",
                 "description": "override",
-                "test_args": "override prompt",
+                "user_prompt": "override prompt",
                 "assertions": [],
                 "grading_criteria": [
                     {"id": "ov1", "criterion": "override criterion"},
@@ -589,10 +590,10 @@ class TestClauditorBlindCompare:
         call = mock_bc.await_args
         assert call.kwargs["model"] == "claude-opus-4-6"
 
-    def test_clauditor_blind_compare_raises_on_empty_test_args(self, tmp_path):
-        """Empty test_args in the spec propagates as ValueError."""
+    def test_clauditor_blind_compare_raises_on_missing_user_prompt(self, tmp_path):
+        """Missing user_prompt in the spec propagates as ValueError."""
         skill_path, _ = _write_skill_with_eval(
-            tmp_path, name="empty", test_args=""
+            tmp_path, name="empty", user_prompt=None
         )
         factory = _blind_compare_factory(tmp_path)
 
@@ -600,7 +601,7 @@ class TestClauditorBlindCompare:
             "clauditor.quality_grader.blind_compare",
             new=AsyncMock(return_value=_make_blind_report()),
         ):
-            with pytest.raises(ValueError, match="test_args"):
+            with pytest.raises(ValueError, match="user_prompt"):
                 factory(skill_path, "a", "b")
 
     def test_clauditor_blind_compare_reserved_fixture_name(self):

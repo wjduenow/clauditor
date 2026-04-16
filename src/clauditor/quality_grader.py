@@ -305,6 +305,8 @@ async def blind_compare(
 
     Requires the 'grader' extra: pip install clauditor[grader]
     """
+    if not user_prompt or not user_prompt.strip():
+        raise ValueError("blind_compare: user_prompt must be non-empty")
     if not output_a or not output_a.strip():
         raise ValueError("blind_compare: output_a must be non-empty")
     if not output_b or not output_b.strip():
@@ -502,11 +504,18 @@ def validate_blind_compare_spec(spec: SkillSpec) -> None:
             "No eval spec found (blind_compare_from_spec requires "
             "spec.eval_spec to be set)"
         )
-    user_prompt = spec.eval_spec.test_args or ""
+    raw = spec.eval_spec.user_prompt
+    if raw is not None and not isinstance(raw, str):
+        raise ValueError(
+            "blind_compare_from_spec: eval_spec.user_prompt must be a "
+            f"string, got {type(raw).__name__}"
+        )
+    user_prompt = raw or ""
     if not user_prompt.strip():
         raise ValueError(
-            "blind_compare_from_spec: eval_spec.test_args must be set "
-            "(used as the user prompt context for the judge)"
+            "blind_compare_from_spec: eval_spec.user_prompt must be a "
+            "non-empty, non-whitespace string (used as the user prompt "
+            "context for the judge)"
         )
 
 
@@ -527,13 +536,21 @@ async def blind_compare_from_spec(
     to :func:`blind_compare`.
 
     Raises :class:`ValueError` if ``spec.eval_spec`` is missing or if
-    ``eval_spec.test_args`` is empty/whitespace (it is used as the user prompt
-    context for the judge). Does not print to stdout or stderr (DEC-006).
+    ``eval_spec.user_prompt`` is empty/whitespace (it is used as the user
+    prompt context for the judge). Does not print to stdout or stderr
+    (DEC-006).
     """
     validate_blind_compare_spec(spec)
-    assert spec.eval_spec is not None  # for type-checker; validator enforces
+    # Validator above guarantees both are set, but use an explicit raise
+    # (not `assert`, which `python -O` strips) since ``user_prompt`` flows
+    # straight into an LLM prompt — defense in depth.
+    if spec.eval_spec is None or spec.eval_spec.user_prompt is None:  # pragma: no cover
+        raise RuntimeError(
+            "blind_compare_from_spec: validator failed to enforce "
+            "user_prompt invariant"
+        )
 
-    user_prompt = spec.eval_spec.test_args or ""
+    user_prompt = spec.eval_spec.user_prompt
 
     rubric_hint: str | None = None
     criteria = spec.eval_spec.grading_criteria

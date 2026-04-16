@@ -1300,7 +1300,7 @@ def _run_blind_compare(
 ) -> int:
     """Dispatch blind A/B comparison for a pair of ``.txt`` outputs.
 
-    Delegates spec/test_args/rubric/model resolution to
+    Delegates spec/user_prompt/rubric/model resolution to
     :func:`blind_compare_from_spec`; this wrapper handles file I/O, stderr
     reporting, and the ``_print_blind_report`` call. Both files are read as
     plain UTF-8. Returns 0 regardless of which side wins — blind compare is
@@ -1352,7 +1352,7 @@ def _run_blind_compare(
         )
         return 2
 
-    # US-002: all spec/test_args/rubric/model resolution happens inside
+    # US-002: all spec/user_prompt/rubric/model resolution happens inside
     # blind_compare_from_spec (shared with the pytest fixture from US-003).
     # We read the spec's model for the stderr progress line; the helper
     # resolves its own effective model internally. Validation already ran
