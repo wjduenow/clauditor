@@ -41,9 +41,9 @@ clauditor implements (and in places extends) the skill evaluation workflow descr
 | Longitudinal history | `.clauditor/history.jsonl` schema v3 + `clauditor trend --metric <dotted.path>` with ASCII sparklines |
 | Per-iteration workspace | `.clauditor/iteration-N/<skill>/` with `grading.json`, `timing.json`, and `run-*/output.{txt,jsonl}` captures |
 
-**Beyond the spec**, clauditor adds: trigger precision testing (`triggers.py`), a strict/extract `FORMAT_REGISTRY` invariant for canonical types, tiered section extraction (top-3 restaurants require more fields than the next 7), a reusable pytest plugin, and an `AssertionResult.kind` enum for programmatic filtering.
+**Beyond the spec**, clauditor adds: trigger precision testing (`triggers.py`), a strict/extract `FORMAT_REGISTRY` invariant for canonical types, tiered section extraction (top-3 restaurants require more fields than the next 7), a reusable pytest plugin, an `AssertionResult.kind` enum for programmatic filtering, `input_files` staging into per-run CWDs, a blind A/B judge with position-swap debiasing (`clauditor compare --blind`), automated with/without baseline pair runs (`clauditor.comparator.compare_ab`), always-pass assertion auditing, execution-transcript capture for root-cause analysis, and an LLM-driven skill improvement proposer (`clauditor suggest`).
 
-**Deliberately out of scope**: automated with/without pair runs, blind A/B judges, human-feedback capture, and LLM-driven skill improvement proposers. These are tracked as follow-up issues (#23–#27).
+**Deliberately out of scope**: human-in-the-loop feedback capture (`feedback.json`). clauditor is pure automation — it surfaces regressions and proposes edits, but the final skill-improvement loop is author-driven.
 
 ## Install
 
