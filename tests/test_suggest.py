@@ -587,6 +587,7 @@ class TestLoadSuggestInputMalformedJson:
                                 "passed": False,
                                 "message": "missing",
                                 "kind": "presence",
+                                "transcript_path": None,
                             },
                         ],
                     }
@@ -664,6 +665,7 @@ class TestLoadSuggestInputMalformedJson:
                                     "passed": False,
                                     "message": "msg",
                                     "kind": "presence",
+                                    "transcript_path": None,
                                 },
                             ],
                         }
@@ -732,6 +734,7 @@ class TestLoadSuggestInputMalformedJson:
                                     "passed": False,
                                     "message": "m",
                                     "kind": "presence",
+                                    "transcript_path": None,
                                 }
                             ],
                         }
@@ -771,6 +774,7 @@ class TestLoadSuggestInputMalformedJson:
                                 "passed": False,
                                 "message": "m",
                                 "kind": "presence",
+                                "transcript_path": None,
                             }
                         ],
                     },
@@ -804,6 +808,7 @@ class TestLoadSuggestInputMalformedJson:
                                 "passed": False,
                                 "message": "fails in run 0",
                                 "kind": "presence",
+                                "transcript_path": None,
                             },
                             {
                                 "id": "a2",
@@ -811,6 +816,7 @@ class TestLoadSuggestInputMalformedJson:
                                 "passed": True,
                                 "message": "",
                                 "kind": "presence",
+                                "transcript_path": None,
                             },
                         ],
                     },
@@ -823,6 +829,7 @@ class TestLoadSuggestInputMalformedJson:
                                 "passed": False,
                                 "message": "fails in run 1 too",
                                 "kind": "presence",
+                                "transcript_path": None,
                             },
                             {
                                 "id": "a3",
@@ -830,6 +837,7 @@ class TestLoadSuggestInputMalformedJson:
                                 "passed": False,
                                 "message": "only fails in variance",
                                 "kind": "presence",
+                                "transcript_path": None,
                             },
                         ],
                     },
@@ -995,6 +1003,7 @@ class TestLoadSuggestInputCRLF:
                                     "passed": False,
                                     "message": "missing",
                                     "kind": "presence",
+                                    "transcript_path": None,
                                 }
                             ],
                         }

@@ -977,22 +977,6 @@ class TestTranscriptPathField:
         restored = AssertionResult.from_json_dict(payload)
         assert restored.transcript_path is None
 
-    def test_from_json_dict_missing_key_tolerant(self):
-        """Older fixtures lacking the key load with transcript_path=None."""
-        legacy = {
-            "id": "venues",
-            "name": "contains:Venues",
-            "passed": True,
-            "message": "Found 'Venues'",
-            "kind": "presence",
-            "evidence": None,
-            "raw_data": None,
-            # no transcript_path key at all
-        }
-        restored = AssertionResult.from_json_dict(legacy)
-        assert restored.transcript_path is None
-        assert restored.id == "venues"
-
     def test_assertion_set_round_trip_threads_transcript_path(self):
         results = [
             AssertionResult(
@@ -1023,23 +1007,3 @@ class TestTranscriptPathField:
         )
         assert restored.results[1].transcript_path is None
 
-    def test_assertion_set_from_json_back_compat(self):
-        """Legacy assertions.json without transcript_path loads cleanly."""
-        legacy_payload = {
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "results": [
-                {
-                    "id": "a1",
-                    "name": "contains:X",
-                    "passed": True,
-                    "message": "ok",
-                    "kind": "presence",
-                    "evidence": None,
-                    "raw_data": None,
-                },
-            ],
-        }
-        restored = AssertionSet.from_json(legacy_payload)
-        assert restored.results[0].transcript_path is None
-        assert restored.results[0].id == "a1"

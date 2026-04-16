@@ -1331,14 +1331,6 @@ class TestCmdGradeSaveDiff:
         assert "score_mean" in payload["variance"]
         assert "stability" in payload["variance"]
 
-    def test_grade_save_flag_removed(self, tmp_path, monkeypatch, capsys):
-        """argparse rejects --save with an unrecognized argument error."""
-        monkeypatch.chdir(tmp_path)
-        with pytest.raises(SystemExit):
-            main(["grade", "skill.md", "--save"])
-        err = capsys.readouterr().err
-        assert "--save" in err or "unrecognized" in err
-
     def test_grade_crash_leaves_no_iteration_dir(self, tmp_path, monkeypatch):
         """An exception mid-write must not leave a finalized iteration-N/."""
         monkeypatch.chdir(tmp_path)
@@ -2864,34 +2856,6 @@ class TestCmdCompareNumericRefs:
         err = capsys.readouterr().err
         assert "invalid skill name" in err
 
-    def test_compare_legacy_grade_json_files(self, tmp_path, capsys):
-        """Regression: legacy two .grade.json file form still works."""
-        before = tmp_path / "before.grade.json"
-        after = tmp_path / "after.grade.json"
-        for p, passes in [
-            (before, {"c1": True}),
-            (after, {"c1": True}),
-        ]:
-            report = GradingReport(
-                skill_name=p.stem,
-                model="test-model",
-                results=[
-                    GradingResult(
-                        criterion=c,
-                        passed=v,
-                        score=0.9 if v else 0.3,
-                        evidence="",
-                        reasoning="",
-                    )
-                    for c, v in passes.items()
-                ],
-                duration_seconds=0.0,
-            )
-            p.write_text(report.to_json())
-        rc = main(["compare", str(before), str(after)])
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "no flips" in out
 
 
 class TestCmdCompareBlind:
@@ -4824,6 +4788,7 @@ class TestCmdSuggest:
                             "passed": True,
                             "kind": "contains",
                             "message": "ok",
+                            "transcript_path": None,
                         }
                     ],
                 }
@@ -4848,6 +4813,7 @@ class TestCmdSuggest:
                             "passed": False,
                             "kind": "contains",
                             "message": "no match",
+                            "transcript_path": None,
                         }
                     ],
                 }

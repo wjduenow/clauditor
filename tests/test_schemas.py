@@ -672,22 +672,6 @@ class TestFromFile:
         with pytest.raises(ValueError, match=r"duplicate id 'shared'"):
             EvalSpec.from_file(path)
 
-    def test_from_file_legacy_pattern_key_rejected(self, tmp_path):
-        """DEC-006: legacy 'pattern' key is rejected with a migration message."""
-        data = {
-            "skill_name": "test",
-            "sections": [
-                {
-                    "name": "S",
-                    "fields": [
-                        {"id": "f1", "name": "f1", "required": True, "pattern": r"\d+"},
-                    ],
-                }
-            ],
-        }
-        path = _write_json(tmp_path, data)
-        with pytest.raises(ValueError, match="no longer supported"):
-            EvalSpec.from_file(path)
 
 
 class TestToDict:
