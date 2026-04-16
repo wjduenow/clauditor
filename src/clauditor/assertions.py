@@ -70,7 +70,7 @@ class AssertionResult:
             kind=data["kind"],
             evidence=data.get("evidence"),
             raw_data=data.get("raw_data"),
-            transcript_path=data["transcript_path"],
+            transcript_path=data.get("transcript_path"),
         )
 
 

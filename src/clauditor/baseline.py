@@ -1,4 +1,4 @@
-"""Pure compute for the ``--baseline`` phase of ``clauditor grade``.
+"""Compute helper for the ``--baseline`` phase of ``clauditor grade``.
 
 Aggregates Layer 1 assertions, Layer 2 extraction (when sections are
 declared), and Layer 3 grading for a baseline (no-skill-prefix) run.
@@ -101,10 +101,10 @@ def compute_baseline(
 ) -> BaselineReports:
     """Compute all baseline grading layers from an already-run result.
 
-    Pure function: takes the already-executed :class:`SkillResult` and the
-    evaluation spec, runs L1 assertions synchronously, and awaits L2/L3
-    grading via ``asyncio.run``. Returns a :class:`BaselineReports`
-    dataclass — no file I/O, no subprocess invocation, no stderr output.
+    Takes the already-executed :class:`SkillResult` and the evaluation
+    spec, runs L1 assertions synchronously, and awaits L2/L3 grading via
+    ``asyncio.run``. Returns a :class:`BaselineReports` dataclass — no
+    file I/O, no subprocess invocation, no stderr output.
 
     Parameters are keyword-only to match the codebase convention and keep
     call sites readable.
