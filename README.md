@@ -123,7 +123,46 @@ def test_with_eval_spec(clauditor_spec):
     assert results.passed, results.summary()
 ```
 
+## How It Works
+
+```mermaid
+flowchart LR
+    A["clauditor grade\nskill.md"] --> B["Run skill\n(claude -p)"]
+    B --> C["Skill output"]
+    C --> D["L1 Assertions\n(free)"]
+    C --> E["L2 Extraction\n(Haiku)"]
+    C --> F["L3 Quality\n(Sonnet)"]
+    D --> G["Persist + Report"]
+    E --> G
+    F --> G
+
+    style D fill:#c8e6c9
+    style E fill:#fff9c4
+    style F fill:#ffccbc
+```
+
+The skill output flows through three independent evaluation layers, each with different cost/fidelity tradeoffs. Results are persisted to `.clauditor/iteration-N/<skill>/` and appended to `history.jsonl` for trend tracking. See [docs/architecture.md](docs/architecture.md) for the full flow.
+
 ## Three Layers of Validation
+
+```mermaid
+flowchart TD
+    SPEC["eval.json"] --> L1_IN["assertions[]"]
+    SPEC --> L2_IN["sections[].tiers[].fields[]"]
+    SPEC --> L3_IN["grading_criteria[]"]
+
+    L1_IN --> L1["Layer 1\nString matching\nNo API calls"]
+    L2_IN --> L2["Layer 2\nSchema extraction\nHaiku"]
+    L3_IN --> L3["Layer 3\nRubric grading\nSonnet"]
+
+    L1 --> R1["assertions.json"]
+    L2 --> R2["extraction.json"]
+    L3 --> R3["grading.json"]
+
+    style L1 fill:#c8e6c9
+    style L2 fill:#fff9c4
+    style L3 fill:#ffccbc
+```
 
 ### Layer 1: Deterministic Assertions (free, instant)
 
