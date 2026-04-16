@@ -163,11 +163,11 @@ class TestAppendAndRead:
         with pytest.raises(TypeError):
             append_record("s", 1.0, 1.0, {}, path=path)  # type: ignore[call-arg]
 
-    def test_schema_version_v3_written(self, tmp_path):
+    def test_schema_version_written(self, tmp_path):
         path = tmp_path / "history.jsonl"
         append_record("s", 1.0, 1.0, {"k": 1}, command="grade", path=path)
         records = read_records(path=path)
-        assert records[0]["schema_version"] == 3
+        assert records[0]["schema_version"] == SCHEMA_VERSION
         assert records[0]["command"] == "grade"
         assert records[0]["iteration"] is None
         assert records[0]["workspace_path"] is None
@@ -188,10 +188,10 @@ class TestAppendAndRead:
         assert len(read_records(path=path)) == 3
 
 
-class TestAppendV3:
-    """Schema v3: iteration + workspace_path fields (US-005)."""
+class TestAppendRecordShape:
+    """Record shape: iteration + workspace_path fields."""
 
-    def test_append_v3_record_shape(self, tmp_path):
+    def test_append_record_shape(self, tmp_path):
         path = tmp_path / "history.jsonl"
         append_record(
             "s",
@@ -206,11 +206,11 @@ class TestAppendV3:
         records = read_records(path=path)
         assert len(records) == 1
         rec = records[0]
-        assert rec["schema_version"] == 3
+        assert rec["schema_version"] == SCHEMA_VERSION
         assert rec["iteration"] == 3
         assert rec["workspace_path"] == ".clauditor/iteration-3/foo"
 
-    def test_append_v3_defaults_none(self, tmp_path):
+    def test_append_defaults_none(self, tmp_path):
         path = tmp_path / "history.jsonl"
         append_record("s", 1.0, 1.0, {}, command="grade", path=path)
         rec = read_records(path=path)[0]
@@ -221,12 +221,12 @@ class TestAppendV3:
 class TestSchemaVersionEnforcement:
     """read_records hard-requires schema_version=3 (DEC-003)."""
 
-    def test_v2_record_skipped_with_warning(self, tmp_path, capsys):
+    def test_wrong_version_skipped_with_warning(self, tmp_path, capsys):
         import json as _json
 
         path = tmp_path / "history.jsonl"
-        v2_record = {
-            "schema_version": 2,
+        bad_record = {
+            "schema_version": 99,
             "command": "grade",
             "ts": "2026-01-01T00:00:00+00:00",
             "skill": "skill-a",
@@ -234,35 +234,34 @@ class TestSchemaVersionEnforcement:
             "mean_score": 0.6,
             "metrics": {},
         }
-        path.write_text(_json.dumps(v2_record) + "\n")
+        path.write_text(_json.dumps(bad_record) + "\n")
 
         records = read_records(path=path)
         assert len(records) == 0
         err = capsys.readouterr().err
-        assert "schema_version=2" in err
-        assert "expected 3" in err
+        assert "schema_version=99" in err
+        assert f"expected {SCHEMA_VERSION}" in err
 
-    def test_v1_record_skipped_with_warning(self, tmp_path, capsys):
+    def test_missing_version_skipped_with_warning(self, tmp_path, capsys):
         import json as _json
 
         path = tmp_path / "history.jsonl"
-        # v1 records have no schema_version key at all
-        v1_record = {
+        no_version = {
             "ts": "2025-01-01T00:00:00+00:00",
             "skill": "skill-a",
             "pass_rate": 0.5,
             "mean_score": 0.6,
             "metrics": {},
         }
-        path.write_text(_json.dumps(v1_record) + "\n")
+        path.write_text(_json.dumps(no_version) + "\n")
 
         records = read_records(path=path)
         assert len(records) == 0
         err = capsys.readouterr().err
         assert "schema_version=None" in err
-        assert "expected 3" in err
+        assert f"expected {SCHEMA_VERSION}" in err
 
-    def test_v3_record_passes(self, tmp_path, capsys):
+    def test_valid_record_passes(self, tmp_path, capsys):
         path = tmp_path / "history.jsonl"
         append_record(
             "skill-a", 0.9, 0.85, {}, command="grade", path=path,
@@ -271,25 +270,19 @@ class TestSchemaVersionEnforcement:
 
         records = read_records(path=path)
         assert len(records) == 1
-        assert records[0]["schema_version"] == 3
+        assert records[0]["schema_version"] == SCHEMA_VERSION
         assert records[0]["iteration"] == 2
-        # No warnings emitted
         err = capsys.readouterr().err
         assert "schema_version" not in err
 
-    def test_mixed_file_only_v3_returned(self, tmp_path, capsys):
+    def test_mixed_file_only_valid_returned(self, tmp_path, capsys):
         import json as _json
 
         path = tmp_path / "history.jsonl"
-        v1 = {"schema_version": 1, "skill": "a", "pass_rate": 0.1}
-        v2 = {
-            "schema_version": 2,
-            "skill": "a",
-            "pass_rate": 0.5,
-            "metrics": {},
-        }
-        v3 = {
-            "schema_version": 3,
+        bad = {"schema_version": 99, "skill": "a", "pass_rate": 0.1}
+        no_ver = {"skill": "a", "pass_rate": 0.5, "metrics": {}}
+        good = {
+            "schema_version": SCHEMA_VERSION,
             "command": "grade",
             "ts": "t",
             "skill": "a",
@@ -300,18 +293,18 @@ class TestSchemaVersionEnforcement:
             "workspace_path": None,
         }
         lines = [
-            _json.dumps(v1),
-            _json.dumps(v2),
-            _json.dumps(v3),
+            _json.dumps(bad),
+            _json.dumps(no_ver),
+            _json.dumps(good),
         ]
         path.write_text("\n".join(lines) + "\n")
 
         records = read_records(path=path)
         assert len(records) == 1
-        assert records[0]["schema_version"] == 3
+        assert records[0]["schema_version"] == SCHEMA_VERSION
         err = capsys.readouterr().err
-        assert "schema_version=1" in err
-        assert "schema_version=2" in err
+        assert "schema_version=99" in err
+        assert "schema_version=None" in err
 
 
 def _concurrent_writer(args):
@@ -361,7 +354,7 @@ class TestConcurrentAppend:
         seen_iters = set()
         for line in lines:
             rec = _json.loads(line)  # would raise if interleaved/corrupt
-            assert rec["schema_version"] == 3
+            assert rec["schema_version"] == SCHEMA_VERSION
             assert isinstance(rec["iteration"], int)
             seen_iters.add(rec["iteration"])
         assert seen_iters == set(range(n))
@@ -402,7 +395,7 @@ class TestFileLockFallback:
 
         records = read_records(path=path)
         assert len(records) == 1
-        assert records[0]["schema_version"] == 3
+        assert records[0]["schema_version"] == SCHEMA_VERSION
         err = capsys.readouterr().err
         assert "fcntl.flock unsupported" in err
 

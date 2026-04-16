@@ -3804,8 +3804,8 @@ class TestCmdTrend:
         data_lines = [ln for ln in out.splitlines() if "\t" in ln]
         assert len(data_lines) == 5
 
-    def test_trend_skips_v2_records(self, tmp_path, monkeypatch, capsys):
-        """cmd_trend skips v2 records; only v3 records appear (DEC-003)."""
+    def test_trend_skips_bad_version_records(self, tmp_path, monkeypatch, capsys):
+        """cmd_trend skips records with wrong schema_version (DEC-003)."""
         import json as _json
 
         from clauditor import history
@@ -3814,9 +3814,8 @@ class TestCmdTrend:
         path = tmp_path / ".clauditor" / "history.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        # One v2 record — should be skipped by the reader.
-        v2_rec = {
-            "schema_version": 2,
+        bad_rec = {
+            "schema_version": 99,
             "command": "grade",
             "ts": "2026-01-01T00:00:00+00:00",
             "skill": "test-skill",
@@ -3825,9 +3824,9 @@ class TestCmdTrend:
             "metrics": {},
         }
         with path.open("w", encoding="utf-8") as f:
-            f.write(_json.dumps(v2_rec) + "\n")
+            f.write(_json.dumps(bad_rec) + "\n")
 
-        # One v3 record via the API.
+        # One valid record via the API.
         history.append_record(
             "test-skill",
             0.9,
@@ -3842,7 +3841,7 @@ class TestCmdTrend:
         rc = main(["trend", "test-skill", "--metric", "pass_rate"])
         assert rc == 0
         out = capsys.readouterr().out
-        # v2 record skipped, only v3 record appears.
+        # Bad record skipped, only valid record appears.
         assert "0.4" not in out
         assert "0.9" in out
 
@@ -4113,7 +4112,7 @@ class TestCmdGradeHistory:
         assert record["skill"] == "test-skill"
         assert record["pass_rate"] == 1.0
         assert record["mean_score"] == 0.9
-        assert record["schema_version"] == 3
+        assert record["schema_version"] == 1
         assert record["command"] == "grade"
 
     def test_grade_history_records_metrics(self, tmp_path, monkeypatch):
@@ -4312,7 +4311,7 @@ class TestCmdGradeHistory:
     def test_grade_history_record_has_iteration_and_workspace_path(
         self, tmp_path, monkeypatch
     ):
-        """history.jsonl records carry iteration + workspace_path (schema v3)."""
+        """history.jsonl records carry iteration + workspace_path."""
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "output.txt"
         output_file.write_text("hi")
@@ -4451,7 +4450,7 @@ class TestCmdExtractHistory:
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["skill"] == "test-skill"
-        assert record["schema_version"] == 3
+        assert record["schema_version"] == 1
         assert record["command"] == "extract"
         assert record["pass_rate"] is None
         assert record["mean_score"] is None
@@ -4549,7 +4548,7 @@ class TestCmdValidateHistory:
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["skill"] == "test-skill"
-        assert record["schema_version"] == 3
+        assert record["schema_version"] == 1
         assert record["command"] == "validate"
         # Layer 1 pass_rate is 1.0 (the "contains hello" assertion passes)
         assert record["pass_rate"] == 1.0

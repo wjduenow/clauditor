@@ -407,7 +407,7 @@ Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 1,
   "command": "grade",
   "ts": "2026-04-13T15:00:00+00:00",
   "skill": "find-restaurants",

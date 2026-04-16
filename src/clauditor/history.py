@@ -6,10 +6,9 @@ Appends a JSON line per grade run to ``.clauditor/history.jsonl`` so the
 ASCII-only (DEC-014): the sparkline uses ``"_.-=#"`` glyphs — no Unicode
 block characters.
 
-Schema v3 (US-005): each record is a JSON object with the following
-top-level keys:
+Each record is a JSON object with the following top-level keys:
 
-- ``schema_version``: int, always ``3``
+- ``schema_version``: int, always ``1``
 - ``command``: one of ``"grade"``, ``"extract"``, ``"validate"``
 - ``ts``: ISO-8601 UTC timestamp
 - ``skill``: skill name
@@ -19,12 +18,8 @@ top-level keys:
 - ``iteration``: int or None — Ralph iteration number, when known
 - ``workspace_path``: str or None — workspace dir for this run, when known
 
-The two new v3 fields (``iteration``, ``workspace_path``) are always
-written, even when ``None``, so the on-disk record shape is predictable.
-
-All history records are schema v3. :func:`read_records` hard-skips any
-record whose ``schema_version`` is not ``3``, emitting a stderr warning
-per ``.claude/rules/json-schema-version.md``.
+``iteration`` and ``workspace_path`` are always written, even when
+``None``, so the on-disk record shape is predictable.
 
 Concurrent appends from multiple processes are serialized via a
 ``fcntl.flock`` exclusive lock on ``<history_dir>/.lock``.
@@ -73,7 +68,7 @@ def _default_path() -> Path:
 
 
 SPARK_GLYPHS = "_.-=#"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 1
 
 _FLOCK_UNSUPPORTED_WARNED = False
 
@@ -138,10 +133,7 @@ def append_record(
     tests can monkeypatch the module attribute.
 
     ``command`` is required (keyword-only) and identifies which clauditor
-    subcommand produced the record. Every written record includes
-    ``schema_version: 3`` at the top level along with the v3 fields
-    ``iteration`` and ``workspace_path`` (always present, possibly
-    ``None``).
+    subcommand produced the record.
 
     Concurrent appends from multiple processes are serialized via an
     ``fcntl.flock`` exclusive lock on ``<history_parent>/.lock`` so each
@@ -175,8 +167,8 @@ def append_record(
 def _check_schema_version(data: dict, source: Path, lineno: int) -> bool:
     """Return ``True`` if ``data`` has the expected schema version.
 
-    Non-v3 records are skipped with a stderr warning per
-    ``.claude/rules/json-schema-version.md``.
+    Records with a mismatched version are skipped with a stderr warning
+    per ``.claude/rules/json-schema-version.md``.
     """
     version = data.get("schema_version")
     if version != SCHEMA_VERSION:
@@ -195,10 +187,10 @@ def read_records(
 ) -> list[dict]:
     """Read all history records, optionally filtered by skill.
 
-    Missing file -> empty list. Corrupt lines are skipped with a warning to
-    stderr. Records with ``schema_version`` other than 3 are skipped with a
-    warning. ``path`` defaults to :data:`_DEFAULT_PATH` resolved at call
-    time so tests can monkeypatch the module attribute.
+    Missing file -> empty list. Corrupt lines and records with an unexpected
+    ``schema_version`` are skipped with a warning to stderr. ``path``
+    defaults to :data:`_DEFAULT_PATH` resolved at call time so tests can
+    monkeypatch the module attribute.
     """
     if path is None:
         path = _default_path()
