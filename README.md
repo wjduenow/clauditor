@@ -279,7 +279,7 @@ clauditor compare --skill my-skill --from 1 --to 2
 # 2. Iteration directory paths
 clauditor compare .clauditor/iteration-1/my-skill .clauditor/iteration-2/my-skill
 
-# 3. Legacy grade-report files
+# 3. Saved grade-report files
 clauditor compare before.grade.json after.grade.json
 
 # Or re-grade two raw captures against a spec:
@@ -602,9 +602,9 @@ bare hostnames too.
 Field-level checks still run over all extracted entries so you see both
 the count failure and any per-entry failures.
 
-## Migration notes
+## Notes
 
-- **`history.jsonl` is schema v3** with `iteration` and `workspace_path` fields on `grade` records. The reader hard-requires `schema_version: 3`; older records are skipped with a warning.
+- **`history.jsonl` uses schema v3** with `iteration` and `workspace_path` fields on `grade` records. The reader requires `schema_version: 3`; records with a different version are skipped with a warning.
 - **`.clauditor/` is anchored at the repo root** (walking up for `.git/` or `.claude/`), so running `grade` from a subdirectory writes to the same workspace as running it from the top.
 
 ## Reference docs
