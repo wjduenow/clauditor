@@ -5,7 +5,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/41
 - **Branch:** `feature/41-legacy-audit`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/41-legacy-audit`
-- **Phase:** detailing
+- **Phase:** devolved
+- **PR:** https://github.com/wjduenow/clauditor/pull/42
 - **Sessions:** 1 (2026-04-15)
 
 ## Ticket summary
@@ -327,8 +328,22 @@ No story violates any rule.
 
 ## Beads Manifest
 
-*(populated in Phase 7)*
+- **Epic:** `clauditor-4ke` — #41: Legacy/backcompat audit and removal
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/41-legacy-audit`
+- **Branch:** `feature/41-legacy-audit`
+- **PR:** https://github.com/wjduenow/clauditor/pull/42
+
+| Bead ID | Story | Depends on |
+|---|---|---|
+| `clauditor-4ke.1` | US-001: Safe-delete bulk removal | — |
+| `clauditor-4ke.2` | US-002: Enforce history.jsonl schema v3 | .1 |
+| `clauditor-4ke.3` | US-003: Drop flat-fields eval-spec parser | .2 |
+| `clauditor-4ke.4` | US-004: GradingReport required fields | .3 |
+| `clauditor-4ke.5` | US-005: Refactor _run_baseline_phase | .4 |
+| `clauditor-4ke.6` | US-006: README.md final sweep | .5 |
+| `clauditor-4ke.7` | QG-001: Quality Gate | .6 |
+| `clauditor-4ke.8` | PM-001: Patterns & Memory | .7 |
 
 ## Session Notes
 
-**2026-04-15 — Session 1:** Discovery phase. Fetched #41, created worktree, ran three parallel audit subagents (keyword, structural, docs). Consolidated 17 primary findings into 4 action categories + 7 explicit non-findings. Awaiting approval checkpoint before Phase 2.
+**2026-04-15 — Session 1:** Discovery phase. Fetched #41, created worktree, ran three parallel audit subagents (keyword, structural, docs). Consolidated 17 primary findings into 4 action categories + 7 explicit non-findings. User approved all categories: bulk safe-delete, history v3 enforcement, flat-fields removal, GradingReport required fields, _run_baseline_phase refactor (option a), README sweep. Devolved to 8 beads (epic clauditor-4ke). Draft PR #42 published.
