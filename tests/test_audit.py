@@ -255,6 +255,40 @@ class TestLoadIterations:
         assert layers == {"L1", "L2", "L3"}
 
 
+    def test_extraction_entry_missing_passed_skipped(self, tmp_path: Path) -> None:
+        """Extraction entries without a 'passed' key are silently skipped."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        extraction = {
+            "schema_version": 1,
+            "skill_name": "s",
+            "model": "test",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {
+                "f1": [
+                    {"field_name": "f1", "section": "s", "tier": "required",
+                     "entry_index": 0, "required": True, "passed": True,
+                     "presence_passed": True, "format_passed": None,
+                     "evidence": None},
+                    {"field_name": "f2", "section": "s", "tier": "required",
+                     "entry_index": 1, "required": True,
+                     "presence_passed": False, "format_passed": None,
+                     "evidence": None},
+                ],
+            },
+        }
+        (skill_dir / "extraction.json").write_text(
+            json.dumps(extraction, indent=2) + "\n"
+        )
+        records, _ = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
+        l2 = [r for r in records if r.layer == "L2"]
+        assert len(l2) == 1
+        assert l2[0].passed is True
+
+
 # --------------------------------------------------------------------------- #
 # aggregate                                                                    #
 # --------------------------------------------------------------------------- #

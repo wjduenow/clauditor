@@ -110,6 +110,10 @@ def criterion_text(entry: object) -> str:
 
 def _resolve_field_format(field_dict: dict) -> str | None:
     """Resolve the ``format`` value for a field entry during spec load."""
+    if "pattern" in field_dict:
+        raise ValueError(
+            f"Field {field_dict.get('name')!r}: use 'format', not 'pattern'"
+        )
     return field_dict.get("format")
 
 
@@ -283,7 +287,10 @@ class EvalSpec:
                     "wrap fields inside a tiers[] entry"
                 )
             else:
-                tiers = []
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"sections[{si}] is missing 'tiers'"
+                )
             sections.append(
                 SectionRequirement(
                     name=s["name"],

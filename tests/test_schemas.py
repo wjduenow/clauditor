@@ -1195,6 +1195,39 @@ class TestTieredSections:
         with pytest.raises(ValueError, match="flat .fields. without .tiers"):
             EvalSpec.from_file(path)
 
+    def test_pattern_key_rejected(self, tmp_path):
+        """Field entries using 'pattern' instead of 'format' are rejected."""
+        data = {
+            "skill_name": "test",
+            "sections": [
+                {
+                    "name": "S",
+                    "tiers": [
+                        {
+                            "label": "required",
+                            "fields": [
+                                {"id": "f1", "name": "f1", "required": True,
+                                 "pattern": r"\d+"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(ValueError, match="use 'format', not 'pattern'"):
+            EvalSpec.from_file(path)
+
+    def test_section_missing_tiers_rejected(self, tmp_path):
+        """Section with neither 'tiers' nor 'fields' raises ValueError."""
+        data = {
+            "skill_name": "test",
+            "sections": [{"name": "S"}],
+        }
+        path = _write_json(tmp_path, data)
+        with pytest.raises(ValueError, match="missing 'tiers'"):
+            EvalSpec.from_file(path)
+
     def test_tier_description_preserved_through_roundtrip(self, tmp_path):
         """Tier description field survives from_file -> to_dict -> from_file."""
         path1 = _write_json(tmp_path, TIERED_SECTION_DATA, name="first.json")
