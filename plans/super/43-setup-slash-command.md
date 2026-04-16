@@ -2,10 +2,10 @@
 
 ## Meta
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/43
-- **Branch:** `feature/43-setup-slash-command` *(to be created)*
-- **Worktree:** `worktrees/clauditor/feature/43-setup-slash-command` *(to be created)*
-- **Phase:** `detailing`
-- **PR:** _pending_
+- **Branch:** `feature/43-setup-slash-command`
+- **Worktree:** _n/a (working on branch directly)_
+- **Phase:** `devolved`
+- **PR:** https://github.com/wjduenow/clauditor/pull/44
 - **Sessions:** 1
 - **Last session:** 2026-04-16
 
@@ -991,7 +991,27 @@ US-006 and US-008 need US-005.
 
 ## Beads Manifest
 
-_(Pending — populated in Phase 7.)_
+- **Epic:** `clauditor-3xy`
+- **Branch:** `feature/43-setup-slash-command`
+- **PR:** https://github.com/wjduenow/clauditor/pull/44
+
+| Story | Bead ID | Depends on | Ready to start |
+|---|---|---|---|
+| US-001 Packaging foundation | `clauditor-3xy.1` | — | ✅ |
+| US-002 Bundled skill content | `clauditor-3xy.2` | US-001 | |
+| US-003 Hatch build hook | `clauditor-3xy.3` | US-002 | |
+| US-004 Pure resolver | `clauditor-3xy.4` | — | ✅ |
+| US-005 CLI glue | `clauditor-3xy.5` | US-002, US-004 | |
+| US-006 `cmd_doctor` check | `clauditor-3xy.6` | US-005 | |
+| US-007 `skills-ref` CI | `clauditor-3xy.7` | US-002 | |
+| US-008 Docs | `clauditor-3xy.8` | US-005 | |
+| US-009 Amend GH #43 | `clauditor-3xy.9` | — | ✅ |
+| US-010 Quality Gate | `clauditor-3xy.10` | US-001..US-008 | |
+| US-011 Patterns & Memory | `clauditor-3xy.11` (P4) | US-010 | |
+
+17 dependency edges wired. `bd ready` at devolve time shows
+`{clauditor-3xy.1, clauditor-3xy.4, clauditor-3xy.9}` as the kickoff
+set.
 
 ---
 
@@ -1018,4 +1038,14 @@ path is `.claude/skills/<name>/SKILL.md` (directory), not
 enumerated, Claude Code extensions identified. Added Q7–Q12.
 
 **Refinement complete.** User resolved Q7–Q12 + both blockers. 17
-decisions recorded. Next: move to Detailing (generate stories).
+decisions recorded.
+
+**Detailing complete.** 11 stories drafted (9 implementation + Quality
+Gate + Patterns & Memory), each traceable to specific DEC-### entries.
+
+**Published.** Feature branch `feature/43-setup-slash-command` pushed;
+draft PR #44 opened against `dev`.
+
+**Approved and devolved.** Epic `clauditor-3xy` + 11 beads tasks
+created with 17 dependency edges. Three kickoff tasks ready:
+`clauditor-3xy.{1,4,9}`.
