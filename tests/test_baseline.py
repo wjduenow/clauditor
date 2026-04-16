@@ -66,7 +66,7 @@ def _make_grading_report(
     )
 
 
-def _make_eval_spec(*, with_sections: bool = False) -> EvalSpec:
+def _make_eval_spec() -> EvalSpec:
     spec = EvalSpec(
         skill_name="test-skill",
         test_args="test args",
