@@ -10,7 +10,7 @@
 [![License](https://img.shields.io/github/license/wjduenow/clauditor)](https://github.com/wjduenow/clauditor/blob/dev/LICENSE)
 [![codecov](https://codecov.io/gh/wjduenow/clauditor/branch/dev/graph/badge.svg)](https://codecov.io/gh/wjduenow/clauditor)
 
-Auditor for Claude Code skills and slash commands. Catches when your skill produces the wrong shape, not just the wrong answer — layered evaluation from free deterministic assertions through LLM-graded quality rubrics.
+Auditor for AgentSkills.io skills and Claude Integrations. Catches when your skill produces the wrong shape, not just the wrong answer — layered evaluation from free deterministic assertions through LLM-graded quality rubrics.
 
 <details>
 <summary>Contents</summary>
