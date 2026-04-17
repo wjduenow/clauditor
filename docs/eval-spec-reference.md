@@ -58,21 +58,26 @@ A complete eval spec with all three layers:
   "input_files": ["fixtures/sample-venues.csv"],
 
   "assertions": [
-    {"type": "contains", "value": "Venues"},
-    {"type": "has_entries", "value": "3"},
-    {"type": "has_urls", "value": "3"},
-    {"type": "min_length", "value": "500"},
-    {"type": "not_contains", "value": "Error"}
+    {"id": "contains_venues", "type": "contains", "value": "Venues"},
+    {"id": "has_entries_3", "type": "has_entries", "value": "3"},
+    {"id": "has_urls_3", "type": "has_urls", "value": "3"},
+    {"id": "min_length_500", "type": "min_length", "value": "500"},
+    {"id": "no_error", "type": "not_contains", "value": "Error"}
   ],
 
   "sections": [
     {
       "name": "Venues",
-      "min_entries": 3,
-      "fields": [
-        {"name": "name", "required": true},
-        {"name": "address", "required": true},
-        {"name": "website", "required": true}
+      "tiers": [
+        {
+          "label": "default",
+          "min_entries": 3,
+          "fields": [
+            {"id": "venue_name", "name": "name", "required": true},
+            {"id": "venue_address", "name": "address", "required": true},
+            {"id": "venue_website", "name": "website", "required": true}
+          ]
+        }
       ]
     }
   ],
@@ -81,9 +86,9 @@ A complete eval spec with all three layers:
   "output_files": ["research/*.md", "research/*.json"],
 
   "grading_criteria": [
-    "Are all venues within the specified distance?",
-    "Are venues appropriate for the specified age range?",
-    "Do cost tiers match the budget filter?"
+    {"id": "distance_match", "criterion": "Are all venues within the specified distance?"},
+    {"id": "age_appropriate", "criterion": "Are venues appropriate for the specified age range?"},
+    {"id": "cost_tier_match", "criterion": "Do cost tiers match the budget filter?"}
   ],
   "grading_model": "claude-sonnet-4-6",
   "grade_thresholds": {
@@ -130,13 +135,18 @@ extracted value. `format` does double duty:
   "sections": [
     {
       "name": "Restaurants",
-      "min_entries": 1,
-      "max_entries": 3,
-      "fields": [
-        {"name": "name",    "required": true},
-        {"name": "phone",   "required": true,  "format": "phone_us"},
-        {"name": "website", "required": true,  "format": "domain"},
-        {"name": "zip",     "required": false, "format": "^\\d{5}$"}
+      "tiers": [
+        {
+          "label": "default",
+          "min_entries": 1,
+          "max_entries": 3,
+          "fields": [
+            {"id": "r_name",    "name": "name",    "required": true},
+            {"id": "r_phone",   "name": "phone",   "required": true,  "format": "phone_us"},
+            {"id": "r_website", "name": "website", "required": true,  "format": "domain"},
+            {"id": "r_zip",     "name": "zip",     "required": false, "format": "^\\d{5}$"}
+          ]
+        }
       ]
     }
   ]

@@ -17,18 +17,23 @@ This creates `my-skill.eval.json` alongside your skill file:
   "skill_name": "my-skill",
   "test_args": "\"San Jose, CA\" --depth quick",
   "assertions": [
-    {"type": "contains", "value": "Results"},
-    {"type": "has_entries", "value": "3"},
-    {"type": "has_urls", "value": "3"},
-    {"type": "min_length", "value": "500"}
+    {"id": "contains_results", "type": "contains", "value": "Results"},
+    {"id": "has_entries_3",    "type": "has_entries", "value": "3"},
+    {"id": "has_urls_3",       "type": "has_urls", "value": "3"},
+    {"id": "min_length_500",   "type": "min_length", "value": "500"}
   ],
   "sections": [
     {
       "name": "Results",
-      "min_entries": 3,
-      "fields": [
-        {"name": "name", "required": true},
-        {"name": "address", "required": true}
+      "tiers": [
+        {
+          "label": "default",
+          "min_entries": 3,
+          "fields": [
+            {"id": "result_name",    "name": "name",    "required": true},
+            {"id": "result_address", "name": "address", "required": true}
+          ]
+        }
       ]
     }
   ]

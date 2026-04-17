@@ -1,5 +1,9 @@
 # Architecture Diagrams
 
+Visual + narrative reference for how `clauditor grade` flows end-to-end and how the three evaluation layers compose. Read this when you want depth beyond the README's summary — the grade-command flow, the three-layer pipeline with subgraphs, and the cost/fidelity tradeoffs per layer.
+
+> Companion to the [root README](../README.md). This doc is the full architecture reference; the README has a summary with code examples.
+
 ## Overview
 
 At a glance, a `clauditor grade` run invokes the skill, then fans the
@@ -71,7 +75,7 @@ flowchart TD
 | L1 Assertions | Deterministic string matching — no API calls | `assertions.py::run_assertions` |
 | L2 Extraction | Schema field extraction via Haiku | `grader.py::extract_and_report` |
 | L3 Quality | Rubric-based grading via Sonnet | `quality_grader.py::grade_quality` |
-| Persistence | Atomic workspace with sidecars | `workspace.py` + `cli.py` |
+| Persistence | Atomic workspace with sidecars | `workspace.py` + `cli/grade.py` |
 | History | One JSONL line per run for `clauditor trend` | `history.py::append_record` |
 
 ### Optional phases

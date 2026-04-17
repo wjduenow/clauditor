@@ -44,10 +44,10 @@ Or define in `eval.json`:
 ```json
 {
   "assertions": [
-    {"type": "contains", "value": "Venues"},
-    {"type": "regex", "value": "\\*\\*\\d+\\."},
-    {"type": "has_urls", "value": "3"},
-    {"type": "not_contains", "value": "Error"}
+    {"id": "contains_venues", "type": "contains", "value": "Venues"},
+    {"id": "regex_numbered", "type": "regex", "value": "\\*\\*\\d+\\."},
+    {"id": "has_urls_3", "type": "has_urls", "value": "3"},
+    {"id": "no_error", "type": "not_contains", "value": "Error"}
   ]
 }
 ```
@@ -73,13 +73,18 @@ The eval spec defines what fields each section should have:
   "sections": [
     {
       "name": "Venues",
-      "min_entries": 3,
-      "fields": [
-        {"name": "name", "required": true},
-        {"name": "address", "required": true},
-        {"name": "hours", "required": true},
-        {"name": "website", "required": true},
-        {"name": "phone", "required": false}
+      "tiers": [
+        {
+          "label": "default",
+          "min_entries": 3,
+          "fields": [
+            {"id": "venue_name",    "name": "name",    "required": true},
+            {"id": "venue_address", "name": "address", "required": true},
+            {"id": "venue_hours",   "name": "hours",   "required": true},
+            {"id": "venue_website", "name": "website", "required": true},
+            {"id": "venue_phone",   "name": "phone",   "required": false}
+          ]
+        }
       ]
     }
   ]
@@ -117,9 +122,9 @@ Define rubric criteria in your eval spec:
 ```json
 {
   "grading_criteria": [
-    "Are all venues within the specified distance?",
-    "Are events actually happening on the target date?",
-    "Do cost tiers match the budget filter?"
+    {"id": "distance_match", "criterion": "Are all venues within the specified distance?"},
+    {"id": "events_on_date", "criterion": "Are events actually happening on the target date?"},
+    {"id": "cost_tier_match", "criterion": "Do cost tiers match the budget filter?"}
   ],
   "grade_thresholds": {
     "min_pass_rate": 0.7,
@@ -151,15 +156,20 @@ Each criterion gets a pass/fail, score (0.0-1.0), evidence (quoted output), and 
 .clauditor/
   iteration-1/
     my-skill/
-      grading.json        # full GradingReport
+      assertions.json     # L1 AssertionSet
+      extraction.json     # L2 ExtractionReport (only when sections declared)
+      grading.json        # L3 GradingReport
       timing.json         # skill name, iteration, n_runs, token + duration metrics
       run-0/
         output.txt        # rendered text blocks
         output.jsonl      # raw stream-json events
   iteration-2/
     my-skill/
+      assertions.json
       grading.json
       timing.json
+      baseline_*.json     # with --baseline: L1/L2/L3 sidecars for the skill-less arm
+      benchmark.json      # with --baseline: delta block (pass_rate / time / tokens)
       run-0/
         output.txt
         output.jsonl
@@ -187,7 +197,7 @@ clauditor compare before.grade.json after.grade.json
 clauditor compare before.txt after.txt --spec <skill.md>
 ```
 
-For a true baseline A/B run (skill vs raw Claude against the same rubric), use the Python API `clauditor.comparator.compare_ab()` directly — the `grade --compare` CLI flag was removed in favor of the file-diff workflow above.
+For a true baseline A/B run (skill vs raw Claude against the same rubric), use `clauditor compare … --blind` on two captured outputs, or run the `compare` subcommand over two iteration folders to diff grading reports. The legacy `grade --compare` CLI flag and the `comparator.compare_ab()` Python entry point have both been removed.
 
 #### Blind A/B comparison (`--blind`)
 
@@ -253,19 +263,15 @@ Reports accuracy, precision, and recall. Passes only when every classification i
 ```python
 import asyncio
 from clauditor.quality_grader import grade_quality, measure_variance
-from clauditor.comparator import compare_ab
 from clauditor.triggers import test_triggers
 from clauditor.spec import SkillSpec
 
 spec = SkillSpec.from_file(".claude/commands/my-skill.md")
+output = spec.run().output  # or Path("captured.txt").read_text()
 
 # Quality grading
 report = asyncio.run(grade_quality(output, spec.eval_spec))
 print(f"{report.pass_rate:.0%} passed, mean score {report.mean_score:.2f}")
-
-# A/B comparison
-ab = asyncio.run(compare_ab(spec))
-print(f"Regressions: {len(ab.regressions)}")
 
 # Variance
 var = asyncio.run(measure_variance(spec, n_runs=3))

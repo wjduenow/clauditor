@@ -30,15 +30,15 @@ Source install: `git clone https://github.com/wjduenow/clauditor.git && cd claud
 
 ## Why clauditor?
 
-- **Does your skill hit the expected output shape?** L1 assertions — free, instant, CI-friendly.
-- **Does it pull the right fields?** L2 schema extraction — pennies, Haiku-graded.
-- **Is it actually useful?** L3 LLM-graded rubric — dollars, release-gating.
+- **Layer 1 — Does your skill hit the expected output shape?** Deterministic assertions — free, instant, CI-friendly.
+- **Layer 2 — Does it pull the right fields?** Haiku-graded schema extraction — pennies per run.
+- **Layer 3 — Is it actually useful?** Sonnet-graded rubric — dollars per run, release-gating.
 
 ## One-minute example
 
 ```bash
 clauditor init .claude/commands/my-skill.md       # generate starter eval spec
-clauditor validate .claude/commands/my-skill.md   # → "my-skill: 4 assertions, 4 passed, 0 failed"
+clauditor validate .claude/commands/my-skill.md   # → "4/4 assertions passed (100%)"
 ```
 
 Swap `validate` for `grade` once you've added `grading_criteria` to the spec.
@@ -102,7 +102,7 @@ clauditor compare --skill <s> --from 1 --to 2  # Diff iterations
 clauditor trend <skill> --metric total.total   # History + sparkline
 ```
 
-**Covered in the full reference:** every subcommand flag (`--variance`, `--iteration`, `--diff`, `--blind`, …), exit codes, `history.jsonl` shape, `clauditor trend` metric paths. Full reference: [docs/cli-reference.md](docs/cli-reference.md).
+**Covered in the full reference:** every subcommand flag (`--variance`, `--iteration`, `--diff`, …), exit codes, `history.jsonl` shape, `clauditor trend` metric paths. Full reference: [docs/cli-reference.md](docs/cli-reference.md).
 
 ## Pytest Integration
 
@@ -122,13 +122,13 @@ An `<skill-name>.eval.json` lives next to the skill's `.md` file and drives all 
 {
   "skill_name": "find-kid-activities",
   "test_args":  "\"Cupertino, CA\" --ages 4-6",
-  "assertions": [{"type": "contains", "value": "Venues"}],
-  "sections":   [{"name": "Venues", "min_entries": 3, "fields": [{"name": "name", "required": true}]}],
-  "grading_criteria": ["Are all venues within the specified distance?"]
+  "assertions": [{"id": "has_venues", "type": "contains", "value": "Venues"}],
+  "sections":   [{"name": "Venues", "tiers": [{"label": "default", "min_entries": 3, "fields": [{"id": "v_name", "name": "name", "required": true}]}]}],
+  "grading_criteria": [{"id": "distance_ok", "criterion": "Are all venues within the specified distance?"}]
 }
 ```
 
-**Covered in the full reference:** every top-level and nested field with validation rules, `input_files` staging, `output_file` / `output_files` capture, and the `format` DSL (`phone_us`, `url`, `domain`, … or inline regex). Full reference: [docs/eval-spec-reference.md](docs/eval-spec-reference.md).
+**Covered in the full reference:** the full eval-spec JSON shape, `input_files` staging rules, `output_file` / `output_files` capture, and the `format` validation DSL (`phone_us`, `url`, `domain`, … or inline regex). Full reference: [docs/eval-spec-reference.md](docs/eval-spec-reference.md).
 
 <details>
 <summary>Alignment with agentskills.io</summary>
@@ -158,7 +158,7 @@ clauditor implements (and extends) the workflow at [agentskills.io/skill-creatio
 - [`docs/pytest-plugin.md`](docs/pytest-plugin.md) — pytest fixtures and options
 - [`docs/skill-usage.md`](docs/skill-usage.md) — using `/clauditor` in Claude Code
 - [`docs/stream-json-schema.md`](docs/stream-json-schema.md) — `claude` stream-json parser contract
-- [`CONTRIBUTING.md`](CONTRIBUTING.md) — maintainer pre-release dogfood gate + contribution workflow
+- [`CONTRIBUTING.md`](CONTRIBUTING.md#pre-release-dogfood) — maintainer pre-release dogfood gate + contribution workflow
 
 ## License
 
