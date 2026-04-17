@@ -436,38 +436,18 @@ async def extract_and_grade(
 
     Requires the 'grader' extra: pip install clauditor[grader]
     """
-    try:
-        from anthropic import AsyncAnthropic
-    except ImportError:
-        raise ImportError(
-            "Layer 2 grading requires the anthropic SDK. "
-            "Install with: pip install clauditor[grader]"
-        )
+    # Import inside the function so the ImportError check stays local
+    # to the Layer 2 entry points; the helper itself raises the same
+    # ImportError shape when ``anthropic`` is missing.
+    from clauditor._anthropic import call_anthropic
 
-    client = AsyncAnthropic()
     prompt = build_extraction_prompt(eval_spec)
+    full_prompt = f"{prompt}\n\n<skill_output>\n{output}\n</skill_output>"
+    result = await call_anthropic(full_prompt, model=model, max_tokens=4096)
+    input_tokens = result.input_tokens
+    output_tokens = result.output_tokens
 
-    response = await client.messages.create(
-        model=model,
-        max_tokens=4096,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"{prompt}\n\n<skill_output>\n{output}\n</skill_output>"
-                ),
-            },
-        ],
-    )
-    input_tokens = getattr(response.usage, "input_tokens", 0)
-    output_tokens = getattr(response.usage, "output_tokens", 0)
-
-    text_blocks = [
-        b.text
-        for b in (response.content or [])
-        if getattr(b, "type", None) == "text"
-    ]
-    if not text_blocks:
+    if not result.text_blocks:
         return AssertionSet(
             results=[
                 AssertionResult(
@@ -481,7 +461,7 @@ async def extract_and_grade(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
-    response_text = text_blocks[0]
+    response_text = result.text_blocks[0]
     try:
         # Extract JSON from response (may be wrapped in markdown code block)
         json_str = response_text
@@ -572,40 +552,21 @@ async def extract_and_report(
     :func:`extract_and_grade`, which returns an ``AssertionSet`` for CLI
     display — this wrapper feeds the auditor's persistence path.
     """
-    try:
-        from anthropic import AsyncAnthropic
-    except ImportError:
-        raise ImportError(
-            "Layer 2 grading requires the anthropic SDK. "
-            "Install with: pip install clauditor[grader]"
-        )
+    # Import inside the function so the ImportError check stays local
+    # to the Layer 2 entry points; the helper itself raises the same
+    # ImportError shape when ``anthropic`` is missing.
+    from clauditor._anthropic import call_anthropic
 
-    client = AsyncAnthropic()
     prompt = build_extraction_prompt(eval_spec)
-
-    response = await client.messages.create(
-        model=model,
-        max_tokens=4096,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"{prompt}\n\n<skill_output>\n{output}\n</skill_output>"
-                ),
-            },
-        ],
-    )
-    input_tokens = getattr(response.usage, "input_tokens", 0)
-    output_tokens = getattr(response.usage, "output_tokens", 0)
+    full_prompt = f"{prompt}\n\n<skill_output>\n{output}\n</skill_output>"
+    result = await call_anthropic(full_prompt, model=model, max_tokens=4096)
+    input_tokens = result.input_tokens
+    output_tokens = result.output_tokens
 
     # FIX-3 (#25): defensively unpack the response. Anthropic returns a
     # ``content`` list; refusals / tool-use blocks / empty content would
     # have crashed ``response.content[0].text`` mid-staging.
-    text_blocks = [
-        b.text for b in (response.content or [])
-        if getattr(b, "type", None) == "text"
-    ]
-    if not text_blocks:
+    if not result.text_blocks:
         return ExtractionReport(
             skill_name=skill_name,
             model=model,
@@ -614,7 +575,7 @@ async def extract_and_report(
             output_tokens=output_tokens,
             parse_errors=["grader returned no text blocks"],
         )
-    response_text = text_blocks[0]
+    response_text = result.text_blocks[0]
     try:
         json_str = response_text
         if "```json" in json_str:
