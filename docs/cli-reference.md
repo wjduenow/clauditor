@@ -26,8 +26,80 @@ clauditor trend <skill> --metric grader.input_tokens --command extract  # Filter
 clauditor triggers <skill.md>          # Trigger precision testing
 clauditor capture <skill> -- "args"    # Run skill, save stdout to tests/eval/captured/
 clauditor suggest <skill.md>           # Propose SKILL.md edits from prior failing iterations
+clauditor propose-eval <skill.md>      # LLM-assisted EvalSpec bootstrap (SKILL.md + optional capture)
 clauditor doctor                       # Report environment diagnostics
 ```
+
+## propose-eval
+
+LLM-assisted EvalSpec bootstrap. `clauditor propose-eval <skill.md>` reads the SKILL.md file and (optionally) a captured skill run, asks Sonnet to propose a full three-layer EvalSpec (L1 assertions, L2 tiered extraction, L3 rubric), validates the proposal through `EvalSpec.from_dict`, and writes `eval.json` next to the SKILL.md. Use it to skip the blank-spec drudgery when onboarding a new skill.
+
+### Required inputs
+
+- `<skill_md>` (positional) — path to the SKILL.md file. Its parent directory is the target for `eval.json`.
+
+### Flags
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--from-capture PATH` | Override capture discovery with an explicit file. Wins over `--from-iteration`. |
+| `--from-iteration N` | Load the capture from `.clauditor/runs/iteration-N/<skill>/run-0/output.txt` (N must be a positive integer). |
+| `--force` | Overwrite an existing `eval.json` at `<skill_md_dir>/eval.json`. Without it, the command refuses with exit 1. |
+| `--dry-run` | Print the proposed spec as pretty JSON to stdout; do not write a file. |
+| `--model MODEL` | Override the proposer model (default: `claude-sonnet-4-6`). |
+| `--json` | Emit the full `ProposeEvalReport` JSON envelope on stdout (includes `schema_version`, tokens, duration, validation errors). |
+| `-v, --verbose` | Log capture source, redaction count, model, and token estimates to stderr. |
+| `--project-dir PATH` | Override project root (default: cwd). Used for capture discovery and relative-path reporting. |
+
+### Examples
+
+```bash
+# Basic bootstrap — uses DEC-001 capture discovery, writes eval.json
+clauditor propose-eval .claude/commands/my-skill.md
+
+# Preview the proposal without writing
+clauditor propose-eval .claude/commands/my-skill.md --dry-run
+
+# Bootstrap from an explicit capture file (takes precedence over discovery)
+clauditor propose-eval .claude/commands/my-skill.md --from-capture tests/eval/captured/my-skill.txt
+
+# Overwrite an existing eval.json
+clauditor propose-eval .claude/commands/my-skill.md --force
+```
+
+### Exit codes
+
+Mirrors the DEC-006 contract in `src/clauditor/cli/propose_eval.py`:
+
+| Code | Meaning |
+| ---- | ------- |
+| `0` | Success — spec printed (`--dry-run` / `--json`) or written to `eval.json`. |
+| `1` | Response-parse failure from the proposer (malformed JSON, missing top-level shape) OR collision: `eval.json` already exists and `--force` was not passed. |
+| `2` | Spec-validation failure — the proposed dict did not survive `EvalSpec.from_dict` (missing required fields, duplicate ids, invalid `format` strings, …). The errors are printed one per line on stderr. |
+| `3` | Anthropic API error — auth failure, rate-limit exhaustion, connection error, or any non-retriable SDK error surfaced by `clauditor._anthropic.call_anthropic`. |
+
+### Capture discovery (DEC-001)
+
+When neither `--from-capture` nor `--from-iteration` is provided, the loader looks for a capture file in this order and uses the first match:
+
+1. `<project_dir>/tests/eval/captured/<skill_name>.txt` (primary — the same directory `clauditor capture` writes to).
+2. `<project_dir>/.clauditor/captures/<skill_name>.txt` (fallback).
+
+The `<skill_name>` is resolved from the SKILL.md frontmatter's `name` field, falling back to the SKILL.md filename stem. If no capture is found, the proposer runs against the SKILL.md alone — the quality of the generated spec will be lower, but the command does not error out.
+
+### Token budget (DEC-005 / DEC-011)
+
+The prompt is pre-checked against a **50,000-token cap** via a `len(prompt) / 4` heuristic before the Anthropic call. This is a coarse safety rail that prevents a mid-stream 413 when a SKILL.md + capture is pathologically large; oversize inputs surface as a synthesized `api_error` in the `ProposeEvalReport` and exit code 3 rather than a partial-response failure.
+
+### Security / scrubbing (DEC-008)
+
+Captured skill output is scrubbed through `clauditor.transcripts.redact` before it lands in the prompt OR the sidecar. The redaction is non-mutating (per `.claude/rules/non-mutating-scrub.md`): secret-shaped substrings (Anthropic keys, GitHub PATs, Bearer tokens) are replaced in a new copy while the caller's in-memory representation — if any — stays untouched. Both CLI-override paths (`--from-capture`, `--from-iteration`) apply the same scrub; the loader-discovered path is scrubbed by the loader itself.
+
+### Relationship to `init` and `capture`
+
+- `clauditor init` writes a **skill stub** (`SKILL.md` + starter `eval.json`) for a brand-new skill. Use it first when the skill itself does not yet exist.
+- `clauditor propose-eval` fills in an `eval.json` for a skill whose **SKILL.md already exists**. It does not write a skill stub and does not regenerate SKILL.md.
+- `clauditor capture <skill> -- "args"` produces the captured run that `propose-eval` reads as grounding context. Capturing before `propose-eval` typically lifts the quality of the generated spec (the proposer sees what real output looks like).
 
 ## Persistent metric history
 
