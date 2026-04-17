@@ -62,6 +62,53 @@ cd clauditor
 uv sync --dev
 ```
 
+## Installing the /clauditor slash command
+
+clauditor ships a bundled Claude Code skill that exposes its
+capture/validate/grade workflow as a `/clauditor` slash command. After
+installing the CLI (pip/uv), run one command from your project root:
+
+```bash
+uv run clauditor setup
+```
+
+Expected output:
+
+```
+Installed /clauditor: <project root>/.claude/skills/clauditor -> <site-packages path>/clauditor/skills/clauditor
+```
+
+`setup` creates a single symlink at `.claude/skills/clauditor` pointing
+at the bundled skill directory inside the installed clauditor package,
+so `pip install --upgrade clauditor` picks up skill updates automatically
+without re-running `setup`.
+
+**Flags:**
+
+- `--unlink` — remove the `/clauditor` symlink. Refuses to delete regular
+  files or symlinks that don't point at the installed clauditor package,
+  so it won't touch user-authored skills.
+- `--force` — overwrite an existing file or symlink at
+  `.claude/skills/clauditor`. Without `--force`, `setup` refuses to
+  clobber any pre-existing entry. Use `--force` only when you know the
+  entry is ours.
+- `--project-dir PATH` — override project-root detection. By default,
+  `setup` walks up from the current directory looking for a `.git/` or
+  `.claude/` marker; pass `--project-dir` to target a different root.
+
+**Restart note:** if `.claude/skills/` did not exist before
+`clauditor setup` ran, restart Claude Code once so it picks up the new
+directory. Subsequent edits under `.claude/skills/clauditor/` are
+hot-reloaded — see the Claude Code
+[live change detection](https://code.claude.com/docs/en/skills#live-change-detection)
+reference.
+
+**Diagnostic:** `uv run clauditor doctor` reports the skill symlink's
+health (absent / installed / stale / wrong-target / unmanaged).
+
+**Maintainers:** the bundled skill has a pre-release dogfood gate — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md#pre-release-dogfood).
+
 ## Quick Start
 
 ### 1. Create an eval spec for your skill

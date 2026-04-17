@@ -1,0 +1,34 @@
+{
+  "skill_name": "clauditor",
+  "description": "Eval spec for the bundled /clauditor skill — maintainer-only pre-release dogfood gate (DEC-007). Requires the clauditor source repo as cwd because test_args references .claude/commands/chunk.md. Not runnable from a user's project.",
+  "test_args": ".claude/commands/chunk.md",
+  "user_prompt": "Validate the skill at .claude/commands/chunk.md — report which clauditor layers you would run (L1 assertions, L3 grading) and the concrete commands involved.",
+  "assertions": [
+    {
+      "id": "mentions-assertions",
+      "type": "contains",
+      "value": "assertion"
+    },
+    {
+      "id": "no-error-trace",
+      "type": "not_contains",
+      "value": "Traceback"
+    },
+    {
+      "id": "produces-output",
+      "type": "min_length",
+      "value": "50"
+    }
+  ],
+  "grading_criteria": [
+    {
+      "id": "identifies-layer-correctly",
+      "criterion": "The response correctly distinguishes between L1 deterministic assertions and L3 LLM-graded rubric criteria, naming at least one layer accurately."
+    },
+    {
+      "id": "provides-concrete-guidance",
+      "criterion": "The response provides actionable next steps (specific clauditor commands such as 'clauditor validate' or 'clauditor grade', or specific file paths) rather than generic advice."
+    }
+  ],
+  "grading_model": "claude-sonnet-4-6"
+}

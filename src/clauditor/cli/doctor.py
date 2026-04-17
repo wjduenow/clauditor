@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from importlib.resources import as_file, files
 from pathlib import Path
 
 
@@ -46,7 +47,7 @@ def _is_pep660_editable() -> bool:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    """Read-only environment diagnostics (DEC-005/008/014).
+    """Read-only environment diagnostics (DEC-005/008/013/014).
 
     Always exits 0 — this is a reporting tool, not a CI gate.
     """
@@ -143,6 +144,23 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             checks.append(("editable-install", "ok", str(origin.parent)))
     else:
         checks.append(("editable-install", "fail", "clauditor package not importable"))
+
+    # DEC-013: inspect the /clauditor skill symlink and report its health.
+    try:
+        from clauditor import setup as setup_module
+        from clauditor.cli.setup import check_clauditor_skill_symlink
+
+        traversable = files("clauditor") / "skills" / "clauditor"
+        with as_file(traversable) as pkg_skill_root_path:
+            pkg_skill_root = Path(pkg_skill_root_path).resolve()
+            project_root = setup_module.find_project_root(Path.cwd())
+            checks.append(
+                check_clauditor_skill_symlink(project_root, pkg_skill_root)
+            )
+    except Exception as e:  # pragma: no cover - defensive
+        checks.append(
+            ("clauditor-skill-symlink", "warn", f"check failed: {e}")
+        )
 
     width = max(len(name) for name, _, _ in checks)
     for name, status, detail in checks:

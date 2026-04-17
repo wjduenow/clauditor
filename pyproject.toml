@@ -49,6 +49,10 @@ Issues = "https://github.com/wjduenow/clauditor/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/clauditor"]
+include = ["src/clauditor/skills/**/*"]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "build_hooks/stamp_skill_version.py"
 
 [tool.ruff]
 target-version = "py311"

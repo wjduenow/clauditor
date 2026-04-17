@@ -247,6 +247,7 @@ from clauditor.cli import extract as extract_mod  # noqa: E402
 from clauditor.cli import grade as grade_mod  # noqa: E402
 from clauditor.cli import init as init_mod  # noqa: E402
 from clauditor.cli import run as run_mod  # noqa: E402
+from clauditor.cli import setup as setup_mod  # noqa: E402
 from clauditor.cli import suggest as suggest_mod  # noqa: E402
 from clauditor.cli import trend as trend_mod  # noqa: E402
 from clauditor.cli import triggers as triggers_mod  # noqa: E402
@@ -262,6 +263,7 @@ from clauditor.cli.grade import (  # noqa: E402,F401
 )
 from clauditor.cli.init import cmd_init  # noqa: E402,F401
 from clauditor.cli.run import cmd_run  # noqa: E402,F401
+from clauditor.cli.setup import cmd_setup  # noqa: E402,F401
 from clauditor.cli.suggest import cmd_suggest  # noqa: E402,F401
 from clauditor.cli.trend import cmd_trend  # noqa: E402,F401
 from clauditor.cli.triggers import cmd_triggers  # noqa: E402,F401
@@ -295,6 +297,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # init
     init_mod.add_parser(subparsers)
+
+    # setup
+    setup_mod.add_parser(subparsers)
 
     # capture
     capture_mod.add_parser(subparsers)
@@ -341,6 +346,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_extract(parsed)
     elif parsed.command == "init":
         return cmd_init(parsed)
+    elif parsed.command == "setup":
+        return cmd_setup(parsed)
     elif parsed.command == "capture":
         return cmd_capture(parsed)
     elif parsed.command == "doctor":

@@ -132,7 +132,41 @@ refactored split makes the grading logic unit-testable without
 `tmp_path` or subprocess mocks, and positions the pure helper for
 reuse from a future pytest fixture.
 
-### Fourth anchor (LLM grader pure split)
+### Fourth anchor (decision function for setup)
+
+`src/clauditor/setup.py::plan_setup` — pure function that takes a
+`cwd`, a resolved `pkg_skill_root`, and the `force` / `unlink` flags
+and returns a `SetupAction` enum member describing what the I/O
+layer should do next. First anchor for a *decision function*
+(returns an enum discriminator) rather than a data-aggregation or
+resolve-and-compose helper: the pure compute is "inspect the
+filesystem, classify the situation, pick the branch"; the I/O layer
+then dispatches on the enum to run `os.symlink`, `os.unlink`,
+`shutil.rmtree`, or print a refusal. Traces to DEC-014 in
+`plans/super/43-setup-slash-command.md`.
+
+Two callers:
+
+- `src/clauditor/cli/setup.py::cmd_setup` — side-effect layer.
+  Translates each `SetupAction` into filesystem operations,
+  stdout/stderr messages, and exit codes (DEC-008 / DEC-009 /
+  DEC-016). Also runs the "plan + dispatch, retry once on
+  `FileExistsError`" loop for the atomic create-or-fail path.
+- `tests/test_setup.py` — pure consumer. 23 tests, one per enum
+  branch plus home-exclusion guards for `find_project_root`. Each
+  test constructs a `cwd` + `pkg_skill_root` under `tmp_path`, calls
+  `plan_setup`, and asserts on the returned enum member — no
+  subprocess mocks, no stdout capture, no exit-code assertions.
+
+The split makes the home-directory exclusion in `find_project_root`
+directly unit-testable (see also
+`.claude/rules/project-root-home-exclusion.md`): a bundled "classify
+and execute" helper would have hidden that guard behind a subprocess
+mock and an assertion on the absence of a symlink, instead of a
+direct `plan_setup(cwd=home_like_dir, ...)` returning the refusal
+enum.
+
+### Fifth anchor (LLM grader pure split)
 
 The four async LLM-grader entry points in `grader.py` and
 `quality_grader.py` — `extract_and_grade`, `extract_and_report`,
