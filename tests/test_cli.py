@@ -2719,6 +2719,21 @@ class TestCmdTriggers:
         assert "No grading model specified" in err
         assert "--model" in err
 
+    def test_triggers_missing_trigger_tests_exits_1(self, capsys):
+        """Non-dry-run with no trigger_tests on the spec must exit 1 with a
+        clear error, matching the --dry-run branch. Otherwise CI cannot
+        distinguish 'passed zero triggers' from 'spec forgot trigger_tests'.
+        """
+        eval_spec = _make_eval_spec(trigger_tests=None)
+        spec = _make_spec(eval_spec=eval_spec)
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["triggers", "skill.md"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "No trigger_tests defined" in err
+
 
 class TestCmdInit:
     """Tests for the init subcommand."""

@@ -647,7 +647,18 @@ class SuggestReport:
     schema_version: int = _SCHEMA_VERSION
 
     def to_json(self) -> str:
-        """Serialize to JSON with ``schema_version`` as the first key."""
+        """Serialize to JSON with ``schema_version`` as the first key.
+
+        Scrubs ``api_error`` through :func:`clauditor.transcripts.redact`
+        before emitting so on-disk secrets (e.g. an Anthropic key echoed
+        back in a 401 body) are redacted per
+        ``.claude/rules/non-mutating-scrub.md``. In-memory ``self.api_error``
+        stays full-fidelity — downstream consumers can still read the
+        original for debugging.
+        """
+        scrubbed_api_error = (
+            redact(self.api_error)[0] if self.api_error is not None else None
+        )
         payload: dict = {
             "schema_version": self.schema_version,
             "skill_name": self.skill_name,
@@ -673,7 +684,7 @@ class SuggestReport:
             ],
             "validation_errors": list(self.validation_errors),
             "parse_error": self.parse_error,
-            "api_error": self.api_error,
+            "api_error": scrubbed_api_error,
         }
         return json.dumps(payload, indent=2) + "\n"
 
