@@ -1704,7 +1704,10 @@ def _check_clauditor_skill_symlink(
         return (
             check_name,
             "info",
-            "no project root found; run from a project directory",
+            (
+                "no project root found; run from a project directory "
+                "or pass --project-dir"
+            ),
         )
 
     dest = project_root / ".claude" / "skills" / "clauditor"

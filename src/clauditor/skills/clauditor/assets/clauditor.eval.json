@@ -1,6 +1,6 @@
 {
   "skill_name": "clauditor",
-  "description": "Eval spec for the bundled /clauditor skill — validates that the slash command explains the capture/validate/grade workflow correctly.",
+  "description": "Eval spec for the bundled /clauditor skill — maintainer-only pre-release dogfood gate (DEC-007). Requires the clauditor source repo as cwd because test_args references .claude/commands/chunk.md. Not runnable from a user's project.",
   "test_args": ".claude/commands/chunk.md",
   "user_prompt": "Validate the skill at .claude/commands/chunk.md — report which clauditor layers you would run (L1 assertions, L3 grading) and the concrete commands involved.",
   "assertions": [

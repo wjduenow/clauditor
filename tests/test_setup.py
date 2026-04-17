@@ -170,18 +170,6 @@ class TestPlanSetupInstall:
         result = plan_setup(project, pkg, force=True, unlink=False)
         assert result is SetupAction.REPLACE_WITH_FORCE
 
-    # Combined alias to satisfy the "one test per SetupAction enum member"
-    # naming convention. The three force-replace cases above cover the
-    # branches; this one asserts the enum value is reachable through the
-    # canonical file state.
-    def test_plan_setup_returns_replace_with_force(self, tmp_path: Path) -> None:
-        project = _make_project(tmp_path)
-        pkg = _make_pkg_skill_root(tmp_path)
-        dest = _dest(project)
-        dest.touch()
-        result = plan_setup(project, pkg, force=True, unlink=False)
-        assert result is SetupAction.REPLACE_WITH_FORCE
-
     def test_plan_setup_force_ignored_for_our_symlink(
         self, tmp_path: Path
     ) -> None:

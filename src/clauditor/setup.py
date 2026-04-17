@@ -121,7 +121,10 @@ def plan_setup(
     """
     project_root = find_project_root(cwd)
     if project_root is None:
-        raise ValueError("no project root found; run from a project directory")
+        raise ValueError(
+            "no project root found; run from a project directory "
+            "or pass --project-dir"
+        )
 
     dest = project_root / ".claude" / "skills" / "clauditor"
 
