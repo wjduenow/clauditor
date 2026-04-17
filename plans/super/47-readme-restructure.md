@@ -4,8 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/47
 - **Branch:** `feature/47-readme-restructure`
 - **Worktree:** _n/a (working on branch directly)_
-- **Phase:** `detailing`
-- **PR:** _pending_
+- **Phase:** `devolved`
+- **PR:** https://github.com/wjduenow/clauditor/pull/49
 - **Sessions:** 1
 - **Last session:** 2026-04-17
 
@@ -705,7 +705,21 @@ commits.
 
 ## Beads Manifest
 
-_(Pending — populated in Phase 7.)_
+- **Epic:** `clauditor-8r1`
+- **Branch:** `feature/47-readme-restructure`
+- **PR:** https://github.com/wjduenow/clauditor/pull/49
+
+| Story | Bead ID | Depends on | Ready |
+|---|---|---|---|
+| US-001 Extract 6 docs files | `clauditor-8r1.1` | — | ✅ |
+| US-002 Merge into architecture | `clauditor-8r1.2` | — | ✅ |
+| US-003 Rewrite README | `clauditor-8r1.3` | US-001, US-002 | |
+| US-004 Link audit | `clauditor-8r1.4` | US-003 | |
+| US-005 Quality Gate | `clauditor-8r1.5` | US-001..US-004 | |
+| US-006 Patterns & Memory | `clauditor-8r1.6` (P4) | US-005 | |
+
+8 dependency edges wired. Kickoff set: `{clauditor-8r1.1,
+clauditor-8r1.2}` run in parallel.
 
 ---
 
