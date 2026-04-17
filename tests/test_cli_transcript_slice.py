@@ -328,6 +328,7 @@ class TestValidateVerboseInvocation:
 
     def test_cmd_validate_invokes_slice_on_failure(self, tmp_path, capsys) -> None:
         from clauditor import cli
+        from clauditor.cli import validate as validate_mod
 
         skill_path = tmp_path / "demo.md"
         skill_path.write_text("# demo\nhello\n")
@@ -371,7 +372,7 @@ class TestValidateVerboseInvocation:
             spec.run.return_value = fake_skill_result
             from_file.return_value = spec
 
-            with patch.object(cli, "run_assertions") as run_assertions:
+            with patch.object(validate_mod, "run_assertions") as run_assertions:
                 run_assertions.return_value = AssertionSet(
                     results=[
                         AssertionResult(
@@ -386,7 +387,9 @@ class TestValidateVerboseInvocation:
                     with patch.object(
                         cli, "_print_failing_transcript_slice"
                     ) as printer:
-                        with patch.object(cli, "allocate_iteration") as alloc:
+                        with patch.object(
+                            validate_mod, "allocate_iteration"
+                        ) as alloc:
                             ws = MagicMock()
                             ws.iteration = 1
                             ws.tmp_path = tmp_path / "stage"
@@ -415,6 +418,7 @@ class TestValidateVerboseInvocation:
         self, tmp_path
     ) -> None:
         from clauditor import cli
+        from clauditor.cli import validate as validate_mod
 
         fake_skill_result = MagicMock()
         fake_skill_result.succeeded = True
@@ -441,7 +445,7 @@ class TestValidateVerboseInvocation:
             spec.run.return_value = fake_skill_result
             from_file.return_value = spec
 
-            with patch.object(cli, "run_assertions") as run_assertions:
+            with patch.object(validate_mod, "run_assertions") as run_assertions:
                 run_assertions.return_value = AssertionSet(
                     results=[
                         AssertionResult(
@@ -456,7 +460,9 @@ class TestValidateVerboseInvocation:
                     with patch.object(
                         cli, "_print_failing_transcript_slice"
                     ) as printer:
-                        with patch.object(cli, "allocate_iteration") as alloc:
+                        with patch.object(
+                            validate_mod, "allocate_iteration"
+                        ) as alloc:
                             ws = MagicMock()
                             ws.iteration = 1
                             ws.tmp_path = tmp_path / "stage2"
