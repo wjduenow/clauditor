@@ -2365,6 +2365,32 @@ class TestCmdCompareNumericRefs:
         err = capsys.readouterr().err
         assert "cannot combine" in err or "--skill" in err
 
+    def test_compare_mismatched_file_types_exits_2(self, tmp_path, capsys):
+        """A .txt and a .grade.json pair surfaces as rc=2 with kind mismatch."""
+        txt = tmp_path / "before.txt"
+        txt.write_text("some output")
+        gj = tmp_path / "after.grade.json"
+        report = GradingReport(
+            skill_name="x", model="m", results=[],
+            duration_seconds=0.0, thresholds=GradeThresholds(), metrics={},
+        )
+        gj.write_text(report.to_json())
+        rc = main(["compare", str(txt), str(gj)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mismatched file types" in err
+
+    def test_compare_unsupported_file_type_exits_2(self, tmp_path, capsys):
+        """A pair with unsupported extensions (e.g. .json, .log) rc=2."""
+        a = tmp_path / "a.log"
+        b = tmp_path / "b.log"
+        a.write_text("x")
+        b.write_text("y")
+        rc = main(["compare", str(a), str(b)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Unsupported file type" in err
+
 
 
 def _make_blind_report(**overrides):
@@ -3872,6 +3898,33 @@ class TestCmdTrendCommandFilter:
         assert rc == 1
         err = capsys.readouterr().err
         assert "pass_rate" in err
+
+    def test_command_filter_empty_result_exits_1(self, tmp_path, monkeypatch, capsys):
+        """Requesting a command filter that matches zero records surfaces
+        as rc=1 with 'Try --command all' hint."""
+        from clauditor import history
+
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".clauditor" / "history.jsonl"
+        # Seed only grade records, then filter by validate → zero matches.
+        history.append_record(
+            skill="test-skill",
+            pass_rate=0.8,
+            mean_score=0.7,
+            metrics={},
+            command="grade",
+            path=path,
+        )
+        rc = main(
+            [
+                "trend", "test-skill", "--metric", "pass_rate",
+                "--command", "validate",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "validate" in err
+        assert "--command all" in err
 
 
 class TestCmdTrendDottedPath:

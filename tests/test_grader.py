@@ -1689,6 +1689,31 @@ class TestParseExtractionResponse:
         entries = result.extracted.sections["Venues"]["default"]
         assert len(entries) == 1
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param("[1, 2, 3]", id="list"),
+            pytest.param('"just a string"', id="string"),
+            pytest.param("42", id="number"),
+            pytest.param("null", id="null"),
+            pytest.param("true", id="boolean"),
+        ],
+    )
+    def test_rejects_non_dict_top_level(self, payload):
+        """A valid JSON value that is not an object must produce a
+        structured parse error, not crash with AttributeError on
+        ``raw.items()``. Guards against a misbehaving grader that
+        returns a bare list/string/number/bool/null.
+        """
+        spec = _make_spec()
+        result = parse_extraction_response(payload, spec)
+        assert not result.success
+        assert len(result.parse_errors) == 1
+        err = result.parse_errors[0]
+        assert err.kind == "json"
+        assert "Expected JSON object at top level" in err.message
+        assert err.evidence == payload[:200]
+
 
 class TestBuildExtractionAssertionSet:
     """Pure helper: response text → AssertionSet."""

@@ -294,11 +294,14 @@ class SkillRunner:
             finally:
                 watchdog.cancel()
 
+            # Join the drainer before reading stderr_chunks — otherwise
+            # ``"".join(stderr_chunks)`` can race with the drainer's
+            # in-progress ``.append()`` and produce a truncated or
+            # partially-concatenated stderr on SkillResult.error. The
+            # outer-finally join is retained for the exception path
+            # (where this happy-path join is skipped).
+            stderr_thread.join(timeout=2.0)
             stderr_text = "".join(stderr_chunks)
-            # stderr_thread.join + stderr_warnings drain moved to the
-            # outer finally so they run on the exception path too —
-            # otherwise a parse-loop failure leaves the drainer daemon
-            # unjoined and its warnings lost.
 
             if timed_out["hit"] and returncode != 0:
                 result = SkillResult(

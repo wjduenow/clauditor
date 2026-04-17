@@ -420,6 +420,25 @@ def parse_extraction_response(
             ],
         )
 
+    # The prompt asks for a top-level JSON object keyed by section name.
+    # A misbehaving model can return a bare list/string/number — iterating
+    # ``.items()`` on that would raise AttributeError mid-parse. Fail
+    # explicitly with a structured parse error instead.
+    if not isinstance(raw, dict):
+        return ExtractionParseResult(
+            extracted=ExtractedOutput(),
+            parse_errors=[
+                ExtractionParseError(
+                    kind="json",
+                    message=(
+                        f"Expected JSON object at top level, got "
+                        f"{type(raw).__name__}: {text[:200]}"
+                    ),
+                    evidence=text[:200],
+                )
+            ],
+        )
+
     extracted = ExtractedOutput(raw_json=raw)
     parse_errors: list[ExtractionParseError] = []
     expected_sections = {s.name for s in eval_spec.sections}
