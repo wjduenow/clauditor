@@ -54,6 +54,14 @@ class _FakePopen:
         if self.returncode == 0:
             self.returncode = -9
 
+    def terminate(self):
+        # Default terminate: mark as dead so the outer-finally cleanup
+        # short-circuits instead of cascading to kill+wait. Tests that need
+        # to exercise the terminate→kill fallback override this attribute.
+        self._killed = True
+        if self.returncode == 0:
+            self.returncode = -15
+
     def poll(self) -> int | None:
         # Immediate-timer tests want poll() to report "still running" so the
         # watchdog sets timed_out=True. Production code only calls poll from

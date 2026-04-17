@@ -48,6 +48,7 @@ class SkillResult:
     output_tokens: int = 0
     raw_messages: list[dict] = field(default_factory=list)
     stream_events: list[dict] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def succeeded(self) -> bool:
@@ -188,6 +189,13 @@ class SkillRunner:
         saw_result = False
         result: SkillResult | None = None
         proc: subprocess.Popen | None = None
+        # Main-thread warnings collected during parse + cleanup.
+        warnings: list[str] = []
+        # Thread-safe collector for warnings raised inside the stderr
+        # drainer (runs in a background thread; appending to a plain list
+        # would race with the main thread's drain at join time).
+        stderr_warnings_lock = threading.Lock()
+        stderr_warnings: list[str] = []
         try:
             try:
                 proc = subprocess.Popen(
@@ -224,8 +232,22 @@ class SkillRunner:
                 try:
                     for chunk in proc.stderr:
                         stderr_chunks.append(chunk)
-                except Exception:
-                    pass
+                except (EOFError, OSError) as exc:
+                    # Expected terminal states for a pipe: EOF or underlying
+                    # OS error (broken pipe, closed fd). Record + continue.
+                    with stderr_warnings_lock:
+                        stderr_warnings.append(
+                            f"stderr drainer stopped: {type(exc).__name__}: {exc}"
+                        )
+                except Exception as exc:  # noqa: BLE001 — defensive observability
+                    # Truly unexpected: record with type info so a
+                    # regression in the CLI's stderr behavior surfaces
+                    # in SkillResult.warnings rather than vanishing.
+                    with stderr_warnings_lock:
+                        stderr_warnings.append(
+                            "stderr drainer raised unexpected "
+                            f"{type(exc).__name__}: {exc}"
+                        )
 
             stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
             stderr_thread.start()
@@ -245,8 +267,15 @@ class SkillRunner:
                 timed_out["hit"] = True
                 try:
                     proc.kill()
-                except Exception:  # pragma: no cover
-                    pass
+                except (OSError, ProcessLookupError) as exc:  # pragma: no cover
+                    # Child already reaped or kill syscall failed. Record
+                    # into stderr_warnings (same thread-safe channel) so
+                    # the main thread surfaces it on SkillResult.warnings.
+                    with stderr_warnings_lock:
+                        stderr_warnings.append(
+                            "watchdog kill failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
 
             watchdog = threading.Timer(self.timeout, _on_timeout)
             watchdog.daemon = True
@@ -261,10 +290,18 @@ class SkillRunner:
                         try:
                             msg = json.loads(line)
                         except json.JSONDecodeError as exc:
+                            # Keep the existing stderr print (the
+                            # stream-json-schema.md rule requires a skip+warn
+                            # contract); ALSO record to warnings so callers
+                            # can detect data loss programmatically without
+                            # scraping stderr.
                             print(
                                 "clauditor.runner: skipping malformed "
                                 f"stream-json line: {exc}",
                                 file=sys.stderr,
+                            )
+                            warnings.append(
+                                f"malformed stream-json line skipped: {exc}"
                             )
                             continue
                         if not isinstance(msg, dict):
@@ -312,6 +349,10 @@ class SkillRunner:
 
             stderr_thread.join(timeout=2.0)
             stderr_text = "".join(stderr_chunks)
+            # Drain any warnings the background thread recorded.
+            with stderr_warnings_lock:
+                warnings.extend(stderr_warnings)
+                stderr_warnings.clear()
 
             if timed_out["hit"] and returncode != 0:
                 result = SkillResult(
@@ -324,6 +365,7 @@ class SkillRunner:
                     output_tokens=output_tokens,
                     raw_messages=raw_messages,
                     stream_events=stream_events,
+                    warnings=list(warnings),
                 )
                 return result
 
@@ -332,6 +374,10 @@ class SkillRunner:
                     "clauditor.runner: stream-json ended without a 'result' "
                     "message; token usage unavailable",
                     file=sys.stderr,
+                )
+                warnings.append(
+                    "stream-json ended without a 'result' message; "
+                    "token usage unavailable"
                 )
 
             result = SkillResult(
@@ -344,33 +390,71 @@ class SkillRunner:
                 output_tokens=output_tokens,
                 raw_messages=raw_messages,
                 stream_events=stream_events,
+                warnings=list(warnings),
             )
             return result
         finally:
             # Defensive cleanup: if an unexpected exception escaped the
             # inner try, the subprocess could still be running. Always try
-            # to reap it so we never leak a claude process. Swallow all
-            # cleanup errors — duration must still be set below.
+            # to reap it so we never leak a claude process. Each step is
+            # guarded independently and records its failure into
+            # ``warnings`` so lost cleanup errors surface on the result.
             if proc is not None and proc.poll() is None:
                 try:
                     proc.terminate()
+                except (OSError, ProcessLookupError) as exc:
+                    warnings.append(
+                        f"cleanup terminate failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired as exc:
+                    # terminate() didn't finish in time; escalate to kill.
+                    warnings.append(
+                        f"cleanup wait after terminate timed out: {exc}"
+                    )
+                    try:
+                        proc.kill()
+                    except (OSError, ProcessLookupError) as kill_exc:
+                        warnings.append(
+                            f"cleanup kill failed: "
+                            f"{type(kill_exc).__name__}: {kill_exc}"
+                        )
                     try:
                         proc.wait(timeout=1)
-                    except Exception:
-                        try:
-                            proc.kill()
-                            proc.wait(timeout=1)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                    except (subprocess.TimeoutExpired, OSError) as wait_exc:
+                        warnings.append(
+                            f"cleanup wait after kill failed: "
+                            f"{type(wait_exc).__name__}: {wait_exc}"
+                        )
+                except OSError as exc:
+                    warnings.append(
+                        f"cleanup wait after terminate failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
             if proc is not None:
-                for stream in (proc.stdout, proc.stderr):
+                for stream_name, stream in (
+                    ("stdout", proc.stdout),
+                    ("stderr", proc.stderr),
+                ):
+                    if stream is None or not hasattr(stream, "close"):
+                        continue
                     try:
-                        if stream is not None and hasattr(stream, "close"):
-                            stream.close()
-                    except Exception:
-                        pass
+                        stream.close()
+                    except OSError as exc:
+                        warnings.append(
+                            f"cleanup close({stream_name}) failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
             duration = time.monotonic() - start
             if result is not None:
                 result.duration_seconds = duration
+                # Any cleanup warnings added after result construction
+                # need to be surfaced on the result too.
+                if warnings:
+                    existing = set(result.warnings)
+                    for w in warnings:
+                        if w not in existing:
+                            result.warnings.append(w)
+                            existing.add(w)
