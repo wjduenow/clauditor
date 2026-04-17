@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2594,6 +2595,37 @@ class TestCmdCompareBlind:
         # appear when validation fails.
         assert "Running blind A/B judge" not in err
 
+    def test_compare_blind_without_positional_args_exits_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--blind with no positional file args exits 2 with file-pair hint."""
+        # No before/after; not numeric-form either. Must hit the
+        # "requires file-pair form" branch (cli/compare.py:277-283).
+        monkeypatch.chdir(tmp_path)
+        rc = main(["compare", "--blind", "--spec", "skill.md"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "file-pair form" in err
+
+    def test_compare_blind_with_grade_json_pair_exits_2(self, tmp_path, capsys):
+        """--blind with .grade.json pair (not .txt) exits 2."""
+        # Both positional args are .grade.json — hit the file-kind check
+        # at cli/compare.py:286-295 that rejects non-txt pairs under --blind.
+        gj_a = tmp_path / "a.grade.json"
+        gj_b = tmp_path / "b.grade.json"
+        report = GradingReport(
+            skill_name="x", model="m", results=[],
+            duration_seconds=0.0, thresholds=GradeThresholds(), metrics={},
+        )
+        gj_a.write_text(report.to_json())
+        gj_b.write_text(report.to_json())
+        rc = main(
+            ["compare", str(gj_a), str(gj_b), "--spec", "skill.md", "--blind"]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "file-pair form" in err
+
 
 class TestCmdGradeCompareFlagRemoved:
     """US-003: the legacy --compare flag on grade is gone."""
@@ -3189,6 +3221,23 @@ class TestCmdExtract:
         assert "Traceback" not in err
         assert "Output file not found" in err
         assert str(missing) in err
+
+    def test_extract_live_skill_failure_exits_1(self, capsys):
+        """Live-run path: a skill that returns ``not succeeded`` → rc=1
+        with a stderr 'Skill failed' line. Covers the non-output-file
+        branch at cli/extract.py:97-99.
+        """
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.return_value = make_skill_result(
+            output="", exit_code=1, duration_seconds=0.2, error="boom",
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["extract", "skill.md"])
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "Skill failed" in err
+        assert "boom" in err
 
 
     def test_extract_with_output_file(self, tmp_path):
@@ -3898,6 +3947,23 @@ class TestCmdTrendCommandFilter:
         assert rc == 1
         err = capsys.readouterr().err
         assert "pass_rate" in err
+
+    def test_positive_int_rejects_non_integer(self):
+        """--last type=_positive_int rejects non-integer values via
+        argparse (covers trend._positive_int ValueError branch)."""
+        from clauditor.cli.trend import _positive_int
+
+        with pytest.raises(argparse.ArgumentTypeError, match="not an integer"):
+            _positive_int("abc")
+
+    def test_positive_int_rejects_zero_and_negative(self):
+        """_positive_int enforces >= 1 (covers trend._positive_int < 1 branch)."""
+        from clauditor.cli.trend import _positive_int
+
+        with pytest.raises(argparse.ArgumentTypeError, match=">= 1"):
+            _positive_int("0")
+        with pytest.raises(argparse.ArgumentTypeError, match=">= 1"):
+            _positive_int("-5")
 
     def test_command_filter_empty_result_exits_1(self, tmp_path, monkeypatch, capsys):
         """Requesting a command filter that matches zero records surfaces
