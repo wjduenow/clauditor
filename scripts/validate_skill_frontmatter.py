@@ -56,8 +56,8 @@ def _extract_frontmatter(text: str) -> tuple[str | None, str | None]:
 def _parse_top_level_string(block: str, key: str) -> str | None:
     """Extract a top-level ``key: value`` string from a YAML-ish block.
 
-    Handles optional single/double quoting and strips trailing comments.
-    Returns ``None`` if the key is absent. This is intentionally a tiny
+    Handles optional single/double quoting. Returns ``None`` if the key
+    is absent. This is intentionally a tiny
     parser, not a full YAML engine — the bundled skill's frontmatter is a
     fixed shape (a handful of scalar strings, one nested mapping, one
     list).

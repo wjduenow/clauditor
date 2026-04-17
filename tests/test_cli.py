@@ -3519,6 +3519,26 @@ class TestCmdSetup:
         out = capsys.readouterr().out
         assert "not installed" in out
 
+    def test_setup_unlink_refuses_wrong_target_symlink(self, setup_env, capsys):
+        """--unlink on a symlink pointing elsewhere → exit 1, preserved."""
+        dest = setup_env["dest"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        elsewhere = setup_env["project_root"] / "other-dir"
+        elsewhere.mkdir()
+        import os as _os
+
+        _os.symlink(elsewhere, dest)
+
+        rc = main(["setup", "--unlink"])
+
+        assert rc == 1
+        # Symlink preserved — we do NOT silently delete user-authored
+        # symlinks just because `--unlink` was passed (DEC-009).
+        assert dest.is_symlink()
+        assert dest.resolve() == elsewhere.resolve()
+        err = capsys.readouterr().err
+        assert "target does not match" in err or "does not match" in err
+
     def test_setup_errors_when_no_project_root(self, tmp_path, monkeypatch, capsys):
         """No .git, no .claude → exit 2, stderr 'no project root'."""
         # Fake package skill tree outside any git checkout.

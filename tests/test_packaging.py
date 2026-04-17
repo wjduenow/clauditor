@@ -30,13 +30,13 @@ def built_wheel(tmp_path_factory) -> Path:
     except FileNotFoundError:
         pytest.skip("build tool unavailable: uv not on PATH")
     if result.returncode != 0:
-        pytest.skip(
-            f"build tool unavailable: uv build failed "
-            f"(rc={result.returncode}): {result.stderr}"
+        pytest.fail(
+            f"uv build failed (rc={result.returncode}):\n"
+            f"stdout={result.stdout}\nstderr={result.stderr}"
         )
     wheels = list(out_dir.glob("clauditor-*.whl"))
     if not wheels:
-        pytest.skip(f"build tool unavailable: no wheel produced in {out_dir}")
+        pytest.fail(f"uv build succeeded but no wheel produced in {out_dir}")
     return wheels[0]
 
 

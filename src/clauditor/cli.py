@@ -1714,13 +1714,15 @@ def _check_clauditor_skill_symlink(
         # symlinks but ``is_symlink()`` is True — this is how we detect
         # dangling symlinks after a pip uninstall/upgrade.
         if not dest.exists():
-            target = os.readlink(dest)
+            # repr() protects the single-line doctor output from symlink
+            # targets containing newlines or control characters.
+            target_display = repr(os.readlink(dest))
             return (
                 check_name,
                 "warn",
                 (
                     f"stale symlink; 'clauditor setup --force' to fix "
-                    f"(target: {target})"
+                    f"(target: {target_display})"
                 ),
             )
         if dest.resolve() == pkg_skill_root.resolve():
@@ -1937,7 +1939,10 @@ def _install_symlink(dest: Path, pkg_skill_root: Path) -> None:
     """Create the symlink at ``dest`` pointing to ``pkg_skill_root``.
 
     Ensures the parent ``.claude/skills/`` dir exists with explicit mode
-    ``0o755`` per DEC-012, then calls :func:`os.symlink` per DEC-010.
+    ``0o755`` per DEC-012, then calls :func:`os.symlink`. Raises
+    :exc:`FileExistsError` if ``dest`` appeared between the caller's
+    :func:`plan_setup` inspection and this call — the caller re-plans
+    once per DEC-010.
     """
     dest.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     os.symlink(pkg_skill_root, dest)
@@ -1956,6 +1961,76 @@ def _remove_existing(dest: Path) -> None:
         shutil.rmtree(dest)
 
 
+def _dispatch_setup_action(
+    action: setup_module.SetupAction,
+    dest: Path,
+    pkg_skill_root: Path,
+) -> int:
+    """Translate a :class:`SetupAction` into I/O + exit code.
+
+    May raise :exc:`FileExistsError` from :func:`_install_symlink` when
+    ``dest`` appeared since ``plan_setup`` inspected it. The caller
+    (:func:`cmd_setup`) re-plans once on that exception per DEC-010.
+    """
+    if action is setup_module.SetupAction.CREATE_SYMLINK:
+        _install_symlink(dest, pkg_skill_root)
+        print(f"Installed /clauditor: {dest} -> {pkg_skill_root}")
+        return 0
+    if action is setup_module.SetupAction.NOOP_ALREADY_INSTALLED:
+        print("/clauditor already installed (no changes)")
+        return 0
+    if action is setup_module.SetupAction.REPLACE_WITH_FORCE:
+        _remove_existing(dest)
+        _install_symlink(dest, pkg_skill_root)
+        print(f"Installed /clauditor: {dest} -> {pkg_skill_root}")
+        return 0
+    if action is setup_module.SetupAction.REFUSE_EXISTING_FILE:
+        print(
+            "ERROR: .claude/skills/clauditor exists (regular file); "
+            "use --force to overwrite",
+            file=sys.stderr,
+        )
+        return 1
+    if action is setup_module.SetupAction.REFUSE_EXISTING_DIR:
+        print(
+            "ERROR: .claude/skills/clauditor exists (directory); "
+            "use --force to overwrite",
+            file=sys.stderr,
+        )
+        return 1
+    if action is setup_module.SetupAction.REFUSE_WRONG_SYMLINK:
+        print(
+            "ERROR: .claude/skills/clauditor is a symlink pointing "
+            "elsewhere; use --force to overwrite",
+            file=sys.stderr,
+        )
+        return 1
+    if action is setup_module.SetupAction.REMOVE_SYMLINK:
+        dest.unlink()
+        print("Removed .claude/skills/clauditor")
+        return 0
+    if action is setup_module.SetupAction.NOOP_NOTHING_TO_UNLINK:
+        print("/clauditor not installed (nothing to unlink)")
+        return 0
+    if action is setup_module.SetupAction.REFUSE_UNLINK_NON_SYMLINK:
+        print(
+            "ERROR: .claude/skills/clauditor is not a symlink; "
+            "refusing to unlink",
+            file=sys.stderr,
+        )
+        return 1
+    if action is setup_module.SetupAction.REFUSE_UNLINK_WRONG_TARGET:
+        print(
+            "ERROR: .claude/skills/clauditor symlink target does "
+            "not match installed clauditor; refusing",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Unreachable: every SetupAction member is handled above.
+    return 1  # pragma: no cover
+
+
 def cmd_setup(args: argparse.Namespace) -> int:
     """Install the bundled ``/clauditor`` skill symlink (or remove it).
 
@@ -1963,6 +2038,11 @@ def cmd_setup(args: argparse.Namespace) -> int:
     :func:`clauditor.setup.plan_setup`; this function translates the
     returned :class:`SetupAction` into filesystem operations, stdout/
     stderr messages, and exit codes per DEC-008, DEC-009, DEC-016.
+
+    Retries the plan+dispatch once on :exc:`FileExistsError` so a
+    concurrent process that created ``dest`` between our inspection
+    and our :func:`os.symlink` call is handled cleanly per DEC-010
+    (atomic create-or-fail, no check-then-create).
     """
     traversable = files("clauditor") / "skills" / "clauditor"
     with as_file(traversable) as pkg_skill_root_path:
@@ -1974,80 +2054,38 @@ def cmd_setup(args: argparse.Namespace) -> int:
             else Path.cwd().resolve()
         )
 
-        try:
-            action = setup_module.plan_setup(
-                cwd,
-                pkg_skill_root,
-                force=args.force,
-                unlink=args.unlink,
-            )
-        except ValueError as e:
-            print(f"ERROR: {e}", file=sys.stderr)
-            return 2
+        for attempt in range(2):
+            try:
+                action = setup_module.plan_setup(
+                    cwd,
+                    pkg_skill_root,
+                    force=args.force,
+                    unlink=args.unlink,
+                )
+            except ValueError as e:
+                print(f"ERROR: {e}", file=sys.stderr)
+                return 2
 
-        project_root = setup_module.find_project_root(cwd)
-        # find_project_root cannot return None here: plan_setup already
-        # raised ValueError in that case and we returned above.
-        assert project_root is not None
-        dest = project_root / ".claude" / "skills" / "clauditor"
+            project_root = setup_module.find_project_root(cwd)
+            # find_project_root cannot return None here: plan_setup already
+            # raised ValueError in that case and we returned above.
+            assert project_root is not None
+            dest = project_root / ".claude" / "skills" / "clauditor"
 
-        if action is setup_module.SetupAction.CREATE_SYMLINK:
-            _install_symlink(dest, pkg_skill_root)
-            print(f"Installed /clauditor: {dest} -> {pkg_skill_root}")
-            return 0
-        if action is setup_module.SetupAction.NOOP_ALREADY_INSTALLED:
-            print("/clauditor already installed (no changes)")
-            return 0
-        if action is setup_module.SetupAction.REPLACE_WITH_FORCE:
-            _remove_existing(dest)
-            _install_symlink(dest, pkg_skill_root)
-            print(f"Installed /clauditor: {dest} -> {pkg_skill_root}")
-            return 0
-        if action is setup_module.SetupAction.REFUSE_EXISTING_FILE:
-            print(
-                "ERROR: .claude/skills/clauditor exists (regular file); "
-                "use --force to overwrite",
-                file=sys.stderr,
-            )
-            return 1
-        if action is setup_module.SetupAction.REFUSE_EXISTING_DIR:
-            print(
-                "ERROR: .claude/skills/clauditor exists (directory); "
-                "use --force to overwrite",
-                file=sys.stderr,
-            )
-            return 1
-        if action is setup_module.SetupAction.REFUSE_WRONG_SYMLINK:
-            print(
-                "ERROR: .claude/skills/clauditor is a symlink pointing "
-                "elsewhere; use --force to overwrite",
-                file=sys.stderr,
-            )
-            return 1
-        if action is setup_module.SetupAction.REMOVE_SYMLINK:
-            dest.unlink()
-            print("Removed .claude/skills/clauditor")
-            return 0
-        if action is setup_module.SetupAction.NOOP_NOTHING_TO_UNLINK:
-            print("/clauditor not installed (nothing to unlink)")
-            return 0
-        if action is setup_module.SetupAction.REFUSE_UNLINK_NON_SYMLINK:
-            print(
-                "ERROR: .claude/skills/clauditor is not a symlink; "
-                "refusing to unlink",
-                file=sys.stderr,
-            )
-            return 1
-        if action is setup_module.SetupAction.REFUSE_UNLINK_WRONG_TARGET:
-            print(
-                "ERROR: .claude/skills/clauditor symlink target does "
-                "not match installed clauditor; refusing",
-                file=sys.stderr,
-            )
-            return 1
+            try:
+                return _dispatch_setup_action(action, dest, pkg_skill_root)
+            except FileExistsError:
+                if attempt == 1:
+                    print(
+                        "ERROR: .claude/skills/clauditor changed during "
+                        "setup (concurrent modification); retry",
+                        file=sys.stderr,
+                    )
+                    return 1
+                # Re-plan once: dest appeared after our inspection.
+                continue
 
-        # Unreachable: every SetupAction member is handled above.
-        return 1  # pragma: no cover
+        return 1  # pragma: no cover (loop always returns)
 
 
 def cmd_trend(args: argparse.Namespace) -> int:

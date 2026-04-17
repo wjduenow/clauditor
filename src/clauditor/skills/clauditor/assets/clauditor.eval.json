@@ -1,8 +1,8 @@
 {
   "skill_name": "clauditor",
   "description": "Eval spec for the bundled /clauditor skill — validates that the slash command explains the capture/validate/grade workflow correctly.",
-  "test_args": "examples/.claude/commands/example-skill.eval.json",
-  "user_prompt": "Validate the skill at examples/.claude/commands/example-skill.eval.json — report which clauditor layers you would run and the commands involved.",
+  "test_args": ".claude/commands/chunk.md",
+  "user_prompt": "Validate the skill at .claude/commands/chunk.md — report which clauditor layers you would run (L1 assertions, L3 grading) and the concrete commands involved.",
   "assertions": [
     {
       "id": "mentions-assertions",

@@ -46,8 +46,13 @@ def _read_project_version(pyproject_path: Path) -> str:
 
 
 def _stamp_version(skill_md_text: str, version: str) -> str:
+    # Use a callable replacement to bypass re's backref interpretation of
+    # ``\1``/``\g``/etc. in the version string. Semver is safe today, but
+    # release-candidate tags with unusual characters would otherwise mangle.
     new_text, n = VERSION_LINE_PATTERN.subn(
-        f'clauditor-version: "{version}"', skill_md_text, count=1
+        lambda _match: f'clauditor-version: "{version}"',
+        skill_md_text,
+        count=1,
     )
     if n == 0:
         raise RuntimeError(
@@ -80,7 +85,8 @@ class StampSkillVersionHook(BuildHookInterface):
         # Write the stamped copy to a temporary file and force-include it at
         # the intended wheel path. Hatchling reserves that target path so the
         # unstamped source-tree file is NOT also packaged. The source tree is
-        # never mutated.
+        # never mutated. We stash the tmp path so ``finalize`` can clean it
+        # up; otherwise every wheel build leaks one file in the system temp.
         tmp = tempfile.NamedTemporaryFile(
             mode="w",
             encoding="utf-8",
@@ -93,8 +99,19 @@ class StampSkillVersionHook(BuildHookInterface):
         finally:
             tmp.close()
 
+        self._stamped_tmp_path = tmp.name
         force_include = build_data.setdefault("force_include", {})
         force_include[tmp.name] = WHEEL_TARGET_PATH
+
+    def finalize(
+        self,
+        version: str,
+        build_data: dict[str, Any],
+        artifact_path: str,
+    ) -> None:
+        tmp_name = getattr(self, "_stamped_tmp_path", None)
+        if tmp_name:
+            Path(tmp_name).unlink(missing_ok=True)
 
 
 @hookimpl
