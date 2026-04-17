@@ -20,22 +20,16 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from clauditor.assertions import (
-    AssertionSet,
-    assert_contains,
-    assert_has_entries,
-    assert_has_urls,
-    assert_min_count,
-    assert_min_length,
-    assert_not_contains,
-    assert_regex,
-    run_assertions,
-)
-
 
 @dataclass
 class SkillResult:
-    """Captured output from a skill run."""
+    """Captured output from a skill run.
+
+    Pure data container: the Layer 1 ``assert_*`` test helpers live on
+    :class:`clauditor.asserters.SkillAsserter`, which composes a
+    ``SkillResult``. Non-test callers get a methodless dataclass; tests
+    opt into the helpers by constructing ``SkillAsserter(result)``.
+    """
 
     output: str
     exit_code: int
@@ -48,58 +42,11 @@ class SkillResult:
     output_tokens: int = 0
     raw_messages: list[dict] = field(default_factory=list)
     stream_events: list[dict] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def succeeded(self) -> bool:
         return self.exit_code == 0 and self.output.strip() != ""
-
-    # --- Layer 1: Deterministic assertions ---
-
-    def assert_contains(self, value: str) -> None:
-        """Assert output contains a substring. Raises AssertionError on failure."""
-        result = assert_contains(self.output, value)
-        if not result:
-            raise AssertionError(result.message)
-
-    def assert_not_contains(self, value: str) -> None:
-        """Assert output does NOT contain a substring."""
-        result = assert_not_contains(self.output, value)
-        if not result:
-            raise AssertionError(result.message)
-
-    def assert_matches(self, pattern: str) -> None:
-        """Assert output matches a regex pattern."""
-        result = assert_regex(self.output, pattern)
-        if not result:
-            raise AssertionError(result.message)
-
-    def assert_min_count(self, pattern: str, minimum: int) -> None:
-        """Assert a pattern appears at least N times."""
-        result = assert_min_count(self.output, pattern, minimum)
-        if not result:
-            raise AssertionError(result.message)
-
-    def assert_min_length(self, minimum: int) -> None:
-        """Assert output is at least N characters."""
-        result = assert_min_length(self.output, minimum)
-        if not result:
-            raise AssertionError(result.message)
-
-    def assert_has_urls(self, minimum: int = 1) -> None:
-        """Assert output contains at least N URLs."""
-        result = assert_has_urls(self.output, minimum)
-        if not result:
-            raise AssertionError(result.message)
-
-    def assert_has_entries(self, minimum: int = 1) -> None:
-        """Assert output contains at least N numbered entries."""
-        result = assert_has_entries(self.output, minimum)
-        if not result:
-            raise AssertionError(result.message)
-
-    def run_assertions(self, assertions: list[dict]) -> AssertionSet:
-        """Run a list of assertion dicts against this output."""
-        return run_assertions(self.output, assertions)
 
 
 class SkillRunner:
@@ -188,6 +135,14 @@ class SkillRunner:
         saw_result = False
         result: SkillResult | None = None
         proc: subprocess.Popen | None = None
+        stderr_thread: threading.Thread | None = None
+        # Main-thread warnings collected during parse + cleanup.
+        warnings: list[str] = []
+        # Thread-safe collector for warnings raised inside the stderr
+        # drainer (runs in a background thread; appending to a plain list
+        # would race with the main thread's drain at join time).
+        stderr_warnings_lock = threading.Lock()
+        stderr_warnings: list[str] = []
         try:
             try:
                 proc = subprocess.Popen(
@@ -224,8 +179,22 @@ class SkillRunner:
                 try:
                     for chunk in proc.stderr:
                         stderr_chunks.append(chunk)
-                except Exception:
-                    pass
+                except (EOFError, OSError) as exc:
+                    # Expected terminal states for a pipe: EOF or underlying
+                    # OS error (broken pipe, closed fd). Record + continue.
+                    with stderr_warnings_lock:
+                        stderr_warnings.append(
+                            f"stderr drainer stopped: {type(exc).__name__}: {exc}"
+                        )
+                except Exception as exc:  # noqa: BLE001 — defensive observability
+                    # Truly unexpected: record with type info so a
+                    # regression in the CLI's stderr behavior surfaces
+                    # in SkillResult.warnings rather than vanishing.
+                    with stderr_warnings_lock:
+                        stderr_warnings.append(
+                            "stderr drainer raised unexpected "
+                            f"{type(exc).__name__}: {exc}"
+                        )
 
             stderr_thread = threading.Thread(target=_drain_stderr, daemon=True)
             stderr_thread.start()
@@ -245,8 +214,15 @@ class SkillRunner:
                 timed_out["hit"] = True
                 try:
                     proc.kill()
-                except Exception:  # pragma: no cover
-                    pass
+                except (OSError, ProcessLookupError) as exc:  # pragma: no cover
+                    # Child already reaped or kill syscall failed. Record
+                    # into stderr_warnings (same thread-safe channel) so
+                    # the main thread surfaces it on SkillResult.warnings.
+                    with stderr_warnings_lock:
+                        stderr_warnings.append(
+                            "watchdog kill failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
 
             watchdog = threading.Timer(self.timeout, _on_timeout)
             watchdog.daemon = True
@@ -261,10 +237,18 @@ class SkillRunner:
                         try:
                             msg = json.loads(line)
                         except json.JSONDecodeError as exc:
+                            # Keep the existing stderr print (the
+                            # stream-json-schema.md rule requires a skip+warn
+                            # contract); ALSO record to warnings so callers
+                            # can detect data loss programmatically without
+                            # scraping stderr.
                             print(
                                 "clauditor.runner: skipping malformed "
                                 f"stream-json line: {exc}",
                                 file=sys.stderr,
+                            )
+                            warnings.append(
+                                f"malformed stream-json line skipped: {exc}"
                             )
                             continue
                         if not isinstance(msg, dict):
@@ -310,6 +294,12 @@ class SkillRunner:
             finally:
                 watchdog.cancel()
 
+            # Join the drainer before reading stderr_chunks — otherwise
+            # ``"".join(stderr_chunks)`` can race with the drainer's
+            # in-progress ``.append()`` and produce a truncated or
+            # partially-concatenated stderr on SkillResult.error. The
+            # outer-finally join is retained for the exception path
+            # (where this happy-path join is skipped).
             stderr_thread.join(timeout=2.0)
             stderr_text = "".join(stderr_chunks)
 
@@ -324,6 +314,7 @@ class SkillRunner:
                     output_tokens=output_tokens,
                     raw_messages=raw_messages,
                     stream_events=stream_events,
+                    warnings=list(warnings),
                 )
                 return result
 
@@ -332,6 +323,10 @@ class SkillRunner:
                     "clauditor.runner: stream-json ended without a 'result' "
                     "message; token usage unavailable",
                     file=sys.stderr,
+                )
+                warnings.append(
+                    "stream-json ended without a 'result' message; "
+                    "token usage unavailable"
                 )
 
             result = SkillResult(
@@ -344,33 +339,79 @@ class SkillRunner:
                 output_tokens=output_tokens,
                 raw_messages=raw_messages,
                 stream_events=stream_events,
+                warnings=list(warnings),
             )
             return result
         finally:
             # Defensive cleanup: if an unexpected exception escaped the
             # inner try, the subprocess could still be running. Always try
-            # to reap it so we never leak a claude process. Swallow all
-            # cleanup errors — duration must still be set below.
+            # to reap it so we never leak a claude process. Each step is
+            # guarded independently and records its failure into
+            # ``warnings`` so lost cleanup errors surface on the result.
             if proc is not None and proc.poll() is None:
                 try:
                     proc.terminate()
+                except (OSError, ProcessLookupError) as exc:
+                    warnings.append(
+                        f"cleanup terminate failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                try:
+                    proc.wait(timeout=1)
+                except subprocess.TimeoutExpired as exc:
+                    # terminate() didn't finish in time; escalate to kill.
+                    warnings.append(
+                        f"cleanup wait after terminate timed out: {exc}"
+                    )
+                    try:
+                        proc.kill()
+                    except (OSError, ProcessLookupError) as kill_exc:
+                        warnings.append(
+                            f"cleanup kill failed: "
+                            f"{type(kill_exc).__name__}: {kill_exc}"
+                        )
                     try:
                         proc.wait(timeout=1)
-                    except Exception:
-                        try:
-                            proc.kill()
-                            proc.wait(timeout=1)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                    except (subprocess.TimeoutExpired, OSError) as wait_exc:
+                        warnings.append(
+                            f"cleanup wait after kill failed: "
+                            f"{type(wait_exc).__name__}: {wait_exc}"
+                        )
+                except OSError as exc:
+                    warnings.append(
+                        f"cleanup wait after terminate failed: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
             if proc is not None:
-                for stream in (proc.stdout, proc.stderr):
+                for stream_name, stream in (
+                    ("stdout", proc.stdout),
+                    ("stderr", proc.stderr),
+                ):
+                    if stream is None or not hasattr(stream, "close"):
+                        continue
                     try:
-                        if stream is not None and hasattr(stream, "close"):
-                            stream.close()
-                    except Exception:
-                        pass
+                        stream.close()
+                    except OSError as exc:
+                        warnings.append(
+                            f"cleanup close({stream_name}) failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+            # Join the drainer thread + surface its warnings on every
+            # exit path (success OR exception). Guarded because the
+            # thread may not have been created if Popen itself failed.
+            if stderr_thread is not None:
+                stderr_thread.join(timeout=2.0)
+                with stderr_warnings_lock:
+                    warnings.extend(stderr_warnings)
+                    stderr_warnings.clear()
             duration = time.monotonic() - start
             if result is not None:
                 result.duration_seconds = duration
+                # Any cleanup warnings added after result construction
+                # need to be surfaced on the result too.
+                if warnings:
+                    existing = set(result.warnings)
+                    for w in warnings:
+                        if w not in existing:
+                            result.warnings.append(w)
+                            existing.add(w)

@@ -11,6 +11,7 @@ import socket
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -422,64 +423,67 @@ def assert_has_format(
     )
 
 
+# Table-driven dispatch for run_assertions. Each handler is an adapter
+# that takes (output, assertion_dict) and returns an AssertionResult, so
+# the dispatcher body stays a single lookup + call. Adding a new
+# assertion type means adding one entry here — no edits to run_assertions.
+_ASSERTION_HANDLERS: dict[str, Callable[[str, dict], AssertionResult]] = {
+    "contains": lambda out, a: assert_contains(out, a.get("value", "")),
+    "not_contains": lambda out, a: assert_not_contains(out, a.get("value", "")),
+    "regex": lambda out, a: assert_regex(out, a.get("value", "")),
+    "min_count": lambda out, a: assert_min_count(
+        out, a.get("value", ""), a.get("minimum", 1)
+    ),
+    "min_length": lambda out, a: assert_min_length(
+        out, int(a.get("value", "")) if a.get("value", "") else 0
+    ),
+    "max_length": lambda out, a: assert_max_length(
+        out, int(a.get("value", "")) if a.get("value", "") else 0
+    ),
+    "has_urls": lambda out, a: assert_has_urls(
+        out, int(a.get("value", "")) if a.get("value", "") else 1
+    ),
+    "has_entries": lambda out, a: assert_has_entries(
+        out, int(a.get("value", "")) if a.get("value", "") else 1
+    ),
+    "urls_reachable": lambda out, a: assert_urls_reachable(
+        out, int(a.get("value", "")) if a.get("value", "") else 1
+    ),
+    "has_format": lambda out, a: assert_has_format(
+        out,
+        a.get("format", ""),
+        int(a.get("value", "")) if a.get("value", "") else 1,
+    ),
+}
+
+
 def run_assertions(output: str, assertions: list[dict]) -> AssertionSet:
     """Run a list of assertion dicts against output.
 
     Each dict has: {"type": "contains", "value": "Venues"} etc.
-    Supported types: contains, not_contains, regex, min_count,
-    min_length, max_length, has_urls, has_entries.
+    Supported types: see ``_ASSERTION_HANDLERS`` keys (contains,
+    not_contains, regex, min_count, min_length, max_length, has_urls,
+    has_entries, urls_reachable, has_format).
     """
     results = AssertionSet()
     for a in assertions:
         atype = a["type"]
-        value = a.get("value", "")
         spec_id = a.get("id")
-        before = len(results.results)
-
-        if atype == "contains":
-            results.results.append(assert_contains(output, value))
-        elif atype == "not_contains":
-            results.results.append(assert_not_contains(output, value))
-        elif atype == "regex":
-            results.results.append(assert_regex(output, value))
-        elif atype == "min_count":
-            results.results.append(assert_min_count(output, value, a.get("minimum", 1)))
-        elif atype == "min_length":
-            results.results.append(assert_min_length(output, int(value)))
-        elif atype == "max_length":
-            results.results.append(assert_max_length(output, int(value)))
-        elif atype == "has_urls":
-            results.results.append(assert_has_urls(output, int(value) if value else 1))
-        elif atype == "has_entries":
-            results.results.append(
-                assert_has_entries(output, int(value) if value else 1)
-            )
-        elif atype == "urls_reachable":
-            results.results.append(
-                assert_urls_reachable(output, int(value) if value else 1)
-            )
-        elif atype == "has_format":
-            results.results.append(
-                assert_has_format(
-                    output, a.get("format", ""), int(value) if value else 1
-                )
+        handler = _ASSERTION_HANDLERS.get(atype)
+        if handler is None:
+            result = AssertionResult(
+                name=f"unknown:{atype}",
+                passed=False,
+                message=f"Unknown assertion type: {atype}",
+                kind="custom",
             )
         else:
-            results.results.append(
-                AssertionResult(
-                    name=f"unknown:{atype}",
-                    passed=False,
-                    message=f"Unknown assertion type: {atype}",
-                    kind="custom",
-                )
-            )
+            result = handler(output, a)
 
-        # Stamp the stable spec id onto every result produced by this
-        # assertion dict (US-002). Most assertion dicts produce exactly
-        # one result, but loop defensively across any added since
-        # `before` in case helpers grow to emit multiple.
+        # Stamp the stable spec id onto the result produced by this
+        # assertion dict (US-002).
         if spec_id is not None:
-            for r in results.results[before:]:
-                r.id = spec_id
+            result.id = spec_id
+        results.results.append(result)
 
     return results

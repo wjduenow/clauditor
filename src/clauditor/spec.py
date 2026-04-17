@@ -20,7 +20,7 @@ class SkillSpec:
     Usage:
         spec = SkillSpec.from_file(".claude/commands/find-kid-activities.md")
         result = spec.run()
-        result.assert_contains("Venues")
+        SkillAsserter(result).assert_contains("Venues")
 
         # Or run the full eval spec:
         assertion_set = spec.evaluate()

@@ -147,11 +147,11 @@ then dispatches on the enum to run `os.symlink`, `os.unlink`,
 
 Two callers:
 
-- `src/clauditor/cli.py::cmd_setup` — side-effect layer. Translates
-  each `SetupAction` into filesystem operations, stdout/stderr
-  messages, and exit codes (DEC-008 / DEC-009 / DEC-016). Also runs
-  the "plan + dispatch, retry once on `FileExistsError`" loop for
-  the atomic create-or-fail path.
+- `src/clauditor/cli/setup.py::cmd_setup` — side-effect layer.
+  Translates each `SetupAction` into filesystem operations,
+  stdout/stderr messages, and exit codes (DEC-008 / DEC-009 /
+  DEC-016). Also runs the "plan + dispatch, retry once on
+  `FileExistsError`" loop for the atomic create-or-fail path.
 - `tests/test_setup.py` — pure consumer. 23 tests, one per enum
   branch plus home-exclusion guards for `find_project_root`. Each
   test constructs a `cwd` + `pkg_skill_root` under `tmp_path`, calls
@@ -165,6 +165,98 @@ and execute" helper would have hidden that guard behind a subprocess
 mock and an assertion on the absence of a symlink, instead of a
 direct `plan_setup(cwd=home_like_dir, ...)` returning the refusal
 enum.
+
+### Fifth anchor (LLM grader pure split)
+
+The four async LLM-grader entry points in `grader.py` and
+`quality_grader.py` — `extract_and_grade`, `extract_and_report`,
+`grade_quality`, `blind_compare` — were refactored into thin
+`build_prompt → await call_anthropic → parse_response → return`
+wrappers, with all verdict logic extracted into pure helpers. Each
+async wrapper is now under ~50 body lines and does zero parsing,
+JSON decoding, or assertion construction: it builds a prompt, awaits
+a single Anthropic call (via the centralized helper — see
+`.claude/rules/centralized-sdk-call.md`), and hands the response
+text to a pure builder.
+
+The pure helpers extracted (all side-effect-free, unit-testable
+without `AsyncMock` or any SDK patch):
+
+- `src/clauditor/grader.py`:
+  - `build_extraction_prompt(eval_spec, output_text=None)` — two-arg
+    form returns the full prompt with a fenced `<skill_output>`
+    block; one-arg form keeps the header-template tests working.
+  - `parse_extraction_response(text, eval_spec) → ExtractionParseResult`
+    — strips markdown fences, parses JSON, normalizes into
+    `ExtractedOutput`, surfaces flat-list failures as structured
+    `ExtractionParseError` entries so both callers translate them
+    into the appropriate output shape.
+  - `build_extraction_assertion_set(...)` — pure core of
+    `extract_and_grade`.
+  - `build_extraction_report_from_text(...)` — pure core of
+    `extract_and_report`.
+  - `_strip_markdown_fence(text)` — shared fence stripper.
+- `src/clauditor/quality_grader.py`:
+  - `build_grading_prompt(eval_spec, output_text=None)` — parallel
+    two-form shape.
+  - `build_grading_report(response_text, eval_spec, ...)` — pure
+    core of `grade_quality`; dispatches on empty text / alignment
+    failure / unparseable JSON / happy path.
+  - `parse_blind_response(text)` — promoted to a public name; the
+    legacy `_parse_blind_response` is kept as an alias for back-
+    compat callers.
+  - `combine_blind_results(parsed1, parsed2, ...)` — pure core of
+    `blind_compare`; handles both-fail / only-one-parsed / agreement
+    / disagreement branches and the verdict arithmetic.
+  - `build_blind_prompt(...)` — retained; verified to stay inside
+    the pure layer after the extraction.
+  - `_translate_blind_result`, `_validate_blind_inputs`,
+    `_pick_blind_mappings`, `_slots_for_mapping`,
+    `_build_blind_prompt_for_mapping` — private pure sub-helpers
+    that partition the blind-compare protocol (input validation,
+    mapping selection, slot assignment, per-mapping prompt build,
+    result translation) so each step is testable in isolation.
+
+The wrappers ended up this small:
+
+- `grade_quality` — ~36 body lines: build prompt, `_monotonic` /
+  `call_anthropic` / `_monotonic` for duration, first-text-block
+  extraction, delegate to `build_grading_report`.
+- `blind_compare` — ~47 body lines: validate, pick mappings, build
+  two prompts, `asyncio.gather(call_anthropic, call_anthropic)`,
+  parse each response, delegate to `combine_blind_results`.
+- `extract_and_grade` — ~28 body lines: build prompt, single
+  `call_anthropic`, delegate to `build_extraction_assertion_set`.
+- `extract_and_report` — ~33 body lines: build prompt, single
+  `call_anthropic`, delegate to `build_extraction_report_from_text`.
+
+Why the split matters here, beyond the usual testability payoff:
+
+- **No SDK mocks in the pure-helper tests**: `TestBuildGradingReport`,
+  `TestCombineBlindResults`, `TestParseExtractionResponse`, and
+  `TestBuildExtractionAssertionSet` feed canned response strings
+  directly to the builders and assert on the returned
+  `GradingReport` / `BlindReport` / `AssertionSet`. No `patch`, no
+  `AsyncMock`, no `anthropic` SDK import. Tests that verify the
+  Anthropic call itself live separately and mock
+  `clauditor._anthropic.call_anthropic` at a single seam per module.
+- **Error-branch coverage is cheap**: the empty-text, unparseable-
+  JSON, alignment-failure, and disagreement branches each get a
+  direct unit test passing the specific bad string to the pure
+  builder. Previously those branches could only be reached through
+  an `AsyncMock` with `side_effect` wiring that hid bugs behind
+  multi-layer setup.
+- **The async wrappers are now trivially reviewable**: a reviewer
+  reading `grade_quality` sees the shape (build → await → parse →
+  return) at a glance and can check the five pure helpers
+  independently. Before the split, verdict logic was interleaved
+  with SDK exception handling, token accounting, and duration
+  tracking in one ~140-line function.
+
+Traces to bead `clauditor-24h.5` (US-005) of
+`plans/super/audit-quality-2026-04.md`. Companion rule:
+`.claude/rules/centralized-sdk-call.md` codifies the shared
+`call_anthropic` seam the thin wrappers all target.
 
 ## When this rule applies
 

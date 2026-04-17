@@ -158,11 +158,12 @@ clauditor validate .claude/commands/my-skill.md --json
 ### 3. Use in pytest
 
 ```python
-def test_my_skill(clauditor_runner):
+def test_my_skill(clauditor_runner, clauditor_asserter):
     result = clauditor_runner.run("my-skill", '"San Jose, CA" --depth quick')
-    result.assert_contains("Results")
-    result.assert_has_entries(minimum=3)
-    result.assert_has_urls(minimum=3)
+    asserter = clauditor_asserter(result)
+    asserter.assert_contains("Results")
+    asserter.assert_has_entries(minimum=3)
+    asserter.assert_has_urls(minimum=3)
 
 def test_with_eval_spec(clauditor_spec):
     spec = clauditor_spec(".claude/commands/my-skill.md")
@@ -216,12 +217,15 @@ flowchart TD
 No API calls. Regex, string matching, and counting.
 
 ```python
-result.assert_contains("Venues")           # substring check
-result.assert_not_contains("Error")        # absence check
-result.assert_matches(r"\*\*\d+\.")        # regex
-result.assert_has_entries(minimum=5)        # numbered entries
-result.assert_has_urls(minimum=3)           # URL count
-result.assert_min_length(500)              # output length
+from clauditor import SkillAsserter
+
+asserter = SkillAsserter(result)
+asserter.assert_contains("Venues")           # substring check
+asserter.assert_not_contains("Error")        # absence check
+asserter.assert_matches(r"\*\*\d+\.")        # regex
+asserter.assert_has_entries(minimum=5)        # numbered entries
+asserter.assert_has_urls(minimum=3)           # URL count
+asserter.assert_min_length(500)              # output length
 ```
 
 Or define in `eval.json`:
@@ -484,6 +488,7 @@ clauditor trend <skill> --list-metrics           # List available metric paths
 clauditor trend <skill> --metric grader.input_tokens --command extract  # Filter by subcommand
 clauditor triggers <skill.md>          # Trigger precision testing
 clauditor capture <skill> -- "args"    # Run skill, save stdout to tests/eval/captured/
+clauditor suggest <skill.md>           # Propose SKILL.md edits from prior failing iterations
 clauditor doctor                       # Report environment diagnostics
 ```
 
@@ -516,11 +521,25 @@ Use `clauditor trend <skill> --metric <dotted.path>` to view a series. Paths wal
 
 Runs with `--only-criterion` skip the history append to keep longitudinal data comparable.
 
+## Exit Codes
+
+clauditor uses structured exit codes so scripts and CI pipelines can distinguish "the tool itself failed" from "the tool ran fine but the skill under test failed its gate."
+
+| Code | Meaning                                                                                                                                              |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | Success. The command completed and, where applicable, the skill passed its gate (all assertions satisfied, all criteria above threshold, no regression detected, no trigger miss). |
+| `1`  | Signal failed. The tool ran fine, but the skill did not meet its bar: an L1 assertion failed, an L3 criterion scored below threshold, `clauditor compare` detected a regression relative to baseline, or a trigger classification was wrong. The on-disk artifacts are complete and valid; the skill needs fixing, not the tool. |
+| `2`  | Input error. A user-supplied argument was missing, malformed, or incompatible with another flag (e.g. `--iteration` without an integer value, a skill `.md` file that does not exist, an eval spec that fails schema validation). The command exited before doing work; re-run with corrected arguments. |
+| `3`  | Anthropic API error. `clauditor suggest` only. The Anthropic SDK returned a non-retriable failure (auth, malformed request, exhausted retries). No sidecar is written; re-run once the upstream issue is resolved. |
+
+Commands that only invoke the Anthropic API transiently (`extract`, `grade`, `triggers`) funnel API failures through the same retry policy as `suggest` but surface them as exit 1 with an `ERROR:` line on stderr rather than a distinct code.
+
 ## Pytest Integration
 
 clauditor registers as a pytest plugin automatically. Available fixtures:
 
 - `clauditor_runner` — pre-configured `SkillRunner`
+- `clauditor_asserter` — factory wrapping a `SkillResult` with `assert_*` helpers (`assert_contains`, `assert_matches`, `assert_has_urls`, `assert_has_entries`, `assert_min_count`, `assert_min_length`, `run_assertions`) — see `.claude/rules/data-vs-asserter-split.md`
 - `clauditor_spec` — factory for loading `SkillSpec` from skill files
 - `clauditor_grader` — factory for Layer 3 quality grading
 - `clauditor_triggers` — factory for trigger precision testing
