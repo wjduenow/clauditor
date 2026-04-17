@@ -2,7 +2,7 @@
 
 Visual + narrative reference for how `clauditor grade` flows end-to-end and how the three evaluation layers compose. Read this when you want depth beyond the README's summary — the grade-command flow, the three-layer pipeline with subgraphs, and the cost/fidelity tradeoffs per layer.
 
-> Companion to the [root README](../README.md). This doc is the full architecture reference; the README has a summary with code examples.
+> Returning from the [root README](../README.md). This doc is the full reference; the README has a summary with code examples.
 
 ## Overview
 
