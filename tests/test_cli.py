@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from clauditor import setup as clauditor_setup
 from clauditor.assertions import AssertionResult, AssertionSet
 from clauditor.cli import main
 from clauditor.quality_grader import GradingReport, GradingResult
@@ -3580,6 +3581,37 @@ class TestCmdSetup:
         err = capsys.readouterr().err
         assert "concurrent modification" in err
 
+    def test_setup_unlink_race_target_already_gone(
+        self, setup_env, monkeypatch, capsys
+    ):
+        """--unlink where the symlink was removed before our unlink call →
+        treat as success (user wanted it gone, it's gone). Symmetric with
+        the install-side retry loop (DEC-010).
+        """
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        import os as _os
+
+        _os.symlink(pkg_skill, dest)  # plan_setup sees it
+        # Race: remove the symlink right before cmd_setup dispatches
+        # the REMOVE_SYMLINK branch. We simulate this by chaining the
+        # side effect into the real dispatch via monkeypatch.
+        real_plan = clauditor_setup.plan_setup
+
+        def racy_plan(cwd, pkg_skill_root, *, force, unlink):
+            action = real_plan(cwd, pkg_skill_root, force=force, unlink=unlink)
+            if action is clauditor_setup.SetupAction.REMOVE_SYMLINK:
+                dest.unlink()  # concurrent peer gets there first
+            return action
+
+        monkeypatch.setattr("clauditor.cli.setup_module.plan_setup", racy_plan)
+
+        rc = main(["setup", "--unlink"])
+
+        assert rc == 0
+        assert "Removed .claude/skills/clauditor" in capsys.readouterr().out
+
     def test_setup_errors_when_no_project_root(self, tmp_path, monkeypatch, capsys):
         """No .git, no .claude → exit 2, stderr 'no project root'."""
         # Fake package skill tree outside any git checkout.
@@ -4170,7 +4202,9 @@ class TestCmdDoctor:
         ]
         assert len(lines) == 1
         assert lines[0].startswith("[info]")
-        assert "no project root" in lines[0]
+        assert "no project root found; run from a project directory" in lines[0]
+        # doctor has no --project-dir flag, so must not suggest one.
+        assert "--project-dir" not in lines[0]
 
 
 class TestCmdTrend:

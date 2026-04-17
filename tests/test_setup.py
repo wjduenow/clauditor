@@ -86,6 +86,39 @@ class TestFindProjectRoot:
         (proj / ".claude").write_text("not a marker\n")
         assert find_project_root(proj) is None
 
+    def test_find_project_root_skips_claude_at_home(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Regression guard: Claude Code ships ~/.claude as a user config
+        # dir. Without the home-exclusion, any setup run from a cwd under
+        # $HOME with no intermediate project marker would install the
+        # skill into ~/.claude/skills/clauditor — contaminating user
+        # config. Mirrors paths.py::resolve_clauditor_dir.
+        fake_home = tmp_path / "home" / "user"
+        fake_home.mkdir(parents=True)
+        (fake_home / ".claude").mkdir()  # the "stray" ~/.claude
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+        sub = fake_home / "Downloads"
+        sub.mkdir()
+        # Walking up from ~/Downloads must skip the ~/.claude marker and
+        # keep walking — no project root at or above $HOME in this setup.
+        assert find_project_root(sub) is None
+
+    def test_find_project_root_accepts_git_at_home(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Home-exclusion is only for .claude; a bare .git at $HOME (rare
+        # but valid — user treats $HOME as a git repo) must still count.
+        fake_home = tmp_path / "home" / "user"
+        fake_home.mkdir(parents=True)
+        (fake_home / ".git").mkdir()
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: fake_home))
+
+        sub = fake_home / "scratch"
+        sub.mkdir()
+        assert find_project_root(sub) == fake_home
+
 
 class TestPlanSetupInstall:
     def test_plan_setup_returns_create_symlink(self, tmp_path: Path) -> None:

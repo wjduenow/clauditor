@@ -1701,13 +1701,12 @@ def _check_clauditor_skill_symlink(
     check_name = "clauditor-skill-symlink"
 
     if project_root is None:
+        # Doctor has no --project-dir flag, so do not suggest one here.
+        # The matching cmd_setup message retains the flag hint per DEC-011.
         return (
             check_name,
             "info",
-            (
-                "no project root found; run from a project directory "
-                "or pass --project-dir"
-            ),
+            "no project root found; run from a project directory",
         )
 
     dest = project_root / ".claude" / "skills" / "clauditor"
@@ -2014,7 +2013,10 @@ def _dispatch_setup_action(
         )
         return 1
     if action is setup_module.SetupAction.REMOVE_SYMLINK:
-        dest.unlink()
+        # missing_ok handles the race where a concurrent peer removed the
+        # symlink between plan_setup and here: treat "already gone" as a
+        # success (the user wanted it gone; it's gone).
+        dest.unlink(missing_ok=True)
         print("Removed .claude/skills/clauditor")
         return 0
     if action is setup_module.SetupAction.NOOP_NOTHING_TO_UNLINK:

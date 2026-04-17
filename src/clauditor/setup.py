@@ -53,14 +53,31 @@ def find_project_root(cwd: Path) -> Path | None:
     checkout); either counts. ``.claude`` must be a directory — a stray
     file named ``.claude`` next to some unrelated project would not
     indicate a project root.
+
+    The user's home directory is accepted only via the ``.git`` marker,
+    never via ``.claude``. Claude Code itself ships a ``~/.claude/`` user
+    config dir, so without this exclusion every ``clauditor setup`` run
+    from a cwd under ``$HOME`` lacking an intermediate project marker
+    would install the skill symlink into ``~/.claude/skills/clauditor``
+    — contaminating the user's global Claude Code config. Mirrors the
+    home-exclusion pattern in :func:`clauditor.paths.resolve_clauditor_dir`.
     """
+    try:
+        home = Path.home().resolve()
+    except (RuntimeError, OSError):
+        home = None
+
     current = cwd
     for _ in range(_PROJECT_ROOT_SEARCH_LIMIT):
-        git_marker = current / ".git"
-        claude_marker = current / ".claude"
-        if git_marker.exists():
+        try:
+            resolved = current.resolve()
+        except OSError:  # pragma: no cover — broken perms along the path
+            resolved = current
+        at_home = home is not None and resolved == home
+
+        if (current / ".git").exists():
             return current
-        if claude_marker.is_dir():
+        if not at_home and (current / ".claude").is_dir():
             return current
         parent = current.parent
         if parent == current:
