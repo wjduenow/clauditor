@@ -518,23 +518,25 @@ class TestCmdProposeEval:
     # Skill file missing / not a regular file
     # ------------------------------------------------------------------
 
-    def test_skill_file_missing_exits_1(
+    def test_skill_file_missing_exits_2(
         self, tmp_path: Path, monkeypatch, capsys
     ):
+        """DEC-006: missing SKILL.md is a pre-call input error → 2."""
         monkeypatch.chdir(tmp_path)
         rc = main(["propose-eval", str(tmp_path / "nope.md")])
-        assert rc == 1
+        assert rc == 2
         err = capsys.readouterr().err
         assert "skill file not found" in err
 
-    def test_skill_path_is_directory_exits_1(
+    def test_skill_path_is_directory_exits_2(
         self, tmp_path: Path, monkeypatch, capsys
     ):
+        """DEC-006: non-file skill path is a pre-call input error → 2."""
         skill_dir = tmp_path / "a-dir"
         skill_dir.mkdir()
         monkeypatch.chdir(tmp_path)
         rc = main(["propose-eval", str(skill_dir)])
-        assert rc == 1
+        assert rc == 2
         err = capsys.readouterr().err
         assert "not a regular file" in err
 

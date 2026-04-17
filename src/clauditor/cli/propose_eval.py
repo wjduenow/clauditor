@@ -178,23 +178,25 @@ def _apply_from_capture_override(
 async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
     """Async orchestration for ``clauditor propose-eval`` (DEC-006)."""
     skill_md_path = Path(args.skill_md)
+    # DEC-006: missing / non-file SKILL.md is a pre-call input error → 2.
     if not skill_md_path.exists():
         print(
             f"ERROR: skill file not found: {skill_md_path}",
             file=sys.stderr,
         )
-        return 1
+        return 2
     if not skill_md_path.is_file():
         print(
             f"ERROR: skill path is not a regular file: {skill_md_path}",
             file=sys.stderr,
         )
-        return 1
+        return 2
 
     project_dir = (
         Path(args.project_dir) if args.project_dir else Path.cwd()
     )
 
+    # DEC-006: decode / read errors are pre-call input errors → 2.
     try:
         propose_input = load_propose_eval_input(skill_md_path, project_dir)
     except UnicodeDecodeError as exc:
@@ -202,13 +204,13 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
             f"ERROR: could not decode input file as UTF-8: {exc}",
             file=sys.stderr,
         )
-        return 1
+        return 2
     except OSError as exc:
         print(
             f"ERROR: could not load SKILL.md {skill_md_path}: {exc}",
             file=sys.stderr,
         )
-        return 1
+        return 2
 
     # Apply capture overrides in priority order: --from-capture wins
     # over --from-iteration if both are set (explicit path beats

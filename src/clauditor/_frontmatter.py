@@ -144,9 +144,13 @@ def parse_frontmatter(text: str) -> tuple[dict | None, str]:
 
         if value == "":
             # Either an empty scalar or the opener of a nested mapping.
-            # Decide by peeking at the next non-blank line: if it's
-            # indented, this is a mapping; otherwise it's a genuinely
-            # empty scalar.
+            # Decide by peeking at the immediately following line: if
+            # it's non-blank and indented, this is a mapping; otherwise
+            # it's a genuinely empty scalar. Blank lines between a
+            # mapping key and its first nested entry are not supported
+            # by this subset — they cause the key to be treated as an
+            # empty scalar and the indented entry to raise on the next
+            # iteration.
             next_offset = offset + 1
             next_is_indented = (
                 next_offset < len(block_lines)
