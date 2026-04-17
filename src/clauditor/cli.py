@@ -1949,16 +1949,21 @@ def _install_symlink(dest: Path, pkg_skill_root: Path) -> None:
 
 
 def _remove_existing(dest: Path) -> None:
-    """Remove whatever is at ``dest`` — symlink, file, or directory.
+    """Remove whatever is at ``dest`` — symlink, file, directory, or exotic.
 
     Used only in the ``--force`` replace path. ``Path.unlink`` handles
     symlinks (even broken ones) and regular files; ``shutil.rmtree``
-    handles a real directory.
+    handles a real directory. The ``unlink(missing_ok=True)`` fallback
+    catches exotic types (FIFO, socket, device) and benign races where a
+    concurrent peer removed ``dest`` between our inspection and this call;
+    ``rmtree`` passes ``ignore_errors=True`` for the same race.
     """
     if dest.is_symlink() or dest.is_file():
         dest.unlink(missing_ok=True)
     elif dest.is_dir():
-        shutil.rmtree(dest)
+        shutil.rmtree(dest, ignore_errors=True)
+    else:
+        dest.unlink(missing_ok=True)
 
 
 def _dispatch_setup_action(

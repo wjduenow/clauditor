@@ -3539,6 +3539,47 @@ class TestCmdSetup:
         err = capsys.readouterr().err
         assert "target does not match" in err or "does not match" in err
 
+    def test_setup_retries_on_race_then_succeeds(
+        self, setup_env, monkeypatch, capsys
+    ):
+        """FileExistsError on first os.symlink → re-plan → success (DEC-010)."""
+        from clauditor import cli as cli_module
+
+        call_count = {"n": 0}
+        original_install = cli_module._install_symlink
+
+        def racy_install(dest, pkg_skill_root):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise FileExistsError("simulated TOCTOU race")
+            return original_install(dest, pkg_skill_root)
+
+        monkeypatch.setattr("clauditor.cli._install_symlink", racy_install)
+
+        rc = main(["setup"])
+
+        assert rc == 0
+        assert call_count["n"] == 2  # first raced, second succeeded
+        dest = setup_env["dest"]
+        assert dest.is_symlink()
+        assert "Installed /clauditor" in capsys.readouterr().out
+
+    def test_setup_exits_1_after_two_race_attempts(
+        self, setup_env, monkeypatch, capsys
+    ):
+        """Persistent FileExistsError → exit 1 with concurrent-mod error."""
+
+        def always_race(dest, pkg_skill_root):
+            raise FileExistsError("persistent race")
+
+        monkeypatch.setattr("clauditor.cli._install_symlink", always_race)
+
+        rc = main(["setup"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "concurrent modification" in err
+
     def test_setup_errors_when_no_project_root(self, tmp_path, monkeypatch, capsys):
         """No .git, no .claude → exit 2, stderr 'no project root'."""
         # Fake package skill tree outside any git checkout.
@@ -4099,6 +4140,37 @@ class TestCmdDoctor:
         assert lines[0].startswith("[warn]")
         assert expected_kind in lines[0]
         assert "unmanaged" in lines[0]
+
+    def test_doctor_reports_info_when_no_project_root(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """No .git or .claude in ancestry → info line (DEC-013, 6th state)."""
+        pkg_skill = tmp_path / "fake-pkg" / "clauditor" / "skills" / "clauditor"
+        pkg_skill.mkdir(parents=True)
+        (pkg_skill / "SKILL.md").write_text("# sentinel\n")
+
+        # cwd is a markerless subdir under tmp_path.
+        subdir = tmp_path / "nowhere"
+        subdir.mkdir()
+        monkeypatch.chdir(subdir)
+
+        def fake_files(pkg_name):
+            assert pkg_name == "clauditor"
+            return tmp_path / "fake-pkg" / "clauditor"
+
+        monkeypatch.setattr("clauditor.cli.files", fake_files)
+
+        rc = main(["doctor"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "clauditor-skill-symlink" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[info]")
+        assert "no project root" in lines[0]
 
 
 class TestCmdTrend:
