@@ -4,8 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/52
 - **Branch:** `feature/52-propose-eval`
 - **Worktree:** _n/a (working on branch directly)_
-- **Phase:** `detailing`
-- **PR:** _pending_
+- **Phase:** `devolved`
+- **PR:** https://github.com/wjduenow/clauditor/pull/53
 - **Sessions:** 1
 - **Last session:** 2026-04-17
 
@@ -647,7 +647,22 @@ US-001 and US-002 run in parallel. US-003 is the integration point.
 
 ## Beads Manifest
 
-_(Pending — populated in Phase 7.)_
+- **Epic:** `clauditor-2ri`
+- **Branch:** `feature/52-propose-eval`
+- **PR:** https://github.com/wjduenow/clauditor/pull/53
+
+| Story | Bead ID | Depends on | Ready |
+|---|---|---|---|
+| US-001 `EvalSpec.from_dict` extraction | `clauditor-2ri.1` | — | ✅ |
+| US-002 `_frontmatter` shared module | `clauditor-2ri.2` | — | ✅ |
+| US-003 pure `propose_eval` | `clauditor-2ri.3` | US-001, US-002 | |
+| US-004 CLI subcommand | `clauditor-2ri.4` | US-003 | |
+| US-005 documentation | `clauditor-2ri.5` | US-004 | |
+| US-006 Quality Gate | `clauditor-2ri.6` | US-001..US-005 | |
+| US-007 Patterns & Memory | `clauditor-2ri.7` (P4) | US-006 | |
+
+10 dependency edges wired. Kickoff set:
+`{clauditor-2ri.1, clauditor-2ri.2}` run in parallel.
 
 ---
 
