@@ -44,8 +44,16 @@ class TestWheelPackaging:
     def test_wheel_contains_skills_subpackage(self, wheel_namelist: list[str]) -> None:
         assert "clauditor/skills/__init__.py" in wheel_namelist
 
-    def test_wheel_contains_bundled_markdown(self, wheel_namelist: list[str]) -> None:
-        assert "clauditor/skills/.sentinel.md" in wheel_namelist
+    def test_wheel_contains_bundled_skill_md(self, wheel_namelist: list[str]) -> None:
+        assert "clauditor/skills/clauditor/SKILL.md" in wheel_namelist
+
+    def test_wheel_contains_bundled_eval_json(
+        self, wheel_namelist: list[str]
+    ) -> None:
+        assert (
+            "clauditor/skills/clauditor/assets/clauditor.eval.json"
+            in wheel_namelist
+        )
 
     def test_wheel_excludes_pycache(self, wheel_namelist: list[str]) -> None:
         offenders = [name for name in wheel_namelist if "__pycache__" in name]
