@@ -101,6 +101,28 @@ def _append_validate_history(
         print(f"WARNING: failed to append history: {e}", file=sys.stderr)
 
 
+def _load_spec_or_report(
+    skill_path: str, eval_path: str | None
+) -> SkillSpec | None:
+    """Load a :class:`SkillSpec`, printing an actionable error if missing.
+
+    Returns the loaded spec on success. On ``FileNotFoundError`` (the
+    skill ``.md`` is missing), prints an ``ERROR:`` line to stderr that
+    names the path AND suggests ``clauditor init`` as the next step,
+    then returns ``None``. Callers map ``None`` to exit code 2 (input
+    error, per DEC-008) rather than letting the traceback escape.
+    """
+    try:
+        return SkillSpec.from_file(skill_path, eval_path=eval_path)
+    except FileNotFoundError:
+        print(
+            f"ERROR: Skill file not found: {skill_path}. "
+            f"Run 'clauditor init {skill_path}' to create one.",
+            file=sys.stderr,
+        )
+        return None
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     """Validate a skill's output against its eval spec (Layer 1 only).
 
@@ -113,12 +135,15 @@ def cmd_validate(args: argparse.Namespace) -> int:
     suppresses the ``run-0/`` stream-json write and leaves
     ``transcript_path`` unset on assertion rows (US-006).
     """
-    spec = SkillSpec.from_file(args.skill, eval_path=args.eval)
+    spec = _load_spec_or_report(args.skill, args.eval)
+    if spec is None:
+        return 2
 
     if not spec.eval_spec:
         print(f"ERROR: No eval spec found for {args.skill}", file=sys.stderr)
         print(
-            f"Create {Path(args.skill).with_suffix('.eval.json')}",
+            f"Create {Path(args.skill).with_suffix('.eval.json')}\n"
+            f"Run 'clauditor init {args.skill}' to create one.",
             file=sys.stderr,
         )
         return 1
@@ -407,10 +432,16 @@ def cmd_grade(args: argparse.Namespace) -> int:
     ``timing.json`` and one ``run-K/`` subdir per skill invocation
     (DEC-002, DEC-003, DEC-010, DEC-011, DEC-012, DEC-014).
     """
-    spec = SkillSpec.from_file(args.skill, eval_path=args.eval)
+    spec = _load_spec_or_report(args.skill, args.eval)
+    if spec is None:
+        return 2
 
     if not spec.eval_spec:
-        print(f"ERROR: No eval spec found for {args.skill}", file=sys.stderr)
+        print(
+            f"ERROR: No eval spec found for {args.skill}\n"
+            f"Run 'clauditor init {args.skill}' to create one.",
+            file=sys.stderr,
+        )
         return 1
 
     if not spec.eval_spec.grading_criteria:
@@ -1470,10 +1501,16 @@ def cmd_triggers(args: argparse.Namespace) -> int:
     """Run trigger precision testing for a skill."""
     import asyncio
 
-    spec = SkillSpec.from_file(args.skill, eval_path=args.eval)
+    spec = _load_spec_or_report(args.skill, args.eval)
+    if spec is None:
+        return 2
 
     if not spec.eval_spec:
-        print(f"ERROR: No eval spec found for {args.skill}", file=sys.stderr)
+        print(
+            f"ERROR: No eval spec found for {args.skill}\n"
+            f"Run 'clauditor init {args.skill}' to create one.",
+            file=sys.stderr,
+        )
         return 1
 
     model = args.model or spec.eval_spec.grading_model
@@ -1534,10 +1571,16 @@ def cmd_extract(args: argparse.Namespace) -> int:
     """Run Layer 2 schema extraction against a skill's output."""
     import asyncio
 
-    spec = SkillSpec.from_file(args.skill, eval_path=args.eval)
+    spec = _load_spec_or_report(args.skill, args.eval)
+    if spec is None:
+        return 2
 
     if not spec.eval_spec:
-        print(f"ERROR: No eval spec found for {args.skill}", file=sys.stderr)
+        print(
+            f"ERROR: No eval spec found for {args.skill}\n"
+            f"Run 'clauditor init {args.skill}' to create one.",
+            file=sys.stderr,
+        )
         return 1
 
     if not spec.eval_spec.sections:
