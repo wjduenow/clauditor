@@ -341,6 +341,28 @@ class TestClassifyQuery:
         assert result.confidence == 0.0
         assert "no text content" in result.reasoning
 
+    @pytest.mark.asyncio
+    async def test_helper_error_yields_graceful_failure_row(self):
+        """AnthropicHelperError does not abort the batch — records one
+        row with ``triggered=False`` and reasoning that names the API error
+        so sibling queries in ``test_triggers`` still produce their rows.
+        """
+        from clauditor._anthropic import AnthropicHelperError
+
+        call = AsyncMock(side_effect=AnthropicHelperError("rate limited"))
+        with patch("clauditor._anthropic.call_anthropic", call):
+            result = await classify_query(
+                "skill", "desc", "query", True, "test-model"
+            )
+        assert result.predicted_trigger is False
+        # expected=True so passed is False
+        assert result.passed is False
+        assert result.confidence == 0.0
+        assert "API error" in result.reasoning
+        assert "rate limited" in result.reasoning
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+
 
 # --- test_triggers tests ---
 

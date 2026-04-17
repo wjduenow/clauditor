@@ -185,11 +185,27 @@ async def classify_query(
     function just awaits the result and projects it onto
     :class:`TriggerResult`.
     """
-    from clauditor._anthropic import call_anthropic
+    from clauditor._anthropic import AnthropicHelperError, call_anthropic
 
     prompt = build_trigger_prompt(skill_name, description, query)
 
-    result = await call_anthropic(prompt, model=model, max_tokens=1024)
+    try:
+        result = await call_anthropic(prompt, model=model, max_tokens=1024)
+    except AnthropicHelperError as exc:
+        # Graceful degradation: a single API failure (auth, 5xx
+        # exhaustion, network) must not abort the entire trigger batch
+        # in ``test_triggers``. Record as a non-triggering failure so
+        # sibling queries still produce their rows.
+        return TriggerResult(
+            query=query,
+            expected_trigger=expected,
+            predicted_trigger=False,
+            passed=not expected,
+            confidence=0.0,
+            reasoning=f"API error: {exc}",
+            input_tokens=0,
+            output_tokens=0,
+        )
     input_tokens = result.input_tokens
     output_tokens = result.output_tokens
 

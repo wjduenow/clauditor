@@ -135,6 +135,7 @@ class SkillRunner:
         saw_result = False
         result: SkillResult | None = None
         proc: subprocess.Popen | None = None
+        stderr_thread: threading.Thread | None = None
         # Main-thread warnings collected during parse + cleanup.
         warnings: list[str] = []
         # Thread-safe collector for warnings raised inside the stderr
@@ -293,12 +294,11 @@ class SkillRunner:
             finally:
                 watchdog.cancel()
 
-            stderr_thread.join(timeout=2.0)
             stderr_text = "".join(stderr_chunks)
-            # Drain any warnings the background thread recorded.
-            with stderr_warnings_lock:
-                warnings.extend(stderr_warnings)
-                stderr_warnings.clear()
+            # stderr_thread.join + stderr_warnings drain moved to the
+            # outer finally so they run on the exception path too —
+            # otherwise a parse-loop failure leaves the drainer daemon
+            # unjoined and its warnings lost.
 
             if timed_out["hit"] and returncode != 0:
                 result = SkillResult(
@@ -393,6 +393,14 @@ class SkillRunner:
                             f"cleanup close({stream_name}) failed: "
                             f"{type(exc).__name__}: {exc}"
                         )
+            # Join the drainer thread + surface its warnings on every
+            # exit path (success OR exception). Guarded because the
+            # thread may not have been created if Popen itself failed.
+            if stderr_thread is not None:
+                stderr_thread.join(timeout=2.0)
+                with stderr_warnings_lock:
+                    warnings.extend(stderr_warnings)
+                    stderr_warnings.clear()
             duration = time.monotonic() - start
             if result is not None:
                 result.duration_seconds = duration

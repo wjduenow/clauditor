@@ -39,16 +39,12 @@ from __future__ import annotations
 
 import asyncio
 import random
-import time
 from dataclasses import dataclass, field
 from typing import Any
 
-# Module-level aliases per .claude/rules/monotonic-time-indirection.md.
-# ``_monotonic`` is captured for future duration-aware callers; the
-# async-bound ``_sleep`` alias is the load-bearing indirection today
-# (tests patch it to avoid real wallclock during retry-branch tests).
+# Module-level alias per .claude/rules/monotonic-time-indirection.md.
+# ``_sleep`` is patched in retry-branch tests to avoid real wallclock.
 # ``_rand_uniform`` lets tests pin jitter to deterministic values.
-_monotonic = time.monotonic
 _sleep = asyncio.sleep
 
 
