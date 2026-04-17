@@ -73,7 +73,10 @@ class TestCmdValidate:
             rc = main(["validate", "skill.md"])
 
         assert rc == 1
-        assert "No eval spec" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "No eval spec" in err
+        # US-002: append actionable init suggestion.
+        assert "clauditor init skill.md" in err
 
     def test_validate_json_output(self, tmp_path):
         """--json flag produces valid JSON output."""
@@ -134,6 +137,24 @@ class TestCmdValidate:
 
         assert rc == 1
         assert "Skill failed" in capsys.readouterr().err
+
+    def test_validate_missing_skill_file(self, capsys):
+        """US-002: missing skill file exits 2 with actionable error + init hint."""
+        with patch(
+            "clauditor.cli.SkillSpec.from_file",
+            side_effect=FileNotFoundError(
+                "Skill file not found: nonexistent.md"
+            ),
+        ):
+            rc = main(["validate", "nonexistent.md"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        # No Python traceback escaped.
+        assert "Traceback" not in err
+        # Message names the path AND suggests `clauditor init`.
+        assert "nonexistent.md" in err
+        assert "clauditor init nonexistent.md" in err
 
 
 class TestCmdRun:
@@ -226,7 +247,26 @@ class TestCmdGrade:
             rc = main(["grade", "skill.md"])
 
         assert rc == 1
-        assert "No eval spec" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "No eval spec" in err
+        # US-002: append actionable init suggestion to existing message.
+        assert "clauditor init skill.md" in err
+
+    def test_grade_missing_skill_file(self, capsys):
+        """US-002: missing skill file exits 2 with actionable error + init hint."""
+        with patch(
+            "clauditor.cli.SkillSpec.from_file",
+            side_effect=FileNotFoundError(
+                "Skill file not found: nonexistent.md"
+            ),
+        ):
+            rc = main(["grade", "nonexistent.md"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+        assert "nonexistent.md" in err
+        assert "clauditor init nonexistent.md" in err
 
     def test_grade_no_grading_criteria(self, capsys):
         """Returns 1 when no grading_criteria defined."""
@@ -3310,7 +3350,26 @@ class TestCmdTriggers:
             rc = main(["triggers", "skill.md"])
 
         assert rc == 1
-        assert "No eval spec" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "No eval spec" in err
+        # US-002: append actionable init suggestion.
+        assert "clauditor init skill.md" in err
+
+    def test_triggers_missing_skill_file(self, capsys):
+        """US-002: missing skill file exits 2 with actionable error + init hint."""
+        with patch(
+            "clauditor.cli.SkillSpec.from_file",
+            side_effect=FileNotFoundError(
+                "Skill file not found: nonexistent.md"
+            ),
+        ):
+            rc = main(["triggers", "nonexistent.md"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+        assert "nonexistent.md" in err
+        assert "clauditor init nonexistent.md" in err
 
 
 class TestCmdInit:
@@ -3435,7 +3494,26 @@ class TestCmdExtract:
             rc = main(["extract", "skill.md"])
 
         assert rc == 1
-        assert "No eval spec" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "No eval spec" in err
+        # US-002: append actionable init suggestion.
+        assert "clauditor init skill.md" in err
+
+    def test_extract_missing_skill_file(self, capsys):
+        """US-002: missing skill file exits 2 with actionable error + init hint."""
+        with patch(
+            "clauditor.cli.SkillSpec.from_file",
+            side_effect=FileNotFoundError(
+                "Skill file not found: nonexistent.md"
+            ),
+        ):
+            rc = main(["extract", "nonexistent.md"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+        assert "nonexistent.md" in err
+        assert "clauditor init nonexistent.md" in err
 
     def test_extract_with_output_file(self, tmp_path):
         """Reads output file, calls extract_and_grade, returns 0 on pass."""
