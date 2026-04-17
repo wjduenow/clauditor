@@ -142,7 +142,10 @@ clauditor grade .claude/commands/my-skill.md --dry-run      # Print prompt, no A
 clauditor grade .claude/commands/my-skill.md --iteration 5  # Write to iteration-5/ explicitly
 clauditor grade .claude/commands/my-skill.md --iteration 5 --force  # Overwrite existing iteration-5/
 clauditor grade .claude/commands/my-skill.md --diff         # Compare against prior iteration
+clauditor grade .claude/commands/my-skill.md --baseline     # Also run without skill for A/B delta
 ```
+
+With `--baseline`, clauditor runs a second pass *without* the skill prefix, grades both arms against the same rubric, and writes an additional `baseline_*.json` sidecar bundle (`baseline_assertions.json`, `baseline_extraction.json`, `baseline_grading.json`) plus a `benchmark.json` delta summary (`{pass_rate, time_seconds, tokens}`) computed as *skill-arm minus baseline-arm*. Use this to quantify whether the skill is actually doing work on top of raw Claude.
 
 Every `grade` run is persisted to `.clauditor/iteration-N/<skill>/` automatically. By default the iteration number auto-increments to the next free slot. Pass `--iteration N` to target a specific slot; if `iteration-N/` already exists the command errors unless you also pass `--force` to overwrite.
 
@@ -207,7 +210,19 @@ Rubric-based grading can miss holistic regressions where two outputs pass every 
 clauditor compare before.txt after.txt --spec <skill.md> --blind
 ```
 
-The judge runs twice with the A/B positions swapped so position bias shows up as disagreement. Output includes a preference (`BEFORE` / `AFTER` / `TIE`), confidence, per-output holistic score, whether the two runs agreed on the winner, and the judge's reasoning. Currently only the file-pair form is supported (iteration refs like `--from/--to` are rejected); `--blind` requires `--spec` with `eval_spec.user_prompt` set (the natural-language query the judge will see) and uses `grading_criteria` from the spec as an optional rubric hint to the judge.
+The judge runs twice with the A/B positions swapped so position bias shows up as disagreement. Output includes a preference (`BEFORE` / `AFTER` / `TIE`), confidence, per-output holistic score, whether the two runs agreed on the winner, and the judge's reasoning. Currently only the file-pair form is supported (iteration refs like `--from/--to` are rejected); `--blind` requires `--spec` with `user_prompt` set on the eval spec (the natural-language query the judge will see) and uses `grading_criteria` from the spec as an optional rubric hint to the judge.
+
+Example eval spec snippet for `--blind`:
+
+```json
+{
+  "skill_name": "find-venues",
+  "user_prompt": "Find kid-friendly activities in Cupertino within 5 miles for ages 4-6.",
+  "grading_criteria": [
+    {"id": "distance_match", "criterion": "Are all venues within the specified distance?"}
+  ]
+}
+```
 
 ### Variance Measurement
 

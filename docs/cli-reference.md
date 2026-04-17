@@ -54,7 +54,7 @@ Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.
 
 Token buckets: `skill` (subprocess), `grader` (Layer 2 extract), `quality` (Layer 3 rubric), `triggers` (trigger precision). Buckets are **absent** when the command doesn't invoke them — e.g. `extract` records have `skill` + `grader`, `validate` records have `skill` only. `total` aggregates across all present buckets.
 
-Use `clauditor trend <skill> --metric <dotted.path>` to view a series. Paths walk the nested `metrics` dict (`total.total`, `grader.input_tokens`, `skill.output_tokens`, `duration_seconds`) with `pass_rate` and `mean_score` as top-level shortcuts. `--command {grade,extract,validate,all}` filters by subcommand (default `grade`). `--list-metrics` prints every resolvable metric path for the skill.
+Use `clauditor trend <skill> --metric <dotted.path>` to view a series. Paths walk the nested `metrics` dict (`total.total`, `skill.output_tokens`, `quality.input_tokens`, `duration_seconds` for grade records; `grader.input_tokens` for extract records) with `pass_rate` and `mean_score` as top-level shortcuts. `--command {grade,extract,validate,all}` filters by subcommand (default `grade`); pass `--command extract` to surface `grader.*` paths. `--list-metrics` prints every resolvable metric path for the skill.
 
 Runs with `--only-criterion` skip the history append to keep longitudinal data comparable.
 
