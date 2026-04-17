@@ -45,7 +45,7 @@ LLM-assisted EvalSpec bootstrap. `clauditor propose-eval <skill.md>` reads the S
 | `--from-capture PATH` | Override capture discovery with an explicit file. Wins over `--from-iteration`. |
 | `--from-iteration N` | Load the capture from `.clauditor/runs/iteration-N/<skill>/run-0/output.txt` (N must be a positive integer). |
 | `--force` | Overwrite an existing `eval.json` at `<skill_md_dir>/eval.json`. Without it, the command refuses with exit 1. |
-| `--dry-run` | Print the proposed spec as pretty JSON to stdout; do not write a file. |
+| `--dry-run` | Print the built proposer prompt to stdout and exit; do not call Anthropic and do not write a file. Cost-free preview. |
 | `--model MODEL` | Override the proposer model (default: `claude-sonnet-4-6`). |
 | `--json` | Emit the full `ProposeEvalReport` JSON envelope on stdout (includes `schema_version`, tokens, duration, validation errors). |
 | `-v, --verbose` | Log capture source, redaction count, model, and token estimates to stderr. |
@@ -57,7 +57,7 @@ LLM-assisted EvalSpec bootstrap. `clauditor propose-eval <skill.md>` reads the S
 # Basic bootstrap — uses DEC-001 capture discovery, writes eval.json
 clauditor propose-eval .claude/commands/my-skill.md
 
-# Preview the proposal without writing
+# Preview the built proposer prompt (no Anthropic call)
 clauditor propose-eval .claude/commands/my-skill.md --dry-run
 
 # Bootstrap from an explicit capture file (takes precedence over discovery)
@@ -73,9 +73,9 @@ Mirrors the DEC-006 contract in `src/clauditor/cli/propose_eval.py`:
 
 | Code | Meaning |
 | ---- | ------- |
-| `0` | Success — spec printed (`--dry-run` / `--json`) or written to `eval.json`. |
+| `0` | Success — prompt printed (`--dry-run`), report envelope printed (`--json`), or spec written to `eval.json`. |
 | `1` | Response-parse failure from the proposer (malformed JSON, missing top-level shape) OR collision: `eval.json` already exists and `--force` was not passed. |
-| `2` | Spec-validation failure — the proposed dict did not survive `EvalSpec.from_dict` (missing required fields, duplicate ids, invalid `format` strings, …). The errors are printed one per line on stderr. |
+| `2` | Spec-validation failure OR pre-call input error — the proposed dict did not survive `EvalSpec.from_dict` (missing required fields, duplicate ids, invalid `format` strings, …), OR the prompt exceeded the token budget, OR `--from-capture`/`--from-iteration` pointed at a missing/invalid target. Errors printed on stderr. |
 | `3` | Anthropic API error — auth failure, rate-limit exhaustion, connection error, or any non-retriable SDK error surfaced by `clauditor._anthropic.call_anthropic`. |
 
 ### Capture discovery (DEC-001)
@@ -85,11 +85,11 @@ When neither `--from-capture` nor `--from-iteration` is provided, the loader loo
 1. `<project_dir>/tests/eval/captured/<skill_name>.txt` (primary — the same directory `clauditor capture` writes to).
 2. `<project_dir>/.clauditor/captures/<skill_name>.txt` (fallback).
 
-The `<skill_name>` is resolved from the SKILL.md frontmatter's `name` field, falling back to the SKILL.md filename stem. If no capture is found, the proposer runs against the SKILL.md alone — the quality of the generated spec will be lower, but the command does not error out.
+The `<skill_name>` is resolved from the SKILL.md frontmatter's `name` field, falling back to the containing directory's basename, and finally to the literal string `"skill"` if neither source matches the security regex (`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`). This clamp blocks path-traversal attempts via a malicious `name:` field (e.g. `"../../etc/passwd"`). If no capture is found, the proposer runs against the SKILL.md alone — the quality of the generated spec will be lower, but the command does not error out. Malformed frontmatter emits a stderr warning and falls through to treating the whole file as body.
 
 ### Token budget (DEC-005 / DEC-011)
 
-The prompt is pre-checked against a **50,000-token cap** via a `len(prompt) / 4` heuristic before the Anthropic call. This is a coarse safety rail that prevents a mid-stream 413 when a SKILL.md + capture is pathologically large; oversize inputs surface as a synthesized `api_error` in the `ProposeEvalReport` and exit code 3 rather than a partial-response failure.
+The prompt is pre-checked against a **50,000-token cap** via a `len(prompt) / 4` heuristic before the Anthropic call. This is a coarse safety rail that prevents a mid-stream 413 when a SKILL.md + capture is pathologically large. Oversize inputs fail fast with an `ERROR:` line on stderr and exit code **2** (pre-call input error per DEC-006) before any Anthropic call is made.
 
 ### Security / scrubbing (DEC-008)
 

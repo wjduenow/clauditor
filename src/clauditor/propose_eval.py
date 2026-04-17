@@ -379,9 +379,16 @@ def build_propose_eval_prompt(propose_input: ProposeEvalInput) -> str:
     parts.append('  "assertions": [')
     parts.append("    {")
     parts.append('      "id": "<kebab-case unique id>",')
-    parts.append('      "kind": "<presence|regex|count|...>",')
+    parts.append(
+        '      "type": "<contains|not_contains|regex|min_count|'
+        'min_length|max_length|has_urls|has_entries|has_format|'
+        'urls_reachable>",'
+    )
     parts.append('      "name": "<human name>",')
-    parts.append("      ...kind-specific fields...")
+    parts.append(
+        '      ...type-specific fields (e.g. "value", "pattern", '
+        '"format", "min", "max")...'
+    )
     parts.append("    }")
     parts.append("  ],")
     parts.append('  "sections": [')

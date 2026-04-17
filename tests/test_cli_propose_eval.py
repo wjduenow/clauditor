@@ -36,7 +36,7 @@ def _make_report(
             "assertions": [
                 {
                     "id": "greets-user",
-                    "kind": "contains",
+                    "type": "contains",
                     "name": "greets the user",
                     "value": "hello",
                 }

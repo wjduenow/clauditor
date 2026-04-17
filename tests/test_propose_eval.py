@@ -61,7 +61,7 @@ def _good_spec_dict(
         spec["assertions"] = [
             {
                 "id": "greets-user",
-                "kind": "contains",
+                "type": "contains",
                 "name": "greets the user",
                 "value": "hello",
             }
@@ -528,7 +528,7 @@ class TestValidateProposedSpec:
             "test_args": "",
             "assertions": [
                 # missing id
-                {"kind": "contains", "name": "n", "value": "v"}
+                {"type": "contains", "name": "n", "value": "v"}
             ],
             "grading_criteria": [
                 {"id": "crit-1", "criterion": "ok"}
@@ -544,7 +544,7 @@ class TestValidateProposedSpec:
             "assertions": [
                 {
                     "id": "same-id",
-                    "kind": "contains",
+                    "type": "contains",
                     "name": "n",
                     "value": "v",
                 }
@@ -617,7 +617,7 @@ class TestValidateProposedSpec:
             "assertions": [
                 {
                     "id": "a1",
-                    "kind": "contains",
+                    "type": "contains",
                     "name": "n",
                     "value": "v",
                 }
@@ -810,7 +810,7 @@ class TestProposeEval:
             "test_args": "",
             "assertions": [
                 # missing id
-                {"kind": "contains", "name": "x", "value": "y"}
+                {"type": "contains", "name": "x", "value": "y"}
             ],
         }
         result = _mock_anthropic_result(text=json.dumps(bad_spec))
