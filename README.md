@@ -47,8 +47,7 @@ Swap `validate` for `grade` once you've added `grading_criteria` to the spec.
 
 From your project root, `uv run clauditor setup` creates a symlink at `.claude/skills/clauditor` pointing at the bundled Claude Code skill; `pip install --upgrade clauditor` then picks up skill updates automatically. Restart Claude Code once if `.claude/skills/` did not exist before.
 
-<details>
-<summary>Flags and details</summary>
+<details><summary>Flags and details</summary>
 
 - `--unlink` — remove the `/clauditor` symlink. Refuses symlinks not pointing at the installed clauditor package, so it won't touch user-authored skills.
 - `--force` — overwrite an existing file or symlink at `.claude/skills/clauditor`.
@@ -95,7 +94,8 @@ Full reference: [docs/layers.md](docs/layers.md).
 Stable exit-code contract (0 = pass, 1 = skill failed, 2 = input error, 3 = Anthropic error). `grade` auto-increments iteration slots under `.clauditor/iteration-N/<skill>/` and appends metrics to `history.jsonl`.
 
 ```bash
-clauditor init <skill.md>             # Generate starter eval.json
+clauditor init <skill.md>             # Starter eval.json
+clauditor propose-eval <skill.md>     # LLM-assisted EvalSpec bootstrap
 clauditor validate <skill.md>         # Layer 1 assertions
 clauditor grade <skill.md>            # Layer 3 quality grading
 clauditor compare --skill <s> --from 1 --to 2  # Diff iterations
@@ -130,8 +130,7 @@ An `<skill-name>.eval.json` lives next to the skill's `.md` file and drives all 
 
 **Covered in the full reference:** the full eval-spec JSON shape, `input_files` staging rules, `output_file` / `output_files` capture, and the `format` validation DSL (`phone_us`, `url`, `domain`, … or inline regex). Full reference: [docs/eval-spec-reference.md](docs/eval-spec-reference.md).
 
-<details>
-<summary>Alignment with agentskills.io</summary>
+<details><summary>Alignment with agentskills.io</summary>
 
 clauditor implements (and extends) the workflow at [agentskills.io/skill-creation/evaluating-skills](https://agentskills.io/skill-creation/evaluating-skills):
 
@@ -144,7 +143,7 @@ clauditor implements (and extends) the workflow at [agentskills.io/skill-creatio
 | Regression + longitudinal history | `clauditor compare`, `.clauditor/history.jsonl`, `clauditor trend --metric <dotted.path>` |
 | Per-iteration workspace | `.clauditor/iteration-N/<skill>/` with sidecars + `run-*/` transcripts |
 
-**Beyond the spec**: trigger precision testing, tiered extraction, pytest plugin, `input_files` staging, blind A/B judge, baseline pair runs, transcript capture, LLM-driven skill improvement proposer (`clauditor suggest`). **Out of scope**: human-in-the-loop feedback capture.
+**Beyond the spec**: trigger precision testing, tiered extraction, pytest plugin, `input_files` staging, blind A/B judge, baseline pair runs, transcript capture, LLM-driven skill improvement proposer (`clauditor suggest`), LLM-assisted EvalSpec bootstrap (`clauditor propose-eval`). **Out of scope**: human-in-the-loop feedback capture.
 
 </details>
 

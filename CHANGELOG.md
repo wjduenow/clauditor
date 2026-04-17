@@ -41,6 +41,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `clauditor propose-eval <SKILL.md>` — LLM-assisted EvalSpec
+  bootstrap. Reads SKILL.md and an optional captured run, asks
+  Sonnet to propose a full 3-layer EvalSpec (L1 assertions, L2
+  tiered extraction, L3 rubric), validates the proposal through
+  `EvalSpec.from_dict`, and writes `eval.json` next to SKILL.md.
+  Captures are scrubbed through `transcripts.redact` (DEC-008) and
+  the sidecar preserves the non-mutating-scrub invariant. See
+  `docs/cli-reference.md#propose-eval` for flags and exit codes.
 - Privacy: `SuggestReport.to_json()` scrubs `api_error` through
   `transcripts.redact()` before emitting so secret-shaped substrings
   (Anthropic keys, GitHub PATs, Bearer tokens) are redacted on disk.
