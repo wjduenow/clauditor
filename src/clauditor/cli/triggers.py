@@ -55,13 +55,18 @@ def cmd_triggers(args: argparse.Namespace) -> int:
         )
         return 2
 
+    # Both the dry-run and non-dry-run paths need trigger_tests. Without
+    # this guard, the non-dry-run path would print an empty 'Trigger
+    # Precision:' block and exit 0 — indistinguishable in CI from a
+    # genuine pass with zero triggers.
+    trigger_tests = spec.eval_spec.trigger_tests
+    if not trigger_tests:
+        print("ERROR: No trigger_tests defined in eval spec", file=sys.stderr)
+        return 1
+
     if args.dry_run:
         from clauditor.triggers import build_trigger_prompt
 
-        trigger_tests = spec.eval_spec.trigger_tests
-        if not trigger_tests:
-            print("ERROR: No trigger_tests defined in eval spec", file=sys.stderr)
-            return 1
         print(f"Model: {model}")
         queries = [
             (q, True) for q in trigger_tests.should_trigger

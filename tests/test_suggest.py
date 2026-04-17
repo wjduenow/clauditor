@@ -1354,6 +1354,7 @@ def _make_report(
     parse_error: str | None = None,
     validation_errors: list[str] | None = None,
     summary_rationale: str = "overall summary",
+    api_error: str | None = None,
 ) -> SuggestReport:
     return SuggestReport(
         skill_name="find",
@@ -1368,6 +1369,7 @@ def _make_report(
         summary_rationale=summary_rationale,
         validation_errors=validation_errors or [],
         parse_error=parse_error,
+        api_error=api_error,
     )
 
 
@@ -1413,6 +1415,44 @@ class TestSuggestReportToJson:
         assert first["id"] == "edit-0"
         assert first["motivated_by"] == ["a1", "g1"]
         assert first["applies_to_file"] == "SKILL.md"
+
+    def test_api_error_scrubbed_on_disk_not_in_memory(self) -> None:
+        """Per .claude/rules/non-mutating-scrub.md, api_error containing a
+        secret-shaped substring (e.g. an Anthropic key echoed in a 401
+        body) is redacted before writing to disk, while the in-memory
+        report keeps the full-fidelity copy for debugging.
+        """
+        secret = "sk-ant-api03-" + "A" * 95
+        raw = f"anthropic API error: 401 body={{\"error\": \"{secret}\"}}"
+        report = _make_report(api_error=raw)
+
+        text = report.to_json()
+        data = json.loads(text)
+
+        # On-disk copy: secret replaced with [REDACTED] marker.
+        assert data["api_error"] is not None
+        assert secret not in data["api_error"]
+        assert "[REDACTED]" in data["api_error"]
+        # Surrounding context is preserved; only the secret span was replaced.
+        assert "anthropic API error: 401" in data["api_error"]
+
+        # In-memory copy is unchanged — downstream consumers (stderr prints,
+        # debugger inspection) still see the full original.
+        assert report.api_error == raw
+
+    def test_api_error_none_stays_none(self) -> None:
+        """Redaction helper must preserve None rather than coerce to string."""
+        report = _make_report(api_error=None)
+        data = json.loads(report.to_json())
+        assert data["api_error"] is None
+
+    def test_api_error_without_secrets_unchanged(self) -> None:
+        """A benign api_error string should round-trip verbatim."""
+        raw = "anthropic API error: timeout after 3 retries"
+        report = _make_report(api_error=raw)
+        data = json.loads(report.to_json())
+        assert data["api_error"] == raw
+        assert report.api_error == raw
 
 
 class TestCheckSchemaVersion:
