@@ -246,6 +246,7 @@ from clauditor.cli import doctor as doctor_mod  # noqa: E402
 from clauditor.cli import extract as extract_mod  # noqa: E402
 from clauditor.cli import grade as grade_mod  # noqa: E402
 from clauditor.cli import init as init_mod  # noqa: E402
+from clauditor.cli import propose_eval as propose_eval_mod  # noqa: E402
 from clauditor.cli import run as run_mod  # noqa: E402
 from clauditor.cli import setup as setup_mod  # noqa: E402
 from clauditor.cli import suggest as suggest_mod  # noqa: E402
@@ -262,6 +263,7 @@ from clauditor.cli.grade import (  # noqa: E402,F401
     cmd_grade,
 )
 from clauditor.cli.init import cmd_init  # noqa: E402,F401
+from clauditor.cli.propose_eval import cmd_propose_eval  # noqa: E402,F401
 from clauditor.cli.run import cmd_run  # noqa: E402,F401
 from clauditor.cli.setup import cmd_setup  # noqa: E402,F401
 from clauditor.cli.suggest import cmd_suggest  # noqa: E402,F401
@@ -313,6 +315,9 @@ def main(argv: list[str] | None = None) -> int:
     # suggest
     suggest_mod.add_parser(subparsers)
 
+    # propose-eval
+    propose_eval_mod.add_parser(subparsers)
+
     # doctor
     doctor_mod.add_parser(subparsers)
 
@@ -358,6 +363,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_audit(parsed)
     elif parsed.command == "suggest":
         return cmd_suggest(parsed)
+    elif parsed.command == "propose-eval":
+        return cmd_propose_eval(parsed)
 
     return 1
 
