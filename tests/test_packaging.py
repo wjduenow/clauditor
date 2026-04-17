@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import subprocess
+import tomllib
 import zipfile
 from pathlib import Path
 
 import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _project_version() -> str:
+    with (PROJECT_ROOT / "pyproject.toml").open("rb") as fh:
+        return tomllib.load(fh)["project"]["version"]
 
 
 @pytest.fixture(scope="module")
@@ -58,3 +64,22 @@ class TestWheelPackaging:
     def test_wheel_excludes_pycache(self, wheel_namelist: list[str]) -> None:
         offenders = [name for name in wheel_namelist if "__pycache__" in name]
         assert offenders == [], f"wheel contains __pycache__ entries: {offenders}"
+
+    def test_wheel_skill_md_has_stamped_version(self, built_wheel: Path) -> None:
+        version = _project_version()
+        with zipfile.ZipFile(built_wheel) as zf:
+            skill_md = zf.read(
+                "clauditor/skills/clauditor/SKILL.md"
+            ).decode("utf-8")
+        expected_line = f'clauditor-version: "{version}"'
+        assert expected_line in skill_md, (
+            f"expected {expected_line!r} in wheel SKILL.md, got:\n{skill_md[:400]}"
+        )
+        # Defense-in-depth: the unstamped placeholder must NOT survive.
+        assert 'clauditor-version: "0.0.0-dev"' not in skill_md
+
+    def test_source_skill_md_remains_dev_placeholder(self) -> None:
+        src_skill = PROJECT_ROOT / "src/clauditor/skills/clauditor/SKILL.md"
+        assert 'clauditor-version: "0.0.0-dev"' in src_skill.read_text(
+            encoding="utf-8"
+        )
