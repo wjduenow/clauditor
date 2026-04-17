@@ -10,13 +10,15 @@ call.
 
 Exit codes (DEC-006, mirrors ``clauditor suggest``):
 
-- ``0`` — success: proposed spec printed (``--dry-run`` / ``--json``)
-  or written to ``<skill>/eval.json``.
+- ``0`` — success: prompt printed (``--dry-run``), sidecar printed
+  (``--json``), or ``<skill>/eval.json`` written.
 - ``1`` — response-parse failure (``validation_errors`` starts with
   ``parse_propose_eval_response:``) OR eval.json exists without
   ``--force`` (DEC-003 collision refusal, matches ``cli/init.py``).
-- ``2`` — spec-validation failure (other ``validation_errors``).
-- ``3`` — API / prompt-build failure (``api_error`` set).
+- ``2`` — spec-validation failure (``EvalSpec.from_dict`` rejected
+  the proposed dict) OR pre-call input error (capture file missing,
+  ``--from-iteration`` invalid, prompt exceeds token budget).
+- ``3`` — Anthropic API failure (``api_error`` set).
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ from pathlib import Path
 
 from clauditor.propose_eval import (
     DEFAULT_PROPOSE_EVAL_MODEL,
+    build_propose_eval_prompt,
     load_propose_eval_input,
     propose_eval,
 )
@@ -71,7 +74,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--dry-run",
         action="store_true",
-        help="Print proposed JSON to stdout; do not write a file",
+        help=(
+            "Print the built prompt to stdout and exit; do not call "
+            "Anthropic or write a file"
+        ),
     )
     p.add_argument(
         "--model",
@@ -122,11 +128,11 @@ def _apply_from_capture_override(
 ) -> int | None:
     """Override ``propose_input.capture_text`` from ``capture_path``.
 
-    Returns an exit code (``1``) to surface to the caller if the path
-    cannot be read; returns ``None`` on success. The scrub uses
-    :func:`transcripts.redact` so the capture is already-scrubbed
-    before landing in the prompt (DEC-008,
-    ``.claude/rules/non-mutating-scrub.md``).
+    Returns an exit code (``2`` — pre-call input error per DEC-006)
+    to surface to the caller if the path cannot be read; returns
+    ``None`` on success. The scrub uses :func:`transcripts.redact` so
+    the capture is already-scrubbed before landing in the prompt
+    (DEC-008, ``.claude/rules/non-mutating-scrub.md``).
     """
     try:
         raw = capture_path.read_text(encoding="utf-8")
@@ -135,21 +141,21 @@ def _apply_from_capture_override(
             f"ERROR: capture file not found: {capture_path}",
             file=sys.stderr,
         )
-        return 1
+        return 2
     except OSError as exc:
         print(
             f"ERROR: could not read capture file {capture_path}: "
             f"{exc}",
             file=sys.stderr,
         )
-        return 1
+        return 2
     except UnicodeDecodeError as exc:
         print(
             f"ERROR: capture file {capture_path} is not valid UTF-8: "
             f"{exc}",
             file=sys.stderr,
         )
-        return 1
+        return 2
 
     scrubbed, count = redact(raw)
     propose_input.capture_text = scrubbed
@@ -224,12 +230,13 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
             if iter_num < 1:
                 raise ValueError("must be >= 1")
         except ValueError as exc:
+            # Pre-call input error per DEC-006.
             print(
                 f"ERROR: --from-iteration must be a positive integer, "
                 f"got {args.from_iteration!r}: {exc}",
                 file=sys.stderr,
             )
-            return 1
+            return 2
 
         iter_capture = (
             project_dir
@@ -265,17 +272,28 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
     model = args.model or DEFAULT_PROPOSE_EVAL_MODEL
     if args.verbose:
         print(f"[propose-eval] model: {model}", file=sys.stderr)
-        # `skill_md_text` is a close enough stand-in for the final
-        # prompt estimate; the real len/4 check happens inside the
-        # prompt builder. This line is an orientation breadcrumb,
-        # not a strict pre-flight.
-        est = (len(propose_input.skill_md_text) + 3) // 4
-        if propose_input.capture_text is not None:
-            est += (len(propose_input.capture_text) + 3) // 4
+
+    # Build the prompt in the CLI layer so we can (a) honor --dry-run
+    # without spending an API call (plan line 520-521) and (b) route
+    # the token-budget ValueError to exit 2 per DEC-006 "pre-call
+    # input errors" row rather than lumping it into api_error → 3.
+    try:
+        prompt = build_propose_eval_prompt(propose_input)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    if args.verbose:
+        est = (len(prompt) + 3) // 4
         print(
-            f"[propose-eval] estimated input tokens (skill+capture): ~{est}",
+            f"[propose-eval] estimated prompt tokens: ~{est}",
             file=sys.stderr,
         )
+
+    # --dry-run: print the prompt and exit. No Anthropic call.
+    if args.dry_run:
+        print(prompt, end="" if prompt.endswith("\n") else "\n")
+        return 0
 
     report = await propose_eval(
         propose_input,
@@ -283,7 +301,7 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
         spec_dir=skill_md_path.parent,
     )
 
-    # DEC-006 row: API / prompt-build failure → exit 3.
+    # DEC-006 row: Anthropic API failure → exit 3.
     if report.api_error is not None:
         print(f"ERROR: {report.api_error}", file=sys.stderr)
         return 3
@@ -322,17 +340,12 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    # DEC-006 row: success. One of three output modes:
+    # DEC-006 row: success. Two output modes:
     # 1. --json: print the full report envelope (schema_version first).
-    # 2. --dry-run: print just the proposed spec as pretty JSON.
-    # 3. default: write eval.json (respecting --force / DEC-003),
+    # 2. default: write eval.json (respecting --force / DEC-003),
     #    print human summary.
     if args.json:
         print(report.to_json(), end="")
-        return 0
-
-    if args.dry_run:
-        print(json.dumps(report.proposed_spec, indent=2))
         return 0
 
     target = skill_md_path.parent / "eval.json"

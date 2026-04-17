@@ -89,19 +89,24 @@ class TestCmdProposeEval:
         assert "1 criteria" in out
 
     # ------------------------------------------------------------------
-    # --dry-run (exit 0, no file written)
+    # --dry-run: prints prompt, NO Anthropic call, no file written
+    # (plan DEC-006 "pre-call" behavior; intent is cost-free preview).
     # ------------------------------------------------------------------
 
-    def test_dry_run_prints_spec_without_writing(
+    def test_dry_run_prints_prompt_without_calling_anthropic(
         self, tmp_path: Path, monkeypatch, capsys
     ):
         skill_md = _write_skill(tmp_path)
         monkeypatch.chdir(tmp_path)
 
-        with patch(
-            "clauditor.cli.propose_eval.propose_eval",
-            new=AsyncMock(return_value=_make_report()),
-        ):
+        # propose_eval must NOT be invoked under --dry-run. If it is,
+        # the AsyncMock side_effect would raise.
+        fail_mock = AsyncMock(
+            side_effect=AssertionError(
+                "propose_eval should not be called under --dry-run"
+            )
+        )
+        with patch("clauditor.cli.propose_eval.propose_eval", new=fail_mock):
             rc = main(["propose-eval", str(skill_md), "--dry-run"])
 
         assert rc == 0
@@ -109,8 +114,11 @@ class TestCmdProposeEval:
         assert not target.exists()
 
         out = capsys.readouterr().out
-        data = json.loads(out)
-        assert data["assertions"][0]["id"] == "greets-user"
+        # Prompt always contains the trusted SKILL.md fence and the
+        # stable-id contract phrase the builder guarantees.
+        assert "<skill_md>" in out
+        assert "unique `id`" in out
+        assert fail_mock.await_count == 0
 
     # ------------------------------------------------------------------
     # --json (exit 0, full envelope, no file written)
@@ -187,6 +195,41 @@ class TestCmdProposeEval:
         assert "--force" in err
         # File was NOT overwritten.
         assert target.read_text() == "{}"
+
+    # ------------------------------------------------------------------
+    # Oversize prompt (token budget exceeded) → exit 2 per DEC-006
+    # ------------------------------------------------------------------
+
+    def test_oversize_prompt_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """Plan DEC-006: pre-call token-budget ValueError → exit 2."""
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        # Force the prompt builder to raise as if the token budget
+        # was exceeded. propose_eval must NOT be invoked (pre-call).
+        fail_mock = AsyncMock(
+            side_effect=AssertionError(
+                "propose_eval should not be called after oversize check"
+            )
+        )
+        with patch(
+            "clauditor.cli.propose_eval.build_propose_eval_prompt",
+            side_effect=ValueError(
+                "prompt too long for model context window: "
+                "estimated 60000 tokens > 50000 limit"
+            ),
+        ), patch(
+            "clauditor.cli.propose_eval.propose_eval",
+            new=fail_mock,
+        ):
+            rc = main(["propose-eval", str(skill_md)])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "prompt too long" in err
+        assert fail_mock.await_count == 0
 
     # ------------------------------------------------------------------
     # API error → exit 3
@@ -314,9 +357,10 @@ class TestCmdProposeEval:
         assert captured["capture_source"] is not None
         assert "my-capture.txt" in captured["capture_source"]
 
-    def test_from_capture_missing_file_exits_1(
+    def test_from_capture_missing_file_exits_2(
         self, tmp_path: Path, monkeypatch, capsys
     ):
+        """DEC-006 row: missing capture file is a pre-call input error → 2."""
         skill_md = _write_skill(tmp_path)
         monkeypatch.chdir(tmp_path)
 
@@ -333,7 +377,7 @@ class TestCmdProposeEval:
                 ]
             )
 
-        assert rc == 1
+        assert rc == 2
         err = capsys.readouterr().err
         assert "capture file not found" in err
         mock_propose.assert_not_called()
@@ -380,9 +424,10 @@ class TestCmdProposeEval:
         assert captured["capture_source"] is not None
         assert "iteration-3" in captured["capture_source"]
 
-    def test_from_iteration_invalid_int_exits_1(
+    def test_from_iteration_invalid_int_exits_2(
         self, tmp_path: Path, monkeypatch, capsys
     ):
+        """DEC-006 row: invalid --from-iteration is a pre-call error → 2."""
         skill_md = _write_skill(tmp_path)
         monkeypatch.chdir(tmp_path)
 
@@ -399,7 +444,7 @@ class TestCmdProposeEval:
                 ]
             )
 
-        assert rc == 1
+        assert rc == 2
         err = capsys.readouterr().err
         assert "--from-iteration" in err
         mock_propose.assert_not_called()
@@ -436,7 +481,7 @@ class TestCmdProposeEval:
         assert "cap.txt" in err
         assert "model:" in err
         assert "claude-sonnet-4-6" in err
-        assert "estimated input tokens" in err
+        assert "estimated prompt tokens" in err
         assert "input_tokens=" in err
         assert "output_tokens=" in err
 

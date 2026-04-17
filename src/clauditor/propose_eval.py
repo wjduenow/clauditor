@@ -121,31 +121,30 @@ class ProposeEvalReport:
     def to_json(self) -> str:
         """Serialize to JSON with ``schema_version`` as the first key.
 
-        Scrubs ``api_error`` through :func:`transcripts.redact`
-        before emitting so on-disk secrets (e.g. an Anthropic key
-        echoed back in a 401 body) are redacted per
-        ``.claude/rules/non-mutating-scrub.md``. The in-memory
-        ``self.api_error`` stays untouched — the scrub operates on a
-        copy.
+        Runs the full payload through :func:`transcripts.redact`
+        before emitting per plan DEC-009 (belt-and-suspenders:
+        captures scrubbed at load time can still leak vendor-specific
+        tokens the regex set misses; the on-write scrub is the second
+        line of defense). Non-mutating per
+        ``.claude/rules/non-mutating-scrub.md`` — ``redact`` rebuilds
+        nested containers so ``self.proposed_spec`` /
+        ``self.validation_errors`` / ``self.api_error`` stay
+        full-fidelity in memory.
         """
-        scrubbed_api_error = (
-            redact(self.api_error)[0]
-            if self.api_error is not None
-            else None
-        )
         payload: dict = {
             "schema_version": self.schema_version,
             "skill_name": self.skill_name,
             "model": self.model,
             "proposed_spec": self.proposed_spec,
             "capture_source": self.capture_source,
-            "api_error": scrubbed_api_error,
+            "api_error": self.api_error,
             "validation_errors": list(self.validation_errors),
             "duration_seconds": self.duration_seconds,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
         }
-        return json.dumps(payload, indent=2) + "\n"
+        scrubbed_payload, _count = redact(payload)
+        return json.dumps(scrubbed_payload, indent=2) + "\n"
 
 
 # --------------------------------------------------------------------------
