@@ -171,7 +171,7 @@ class TestCmdRun:
             duration_seconds=2.0,
         )
 
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
             rc = main(["run", "my-skill"])
 
         assert rc == 0
@@ -189,7 +189,7 @@ class TestCmdRun:
             error="command not found",
         )
 
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
             rc = main(["run", "my-skill"])
 
         assert rc == 1
@@ -3666,7 +3666,7 @@ class TestCmdCapture:
         monkeypatch.chdir(tmp_path)
         mock_runner = MagicMock()
         mock_runner.run.return_value = self._mock_result()
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "find-restaurants"])
         assert rc == 0
         out_path = tmp_path / "tests/eval/captured/find-restaurants.txt"
@@ -3678,7 +3678,7 @@ class TestCmdCapture:
         mock_runner = MagicMock()
         mock_runner.run.return_value = self._mock_result("abc")
         target = tmp_path / "sub" / "custom.txt"
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "find-restaurants", "--out", str(target)])
         assert rc == 0
         assert target.read_text() == "abc"
@@ -3687,7 +3687,7 @@ class TestCmdCapture:
         monkeypatch.chdir(tmp_path)
         mock_runner = MagicMock()
         mock_runner.run.return_value = self._mock_result()
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "find-restaurants", "--versioned"])
         assert rc == 0
         captured_dir = tmp_path / "tests/eval/captured"
@@ -3703,7 +3703,7 @@ class TestCmdCapture:
         mock_runner = MagicMock()
         mock_runner.run.return_value = self._mock_result()
         target = tmp_path / "snap.txt"
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main([
                 "capture", "find-restaurants",
                 "--out", str(target), "--versioned",
@@ -3716,7 +3716,7 @@ class TestCmdCapture:
         monkeypatch.chdir(tmp_path)
         mock_runner = MagicMock()
         mock_runner.run.return_value = self._mock_result()
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "/find-restaurants"])
         assert rc == 0
         mock_runner.run.assert_called_once_with("find-restaurants", "")
@@ -3726,7 +3726,7 @@ class TestCmdCapture:
         monkeypatch.chdir(tmp_path)
         mock_runner = MagicMock()
         mock_runner.run.return_value = self._mock_result()
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "find-restaurants", "--", "near", "San Jose"])
         assert rc == 0
         mock_runner.run.assert_called_once_with("find-restaurants", "near San Jose")
@@ -3744,7 +3744,7 @@ class TestCmdCapture:
             duration_seconds=0.1,
             error="boom",
         )
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "find-restaurants"])
         assert rc == 1
         assert "boom" in capsys.readouterr().err
@@ -4804,7 +4804,7 @@ class TestCmdValidateWorkspace:
         with (
             patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
             patch(
-                "clauditor.cli.allocate_iteration",
+                "clauditor.cli.validate.allocate_iteration",
                 side_effect=InvalidSkillNameError("bad/name"),
             ),
         ):
@@ -4824,7 +4824,7 @@ class TestCmdValidateWorkspace:
         with (
             patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
             patch(
-                "clauditor.cli.allocate_iteration",
+                "clauditor.cli.validate.allocate_iteration",
                 side_effect=ValueError("boom"),
             ),
         ):
@@ -4853,7 +4853,7 @@ class TestCmdValidateWorkspace:
         with (
             patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
             patch(
-                "clauditor.cli.run_assertions",
+                "clauditor.cli.validate.run_assertions",
                 side_effect=RuntimeError("boom in staging"),
             ),
             pytest.raises(RuntimeError, match="boom in staging"),

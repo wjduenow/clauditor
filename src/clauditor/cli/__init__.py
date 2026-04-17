@@ -15,7 +15,7 @@ if TYPE_CHECKING:
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.benchmark import compute_benchmark
 from clauditor.paths import resolve_clauditor_dir
-from clauditor.runner import SkillResult, SkillRunner
+from clauditor.runner import SkillResult
 from clauditor.spec import SkillSpec
 from clauditor.suggest import (
     NoPriorGradeError,
@@ -123,174 +123,6 @@ def _load_spec_or_report(
         return None
 
 
-def cmd_validate(args: argparse.Namespace) -> int:
-    """Validate a skill's output against its eval spec (Layer 1 only).
-
-    Live runs (no ``--output``) publish a per-iteration workspace under
-    ``.clauditor/iteration-N/<skill>/`` containing ``run-0/output.jsonl``,
-    ``run-0/output.txt`` and ``assertions.json`` (with ``transcript_path``
-    wired onto every assertion result). No ``grading.json`` or
-    ``timing.json`` is written — validate has no Layer 3. Shares the
-    iteration counter with ``clauditor grade``. ``--no-transcript``
-    suppresses the ``run-0/`` stream-json write and leaves
-    ``transcript_path`` unset on assertion rows (US-006).
-    """
-    spec = _load_spec_or_report(args.skill, args.eval)
-    if spec is None:
-        return 2
-
-    if not spec.eval_spec:
-        print(f"ERROR: No eval spec found for {args.skill}", file=sys.stderr)
-        print(
-            f"Create {Path(args.skill).with_suffix('.eval.json')}\n"
-            f"Run 'clauditor init {args.skill}' to create one.",
-            file=sys.stderr,
-        )
-        return 1
-
-    skill_result: SkillResult | None = None
-    workspace: IterationWorkspace | None = None
-    workspace_rel: str | None = None
-    iteration_index: int | None = None
-
-    if args.output:
-        # Validate against a pre-captured output file. This path is
-        # intentionally NOT wrapped in a workspace: there is no skill
-        # subprocess to capture a transcript from, so there's nothing
-        # to persist under ``run-0/``. Preserve pre-US-006 behavior.
-        output = Path(args.output).read_text()
-        results = run_assertions(output, spec.eval_spec.assertions)
-    else:
-        # Live-run path: allocate an iteration workspace, run the skill
-        # into ``workspace.tmp_path / run-0``, persist sidecars, and
-        # finalize atomically. On any exception, abort the staging dir.
-        clauditor_dir = resolve_clauditor_dir()
-        try:
-            workspace = allocate_iteration(clauditor_dir, spec.skill_name)
-        except InvalidSkillNameError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 2
-        except ValueError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 2
-
-        try:
-            print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
-            skill_result = spec.run(run_dir=workspace.tmp_path / "run-0")
-            if not skill_result.succeeded:
-                print(
-                    f"ERROR: Skill failed to run: {skill_result.error}",
-                    file=sys.stderr,
-                )
-                workspace.abort()
-                # Still record history so failed live-validates remain
-                # visible in trend/audit tooling. No iteration is
-                # published, so iteration/workspace fields stay None.
-                _append_validate_history(
-                    spec.skill_name,
-                    pass_rate=0.0,
-                    skill_result=skill_result,
-                    iteration=None,
-                    workspace_path=None,
-                )
-                return 1
-            output = skill_result.output
-            print(f"Skill completed in {skill_result.duration_seconds:.1f}s")
-
-            results = run_assertions(output, spec.eval_spec.assertions)
-
-            skill_dir = workspace.tmp_path
-            verbose = bool(getattr(args, "verbose", False))
-            no_transcript = bool(getattr(args, "no_transcript", False))
-
-            if verbose and results.failed:
-                _print_failing_transcript_slice(
-                    0, list(skill_result.stream_events), sys.stderr
-                )
-
-            if not no_transcript:
-                _write_run_dir(
-                    skill_dir / "run-0",
-                    output,
-                    list(skill_result.stream_events),
-                    verbose=verbose,
-                )
-                transcript_rel = _relative_to_repo(
-                    clauditor_dir,
-                    workspace.final_path / "run-0" / "output.jsonl",
-                )
-                for r in results.results:
-                    r.transcript_path = transcript_rel
-            else:
-                # Scrub any `run-0/` subtree the skill already wrote
-                # during staging (e.g. `inputs/` copies), so --no-transcript
-                # does not leak a half-populated run-0 dir into the
-                # published iteration.
-                import shutil
-
-                shutil.rmtree(skill_dir / "run-0", ignore_errors=True)
-
-            assertions_payload = {
-                "schema_version": 1,
-                "skill": spec.skill_name,
-                "iteration": workspace.iteration,
-                "runs": [{"run": 0, **results.to_json()}],
-            }
-            (skill_dir / "assertions.json").write_text(
-                json.dumps(assertions_payload, indent=2) + "\n",
-                encoding="utf-8",
-            )
-
-            workspace.finalize()
-            iteration_index = workspace.iteration
-            workspace_rel = _relative_to_repo(
-                clauditor_dir, workspace.final_path
-            )
-        except Exception:
-            if workspace is not None and not workspace.finalized:
-                workspace.abort()
-            raise
-
-    # Record history (US-005). Layer 1 only — no grader/quality/triggers.
-    _append_validate_history(
-        spec.skill_name,
-        pass_rate=results.pass_rate,
-        skill_result=skill_result,
-        iteration=iteration_index,
-        workspace_path=workspace_rel,
-    )
-
-    if args.json:
-        print(
-            json.dumps(
-                {
-                    "skill": spec.skill_name,
-                    "pass_rate": results.pass_rate,
-                    "passed": results.passed,
-                    "results": [
-                        {
-                            "name": r.name,
-                            "passed": r.passed,
-                            "message": r.message,
-                            **({"evidence": r.evidence} if r.evidence else {}),
-                            **(
-                                {"raw_data": r.raw_data}
-                                if r.raw_data is not None
-                                else {}
-                            ),
-                        }
-                        for r in results.results
-                    ],
-                },
-                indent=2,
-            )
-        )
-    else:
-        print(results.summary())
-
-    return 0 if results.passed else 1
-
-
 _TRANSCRIPT_SLICE_BLOCK_CAP_BYTES = 2048
 _TRANSCRIPT_SLICE_TRUNC_MARKER = "... [truncated]"
 
@@ -315,7 +147,7 @@ def _print_failing_transcript_slice(
     count on the UTF-8 encoding (per-block, post-redaction); overflow is
     truncated with a trailing ``... [truncated]`` marker.
     """
-    from . import transcripts
+    from clauditor import transcripts
 
     text_blocks: list[str] = []
     for event in stream_events:
@@ -365,23 +197,6 @@ def _print_failing_transcript_slice(
         print(f"[{redaction_count} redactions applied]", file=out)
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    """Run a skill and print its output."""
-    runner = SkillRunner(
-        project_dir=args.project_dir or Path.cwd(),
-        timeout=args.timeout,
-    )
-    result = runner.run(args.skill, args.args or "")
-
-    if result.error:
-        print(f"ERROR: {result.error}", file=sys.stderr)
-
-    if result.output:
-        print(result.output)
-
-    return result.exit_code
-
-
 def _write_run_dir(
     run_dir: Path,
     output_text: str,
@@ -403,7 +218,7 @@ def _write_run_dir(
     is always logged to stderr (including when the count is zero) so
     that users can audit what the scrubber matched.
     """
-    from . import transcripts
+    from clauditor import transcripts
 
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1682,289 +1497,6 @@ def cmd_extract(args: argparse.Namespace) -> int:
     return 0 if results.passed else 1
 
 
-def cmd_capture(args: argparse.Namespace) -> int:
-    """Run a skill via ``claude -p`` and write stdout to a captured file.
-
-    DEC-001/002/010/013: default path is ``tests/eval/captured/<skill>.txt``;
-    ``--out`` overrides; ``--versioned`` appends ``-YYYY-MM-DD`` to the stem
-    (combines with ``--out``). Skill name accepts an optional leading ``/``.
-    """
-    from datetime import date
-
-    skill_name = args.skill.lstrip("/")
-    skill_args = " ".join(args.skill_args) if args.skill_args else ""
-
-    default_out = Path("tests/eval/captured") / f"{skill_name}.txt"
-    out_path = Path(args.out) if args.out else default_out
-
-    if args.versioned:
-        stamp = date.today().isoformat()
-        out_path = out_path.with_name(
-            f"{out_path.stem}-{stamp}{out_path.suffix}"
-        )
-
-    runner = SkillRunner(claude_bin=args.claude_bin or "claude")
-    print(f"Running /{skill_name} {skill_args}...", file=sys.stderr)
-    result = runner.run(skill_name, skill_args)
-
-    if not result.succeeded:
-        print(
-            f"ERROR: Skill run failed (exit {result.exit_code}): {result.error}",
-            file=sys.stderr,
-        )
-        return 1
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(result.output, encoding="utf-8")
-    print(f"Captured {len(result.output)} chars to {out_path}", file=sys.stderr)
-    return 0
-
-
-def cmd_doctor(args: argparse.Namespace) -> int:
-    """Read-only environment diagnostics (DEC-005/008/014).
-
-    Always exits 0 — this is a reporting tool, not a CI gate.
-    """
-    import importlib.metadata
-    import importlib.util
-    import shutil
-
-    checks: list[tuple[str, str, str]] = []
-
-    py_version = sys.version_info
-    if py_version >= (3, 11):
-        checks.append(
-            (
-                "python",
-                "ok",
-                f"Python {py_version.major}.{py_version.minor}.{py_version.micro}",
-            )
-        )
-    else:
-        checks.append(
-            (
-                "python",
-                "fail",
-                f"Python {py_version.major}.{py_version.minor} < 3.11 (required)",
-            )
-        )
-
-    if importlib.util.find_spec("anthropic") is not None:
-        checks.append(("anthropic", "ok", "SDK importable"))
-    else:
-        checks.append(
-            (
-                "anthropic",
-                "warn",
-                "SDK not installed (required only for Layer 2/3 grading)",
-            )
-        )
-
-    claude_path = shutil.which("claude")
-    if claude_path:
-        checks.append(("claude-cli", "ok", claude_path))
-    else:
-        checks.append(
-            ("claude-cli", "fail", "`claude` not found on PATH")
-        )
-
-    try:
-        # Version-agnostic lookup: `entry_points(group=...)` is 3.10+, but
-        # `doctor` must keep working even when the Python-version check
-        # itself is about to fail, so fall back to filtering manually.
-        eps = importlib.metadata.entry_points()
-        if hasattr(eps, "select"):
-            eps = eps.select(group="pytest11")
-        else:
-            eps = [
-                ep for ep in eps
-                if getattr(ep, "group", None) == "pytest11"
-            ]
-        names = [ep.name for ep in eps]
-        if "clauditor" in names:
-            checks.append(
-                ("pytest-plugin", "ok", "clauditor registered under pytest11")
-            )
-        else:
-            checks.append(
-                (
-                    "pytest-plugin",
-                    "fail",
-                    f"clauditor not registered (found: {names})",
-                )
-            )
-    except Exception as e:  # pragma: no cover - defensive
-        checks.append(("pytest-plugin", "fail", f"entry_points lookup failed: {e}"))
-
-    spec = importlib.util.find_spec("clauditor")
-    if spec is not None and spec.origin is not None:
-        origin = Path(spec.origin).resolve()
-        if "site-packages" in origin.parts and not origin.is_symlink():
-            checks.append(
-                (
-                    "editable-install",
-                    "warn",
-                    f"clauditor installed non-editable at {origin.parent} "
-                    f"— source edits will not propagate",
-                )
-            )
-        else:
-            checks.append(("editable-install", "ok", str(origin.parent)))
-    else:
-        checks.append(("editable-install", "fail", "clauditor package not importable"))
-
-    width = max(len(name) for name, _, _ in checks)
-    for name, status, detail in checks:
-        tag = f"[{status}]"
-        print(f"{tag:<7} {name:<{width}}  {detail}")
-
-    return 0
-
-
-def cmd_init(args: argparse.Namespace) -> int:
-    """Generate a starter eval.json for a skill."""
-    skill_path = Path(args.skill)
-    eval_path = skill_path.with_suffix(".eval.json")
-
-    if eval_path.exists() and not args.force:
-        print(
-            f"ERROR: {eval_path} already exists. Use --force to overwrite.",
-            file=sys.stderr,
-        )
-        return 1
-
-    starter = {
-        "skill_name": skill_path.stem,
-        "description": f"Eval spec for /{skill_path.stem}",
-        "test_args": "",
-        "assertions": [
-            {"id": "min_length_500", "type": "min_length", "value": "500"},
-            {"id": "has_urls_3", "type": "has_urls", "value": "3"},
-            {"id": "has_entries_3", "type": "has_entries", "value": "3"},
-            {"id": "no_error", "type": "not_contains", "value": "Error"},
-        ],
-        "sections": [
-            {
-                "name": "Results",
-                "tiers": [
-                    {
-                        "label": "default",
-                        "min_entries": 3,
-                        "fields": [
-                            {
-                                "id": "results_name",
-                                "name": "name",
-                                "required": True,
-                            },
-                            {
-                                "id": "results_address",
-                                "name": "address",
-                                "required": True,
-                            },
-                        ],
-                    }
-                ],
-            }
-        ],
-        "grading_criteria": [
-            {
-                "id": "relevant",
-                "criterion": "Are results relevant to the query?",
-            },
-            {
-                "id": "specific",
-                "criterion": "Are descriptions specific (not generic filler)?",
-            },
-        ],
-        "grading_model": "claude-sonnet-4-6",
-        "trigger_tests": {
-            "should_trigger": [],
-            "should_not_trigger": [],
-        },
-        "variance": {
-            "n_runs": 3,
-            "min_stability": 0.8,
-        },
-    }
-
-    eval_path.write_text(json.dumps(starter, indent=2) + "\n")
-    print(f"Created {eval_path}")
-    print("Edit the file to define your skill's expected output structure.")
-    return 0
-
-
-def cmd_trend(args: argparse.Namespace) -> int:
-    """Render a trend line (TSV + ASCII sparkline) for a skill metric."""
-    records = history.read_records(skill=args.skill_name)
-    if not records:
-        print(
-            f"ERROR: no history records for skill '{args.skill_name}'. "
-            "Run `clauditor grade` first.",
-            file=sys.stderr,
-        )
-        return 1
-
-    command_filter = args.command_filter
-    if command_filter != "all":
-        # v1 records (pre-#21) have no "command" key; they were all produced
-        # by cmd_grade, so treat a missing key as "grade" for filter purposes.
-        records = [
-            rec
-            for rec in records
-            if rec.get("command", "grade") == command_filter
-        ]
-        if not records:
-            print(
-                f"ERROR: no history records for skill '{args.skill_name}' "
-                f"with command '{command_filter}'. Try --command all to "
-                "union across all recorded commands.",
-                file=sys.stderr,
-            )
-            return 1
-
-    last_n = args.last
-    if last_n is not None and last_n > 0:
-        records = records[-last_n:]
-
-    if args.list_metrics:
-        paths: set[str] = set()
-        for rec in records:
-            paths |= history.collect_metric_paths(rec)
-        if not paths:
-            print(
-                f"ERROR: no metric paths available for skill "
-                f"'{args.skill_name}'.",
-                file=sys.stderr,
-            )
-            return 1
-        for path in sorted(paths):
-            print(path)
-        return 0
-
-    metric = args.metric
-    timestamps: list[str] = []
-    values: list[float] = []
-    for rec in records:
-        v = history.resolve_path(rec, metric)
-        if v is None:
-            continue
-        timestamps.append(str(rec.get("ts", "")))
-        values.append(float(v))
-
-    if not values:
-        print(
-            f"ERROR: no records with metric '{metric}' for skill "
-            f"'{args.skill_name}'.",
-            file=sys.stderr,
-        )
-        return 1
-
-    for ts, v in zip(timestamps, values):
-        print(f"{ts}\t{v}")
-    print(history.sparkline(values))
-    return 0
-
-
 def cmd_audit(args: argparse.Namespace) -> int:
     """Load + aggregate + threshold-check per-assertion pass rates.
 
@@ -2265,6 +1797,27 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
     return 0
 
 
+# Per-command modules. Each module exposes ``add_parser(subparsers)`` and a
+# ``cmd_<name>(args) -> int`` handler. ``main()`` registers the subparsers
+# and dispatches to the handlers. Re-exporting the ``cmd_<name>`` symbols
+# keeps existing test imports (``from clauditor.cli import cmd_run``) working.
+# These imports live here — after all shared helpers are defined — so that
+# per-command modules that lazily import shared helpers from ``clauditor.cli``
+# see them already defined when their ``cmd_<name>`` function runs.
+from clauditor.cli import capture as capture_mod  # noqa: E402
+from clauditor.cli import doctor as doctor_mod  # noqa: E402
+from clauditor.cli import init as init_mod  # noqa: E402
+from clauditor.cli import run as run_mod  # noqa: E402
+from clauditor.cli import trend as trend_mod  # noqa: E402
+from clauditor.cli import validate as validate_mod  # noqa: E402
+from clauditor.cli.capture import cmd_capture  # noqa: E402,F401
+from clauditor.cli.doctor import cmd_doctor  # noqa: E402,F401
+from clauditor.cli.init import cmd_init  # noqa: E402,F401
+from clauditor.cli.run import cmd_run  # noqa: E402,F401
+from clauditor.cli.trend import cmd_trend  # noqa: E402,F401
+from clauditor.cli.validate import cmd_validate  # noqa: E402,F401
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="clauditor",
@@ -2273,37 +1826,10 @@ def main(argv: list[str] | None = None) -> int:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     # validate
-    p_validate = subparsers.add_parser(
-        "validate", help="Run Layer 1 assertions against a skill's output"
-    )
-    p_validate.add_argument("skill", help="Path to skill .md file")
-    p_validate.add_argument(
-        "--eval", help="Path to eval.json (auto-discovered if omitted)"
-    )
-    p_validate.add_argument(
-        "--output", help="Path to pre-captured output file (skips running the skill)"
-    )
-    p_validate.add_argument(
-        "--json", action="store_true", help="Output results as JSON"
-    )
-    p_validate.add_argument(
-        "--no-transcript",
-        action="store_true",
-        help="Skip writing per-run stream-json transcripts",
-    )
-    p_validate.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="On assertion failure, print the last 5 assistant text blocks to stderr",
-    )
+    validate_mod.add_parser(subparsers)
 
     # run
-    p_run = subparsers.add_parser("run", help="Run a skill and print output")
-    p_run.add_argument("skill", help="Skill name (e.g., find-kid-activities)")
-    p_run.add_argument("--args", help="Arguments to pass to the skill")
-    p_run.add_argument("--project-dir", help="Project directory (default: cwd)")
-    p_run.add_argument("--timeout", type=int, default=180, help="Timeout in seconds")
+    run_mod.add_parser(subparsers)
 
     # grade
     p_grade = subparsers.add_parser(
@@ -2503,76 +2029,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # init
-    p_init = subparsers.add_parser(
-        "init", help="Generate a starter eval.json for a skill"
-    )
-    p_init.add_argument("skill", help="Path to skill .md file")
-    p_init.add_argument(
-        "--force", action="store_true", help="Overwrite existing eval.json"
-    )
+    init_mod.add_parser(subparsers)
 
     # capture
-    p_capture = subparsers.add_parser(
-        "capture",
-        help="Run a skill via `claude -p` and save stdout to a captured file",
-    )
-    p_capture.add_argument(
-        "skill",
-        help="Skill name (leading slash optional, e.g. find-restaurants)",
-    )
-    p_capture.add_argument(
-        "--out",
-        default=None,
-        help="Output file path (default: tests/eval/captured/<skill>.txt)",
-    )
-    p_capture.add_argument(
-        "--versioned",
-        action="store_true",
-        help="Append -YYYY-MM-DD to the output file stem",
-    )
-    p_capture.add_argument(
-        "--claude-bin",
-        default=None,
-        help="Path to the `claude` CLI (default: `claude` on PATH)",
-    )
-    p_capture.add_argument(
-        "skill_args",
-        nargs="*",
-        help="Arguments to pass to the skill (put after `--`)",
-    )
+    capture_mod.add_parser(subparsers)
 
     # trend
-    p_trend = subparsers.add_parser(
-        "trend",
-        help="Print a trend line (TSV + ASCII sparkline) from grade history",
-    )
-    p_trend.add_argument("skill_name", help="Skill name to trend")
-    p_trend_group = p_trend.add_mutually_exclusive_group(required=True)
-    p_trend_group.add_argument(
-        "--metric",
-        help=(
-            "Metric to trend (pass_rate, mean_score, or a dotted path "
-            "into metrics like total.total or grader.input_tokens)"
-        ),
-    )
-    p_trend_group.add_argument(
-        "--list-metrics",
-        action="store_true",
-        help="List every available metric path in history for the skill",
-    )
-    p_trend.add_argument(
-        "--command",
-        dest="command_filter",
-        choices=["grade", "extract", "validate", "all"],
-        default="grade",
-        help="Filter history records by command (default: grade)",
-    )
-    p_trend.add_argument(
-        "--last",
-        type=_positive_int,
-        default=20,
-        help="Show last N records (default 20; must be >= 1)",
-    )
+    trend_mod.add_parser(subparsers)
 
     # audit
     p_audit = subparsers.add_parser(
@@ -2660,13 +2123,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # doctor
-    subparsers.add_parser(
-        "doctor",
-        help=(
-            "Report environment diagnostics "
-            "(Python, SDK, claude CLI, plugin, install)"
-        ),
-    )
+    doctor_mod.add_parser(subparsers)
 
     # Split argv on a literal `--` *only* when the capture subcommand is in
     # play, so other subcommands (validate/grade/...) keep argparse's native
