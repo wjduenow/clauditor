@@ -1,5 +1,6 @@
 """Clauditor — Auditor for Claude Code skills and slash commands."""
 
+from clauditor.asserters import SkillAsserter, assert_from
 from clauditor.assertions import AssertionResult, AssertionSet
 from clauditor.runner import SkillResult, SkillRunner
 from clauditor.schemas import (
@@ -21,9 +22,11 @@ __all__ = [
     "GradingResult",
     "SectionRequirement",
     "TierRequirement",
+    "SkillAsserter",
     "SkillResult",
     "SkillRunner",
     "SkillSpec",
+    "assert_from",
     "TriggerReport",
     "TriggerResult",
     "TriggerTests",

@@ -111,11 +111,12 @@ clauditor validate .claude/commands/my-skill.md --json
 ### 3. Use in pytest
 
 ```python
-def test_my_skill(clauditor_runner):
+def test_my_skill(clauditor_runner, clauditor_asserter):
     result = clauditor_runner.run("my-skill", '"San Jose, CA" --depth quick')
-    result.assert_contains("Results")
-    result.assert_has_entries(minimum=3)
-    result.assert_has_urls(minimum=3)
+    asserter = clauditor_asserter(result)
+    asserter.assert_contains("Results")
+    asserter.assert_has_entries(minimum=3)
+    asserter.assert_has_urls(minimum=3)
 
 def test_with_eval_spec(clauditor_spec):
     spec = clauditor_spec(".claude/commands/my-skill.md")
@@ -169,12 +170,15 @@ flowchart TD
 No API calls. Regex, string matching, and counting.
 
 ```python
-result.assert_contains("Venues")           # substring check
-result.assert_not_contains("Error")        # absence check
-result.assert_matches(r"\*\*\d+\.")        # regex
-result.assert_has_entries(minimum=5)        # numbered entries
-result.assert_has_urls(minimum=3)           # URL count
-result.assert_min_length(500)              # output length
+from clauditor import SkillAsserter
+
+asserter = SkillAsserter(result)
+asserter.assert_contains("Venues")           # substring check
+asserter.assert_not_contains("Error")        # absence check
+asserter.assert_matches(r"\*\*\d+\.")        # regex
+asserter.assert_has_entries(minimum=5)        # numbered entries
+asserter.assert_has_urls(minimum=3)           # URL count
+asserter.assert_min_length(500)              # output length
 ```
 
 Or define in `eval.json`:

@@ -11,6 +11,7 @@ import clauditor.runner as _runner_mod
 
 importlib.reload(_runner_mod)
 
+from clauditor.asserters import SkillAsserter  # noqa: E402
 from clauditor.runner import SkillResult, SkillRunner  # noqa: E402
 from tests.conftest import _FakePopen, make_fake_skill_stream  # noqa: E402
 
@@ -114,16 +115,16 @@ class TestSkillResultSucceeded:
 
 
 # ---------------------------------------------------------------------------
-# SkillResult assertion helpers
+# SkillAsserter — Layer 1 test-helper wrapper (US-006)
 # ---------------------------------------------------------------------------
 
 
-class TestSkillResultAssertions:
+class TestSkillAsserter:
     """Each assertion method should pass or raise AssertionError."""
 
-    def _make(self, output: str) -> SkillResult:
-        return SkillResult(
-            output=output, exit_code=0, skill_name="test", args=""
+    def _make(self, output: str) -> SkillAsserter:
+        return SkillAsserter(
+            SkillResult(output=output, exit_code=0, skill_name="test", args="")
         )
 
     # assert_contains
@@ -184,11 +185,32 @@ class TestSkillResultAssertions:
 
     # run_assertions delegates
     def test_run_assertions_delegates(self):
-        result = self._make("hello world")
-        assertion_set = result.run_assertions(
+        asserter = self._make("hello world")
+        assertion_set = asserter.run_assertions(
             [{"type": "contains", "value": "hello"}]
         )
         assert assertion_set.passed
+
+    def test_asserter_stores_result_reference(self):
+        """SkillAsserter should expose the wrapped result for introspection."""
+        result = SkillResult(
+            output="hi", exit_code=0, skill_name="t", args=""
+        )
+        asserter = SkillAsserter(result)
+        assert asserter.result is result
+
+    def test_assert_from_convenience_factory(self):
+        """``assert_from(result)`` wraps a result in a SkillAsserter."""
+        from clauditor.asserters import assert_from
+
+        result = SkillResult(
+            output="hello world", exit_code=0, skill_name="t", args=""
+        )
+        asserter = assert_from(result)
+        assert isinstance(asserter, SkillAsserter)
+        assert asserter.result is result
+        # Sanity: the wrapper works end-to-end.
+        asserter.assert_contains("hello")
 
 
 # ---------------------------------------------------------------------------
@@ -320,8 +342,9 @@ class TestSkillResultOutputs:
             output="hello world",
             outputs={"other.txt": "completely different text"},
         )
-        result.assert_contains("hello world")
-        result.assert_not_contains("completely different text")
+        asserter = SkillAsserter(result)
+        asserter.assert_contains("hello world")
+        asserter.assert_not_contains("completely different text")
 
 
 # ---------------------------------------------------------------------------

@@ -4,10 +4,11 @@ Registered via entry_points in pyproject.toml.
 Provides fixtures and markers for testing Claude Code skills.
 
 Usage in tests:
-    def test_my_skill(clauditor_runner):
+    def test_my_skill(clauditor_runner, clauditor_asserter):
         result = clauditor_runner.run("my-skill", "--depth quick")
-        result.assert_contains("Expected Section")
-        result.assert_has_entries(minimum=3)
+        asserter = clauditor_asserter(result)
+        asserter.assert_contains("Expected Section")
+        asserter.assert_has_entries(minimum=3)
 
     def test_with_spec(clauditor_spec):
         spec = clauditor_spec(".claude/commands/my-skill.md")
@@ -21,7 +22,8 @@ from pathlib import Path
 
 import pytest
 
-from clauditor.runner import SkillRunner
+from clauditor.asserters import SkillAsserter
+from clauditor.runner import SkillResult, SkillRunner
 from clauditor.spec import SkillSpec
 
 
@@ -90,6 +92,24 @@ def clauditor_runner(request: pytest.FixtureRequest) -> SkillRunner:
         timeout=request.config.getoption("--clauditor-timeout"),
         claude_bin=request.config.getoption("--clauditor-claude-bin"),
     )
+
+
+@pytest.fixture
+def clauditor_asserter():
+    """Factory fixture wrapping a ``SkillResult`` in a ``SkillAsserter``.
+
+    Usage::
+
+        def test_my_skill(clauditor_runner, clauditor_asserter):
+            result = clauditor_runner.run("my-skill")
+            asserter = clauditor_asserter(result)
+            asserter.assert_contains("Expected")
+    """
+
+    def _factory(result: SkillResult) -> SkillAsserter:
+        return SkillAsserter(result)
+
+    return _factory
 
 
 @pytest.fixture
