@@ -5001,7 +5001,7 @@ class TestCmdSuggest:
         monkeypatch.chdir(tmp_path)
 
         sentinel = AsyncMock()
-        with patch("clauditor.cli.propose_edits", new=sentinel):
+        with patch("clauditor.cli.suggest.propose_edits", new=sentinel):
             rc = main(["suggest", "my-skill.md"])
 
         assert rc == 0
@@ -5022,7 +5022,7 @@ class TestCmdSuggest:
 
         report = self._fake_report()
         with patch(
-            "clauditor.cli.propose_edits",
+            "clauditor.cli.suggest.propose_edits",
             new=AsyncMock(return_value=report),
         ):
             rc = main(["suggest", "my-skill.md"])
@@ -5051,7 +5051,7 @@ class TestCmdSuggest:
 
         report = self._fake_report()
         with patch(
-            "clauditor.cli.propose_edits",
+            "clauditor.cli.suggest.propose_edits",
             new=AsyncMock(return_value=report),
         ):
             rc = main(["suggest", "my-skill.md", "--json"])
@@ -5081,7 +5081,7 @@ class TestCmdSuggest:
             captured["source_iteration"] = suggest_input.source_iteration
             return self._fake_report(source_iteration=suggest_input.source_iteration)
 
-        with patch("clauditor.cli.propose_edits", new=_fake_propose):
+        with patch("clauditor.cli.suggest.propose_edits", new=_fake_propose):
             rc = main(["suggest", "my-skill.md", "--from-iteration", "1"])
 
         assert rc == 0
@@ -5106,7 +5106,7 @@ class TestCmdSuggest:
             captured["transcripts"] = suggest_input.transcript_events
             return self._fake_report()
 
-        with patch("clauditor.cli.propose_edits", new=_fake_propose):
+        with patch("clauditor.cli.suggest.propose_edits", new=_fake_propose):
             rc = main(
                 ["suggest", "my-skill.md", "--with-transcripts"]
             )
@@ -5130,7 +5130,7 @@ class TestCmdSuggest:
             summary_rationale="",
         )
         with patch(
-            "clauditor.cli.propose_edits",
+            "clauditor.cli.suggest.propose_edits",
             new=AsyncMock(return_value=report),
         ):
             rc = main(["suggest", "my-skill.md"])
@@ -5156,7 +5156,7 @@ class TestCmdSuggest:
             summary_rationale="",
         )
         with patch(
-            "clauditor.cli.propose_edits",
+            "clauditor.cli.suggest.propose_edits",
             new=AsyncMock(return_value=report),
         ):
             rc = main(["suggest", "my-skill.md"])
@@ -5183,7 +5183,7 @@ class TestCmdSuggest:
             ],
         )
         with patch(
-            "clauditor.cli.propose_edits",
+            "clauditor.cli.suggest.propose_edits",
             new=AsyncMock(return_value=report),
         ):
             rc = main(["suggest", "my-skill.md"])
@@ -5206,7 +5206,7 @@ class TestCmdSuggest:
 
         report = self._fake_report()
         with patch(
-            "clauditor.cli.propose_edits",
+            "clauditor.cli.suggest.propose_edits",
             new=AsyncMock(return_value=report),
         ):
             rc = main(["suggest", "my-skill.md", "-v"])
@@ -5232,11 +5232,11 @@ class TestCmdSuggest:
         report = self._fake_report()
         with (
             patch(
-                "clauditor.cli.propose_edits",
+                "clauditor.cli.suggest.propose_edits",
                 new=AsyncMock(return_value=report),
             ),
             patch(
-                "clauditor.cli.write_sidecar",
+                "clauditor.cli.suggest.write_sidecar",
                 side_effect=OSError("disk full"),
             ),
         ):
@@ -5295,7 +5295,7 @@ class TestCmdSuggest:
         monkeypatch.chdir(tmp_path)
 
         with patch(
-            "clauditor.cli.load_suggest_input",
+            "clauditor.cli.suggest.load_suggest_input",
             side_effect=FileNotFoundError(
                 "iteration-1/my-skill/grading.json vanished"
             ),
