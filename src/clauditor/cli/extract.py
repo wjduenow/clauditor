@@ -76,7 +76,21 @@ def cmd_extract(args: argparse.Namespace) -> int:
     # Get output
     skill_result = None
     if args.output:
-        output = Path(args.output).read_text()
+        try:
+            output = Path(args.output).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            print(
+                f"ERROR: Output file not found: {args.output}",
+                file=sys.stderr,
+            )
+            return 2
+        except (PermissionError, UnicodeDecodeError, OSError) as exc:
+            print(
+                f"ERROR: Failed to read output file {args.output}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
     else:
         print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
         skill_result = spec.run()

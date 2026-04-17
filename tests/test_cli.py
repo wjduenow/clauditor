@@ -156,6 +156,20 @@ class TestCmdValidate:
         assert rc == 1
         assert "Skill failed" in capsys.readouterr().err
 
+    def test_validate_output_file_missing_exits_2(self, capsys, tmp_path):
+        """--output pointing at a non-existent path exits 2 with clean error."""
+        missing = tmp_path / "no-such-file.txt"
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--output", str(missing)])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+        assert "Output file not found" in err
+        assert str(missing) in err
+
+
 class TestCmdRun:
     """Tests for the run subcommand."""
 
@@ -2628,6 +2642,24 @@ class TestCmdTriggers:
         assert "should_trigger" in out
         assert "should_not_trigger" in out
 
+    def test_triggers_no_model_exits_2(self, capsys):
+        """Missing grading_model (neither --model nor spec) exits 2."""
+        eval_spec = _make_eval_spec(
+            grading_model="",
+            trigger_tests=TriggerTests(
+                should_trigger=["q"],
+                should_not_trigger=[],
+            ),
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["triggers", "skill.md"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "No grading model specified" in err
+        assert "--model" in err
+
 
 class TestCmdInit:
     """Tests for the init subcommand."""
@@ -2742,6 +2774,20 @@ class TestCmdExtract:
 
         assert rc == 1
         assert "No sections defined" in capsys.readouterr().err
+
+    def test_extract_output_file_missing_exits_2(self, capsys, tmp_path):
+        """--output pointing at a non-existent path exits 2 with clean error."""
+        missing = tmp_path / "no-such-file.txt"
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["extract", "skill.md", "--output", str(missing)])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+        assert "Output file not found" in err
+        assert str(missing) in err
 
 
     def test_extract_with_output_file(self, tmp_path):
@@ -3032,6 +3078,87 @@ class TestCmdDoctor:
         # Expect fail marker for missing claude CLI
         lines = [line for line in out.splitlines() if "claude-cli" in line]
         assert any("[fail]" in line for line in lines)
+
+
+class TestDoctorPep660Detection:
+    """Tests for ``_is_pep660_editable`` — PEP 660 editable-install signal.
+
+    The doctor's symlink-based fallback misses import-hook / .pth editable
+    installs; this helper reads ``direct_url.json`` from the dist-info as
+    the primary signal. Tests mock ``importlib.metadata.distribution`` so
+    they don't depend on the worker's actual install method.
+    """
+
+    def _fake_dist(self, *, direct_url_body):
+        """Return a stub Distribution whose read_text returns the body."""
+        dist = MagicMock()
+        dist.read_text.return_value = direct_url_body
+        return dist
+
+    def test_editable_true(self):
+        """direct_url.json with dir_info.editable == True → editable."""
+        from clauditor.cli.doctor import _is_pep660_editable
+
+        body = '{"url": "file:///abs/path", "dir_info": {"editable": true}}'
+        with patch(
+            "importlib.metadata.distribution",
+            return_value=self._fake_dist(direct_url_body=body),
+        ):
+            assert _is_pep660_editable() is True
+
+    def test_editable_false(self):
+        """direct_url.json with dir_info.editable == False → not editable."""
+        from clauditor.cli.doctor import _is_pep660_editable
+
+        body = '{"url": "file:///abs", "dir_info": {"editable": false}}'
+        with patch(
+            "importlib.metadata.distribution",
+            return_value=self._fake_dist(direct_url_body=body),
+        ):
+            assert _is_pep660_editable() is False
+
+    def test_editable_missing_dir_info(self):
+        """direct_url.json without dir_info → not editable (non-dir URL)."""
+        from clauditor.cli.doctor import _is_pep660_editable
+
+        body = '{"url": "https://example.com/wheel"}'
+        with patch(
+            "importlib.metadata.distribution",
+            return_value=self._fake_dist(direct_url_body=body),
+        ):
+            assert _is_pep660_editable() is False
+
+    def test_malformed_direct_url_json(self):
+        """Malformed JSON → not editable (falls through)."""
+        from clauditor.cli.doctor import _is_pep660_editable
+
+        with patch(
+            "importlib.metadata.distribution",
+            return_value=self._fake_dist(direct_url_body="{not json"),
+        ):
+            assert _is_pep660_editable() is False
+
+    def test_no_direct_url_json(self):
+        """Missing direct_url.json → not editable (read_text returns None)."""
+        from clauditor.cli.doctor import _is_pep660_editable
+
+        with patch(
+            "importlib.metadata.distribution",
+            return_value=self._fake_dist(direct_url_body=None),
+        ):
+            assert _is_pep660_editable() is False
+
+    def test_package_not_found(self):
+        """Distribution lookup failure → not editable."""
+        import importlib.metadata
+
+        from clauditor.cli.doctor import _is_pep660_editable
+
+        with patch(
+            "importlib.metadata.distribution",
+            side_effect=importlib.metadata.PackageNotFoundError("clauditor"),
+        ):
+            assert _is_pep660_editable() is False
 
 
 class TestCmdTrend:

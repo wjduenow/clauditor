@@ -47,6 +47,13 @@ def cmd_triggers(args: argparse.Namespace) -> int:
         return 1
 
     model = args.model or spec.eval_spec.grading_model
+    if not model:
+        print(
+            "ERROR: No grading model specified. Set grading_model in "
+            "the eval spec or pass --model.",
+            file=sys.stderr,
+        )
+        return 2
 
     if args.dry_run:
         from clauditor.triggers import build_trigger_prompt

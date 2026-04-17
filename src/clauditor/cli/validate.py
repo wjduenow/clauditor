@@ -91,7 +91,21 @@ def cmd_validate(args: argparse.Namespace) -> int:
         # intentionally NOT wrapped in a workspace: there is no skill
         # subprocess to capture a transcript from, so there's nothing
         # to persist under ``run-0/``. Preserve pre-US-006 behavior.
-        output = Path(args.output).read_text()
+        try:
+            output = Path(args.output).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            print(
+                f"ERROR: Output file not found: {args.output}",
+                file=sys.stderr,
+            )
+            return 2
+        except (PermissionError, UnicodeDecodeError, OSError) as exc:
+            print(
+                f"ERROR: Failed to read output file {args.output}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            return 2
         results = run_assertions(output, spec.eval_spec.assertions)
     else:
         # Live-run path: allocate an iteration workspace, run the skill

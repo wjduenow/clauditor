@@ -18,6 +18,33 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
+def _is_pep660_editable() -> bool:
+    """True if clauditor's dist-info advertises a PEP 660 editable install.
+
+    Modern editable installs (pip 21.3+, uv, hatch) write a
+    ``direct_url.json`` into the dist-info with ``dir_info.editable: true``
+    even when the installed ``.py`` files are NOT symlinks (import-hook or
+    ``.pth``-based installs). The plain ``origin.is_symlink()`` check in
+    ``cmd_doctor`` misses those; this helper provides a more reliable
+    primary signal, falling back to the symlink check in the caller.
+    """
+    import importlib.metadata
+    import json
+
+    try:
+        dist = importlib.metadata.distribution("clauditor")
+        direct_url = dist.read_text("direct_url.json")
+    except (importlib.metadata.PackageNotFoundError, OSError):
+        return False
+    if not direct_url:
+        return False
+    try:
+        data = json.loads(direct_url)
+    except json.JSONDecodeError:
+        return False
+    return bool(data.get("dir_info", {}).get("editable"))
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     """Read-only environment diagnostics (DEC-005/008/014).
 
@@ -97,7 +124,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     spec = importlib.util.find_spec("clauditor")
     if spec is not None and spec.origin is not None:
         origin = Path(spec.origin).resolve()
-        if "site-packages" in origin.parts and not origin.is_symlink():
+        # Editable installs: PEP 660 metadata is the primary signal
+        # (catches import-hook / .pth installs where the .py file is
+        # not a symlink); fall back to symlink detection for older
+        # pip (<21.3) installs that still used symlinks directly.
+        if _is_pep660_editable():
+            checks.append(("editable-install", "ok", str(origin.parent)))
+        elif "site-packages" in origin.parts and not origin.is_symlink():
             checks.append(
                 (
                     "editable-install",
