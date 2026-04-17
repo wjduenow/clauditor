@@ -20,22 +20,16 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from clauditor.assertions import (
-    AssertionSet,
-    assert_contains,
-    assert_has_entries,
-    assert_has_urls,
-    assert_min_count,
-    assert_min_length,
-    assert_not_contains,
-    assert_regex,
-    run_assertions,
-)
-
 
 @dataclass
 class SkillResult:
-    """Captured output from a skill run."""
+    """Captured output from a skill run.
+
+    Pure data container: the Layer 1 ``assert_*`` test helpers live on
+    :class:`clauditor.asserters.SkillAsserter`, which composes a
+    ``SkillResult``. Non-test callers get a methodless dataclass; tests
+    opt into the helpers by constructing ``SkillAsserter(result)``.
+    """
 
     output: str
     exit_code: int
@@ -53,54 +47,6 @@ class SkillResult:
     @property
     def succeeded(self) -> bool:
         return self.exit_code == 0 and self.output.strip() != ""
-
-    # --- Layer 1: Deterministic assertions ---
-
-    def assert_contains(self, value: str) -> None:
-        """Assert output contains a substring. Raises AssertionError on failure."""
-        result = assert_contains(self.output, value)
-        if not result:
-            raise AssertionError(result.message)
-
-    def assert_not_contains(self, value: str) -> None:
-        """Assert output does NOT contain a substring."""
-        result = assert_not_contains(self.output, value)
-        if not result:
-            raise AssertionError(result.message)
-
-    def assert_matches(self, pattern: str) -> None:
-        """Assert output matches a regex pattern."""
-        result = assert_regex(self.output, pattern)
-        if not result:
-            raise AssertionError(result.message)
-
-    def assert_min_count(self, pattern: str, minimum: int) -> None:
-        """Assert a pattern appears at least N times."""
-        result = assert_min_count(self.output, pattern, minimum)
-        if not result:
-            raise AssertionError(result.message)
-
-    def assert_min_length(self, minimum: int) -> None:
-        """Assert output is at least N characters."""
-        result = assert_min_length(self.output, minimum)
-        if not result:
-            raise AssertionError(result.message)
-
-    def assert_has_urls(self, minimum: int = 1) -> None:
-        """Assert output contains at least N URLs."""
-        result = assert_has_urls(self.output, minimum)
-        if not result:
-            raise AssertionError(result.message)
-
-    def assert_has_entries(self, minimum: int = 1) -> None:
-        """Assert output contains at least N numbered entries."""
-        result = assert_has_entries(self.output, minimum)
-        if not result:
-            raise AssertionError(result.message)
-
-    def run_assertions(self, assertions: list[dict]) -> AssertionSet:
-        """Run a list of assertion dicts against this output."""
-        return run_assertions(self.output, assertions)
 
 
 class SkillRunner:
