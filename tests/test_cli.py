@@ -3357,6 +3357,223 @@ class TestCmdInit:
         assert data["skill_name"] == "my-skill"
 
 
+@pytest.fixture
+def setup_env(tmp_path, monkeypatch):
+    """Scratch project root + fake installed-package skill dir.
+
+    Creates a ``.git`` marker at ``tmp_path`` so
+    :func:`clauditor.setup.find_project_root` resolves, and plants a
+    sentinel SKILL.md inside a fake ``site-packages/clauditor/skills/
+    clauditor/`` tree whose location is returned by the monkeypatched
+    ``clauditor.cli.files`` callable.
+    """
+    # Project root with a .git marker.
+    (tmp_path / ".git").mkdir()
+    # Fake installed-package skill tree.
+    pkg_skill = tmp_path / "fake-pkg" / "clauditor" / "skills" / "clauditor"
+    pkg_skill.mkdir(parents=True)
+    (pkg_skill / "SKILL.md").write_text("# sentinel\n")
+    monkeypatch.chdir(tmp_path)
+
+    # Replace cli.files so `files("clauditor") / "skills" / "clauditor"`
+    # lands in the fake tree.
+    def fake_files(pkg_name):
+        assert pkg_name == "clauditor"
+        return tmp_path / "fake-pkg" / "clauditor"
+
+    monkeypatch.setattr("clauditor.cli.files", fake_files)
+    return {
+        "project_root": tmp_path,
+        "pkg_skill_root": pkg_skill,
+        "dest": tmp_path / ".claude" / "skills" / "clauditor",
+    }
+
+
+class TestCmdSetup:
+    """Tests for the ``clauditor setup`` subcommand."""
+
+    def test_setup_creates_symlink_when_absent(self, setup_env, capsys):
+        """Dest doesn't exist → creates symlink, exit 0, stdout ok."""
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        assert not dest.exists()
+
+        rc = main(["setup"])
+
+        assert rc == 0
+        assert dest.is_symlink()
+        # Resolved target should match the bundled pkg skill root.
+        assert dest.resolve() == pkg_skill.resolve()
+        out = capsys.readouterr().out
+        assert "Installed /clauditor" in out
+        assert str(dest) in out
+
+    def test_setup_noop_when_already_our_symlink(self, setup_env, capsys):
+        """Dest is symlink → pkg_skill → 'already installed', exit 0."""
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        import os as _os
+        _os.symlink(pkg_skill, dest)
+
+        rc = main(["setup"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "already installed" in out
+
+    def test_setup_refuses_existing_regular_file(self, setup_env, capsys):
+        """Dest is regular file → exit 1, stderr contains 'use --force'."""
+        dest = setup_env["dest"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("not a symlink\n")
+
+        rc = main(["setup"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "use --force" in err
+        assert "regular file" in err
+
+    def test_setup_refuses_wrong_symlink(self, setup_env, capsys, tmp_path):
+        """Dest is symlink → elsewhere → exit 1."""
+        dest = setup_env["dest"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        import os as _os
+        _os.symlink(elsewhere, dest)
+
+        rc = main(["setup"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "pointing elsewhere" in err
+
+    def test_setup_force_replaces_regular_file(self, setup_env, capsys):
+        """Regular file + --force → replaced with symlink, exit 0."""
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("not a symlink\n")
+
+        rc = main(["setup", "--force"])
+
+        assert rc == 0
+        assert dest.is_symlink()
+        assert dest.resolve() == pkg_skill.resolve()
+        assert "Installed /clauditor" in capsys.readouterr().out
+
+    def test_setup_force_replaces_real_dir(self, setup_env, capsys):
+        """Regular directory + --force → replaced with symlink, exit 0."""
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        dest.mkdir(parents=True)
+        (dest / "some-file.txt").write_text("junk\n")
+
+        rc = main(["setup", "--force"])
+
+        assert rc == 0
+        assert dest.is_symlink()
+        assert dest.resolve() == pkg_skill.resolve()
+        assert "Installed /clauditor" in capsys.readouterr().out
+
+    def test_setup_unlink_removes_our_symlink(self, setup_env, capsys):
+        """--unlink on our symlink → removed, exit 0."""
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        import os as _os
+        _os.symlink(pkg_skill, dest)
+
+        rc = main(["setup", "--unlink"])
+
+        assert rc == 0
+        assert not dest.exists()
+        assert not dest.is_symlink()
+        out = capsys.readouterr().out
+        assert "Removed .claude/skills/clauditor" in out
+
+    def test_setup_unlink_refuses_non_symlink(self, setup_env, capsys):
+        """--unlink on regular file → exit 1, stderr 'not a symlink'."""
+        dest = setup_env["dest"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("not a symlink\n")
+
+        rc = main(["setup", "--unlink"])
+
+        assert rc == 1
+        # File still there, not removed.
+        assert dest.exists()
+        err = capsys.readouterr().err
+        assert "not a symlink" in err
+
+    def test_setup_unlink_noop_when_absent(self, setup_env, capsys):
+        """--unlink with nothing present → exit 0, 'not installed' info."""
+        dest = setup_env["dest"]
+        assert not dest.exists()
+
+        rc = main(["setup", "--unlink"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "not installed" in out
+
+    def test_setup_errors_when_no_project_root(self, tmp_path, monkeypatch, capsys):
+        """No .git, no .claude → exit 2, stderr 'no project root'."""
+        # Fake package skill tree outside any git checkout.
+        pkg_skill = tmp_path / "fake-pkg" / "clauditor" / "skills" / "clauditor"
+        pkg_skill.mkdir(parents=True)
+        (pkg_skill / "SKILL.md").write_text("# sentinel\n")
+
+        # Run from a subdir with no project markers in its ancestry.
+        subdir = tmp_path / "nope"
+        subdir.mkdir()
+        monkeypatch.chdir(subdir)
+
+        def fake_files(pkg_name):
+            assert pkg_name == "clauditor"
+            return tmp_path / "fake-pkg" / "clauditor"
+
+        monkeypatch.setattr("clauditor.cli.files", fake_files)
+
+        rc = main(["setup"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "no project root" in err
+
+    def test_setup_project_dir_override(self, tmp_path, monkeypatch, capsys):
+        """--project-dir overrides cwd for project-root resolution."""
+        # Project root for the override.
+        override = tmp_path / "override-proj"
+        override.mkdir()
+        (override / ".git").mkdir()
+        # Fake package tree.
+        pkg_skill = tmp_path / "fake-pkg" / "clauditor" / "skills" / "clauditor"
+        pkg_skill.mkdir(parents=True)
+        (pkg_skill / "SKILL.md").write_text("# sentinel\n")
+
+        # cwd is a markerless subdir — without --project-dir it would fail.
+        sub = tmp_path / "elsewhere"
+        sub.mkdir()
+        monkeypatch.chdir(sub)
+
+        def fake_files(pkg_name):
+            assert pkg_name == "clauditor"
+            return tmp_path / "fake-pkg" / "clauditor"
+
+        monkeypatch.setattr("clauditor.cli.files", fake_files)
+
+        rc = main(["setup", "--project-dir", str(override)])
+
+        assert rc == 0
+        dest = override / ".claude" / "skills" / "clauditor"
+        assert dest.is_symlink()
+        assert dest.resolve() == pkg_skill.resolve()
+        assert "Installed /clauditor" in capsys.readouterr().out
+
+
 def _make_sections():
     """Create sample sections for Layer 2 testing."""
     return [

@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
 import sys
+from importlib.resources import as_file, files
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from clauditor import history
+from clauditor import setup as setup_module
 
 if TYPE_CHECKING:
     from clauditor.quality_grader import GradingReport
@@ -1850,6 +1854,123 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _install_symlink(dest: Path, pkg_skill_root: Path) -> None:
+    """Create the symlink at ``dest`` pointing to ``pkg_skill_root``.
+
+    Ensures the parent ``.claude/skills/`` dir exists with explicit mode
+    ``0o755`` per DEC-012, then calls :func:`os.symlink` per DEC-010.
+    """
+    dest.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    os.symlink(pkg_skill_root, dest)
+
+
+def _remove_existing(dest: Path) -> None:
+    """Remove whatever is at ``dest`` — symlink, file, or directory.
+
+    Used only in the ``--force`` replace path. ``Path.unlink`` handles
+    symlinks (even broken ones) and regular files; ``shutil.rmtree``
+    handles a real directory.
+    """
+    if dest.is_symlink() or dest.is_file():
+        dest.unlink(missing_ok=True)
+    elif dest.is_dir():
+        shutil.rmtree(dest)
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    """Install the bundled ``/clauditor`` skill symlink (or remove it).
+
+    Side-effect layer for US-005. Pure decision logic lives in
+    :func:`clauditor.setup.plan_setup`; this function translates the
+    returned :class:`SetupAction` into filesystem operations, stdout/
+    stderr messages, and exit codes per DEC-008, DEC-009, DEC-016.
+    """
+    traversable = files("clauditor") / "skills" / "clauditor"
+    with as_file(traversable) as pkg_skill_root_path:
+        pkg_skill_root = Path(pkg_skill_root_path).resolve()
+
+        cwd = (
+            Path(args.project_dir).resolve()
+            if args.project_dir
+            else Path.cwd().resolve()
+        )
+
+        try:
+            action = setup_module.plan_setup(
+                cwd,
+                pkg_skill_root,
+                force=args.force,
+                unlink=args.unlink,
+            )
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+
+        project_root = setup_module.find_project_root(cwd)
+        # find_project_root cannot return None here: plan_setup already
+        # raised ValueError in that case and we returned above.
+        assert project_root is not None
+        dest = project_root / ".claude" / "skills" / "clauditor"
+
+        if action is setup_module.SetupAction.CREATE_SYMLINK:
+            _install_symlink(dest, pkg_skill_root)
+            print(f"Installed /clauditor: {dest} -> {pkg_skill_root}")
+            return 0
+        if action is setup_module.SetupAction.NOOP_ALREADY_INSTALLED:
+            print("/clauditor already installed (no changes)")
+            return 0
+        if action is setup_module.SetupAction.REPLACE_WITH_FORCE:
+            _remove_existing(dest)
+            _install_symlink(dest, pkg_skill_root)
+            print(f"Installed /clauditor: {dest} -> {pkg_skill_root}")
+            return 0
+        if action is setup_module.SetupAction.REFUSE_EXISTING_FILE:
+            print(
+                "ERROR: .claude/skills/clauditor exists (regular file); "
+                "use --force to overwrite",
+                file=sys.stderr,
+            )
+            return 1
+        if action is setup_module.SetupAction.REFUSE_EXISTING_DIR:
+            print(
+                "ERROR: .claude/skills/clauditor exists (directory); "
+                "use --force to overwrite",
+                file=sys.stderr,
+            )
+            return 1
+        if action is setup_module.SetupAction.REFUSE_WRONG_SYMLINK:
+            print(
+                "ERROR: .claude/skills/clauditor is a symlink pointing "
+                "elsewhere; use --force to overwrite",
+                file=sys.stderr,
+            )
+            return 1
+        if action is setup_module.SetupAction.REMOVE_SYMLINK:
+            dest.unlink()
+            print("Removed .claude/skills/clauditor")
+            return 0
+        if action is setup_module.SetupAction.NOOP_NOTHING_TO_UNLINK:
+            print("/clauditor not installed (nothing to unlink)")
+            return 0
+        if action is setup_module.SetupAction.REFUSE_UNLINK_NON_SYMLINK:
+            print(
+                "ERROR: .claude/skills/clauditor is not a symlink; "
+                "refusing to unlink",
+                file=sys.stderr,
+            )
+            return 1
+        if action is setup_module.SetupAction.REFUSE_UNLINK_WRONG_TARGET:
+            print(
+                "ERROR: .claude/skills/clauditor symlink target does "
+                "not match installed clauditor; refusing",
+                file=sys.stderr,
+            )
+            return 1
+
+        # Unreachable: every SetupAction member is handled above.
+        return 1  # pragma: no cover
+
+
 def cmd_trend(args: argparse.Namespace) -> int:
     """Render a trend line (TSV + ASCII sparkline) for a skill metric."""
     records = history.read_records(skill=args.skill_name)
@@ -2468,6 +2589,45 @@ def main(argv: list[str] | None = None) -> int:
         "--force", action="store_true", help="Overwrite existing eval.json"
     )
 
+    # setup
+    p_setup = subparsers.add_parser(
+        "setup",
+        help="Install the /clauditor slash command into .claude/skills/",
+        description=(
+            "Create a symlink at .claude/skills/clauditor pointing at the "
+            "bundled skill shipped with the clauditor package. By default, "
+            "refuses to overwrite existing files or symlinks at that path. "
+            "Use --unlink to remove a previously-installed symlink."
+        ),
+    )
+    p_setup.add_argument(
+        "--unlink",
+        action="store_true",
+        help=(
+            "Remove the /clauditor symlink instead of creating it. "
+            "Only removes our own symlinks; refuses to remove files or "
+            "symlinks pointing elsewhere (use --force with care)."
+        ),
+    )
+    p_setup.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Overwrite an existing file or symlink at "
+            ".claude/skills/clauditor. Has no effect in --unlink mode "
+            "(which always refuses to remove non-matching entries)."
+        ),
+    )
+    p_setup.add_argument(
+        "--project-dir",
+        type=str,
+        default=None,
+        help=(
+            "Override project-root detection; use this directory as the "
+            "cwd for .claude/ resolution (default: current working dir)."
+        ),
+    )
+
     # capture
     p_capture = subparsers.add_parser(
         "capture",
@@ -2655,6 +2815,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_extract(parsed)
     elif parsed.command == "init":
         return cmd_init(parsed)
+    elif parsed.command == "setup":
+        return cmd_setup(parsed)
     elif parsed.command == "capture":
         return cmd_capture(parsed)
     elif parsed.command == "doctor":
