@@ -21,7 +21,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 def cmd_run(args: argparse.Namespace) -> int:
     """Run a skill and print its output."""
     runner = SkillRunner(
-        project_dir=args.project_dir or Path.cwd(),
+        project_dir=Path(args.project_dir) if args.project_dir else Path.cwd(),
         timeout=args.timeout,
     )
     result = runner.run(args.skill, args.args or "")

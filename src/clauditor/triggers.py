@@ -194,13 +194,16 @@ async def classify_query(
     except AnthropicHelperError as exc:
         # Graceful degradation: a single API failure (auth, 5xx
         # exhaustion, network) must not abort the entire trigger batch
-        # in ``test_triggers``. Record as a non-triggering failure so
-        # sibling queries still produce their rows.
+        # in ``test_triggers``. ``passed=False`` always — an API error
+        # is never a real test pass, even for ``should_not_trigger``
+        # queries (where ``passed=not expected`` would otherwise
+        # silently count the batch as green despite zero classification
+        # work happening).
         return TriggerResult(
             query=query,
             expected_trigger=expected,
             predicted_trigger=False,
-            passed=not expected,
+            passed=False,
             confidence=0.0,
             reasoning=f"API error: {exc}",
             input_tokens=0,

@@ -109,8 +109,12 @@ def cmd_trend(args: argparse.Namespace) -> int:
         v = history.resolve_path(rec, metric)
         if v is None:
             continue
+        try:
+            numeric = float(v)
+        except (TypeError, ValueError):
+            continue
         timestamps.append(str(rec.get("ts", "")))
-        values.append(float(v))
+        values.append(numeric)
 
     if not values:
         print(

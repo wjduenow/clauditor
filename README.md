@@ -441,6 +441,7 @@ clauditor trend <skill> --list-metrics           # List available metric paths
 clauditor trend <skill> --metric grader.input_tokens --command extract  # Filter by subcommand
 clauditor triggers <skill.md>          # Trigger precision testing
 clauditor capture <skill> -- "args"    # Run skill, save stdout to tests/eval/captured/
+clauditor suggest <skill.md>           # Propose SKILL.md edits from prior failing iterations
 clauditor doctor                       # Report environment diagnostics
 ```
 
@@ -491,6 +492,7 @@ Commands that only invoke the Anthropic API transiently (`extract`, `grade`, `tr
 clauditor registers as a pytest plugin automatically. Available fixtures:
 
 - `clauditor_runner` — pre-configured `SkillRunner`
+- `clauditor_asserter` — factory wrapping a `SkillResult` with `assert_*` helpers (`assert_contains`, `assert_matches`, `assert_has_urls`, `assert_has_entries`, `assert_min_count`, `assert_min_length`, `run_assertions`) — see `.claude/rules/data-vs-asserter-split.md`
 - `clauditor_spec` — factory for loading `SkillSpec` from skill files
 - `clauditor_grader` — factory for Layer 3 quality grading
 - `clauditor_triggers` — factory for trigger precision testing

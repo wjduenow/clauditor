@@ -434,8 +434,12 @@ _ASSERTION_HANDLERS: dict[str, Callable[[str, dict], AssertionResult]] = {
     "min_count": lambda out, a: assert_min_count(
         out, a.get("value", ""), a.get("minimum", 1)
     ),
-    "min_length": lambda out, a: assert_min_length(out, int(a.get("value", ""))),
-    "max_length": lambda out, a: assert_max_length(out, int(a.get("value", ""))),
+    "min_length": lambda out, a: assert_min_length(
+        out, int(a.get("value", "")) if a.get("value", "") else 0
+    ),
+    "max_length": lambda out, a: assert_max_length(
+        out, int(a.get("value", "")) if a.get("value", "") else 0
+    ),
     "has_urls": lambda out, a: assert_has_urls(
         out, int(a.get("value", "")) if a.get("value", "") else 1
     ),

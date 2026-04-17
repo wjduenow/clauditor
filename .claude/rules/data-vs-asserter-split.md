@@ -49,6 +49,9 @@ class SkillAsserter:
 
     def assert_contains(self, value: str) -> None:
         res = assert_contains(self.result.output, value)
+        # ``AssertionResult.__bool__`` returns ``self.passed``, so
+        # ``if not res`` tests the failure case. ``res.message`` is
+        # always populated regardless of outcome.
         if not res:
             raise AssertionError(res.message)
 

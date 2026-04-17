@@ -344,8 +344,10 @@ class TestClassifyQuery:
     @pytest.mark.asyncio
     async def test_helper_error_yields_graceful_failure_row(self):
         """AnthropicHelperError does not abort the batch — records one
-        row with ``triggered=False`` and reasoning that names the API error
-        so sibling queries in ``test_triggers`` still produce their rows.
+        row with ``triggered=False`` + ``passed=False`` regardless of
+        expected (an API error is never a real pass), with reasoning
+        that names the API error so sibling queries in ``test_triggers``
+        still produce their rows.
         """
         from clauditor._anthropic import AnthropicHelperError
 
@@ -355,13 +357,30 @@ class TestClassifyQuery:
                 "skill", "desc", "query", True, "test-model"
             )
         assert result.predicted_trigger is False
-        # expected=True so passed is False
         assert result.passed is False
         assert result.confidence == 0.0
         assert "API error" in result.reasoning
         assert "rate limited" in result.reasoning
         assert result.input_tokens == 0
         assert result.output_tokens == 0
+
+    @pytest.mark.asyncio
+    async def test_helper_error_fails_should_not_trigger_too(self):
+        """An API error on a ``should_not_trigger`` query (expected=False)
+        must still ``passed=False`` — otherwise systematic API failures
+        would silently inflate pass rates on negative tests.
+        """
+        from clauditor._anthropic import AnthropicHelperError
+
+        call = AsyncMock(side_effect=AnthropicHelperError("auth failure"))
+        with patch("clauditor._anthropic.call_anthropic", call):
+            result = await classify_query(
+                "skill", "desc", "unrelated query", False, "test-model"
+            )
+        assert result.expected_trigger is False
+        assert result.predicted_trigger is False
+        assert result.passed is False
+        assert "API error" in result.reasoning
 
 
 # --- test_triggers tests ---
