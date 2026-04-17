@@ -203,7 +203,7 @@ class TestLoadProposeEvalInput:
         assert result.frontmatter is None
 
     def test_malformed_frontmatter_tolerated(
-        self, tmp_path: Path
+        self, tmp_path: Path, capsys
     ) -> None:
         project_dir = tmp_path
         skill_dir = project_dir / ".claude" / "skills" / "broken"
@@ -219,6 +219,12 @@ class TestLoadProposeEvalInput:
         assert result.skill_body == skill_md.read_text()
         # skill_name falls back to dir name.
         assert result.skill_name == "broken"
+
+        # Pass 2 finding: the fallthrough must emit a stderr warning
+        # so authors notice their declared `name:` was ignored.
+        err = capsys.readouterr().err
+        assert "malformed frontmatter" in err
+        assert str(skill_md) in err
 
     def test_capture_text_is_scrubbed(self, tmp_path: Path) -> None:
         """DEC-008: captured content goes through transcripts.redact."""
@@ -302,6 +308,47 @@ class TestSkillNameFromFrontmatter:
         path = tmp_path / "my-skill" / "SKILL.md"
         result = _skill_name_from_frontmatter({"name": 42}, path)
         assert result == "my-skill"
+
+    def test_rejects_path_traversal_in_name(self, tmp_path: Path) -> None:
+        """Pass 2 security finding: name must not contain path separators.
+
+        A malicious SKILL.md declaring `name: "../../etc/passwd"`
+        would otherwise escape the capture directory when the loader
+        interpolates the name into a Path join. The regex clamp
+        forces a fallback to the directory basename (or ``"skill"``
+        if that also fails).
+        """
+        path = tmp_path / "greeter" / "SKILL.md"
+        result = _skill_name_from_frontmatter(
+            {"name": "../../etc/passwd"}, path
+        )
+        assert result == "greeter"
+
+    def test_rejects_absolute_path_in_name(self, tmp_path: Path) -> None:
+        path = tmp_path / "greeter" / "SKILL.md"
+        result = _skill_name_from_frontmatter(
+            {"name": "/etc/passwd"}, path
+        )
+        assert result == "greeter"
+
+    def test_rejects_windows_separator_in_name(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "greeter" / "SKILL.md"
+        result = _skill_name_from_frontmatter(
+            {"name": "foo\\bar"}, path
+        )
+        assert result == "greeter"
+
+    def test_falls_back_to_literal_skill_when_both_invalid(
+        self, tmp_path: Path
+    ) -> None:
+        # Parent dir basename is empty/root-like — fails the regex.
+        path = Path("/") / "SKILL.md"
+        result = _skill_name_from_frontmatter(
+            {"name": "../../etc/passwd"}, path
+        )
+        assert result == "skill"
 
 
 # --------------------------------------------------------------------------

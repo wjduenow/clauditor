@@ -1707,14 +1707,41 @@ class TestEvalSpecFromDict:
             EvalSpec.from_dict(data, spec_dir=tmp_path)
 
     def test_from_file_delegates_to_from_dict(self, tmp_path):
-        """Loading via from_file yields the same spec as direct from_dict."""
+        """Loading via from_file yields the same spec as direct from_dict.
+
+        Covers every field on EvalSpec to catch a drift regression in
+        any branch of ``from_dict`` (per QG pass 2: the per-field
+        asserts this used to have missed ``sections`` / ``user_prompt``
+        / ``variance`` / etc).
+        """
+        import dataclasses
+
         f = tmp_path / "data.csv"
         f.write_text("x")
         payload = {
             "skill_name": "delegate-test",
             "description": "d",
+            "user_prompt": "Do the thing",
             "test_args": "--flag",
             "assertions": [{"id": "a1", "type": "contains", "value": "ok"}],
+            "sections": [
+                {
+                    "name": "Items",
+                    "tiers": [
+                        {
+                            "label": "default",
+                            "min_entries": 1,
+                            "fields": [
+                                {
+                                    "id": "f1",
+                                    "name": "title",
+                                    "required": True,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
             "input_files": ["data.csv"],
             "grading_criteria": [
                 {"id": "c1", "criterion": "Is it good?"},
@@ -1726,9 +1753,34 @@ class TestEvalSpecFromDict:
         via_file = EvalSpec.from_file(spec_path)
         via_dict = EvalSpec.from_dict(payload, spec_dir=tmp_path.resolve())
 
-        assert via_file.skill_name == via_dict.skill_name
-        assert via_file.description == via_dict.description
-        assert via_file.test_args == via_dict.test_args
-        assert via_file.assertions == via_dict.assertions
-        assert via_file.input_files == via_dict.input_files
-        assert via_file.grading_criteria == via_dict.grading_criteria
+        # Byte-level equivalence via asdict — catches drift in any
+        # field (sections, user_prompt, trigger_tests, variance,
+        # grade_thresholds, output_file[s], grading_model, etc).
+        assert dataclasses.asdict(via_file) == dataclasses.asdict(via_dict)
+
+    def test_from_file_and_from_dict_emit_identical_value_errors(
+        self, tmp_path
+    ):
+        """Both paths must emit byte-identical ValueError messages.
+
+        Pre-1.0 convention + QG pass 2 concern: the class docstring
+        promises byte-identical error messages but every existing
+        match pattern was substring regex. This test pins one bad
+        payload and asserts equality on str(exc).
+        """
+        bad_payload = {
+            "skill_name": "s",
+            "assertions": [
+                # Missing 'id' field triggers _require_id failure.
+                {"type": "contains", "value": "ok"}
+            ],
+        }
+        spec_path = tmp_path / "bad.eval.json"
+        spec_path.write_text(json.dumps(bad_payload))
+
+        with pytest.raises(ValueError) as ei_file:
+            EvalSpec.from_file(spec_path)
+        with pytest.raises(ValueError) as ei_dict:
+            EvalSpec.from_dict(bad_payload, spec_dir=tmp_path.resolve())
+
+        assert str(ei_file.value) == str(ei_dict.value)
