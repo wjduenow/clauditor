@@ -1,5 +1,36 @@
 # Architecture Diagrams
 
+Visual + narrative reference for how `clauditor grade` flows end-to-end and how the three evaluation layers compose. Read this when you want depth beyond the README's summary — the grade-command flow, the three-layer pipeline with subgraphs, and the cost/fidelity tradeoffs per layer.
+
+> Returning from the [root README](../README.md). This doc is the full reference; the README has a summary with code examples.
+
+## Overview
+
+At a glance, a `clauditor grade` run invokes the skill, then fans the
+skill's output into three independent evaluation layers whose results
+are persisted and reported together:
+
+```mermaid
+flowchart LR
+    A["clauditor grade\nskill.md"] --> B["Run skill\n(claude -p)"]
+    B --> C["Skill output"]
+    C --> D["L1 Assertions\n(free)"]
+    C --> E["L2 Extraction\n(Haiku)"]
+    C --> F["L3 Quality\n(Sonnet)"]
+    D --> G["Persist + Report"]
+    E --> G
+    F --> G
+
+    style D fill:#c8e6c9
+    style E fill:#fff9c4
+    style F fill:#ffccbc
+```
+
+Results land under `.clauditor/iteration-N/<skill>/` and are appended to
+`history.jsonl` for trend tracking. The sections below expand each
+stage: §1 walks through the full command end-to-end, §2 details the
+three-layer pipeline.
+
 ## 1. Grade Command — End-to-End Flow
 
 What happens when you run `clauditor grade skill.md`:
@@ -44,7 +75,7 @@ flowchart TD
 | L1 Assertions | Deterministic string matching — no API calls | `assertions.py::run_assertions` |
 | L2 Extraction | Schema field extraction via Haiku | `grader.py::extract_and_report` |
 | L3 Quality | Rubric-based grading via Sonnet | `quality_grader.py::grade_quality` |
-| Persistence | Atomic workspace with sidecars | `workspace.py` + `cli.py` |
+| Persistence | Atomic workspace with sidecars | `workspace.py` + `cli/grade.py` |
 | History | One JSONL line per run for `clauditor trend` | `history.py::append_record` |
 
 ### Optional phases
