@@ -250,12 +250,13 @@ def build_blind_prompt(
     )
 
 
-def _parse_blind_response(text: str) -> dict | None:
+def parse_blind_response(text: str) -> dict | None:
     """Parse the judge's JSON response for blind A/B comparison.
 
-    Mirrors :func:`parse_grading_response` style — tries raw JSON first,
-    then falls back to stripping markdown fences. Returns ``None`` on
-    malformed input; :func:`blind_compare` handles graceful failure.
+    Pure function (no I/O). Mirrors :func:`parse_grading_response` style —
+    tries raw JSON first, then falls back to stripping markdown fences.
+    Returns ``None`` on malformed input; :func:`blind_compare` handles
+    graceful failure.
     """
     json_str = text
     if "```" in json_str:
@@ -279,93 +280,82 @@ def _parse_blind_response(text: str) -> dict | None:
     return data
 
 
-async def blind_compare(
-    user_prompt: str,
-    output_a: str,
-    output_b: str,
-    rubric_hint: str | None = None,
-    *,
-    model: str = DEFAULT_GRADING_MODEL,
-    rng: random.Random | None = None,
-) -> BlindReport:
-    """Blind A/B judge: call Anthropic twice with swapped positions.
+# Legacy alias — the helper was private pre-US-005. Keep so existing
+# imports keep working; prefer :func:`parse_blind_response` for new code.
+_parse_blind_response = parse_blind_response
 
-    Run-1 randomly assigns ``output_a``/``output_b`` to slots ``1``/``2``
-    (so the judge cannot anchor on ``a``/``b``). Run-2 uses the opposite
-    mapping. Results are translated back to the caller's canonical
-    ``a``/``b`` space and checked for agreement. Disagreement on the
-    winner yields ``preference="tie"`` with ``position_agreement=False``.
 
-    Requires the 'grader' extra: pip install clauditor[grader]
+def _translate_blind_result(
+    parsed: dict, mapping: str
+) -> tuple[str, float, float, float, str]:
+    """Translate a judge's slot-1/slot-2 verdict back to a/b space.
+
+    Pure helper. ``mapping`` is ``"ab->12"`` (a=slot1, b=slot2) or
+    ``"ab->21"`` (a=slot2, b=slot1). Returns ``(winner_in_ab, confidence,
+    score_a, score_b, reasoning)`` with defensive float coercion on the
+    score fields.
     """
-    if not user_prompt or not user_prompt.strip():
-        raise ValueError("blind_compare: user_prompt must be non-empty")
-    if not output_a or not output_a.strip():
-        raise ValueError("blind_compare: output_a must be non-empty")
-    if not output_b or not output_b.strip():
-        raise ValueError("blind_compare: output_b must be non-empty")
-
+    pref = str(parsed.get("preference", "tie"))
     try:
-        from anthropic import AsyncAnthropic
-    except ImportError:
-        raise ImportError(
-            "Layer 3 blind comparison requires the anthropic SDK. "
-            "Install with: pip install clauditor[grader]"
-        )
+        conf = float(parsed.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        conf = 0.0
+    try:
+        s1 = float(parsed.get("score_1", 0.0))
+    except (TypeError, ValueError):
+        s1 = 0.0
+    try:
+        s2 = float(parsed.get("score_2", 0.0))
+    except (TypeError, ValueError):
+        s2 = 0.0
+    reasoning = str(parsed.get("reasoning", ""))
 
-    effective_rng = rng if rng is not None else random.Random()
+    if mapping == "ab->12":
+        score_a, score_b = s1, s2
+        if pref == "1":
+            winner = "a"
+        elif pref == "2":
+            winner = "b"
+        else:
+            winner = "tie"
+    else:  # ab->21
+        score_a, score_b = s2, s1
+        if pref == "1":
+            winner = "b"
+        elif pref == "2":
+            winner = "a"
+        else:
+            winner = "tie"
+    return winner, conf, score_a, score_b, reasoning
 
-    # Mapping convention:
-    #   "ab->12": output_a is slot 1, output_b is slot 2
-    #   "ab->21": output_a is slot 2, output_b is slot 1
-    if effective_rng.random() < 0.5:
-        run1_mapping = "ab->12"
-    else:
-        run1_mapping = "ab->21"
-    run2_mapping = "ab->21" if run1_mapping == "ab->12" else "ab->12"
 
-    def slots_for(mapping: str) -> tuple[str, str]:
-        if mapping == "ab->12":
-            return output_a, output_b
-        return output_b, output_a
+def combine_blind_results(
+    *,
+    parsed1: dict | None,
+    parsed2: dict | None,
+    text1: str,
+    text2: str,
+    run1_mapping: str,
+    run2_mapping: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    duration_seconds: float,
+) -> BlindReport:
+    """Combine two parsed judge verdicts into a canonical :class:`BlindReport`.
 
-    client = AsyncAnthropic()
+    Pure function (no I/O). Handles all four branches:
 
-    async def call_judge(shared_client, mapping: str):
-        slot_1, slot_2 = slots_for(mapping)
-        prompt = build_blind_prompt(user_prompt, slot_1, slot_2, rubric_hint)
-        return await shared_client.messages.create(
-            model=model,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
+    - Both parsed: agreement → mean confidence, disagreement → min confidence.
+    - Only one parsed: keep the good verdict, flag non-agreement.
+    - Neither parsed: ``tie`` with zero scores and a diagnostic reasoning
+      block quoting the raw responses.
 
-    start = _monotonic()
-    import asyncio as _asyncio
-    response1, response2 = await _asyncio.gather(
-        call_judge(client, run1_mapping),
-        call_judge(client, run2_mapping),
-    )
-
-    input_tokens = getattr(response1.usage, "input_tokens", 0) + getattr(
-        response2.usage, "input_tokens", 0
-    )
-    output_tokens = getattr(response1.usage, "output_tokens", 0) + getattr(
-        response2.usage, "output_tokens", 0
-    )
-
-    def text_of(resp) -> str:
-        if not resp.content or not hasattr(resp.content[0], "text"):
-            return ""
-        return resp.content[0].text
-
-    text1 = text_of(response1)
-    text2 = text_of(response2)
-    parsed1 = _parse_blind_response(text1)
-    parsed2 = _parse_blind_response(text2)
-
+    The async :func:`blind_compare` wrapper is reduced to "issue two calls
+    in parallel, call :func:`parse_blind_response` on each, forward to this
+    helper" — keeping all the verdict math testable without SDK mocks.
+    """
     if parsed1 is None and parsed2 is None:
-        duration = _monotonic() - start
         return BlindReport(
             preference="tie",
             confidence=0.0,
@@ -379,59 +369,23 @@ async def blind_compare(
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            duration_seconds=duration,
+            duration_seconds=duration_seconds,
         )
 
-    def translate(parsed: dict, mapping: str) -> tuple[str, float, float, float, str]:
-        """Return (winner_in_ab, confidence, score_a, score_b, reasoning)."""
-        pref = str(parsed.get("preference", "tie"))
-        try:
-            conf = float(parsed.get("confidence", 0.0))
-        except (TypeError, ValueError):
-            conf = 0.0
-        try:
-            s1 = float(parsed.get("score_1", 0.0))
-        except (TypeError, ValueError):
-            s1 = 0.0
-        try:
-            s2 = float(parsed.get("score_2", 0.0))
-        except (TypeError, ValueError):
-            s2 = 0.0
-        reasoning = str(parsed.get("reasoning", ""))
-
-        if mapping == "ab->12":
-            score_a, score_b = s1, s2
-            if pref == "1":
-                winner = "a"
-            elif pref == "2":
-                winner = "b"
-            else:
-                winner = "tie"
-        else:  # ab->21
-            score_a, score_b = s2, s1
-            if pref == "1":
-                winner = "b"
-            elif pref == "2":
-                winner = "a"
-            else:
-                winner = "tie"
-        return winner, conf, score_a, score_b, reasoning
-
-    # Partial parse failure: keep the good run's verdict, flag non-agreement.
     if parsed1 is None or parsed2 is None:
         if parsed1 is not None:
-            winner, conf, score_a, score_b, reason = translate(
+            winner, conf, score_a, score_b, reason = _translate_blind_result(
                 parsed1, run1_mapping
             )
             failed_text = text2
             good_run = 1
         else:
-            winner, conf, score_a, score_b, reason = translate(
+            assert parsed2 is not None  # narrow for type checkers
+            winner, conf, score_a, score_b, reason = _translate_blind_result(
                 parsed2, run2_mapping
             )
             failed_text = text1
             good_run = 2
-        duration = _monotonic() - start
         return BlindReport(
             preference=winner,  # type: ignore[arg-type]
             confidence=conf,
@@ -446,11 +400,15 @@ async def blind_compare(
             model=model,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
-            duration_seconds=duration,
+            duration_seconds=duration_seconds,
         )
 
-    winner1, conf1, sa1, sb1, reason1 = translate(parsed1, run1_mapping)
-    winner2, conf2, sa2, sb2, reason2 = translate(parsed2, run2_mapping)
+    winner1, conf1, sa1, sb1, reason1 = _translate_blind_result(
+        parsed1, run1_mapping
+    )
+    winner2, conf2, sa2, sb2, reason2 = _translate_blind_result(
+        parsed2, run2_mapping
+    )
 
     if winner1 == winner2:
         preference: Literal["a", "b", "tie"] = winner1  # type: ignore[assignment]
@@ -469,7 +427,6 @@ async def blind_compare(
 
     score_a = (sa1 + sa2) / 2.0
     score_b = (sb1 + sb2) / 2.0
-    duration = _monotonic() - start
 
     return BlindReport(
         preference=preference,
@@ -481,6 +438,102 @@ async def blind_compare(
         model=model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        duration_seconds=duration_seconds,
+    )
+
+
+def _validate_blind_inputs(user_prompt: str, output_a: str, output_b: str) -> None:
+    """Pure guard: raise ``ValueError`` if any input is empty/whitespace."""
+    if not user_prompt or not user_prompt.strip():
+        raise ValueError("blind_compare: user_prompt must be non-empty")
+    if not output_a or not output_a.strip():
+        raise ValueError("blind_compare: output_a must be non-empty")
+    if not output_b or not output_b.strip():
+        raise ValueError("blind_compare: output_b must be non-empty")
+
+
+def _pick_blind_mappings(rng: random.Random | None) -> tuple[str, str]:
+    """Pure: choose run-1 / run-2 slot mappings from ``rng``.
+
+    Returns ``(run1_mapping, run2_mapping)`` where each is either
+    ``"ab->12"`` or ``"ab->21"`` and they always differ.
+    """
+    effective_rng = rng if rng is not None else random.Random()
+    run1 = "ab->12" if effective_rng.random() < 0.5 else "ab->21"
+    run2 = "ab->21" if run1 == "ab->12" else "ab->12"
+    return run1, run2
+
+
+def _slots_for_mapping(
+    mapping: str, output_a: str, output_b: str
+) -> tuple[str, str]:
+    """Pure: project ``output_a`` / ``output_b`` into the judge's slots.
+
+    ``"ab->12"`` → ``(output_a, output_b)``;
+    ``"ab->21"`` → ``(output_b, output_a)``.
+    """
+    if mapping == "ab->12":
+        return output_a, output_b
+    return output_b, output_a
+
+
+def _build_blind_prompt_for_mapping(
+    mapping: str,
+    user_prompt: str,
+    output_a: str,
+    output_b: str,
+    rubric_hint: str | None,
+) -> str:
+    """Pure: build the full judge prompt for a given slot mapping."""
+    slot_1, slot_2 = _slots_for_mapping(mapping, output_a, output_b)
+    return build_blind_prompt(user_prompt, slot_1, slot_2, rubric_hint)
+
+
+async def blind_compare(
+    user_prompt: str,
+    output_a: str,
+    output_b: str,
+    rubric_hint: str | None = None,
+    *,
+    model: str = DEFAULT_GRADING_MODEL,
+    rng: random.Random | None = None,
+) -> BlindReport:
+    """Blind A/B judge: call Anthropic twice with swapped positions.
+
+    Run-1 randomly assigns ``output_a``/``output_b`` to slots ``1``/``2``
+    (so the judge cannot anchor on ``a``/``b``). Run-2 uses the opposite
+    mapping. Results are translated back to the caller's canonical
+    ``a``/``b`` space by the pure helper :func:`combine_blind_results`;
+    disagreement on the winner yields ``preference="tie"`` with
+    ``position_agreement=False``.
+
+    Requires the 'grader' extra: pip install clauditor[grader]
+    """
+    import asyncio as _asyncio
+
+    from clauditor._anthropic import call_anthropic
+    _validate_blind_inputs(user_prompt, output_a, output_b)
+    m1, m2 = _pick_blind_mappings(rng)
+    args = (user_prompt, output_a, output_b, rubric_hint)
+    p1 = _build_blind_prompt_for_mapping(m1, *args)
+    p2 = _build_blind_prompt_for_mapping(m2, *args)
+    start = _monotonic()
+    r1, r2 = await _asyncio.gather(
+        call_anthropic(p1, model=model, max_tokens=2048),
+        call_anthropic(p2, model=model, max_tokens=2048),
+    )
+    duration = _monotonic() - start
+    # Pre-refactor semantics: take the FIRST text block only so downstream
+    # parsers see the same string they did before ``_extract_result``
+    # started joining blocks.
+    t1 = r1.text_blocks[0] if r1.text_blocks else ""
+    t2 = r2.text_blocks[0] if r2.text_blocks else ""
+    return combine_blind_results(
+        parsed1=parse_blind_response(t1), parsed2=parse_blind_response(t2),
+        text1=t1, text2=t2,
+        run1_mapping=m1, run2_mapping=m2, model=model,
+        input_tokens=r1.input_tokens + r2.input_tokens,
+        output_tokens=r1.output_tokens + r2.output_tokens,
         duration_seconds=duration,
     )
 
@@ -564,15 +617,24 @@ async def blind_compare_from_spec(
     )
 
 
-def build_grading_prompt(eval_spec: EvalSpec) -> str:
-    """Build a prompt that asks the LLM to grade output against rubric criteria."""
-    from clauditor.schemas import criterion_text
+def build_grading_prompt(
+    eval_spec: EvalSpec, output_text: str | None = None
+) -> str:
+    """Build a prompt that asks the LLM to grade output against rubric criteria.
+
+    Pure function (no I/O). Returns either the prompt *header* (when
+    ``output_text`` is ``None``) or the full prompt with the skill output
+    fenced inside ``<skill_output>`` tags (when ``output_text`` is given).
+    The two-arg form is the canonical single-call builder used by
+    :func:`grade_quality`; the one-arg form is kept so tests can assert
+    on the header template in isolation.
+    """
     criteria_lines = []
     for i, criterion in enumerate(eval_spec.grading_criteria, 1):
         criteria_lines.append(f"{i}. {criterion_text(criterion)}")
     criteria_block = "\n".join(criteria_lines)
 
-    return (
+    header = (
         f'You are evaluating the quality of output from a Claude Code skill'
         f' called "{eval_spec.skill_name}".\n'
         f"\n"
@@ -596,6 +658,12 @@ def build_grading_prompt(eval_spec: EvalSpec) -> str:
         f"Respond with ONLY valid JSON array:\n"
         f'[{{"criterion": "...", "passed": true, "score": 0.0,'
         f' "evidence": "...", "reasoning": "..."}}]'
+    )
+    if output_text is None:
+        return header
+    return (
+        f"{header}\n\n## Output to Evaluate\n"
+        f"<skill_output>\n{output_text}\n</skill_output>"
     )
 
 
@@ -697,119 +765,95 @@ def parse_grading_response(
     return results
 
 
-async def grade_quality(
-    output: str,
+def _grading_failure_report(
     eval_spec: EvalSpec,
-    model: str = DEFAULT_GRADING_MODEL,
-    thresholds: GradeThresholds | None = None,
+    *,
+    model: str,
+    thresholds: GradeThresholds,
+    duration: float,
+    input_tokens: int,
+    output_tokens: int,
+    evidence: str,
+    reasoning: str,
 ) -> GradingReport:
-    """Layer 3: Grade skill output against rubric criteria using an LLM.
+    """Build a failed :class:`GradingReport` for a parse/alignment failure.
 
-    Requires the 'grader' extra: pip install clauditor[grader]
+    Pure helper used by :func:`grade_quality` to keep the async wrapper
+    readable.
     """
-    thresholds = thresholds if thresholds is not None else GradeThresholds()
-    try:
-        from anthropic import AsyncAnthropic
-    except ImportError:
-        raise ImportError(
-            "Layer 3 quality grading requires the anthropic SDK. "
-            "Install with: pip install clauditor[grader]"
-        )
-
-    client = AsyncAnthropic()
-    prompt = build_grading_prompt(eval_spec)
-
-    start = _monotonic()
-    response = await client.messages.create(
-        model=model,
-        max_tokens=4096,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"{prompt}\n\n## Output to Evaluate\n"
-                    f"<skill_output>\n{output}\n</skill_output>"
-                ),
-            },
+    return GradingReport(
+        skill_name=eval_spec.skill_name,
+        results=[
+            GradingResult(
+                criterion="parse_response",
+                passed=False,
+                score=0.0,
+                evidence=evidence,
+                reasoning=reasoning,
+            )
         ],
+        model=model,
+        thresholds=thresholds,
+        metrics={},
+        duration_seconds=duration,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
-    duration = _monotonic() - start
-    input_tokens = getattr(response.usage, "input_tokens", 0)
-    output_tokens = getattr(response.usage, "output_tokens", 0)
 
-    # Defensive unpack: filter for text blocks so non-text-first items
-    # (tool_use, refusal) don't crash the indexer. Covers both empty
-    # content and tool_use-before-text scenarios.
-    text_blocks = [
-        b.text
-        for b in (response.content or [])
-        if getattr(b, "type", None) == "text" and hasattr(b, "text")
-    ]
-    if not text_blocks:
-        return GradingReport(
-            skill_name=eval_spec.skill_name,
-            results=[
-                GradingResult(
-                    criterion="parse_response",
-                    passed=False,
-                    score=0.0,
-                    evidence="",
-                    reasoning="LLM response contained no text content",
-                )
-            ],
-            model=model,
-            thresholds=thresholds,
-            metrics={},
-            duration_seconds=duration,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+
+def build_grading_report(
+    response_text: str,
+    eval_spec: EvalSpec,
+    *,
+    model: str,
+    thresholds: GradeThresholds,
+    duration: float,
+    input_tokens: int,
+    output_tokens: int,
+) -> GradingReport:
+    """Parse ``response_text`` into a :class:`GradingReport`.
+
+    Pure function (no I/O). Handles three failure modes:
+
+    - Empty ``response_text`` (no text blocks in the SDK response).
+    - :func:`parse_grading_response` raises on misalignment.
+    - :func:`parse_grading_response` returns ``[]`` on unparseable JSON.
+
+    Callers wrap the I/O (Anthropic call, token/duration capture) and
+    forward here for the verdict logic.
+    """
+    common = {
+        "model": model,
+        "thresholds": thresholds,
+        "duration": duration,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+    }
+    if not response_text:
+        return _grading_failure_report(
+            eval_spec,
+            evidence="",
+            reasoning="LLM response contained no text content",
+            **common,
         )
-    response_text = text_blocks[0]
     try:
         results = parse_grading_response(
             response_text, eval_spec.grading_criteria
         )
     except ValueError as exc:
-        return GradingReport(
-            skill_name=eval_spec.skill_name,
-            results=[
-                GradingResult(
-                    criterion="parse_response",
-                    passed=False,
-                    score=0.0,
-                    evidence=response_text[:200],
-                    reasoning=f"Grader result misalignment: {exc}",
-                )
-            ],
-            model=model,
-            thresholds=thresholds,
-            metrics={},
-            duration_seconds=duration,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+        return _grading_failure_report(
+            eval_spec,
+            evidence=response_text[:200],
+            reasoning=f"Grader result misalignment: {exc}",
+            **common,
         )
-
     if not results:
-        # Return a failed report on parse errors
-        return GradingReport(
-            skill_name=eval_spec.skill_name,
-            results=[
-                GradingResult(
-                    criterion="parse_response",
-                    passed=False,
-                    score=0.0,
-                    evidence=response_text[:200],
-                    reasoning="Failed to parse grader response as JSON",
-                )
-            ],
-            model=model,
-            thresholds=thresholds,
-            metrics={},
-            duration_seconds=duration,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
+        return _grading_failure_report(
+            eval_spec,
+            evidence=response_text[:200],
+            reasoning="Failed to parse grader response as JSON",
+            **common,
         )
-
     return GradingReport(
         skill_name=eval_spec.skill_name,
         results=results,
@@ -819,6 +863,44 @@ async def grade_quality(
         duration_seconds=duration,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+    )
+
+
+async def grade_quality(
+    output: str,
+    eval_spec: EvalSpec,
+    model: str = DEFAULT_GRADING_MODEL,
+    thresholds: GradeThresholds | None = None,
+) -> GradingReport:
+    """Layer 3: Grade skill output against rubric criteria using an LLM.
+
+    Thin async wrapper: builds a prompt, issues one Anthropic call, parses
+    the response, and returns a :class:`GradingReport`. All heavy lifting
+    lives in the pure helpers :func:`build_grading_prompt` and
+    :func:`parse_grading_response`.
+
+    Requires the 'grader' extra: pip install clauditor[grader]
+    """
+    thresholds = thresholds if thresholds is not None else GradeThresholds()
+    from clauditor._anthropic import call_anthropic
+
+    prompt = build_grading_prompt(eval_spec, output)
+
+    start = _monotonic()
+    api_result = await call_anthropic(prompt, model=model, max_tokens=4096)
+    duration = _monotonic() - start
+
+    response_text = (
+        api_result.text_blocks[0] if api_result.text_blocks else ""
+    )
+    return build_grading_report(
+        response_text,
+        eval_spec,
+        model=model,
+        thresholds=thresholds,
+        duration=duration,
+        input_tokens=api_result.input_tokens,
+        output_tokens=api_result.output_tokens,
     )
 
 

@@ -11,10 +11,13 @@ import pytest
 
 import clauditor.pytest_plugin as _plugin_mod
 from clauditor.pytest_plugin import (
+    clauditor_asserter,
     clauditor_blind_compare,
     clauditor_capture,
+    clauditor_grader,
     clauditor_runner,
     clauditor_spec,
+    clauditor_triggers,
     pytest_addoption,
     pytest_collection_modifyitems,
     pytest_configure,
@@ -613,3 +616,103 @@ class TestClauditorBlindCompare:
         # And the fixture itself is a pytest fixture callable
         assert callable(clauditor_blind_compare)
         assert hasattr(clauditor_blind_compare, "__wrapped__")
+
+
+class TestClauditorAsserterFactory:
+    """Direct coverage of the clauditor_asserter fixture factory body."""
+
+    def test_factory_returns_skill_asserter_wrapping_result(self):
+        """The factory callable wraps a SkillResult in a SkillAsserter."""
+        from clauditor.asserters import SkillAsserter
+        from clauditor.runner import SkillResult
+
+        factory = clauditor_asserter.__wrapped__()
+        result = SkillResult(
+            output="hello world",
+            exit_code=0,
+            skill_name="s",
+            args="",
+        )
+        asserter = factory(result)
+        assert isinstance(asserter, SkillAsserter)
+        # assert_contains delegates to the real assertion helper.
+        asserter.assert_contains("hello")
+
+
+class TestClauditorGraderFactory:
+    """Direct coverage of clauditor_grader error + output=None branches."""
+
+    def _request_with_model(self, model="claude-sonnet-4-6"):
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {"--clauditor-model": model}.get(opt)
+        )
+        return request
+
+    def test_raises_value_error_when_spec_lacks_eval(self, tmp_path):
+        """Grader factory raises ValueError if spec.eval_spec is None."""
+        request = self._request_with_model()
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            mock_spec = MagicMock()
+            mock_spec.eval_spec = None
+            return mock_spec
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(ValueError, match="No eval spec found"):
+            factory(tmp_path / "skill.md")
+
+    def test_output_none_triggers_spec_run(self, tmp_path):
+        """output=None path calls spec.run() and feeds its output into
+        grade_quality — covers the branch that tests typically bypass
+        by passing output= directly.
+        """
+        request = self._request_with_model()
+        mock_eval_spec = MagicMock()
+
+        mock_run_result = MagicMock()
+        mock_run_result.output = "captured skill output"
+        mock_spec = MagicMock()
+        mock_spec.eval_spec = mock_eval_spec
+        mock_spec.run.return_value = mock_run_result
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            return mock_spec
+
+        # Patch BEFORE __wrapped__ is called: the outer fixture body
+        # does ``from clauditor.quality_grader import grade_quality`` and
+        # captures it into the factory closure, so the patch target must
+        # be live at __wrapped__ time (not just at factory-call time).
+        canned = MagicMock()
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new=AsyncMock(return_value=canned),
+        ) as mock_grade:
+            factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+            result = factory(tmp_path / "skill.md")
+
+        assert result is canned
+        mock_spec.run.assert_called_once()
+        # grade_quality was called with the spec.run() output.
+        call = mock_grade.await_args
+        assert call.args[0] == "captured skill output"
+
+
+class TestClauditorTriggersFactory:
+    """Direct coverage of clauditor_triggers error branch."""
+
+    def test_raises_value_error_when_spec_lacks_eval(self, tmp_path):
+        """Triggers factory raises ValueError if spec.eval_spec is None."""
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {"--clauditor-model": "claude-sonnet-4-6"}.get(opt)
+        )
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            mock_spec = MagicMock()
+            mock_spec.eval_spec = None
+            return mock_spec
+
+        factory = clauditor_triggers.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(ValueError, match="No eval spec found"):
+            factory(tmp_path / "skill.md")

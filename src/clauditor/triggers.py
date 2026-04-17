@@ -174,25 +174,45 @@ async def classify_query(
     description: str,
     query: str,
     expected: bool,
-    client: object,
     model: str,
 ) -> TriggerResult:
     """Classify a single query using the LLM.
 
-    Sends a prompt to the LLM and parses the response to determine
-    whether the query would trigger the skill.
+    Sends a prompt to the LLM via the centralized ``call_anthropic``
+    helper (bead ``clauditor-24h.3``) and parses the response to
+    determine whether the query would trigger the skill. Retry /
+    rate-limit / auth-error handling lives inside the helper — this
+    function just awaits the result and projects it onto
+    :class:`TriggerResult`.
     """
+    from clauditor._anthropic import AnthropicHelperError, call_anthropic
+
     prompt = build_trigger_prompt(skill_name, description, query)
 
-    response = await client.messages.create(  # type: ignore[union-attr]
-        model=model,
-        max_tokens=1024,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    input_tokens = getattr(getattr(response, "usage", None), "input_tokens", 0)
-    output_tokens = getattr(getattr(response, "usage", None), "output_tokens", 0)
+    try:
+        result = await call_anthropic(prompt, model=model, max_tokens=1024)
+    except AnthropicHelperError as exc:
+        # Graceful degradation: a single API failure (auth, 5xx
+        # exhaustion, network) must not abort the entire trigger batch
+        # in ``test_triggers``. ``passed=False`` always — an API error
+        # is never a real test pass, even for ``should_not_trigger``
+        # queries (where ``passed=not expected`` would otherwise
+        # silently count the batch as green despite zero classification
+        # work happening).
+        return TriggerResult(
+            query=query,
+            expected_trigger=expected,
+            predicted_trigger=False,
+            passed=False,
+            confidence=0.0,
+            reasoning=f"API error: {exc}",
+            input_tokens=0,
+            output_tokens=0,
+        )
+    input_tokens = result.input_tokens
+    output_tokens = result.output_tokens
 
-    if not response.content or not hasattr(response.content[0], "text"):
+    if not result.text_blocks:
         return TriggerResult(
             query=query,
             expected_trigger=expected,
@@ -204,7 +224,7 @@ async def classify_query(
             output_tokens=output_tokens,
         )
 
-    response_text = response.content[0].text
+    response_text = result.text_blocks[0]
     predicted, confidence, reasoning = parse_trigger_response(response_text)
 
     return TriggerResult(
@@ -226,7 +246,9 @@ async def test_triggers(
 
     Classifies all should_trigger and should_not_trigger queries in
     parallel via asyncio.gather, then returns a TriggerReport with
-    precision, recall, and accuracy metrics.
+    precision, recall, and accuracy metrics. The Anthropic SDK is
+    accessed through :func:`clauditor._anthropic.call_anthropic` inside
+    :func:`classify_query`; retry / error handling lives in the helper.
     """
     if eval_spec.trigger_tests is None:
         return TriggerReport(
@@ -235,16 +257,6 @@ async def test_triggers(
             results=[],
             model=model,
         )
-
-    try:
-        from anthropic import AsyncAnthropic
-    except ImportError:
-        raise ImportError(
-            "Trigger testing requires the anthropic SDK. "
-            "Install with: pip install clauditor[grader]"
-        )
-
-    client = AsyncAnthropic()
 
     queries: list[tuple[str, bool]] = []
     for q in eval_spec.trigger_tests.should_trigger:
@@ -258,7 +270,6 @@ async def test_triggers(
             description=eval_spec.description,
             query=q,
             expected=expected,
-            client=client,
             model=model,
         )
         for q, expected in queries

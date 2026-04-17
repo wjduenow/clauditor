@@ -963,25 +963,24 @@ async def propose_edits(
     except Exception as exc:  # noqa: BLE001 — never raise out of propose_edits
         return _empty_report(api_error=f"prompt build error: {exc!r}")
 
+    # Route through the centralized helper so retry + error
+    # categorization live in one place (bead clauditor-24h.3). The
+    # helper raises AnthropicHelperError (a RuntimeError subclass) on
+    # non-retriable / exhausted failures; propose_edits promises to
+    # never raise, so we catch the broad Exception umbrella here and
+    # funnel the helper's user-facing message into ``api_error``.
+    from clauditor._anthropic import call_anthropic
+
     try:
-        client = AsyncAnthropic()
-        response = await client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            messages=[{"role": "user", "content": prompt}],
+        result = await call_anthropic(
+            prompt, model=model, max_tokens=max_tokens
         )
     except Exception as exc:  # noqa: BLE001 — never raise out of propose_edits
         return _empty_report(api_error=f"anthropic API error: {exc!r}")
 
-    input_tokens = int(getattr(response.usage, "input_tokens", 0) or 0)
-    output_tokens = int(getattr(response.usage, "output_tokens", 0) or 0)
-
-    text_blocks = [
-        b.text
-        for b in (response.content or [])
-        if getattr(b, "type", None) == "text" and hasattr(b, "text")
-    ]
-    response_text = "".join(text_blocks)
+    input_tokens = result.input_tokens
+    output_tokens = result.output_tokens
+    response_text = result.response_text
 
     try:
         proposals, summary_rationale = parse_suggest_response(

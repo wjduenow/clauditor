@@ -2,51 +2,95 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from clauditor import setup as clauditor_setup
 from clauditor.assertions import AssertionResult, AssertionSet
 from clauditor.cli import main
 from clauditor.quality_grader import GradingReport, GradingResult
 from clauditor.runner import SkillResult
 from clauditor.schemas import (
-    EvalSpec,
     FieldRequirement,
     GradeThresholds,
     SectionRequirement,
     TierRequirement,
     TriggerTests,
 )
-from clauditor.spec import SkillSpec
 from clauditor.triggers import TriggerReport, TriggerResult
 
+# Import conftest factories so existing call sites keep working under their
+# historical names. The canonical implementations live in tests/conftest.py.
+from tests.conftest import (
+    build_eval_spec as _make_eval_spec,
+)
+from tests.conftest import (
+    make_grading_report,
+    make_skill_result,
+)
+from tests.conftest import (
+    make_spec as _make_spec,
+)
 
-def _make_spec(eval_spec=None, skill_name="test-skill"):
-    """Create a mock SkillSpec with the given eval_spec."""
-    spec = MagicMock(spec=SkillSpec)
-    spec.skill_name = skill_name
-    spec.eval_spec = eval_spec
-    return spec
+# ---------------------------------------------------------------------------
+# Parametrized error-path tests that span multiple commands.
+# Consolidates the "missing skill file" (US-002) and "no eval spec" error
+# paths that were previously duplicated across 4-6 per-command test classes.
+# ---------------------------------------------------------------------------
 
 
-def _make_eval_spec(**overrides):
-    """Create a minimal EvalSpec for testing."""
-    defaults = dict(
-        skill_name="test-skill",
-        description="A test skill",
-        test_args="--depth quick",
-        assertions=[{"type": "contains", "value": "hello"}],
-        sections=[],
-        grading_criteria=["Is the output relevant?"],
-        grading_model="claude-sonnet-4-6",
-        trigger_tests=None,
-        variance=None,
-    )
-    defaults.update(overrides)
-    return EvalSpec(**defaults)
+# Commands whose CLI signature is `<cmd> <skill.md>` and route through
+# SkillSpec.from_file. Each must surface a file-not-found as rc=2 with a
+# clean stderr message (US-002: no traceback, include init hint).
+_MISSING_SKILL_FILE_COMMANDS = [
+    pytest.param(["validate", "nonexistent.md"], id="validate"),
+    pytest.param(["grade", "nonexistent.md"], id="grade"),
+    pytest.param(["triggers", "nonexistent.md"], id="triggers"),
+    pytest.param(["extract", "nonexistent.md"], id="extract"),
+]
+
+
+@pytest.mark.parametrize("argv", _MISSING_SKILL_FILE_COMMANDS)
+def test_command_missing_skill_file_exits_2(argv, capsys):
+    """US-002: every <cmd> skill.md path surfaces FNF as rc=2 with init hint."""
+    with patch(
+        "clauditor.cli.SkillSpec.from_file",
+        side_effect=FileNotFoundError("Skill file not found: nonexistent.md"),
+    ):
+        rc = main(argv)
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "Traceback" not in err
+    assert "nonexistent.md" in err
+    assert "clauditor init nonexistent.md" in err
+
+
+# Commands whose CLI signature is `<cmd> <skill.md>` and require an
+# eval_spec. Each must surface "no eval spec" as rc=1 with the init hint.
+_NO_EVAL_SPEC_COMMANDS = [
+    pytest.param(["validate", "skill.md"], id="validate"),
+    pytest.param(["grade", "skill.md"], id="grade"),
+    pytest.param(["triggers", "skill.md"], id="triggers"),
+    pytest.param(["extract", "skill.md"], id="extract"),
+]
+
+
+@pytest.mark.parametrize("argv", _NO_EVAL_SPEC_COMMANDS)
+def test_command_no_eval_spec_exits_1(argv, capsys):
+    """Every <cmd> skill.md path surfaces missing eval spec as rc=1."""
+    spec = _make_spec(eval_spec=None)
+    with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+        rc = main(argv)
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "No eval spec" in err
+    assert "clauditor init skill.md" in err
 
 
 class TestCmdValidate:
@@ -64,16 +108,6 @@ class TestCmdValidate:
             rc = main(["validate", "skill.md", "--output", str(output_file)])
 
         assert rc == 0
-
-    def test_validate_no_eval_spec(self, capsys):
-        """Returns 1 when no eval spec is found."""
-        spec = _make_spec(eval_spec=None)
-
-        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
-            rc = main(["validate", "skill.md"])
-
-        assert rc == 1
-        assert "No eval spec" in capsys.readouterr().err
 
     def test_validate_json_output(self, tmp_path):
         """--json flag produces valid JSON output."""
@@ -98,14 +132,9 @@ class TestCmdValidate:
         # NOT pollute the repo's real .clauditor/ directory.
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".git").mkdir()
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-        spec.run.return_value = SkillResult(
-            output="hello world output",
-            exit_code=0,
-            skill_name="test-skill",
-            args="",
-            duration_seconds=1.5,
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=1.5,
         )
 
         with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
@@ -118,15 +147,9 @@ class TestCmdValidate:
         """Returns 1 when skill run fails."""
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".git").mkdir()
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-        spec.run.return_value = SkillResult(
-            output="",
-            exit_code=1,
-            skill_name="test-skill",
-            args="",
-            duration_seconds=0.5,
-            error="timeout",
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="", exit_code=1, duration_seconds=0.5, error="timeout",
         )
 
         with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
@@ -135,6 +158,19 @@ class TestCmdValidate:
         assert rc == 1
         assert "Skill failed" in capsys.readouterr().err
 
+    def test_validate_output_file_missing_exits_2(self, capsys, tmp_path):
+        """--output pointing at a non-existent path exits 2 with clean error."""
+        missing = tmp_path / "no-such-file.txt"
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--output", str(missing)])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+        assert "Output file not found" in err
+        assert str(missing) in err
+
 
 class TestCmdRun:
     """Tests for the run subcommand."""
@@ -142,15 +178,12 @@ class TestCmdRun:
     def test_run_happy_path(self, capsys):
         """Runs skill and prints output."""
         mock_runner = MagicMock()
-        mock_runner.run.return_value = SkillResult(
-            output="skill output here",
-            exit_code=0,
-            skill_name="my-skill",
-            args="",
+        mock_runner.run.return_value = make_skill_result(
+            output="skill output here", skill_name="my-skill",
             duration_seconds=2.0,
         )
 
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
             rc = main(["run", "my-skill"])
 
         assert rc == 0
@@ -159,16 +192,12 @@ class TestCmdRun:
     def test_run_with_error(self, capsys):
         """Prints error to stderr and returns non-zero exit code."""
         mock_runner = MagicMock()
-        mock_runner.run.return_value = SkillResult(
-            output="",
-            exit_code=1,
-            skill_name="my-skill",
-            args="",
-            duration_seconds=0.5,
-            error="command not found",
+        mock_runner.run.return_value = make_skill_result(
+            output="", exit_code=1, skill_name="my-skill",
+            duration_seconds=0.5, error="command not found",
         )
 
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
             rc = main(["run", "my-skill"])
 
         assert rc == 1
@@ -179,22 +208,7 @@ class TestCmdGrade:
     """Tests for the grade subcommand."""
 
     def _make_grading_report(self, passed=True):
-        return GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="Is the output relevant?",
-                    passed=passed,
-                    score=0.9 if passed else 0.3,
-                    evidence="Found relevant content",
-                    reasoning="Output addresses the query",
-                )
-            ],
-            duration_seconds=1.0,
-            thresholds=GradeThresholds(),
-            metrics={},
-        )
+        return make_grading_report(passed=passed)
 
     def test_grade_with_output(self, tmp_path, monkeypatch):
         """Grades pre-captured output, returns 0 when passed."""
@@ -217,16 +231,6 @@ class TestCmdGrade:
             rc = main(["grade", "skill.md", "--output", str(output_file)])
 
         assert rc == 0
-
-    def test_grade_no_eval_spec(self, capsys):
-        """Returns 1 when no eval spec is found."""
-        spec = _make_spec(eval_spec=None)
-
-        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
-            rc = main(["grade", "skill.md"])
-
-        assert rc == 1
-        assert "No eval spec" in capsys.readouterr().err
 
     def test_grade_no_grading_criteria(self, capsys):
         """Returns 1 when no grading_criteria defined."""
@@ -280,22 +284,7 @@ class TestCmdGradeInputFilesStaging:
     are staged per-run, and captured-output mode warns + skips staging."""
 
     def _make_grading_report(self, passed=True):
-        return GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="Is the output relevant?",
-                    passed=passed,
-                    score=0.9,
-                    evidence="e",
-                    reasoning="r",
-                )
-            ],
-            duration_seconds=1.0,
-            thresholds=GradeThresholds(),
-            metrics={},
-        )
+        return make_grading_report(passed=passed, score=0.9)
 
     def _staging_spec(self, eval_spec, outputs):
         """Build a MagicMock SkillSpec whose .run() mirrors the real
@@ -320,14 +309,9 @@ class TestCmdGradeInputFilesStaging:
         return spec
 
     def _ok_result(self, text="ok"):
-        return SkillResult(
-            output=text,
-            exit_code=0,
-            skill_name="test-skill",
-            args="",
-            duration_seconds=0.1,
-            input_tokens=1,
-            output_tokens=1,
+        return make_skill_result(
+            output=text, duration_seconds=0.1,
+            input_tokens=1, output_tokens=1,
             stream_events=[{"type": "assistant", "text": text}],
         )
 
@@ -456,22 +440,7 @@ class TestOnlyCriterion:
     """Tests for --only-criterion filter on the grade subcommand."""
 
     def _report(self):
-        return GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="x",
-                    passed=True,
-                    score=1.0,
-                    evidence="",
-                    reasoning="",
-                )
-            ],
-            duration_seconds=1.0,
-            thresholds=GradeThresholds(),
-            metrics={},
-        )
+        return make_grading_report(criterion="x", score=1.0)
 
     def _run(self, tmp_path, criteria, extra_args, monkeypatch=None):
         if monkeypatch is not None:
@@ -637,21 +606,8 @@ class TestCmdGradeSaveDiff:
     """Tests for the iteration workspace layout (US-004) and --diff."""
 
     def _make_grading_report(self, skill_name="test-skill", passed=True, score=0.9):
-        return GradingReport(
-            skill_name=skill_name,
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="Is the output relevant?",
-                    passed=passed,
-                    score=score,
-                    evidence="Found relevant content",
-                    reasoning="Output addresses the query",
-                )
-            ],
-            duration_seconds=1.0,
-            thresholds=GradeThresholds(),
-            metrics={},
+        return make_grading_report(
+            skill_name=skill_name, passed=passed, score=score,
         )
 
     def _patch_grade(self, spec, report):
@@ -820,19 +776,12 @@ class TestCmdGradeSaveDiff:
         output_file = tmp_path / "output.txt"
         output_file.write_text("primary text")
 
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-
+        spec = _make_spec(eval_spec=_make_eval_spec())
         # Variance runs invoke spec.run() — return distinct outputs.
         spec.run.side_effect = [
-            SkillResult(
-                output=f"variance run {i}",
-                exit_code=0,
-                skill_name="test-skill",
-                args="",
-                duration_seconds=0.5,
-                input_tokens=10,
-                output_tokens=5,
+            make_skill_result(
+                output=f"variance run {i}", duration_seconds=0.5,
+                input_tokens=10, output_tokens=5,
                 stream_events=[{"type": "result", "i": i}],
             )
             for i in range(2)
@@ -849,12 +798,8 @@ class TestCmdGradeSaveDiff:
         ):
             rc = main(
                 [
-                    "grade",
-                    "skill.md",
-                    "--output",
-                    str(output_file),
-                    "--variance",
-                    "2",
+                    "grade", "skill.md", "--output", str(output_file),
+                    "--variance", "2",
                 ]
             )
         assert rc == 0
@@ -936,17 +881,12 @@ class TestCmdGradeSaveDiff:
         )
         spec = _make_spec(eval_spec=eval_spec)
         spec.run = MagicMock(
-            return_value=SkillResult(
+            return_value=make_skill_result(
                 output="primary output here",
-                exit_code=0,
-                skill_name="test-skill",
-                args="",
                 stream_events=[
                     {"type": "assistant", "text": "primary output here"}
                 ],
-                input_tokens=10,
-                output_tokens=5,
-                duration_seconds=0.5,
+                input_tokens=10, output_tokens=5, duration_seconds=0.5,
             )
         )
         report = self._make_grading_report()
@@ -982,17 +922,12 @@ class TestCmdGradeSaveDiff:
         )
         spec = _make_spec(eval_spec=eval_spec)
         spec.run = MagicMock(
-            return_value=SkillResult(
+            return_value=make_skill_result(
                 output="primary output here",
-                exit_code=0,
-                skill_name="test-skill",
-                args="",
                 stream_events=[
                     {"type": "assistant", "text": "primary output here"}
                 ],
-                input_tokens=10,
-                output_tokens=5,
-                duration_seconds=0.5,
+                input_tokens=10, output_tokens=5, duration_seconds=0.5,
             )
         )
         report = self._make_grading_report()
@@ -1033,14 +968,9 @@ class TestCmdGradeSaveDiff:
         )
         spec = _make_spec(eval_spec=eval_spec)
         spec.run.side_effect = [
-            SkillResult(
+            make_skill_result(
                 output=f"variance text run {i}",
-                exit_code=0,
-                skill_name="test-skill",
-                args="",
-                duration_seconds=0.5,
-                input_tokens=10,
-                output_tokens=5,
+                duration_seconds=0.5, input_tokens=10, output_tokens=5,
                 stream_events=[{"type": "result", "i": i}],
             )
             for i in range(2)
@@ -1086,17 +1016,12 @@ class TestCmdGradeSaveDiff:
         monkeypatch.chdir(tmp_path)
         spec = _make_spec(eval_spec=_make_eval_spec())
         spec.run = MagicMock(
-            return_value=SkillResult(
+            return_value=make_skill_result(
                 output="primary output",
-                exit_code=0,
-                skill_name="test-skill",
-                args="",
                 stream_events=[
                     {"type": "assistant", "text": "primary output"}
                 ],
-                input_tokens=100,
-                output_tokens=50,
-                duration_seconds=1.5,
+                input_tokens=100, output_tokens=50, duration_seconds=1.5,
             )
         )
         report = self._make_grading_report()
@@ -1134,12 +1059,8 @@ class TestCmdGradeSaveDiff:
         monkeypatch.chdir(tmp_path)
         spec = _make_spec(eval_spec=_make_eval_spec())
         spec.run = MagicMock(
-            return_value=SkillResult(
-                output="",
-                exit_code=1,
-                skill_name="test-skill",
-                args="",
-                error="skill blew up",
+            return_value=make_skill_result(
+                output="", exit_code=1, error="skill blew up",
             )
         )
         with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
@@ -1163,22 +1084,12 @@ class TestCmdGradeSaveDiff:
         # First call succeeds (primary), second fails (variance run 1).
         spec.run = MagicMock(
             side_effect=[
-                SkillResult(
-                    output="primary",
-                    exit_code=0,
-                    skill_name="test-skill",
-                    args="",
-                    stream_events=[],
-                    input_tokens=10,
-                    output_tokens=5,
+                make_skill_result(
+                    output="primary", input_tokens=10, output_tokens=5,
                     duration_seconds=0.5,
                 ),
-                SkillResult(
-                    output="",
-                    exit_code=1,
-                    skill_name="test-skill",
-                    args="",
-                    error="variance kaboom",
+                make_skill_result(
+                    output="", exit_code=1, error="variance kaboom",
                 ),
             ]
         )
@@ -1308,15 +1219,9 @@ class TestCmdGradeSaveDiff:
         # Variance runs call spec.run() — return a real SkillResult so
         # the stream_events and token accounting paths don't blow up.
         spec.run = MagicMock(
-            return_value=SkillResult(
+            return_value=make_skill_result(
                 output="variance run",
-                exit_code=0,
-                skill_name="test-skill",
-                args="",
-                stream_events=[],
-                input_tokens=5,
-                output_tokens=3,
-                duration_seconds=0.1,
+                input_tokens=5, output_tokens=3, duration_seconds=0.1,
             )
         )
         report = self._make_grading_report()
@@ -1367,35 +1272,17 @@ class TestCmdGradeSaveDiff:
         spec = _make_spec(eval_spec=_make_eval_spec())
 
         prior_report = self._make_grading_report(score=0.9, passed=True)
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                return_value=prior_report,
-            ),
-        ):
+        s, g = self._patch_grade(spec, prior_report)
+        with s, g:
             assert main(
                 ["grade", "skill.md", "--output", str(output_file)]
             ) == 0
 
         current_report = self._make_grading_report(score=0.4, passed=False)
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                return_value=current_report,
-            ),
-        ):
+        s, g = self._patch_grade(spec, current_report)
+        with s, g:
             main(
-                [
-                    "grade",
-                    "skill.md",
-                    "--output",
-                    str(output_file),
-                    "--diff",
-                ]
+                ["grade", "skill.md", "--output", str(output_file), "--diff"]
             )
         out = capsys.readouterr().out
         assert "REGRESSION" in out
@@ -1406,23 +1293,10 @@ class TestCmdGradeSaveDiff:
         output_file = tmp_path / "output.txt"
         output_file.write_text("hi")
         spec = _make_spec(eval_spec=_make_eval_spec())
-        report = self._make_grading_report()
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                return_value=report,
-            ),
-        ):
+        s, g = self._patch_grade(spec, self._make_grading_report())
+        with s, g:
             rc = main(
-                [
-                    "grade",
-                    "skill.md",
-                    "--output",
-                    str(output_file),
-                    "--diff",
-                ]
+                ["grade", "skill.md", "--output", str(output_file), "--diff"]
             )
         assert rc == 0
         err = capsys.readouterr().err
@@ -1433,22 +1307,7 @@ class TestCmdGradeLayer2Persistence:
     """US-003 (#25): cmd_grade wires Layer 2 and writes extraction.json."""
 
     def _make_grading_report(self):
-        return GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="Is the output relevant?",
-                    passed=True,
-                    score=0.9,
-                    evidence="ok",
-                    reasoning="ok",
-                )
-            ],
-            duration_seconds=1.0,
-            thresholds=GradeThresholds(),
-            metrics={},
-        )
+        return make_grading_report(passed=True, score=0.9)
 
     def _make_sectioned_eval_spec(self):
         return _make_eval_spec(
@@ -1472,19 +1331,10 @@ class TestCmdGradeLayer2Persistence:
             ],
         )
 
-    def test_cmd_grade_invokes_layer2_when_sections_declared(
-        self, tmp_path, monkeypatch
-    ):
-        """Spec with sections writes iteration-*/<skill>/extraction.json."""
+    def _make_extraction_report(self, **overrides):
         from clauditor.grader import ExtractionReport, FieldExtractionResult
 
-        monkeypatch.chdir(tmp_path)
-        output_file = tmp_path / "output.txt"
-        output_file.write_text("some output")
-
-        spec = _make_spec(eval_spec=self._make_sectioned_eval_spec())
-        grading_report = self._make_grading_report()
-        extraction_report = ExtractionReport(
+        defaults = dict(
             skill_name="test-skill",
             model="claude-haiku-4-5-20251001",
             results=[
@@ -1503,6 +1353,20 @@ class TestCmdGradeLayer2Persistence:
             input_tokens=42,
             output_tokens=7,
         )
+        defaults.update(overrides)
+        return ExtractionReport(**defaults)
+
+    def test_cmd_grade_invokes_layer2_when_sections_declared(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec with sections writes iteration-*/<skill>/extraction.json."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some output")
+
+        spec = _make_spec(eval_spec=self._make_sectioned_eval_spec())
+        grading_report = self._make_grading_report()
+        extraction_report = self._make_extraction_report()
 
         with (
             patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
@@ -1564,30 +1428,16 @@ class TestCmdGradeLayer2Persistence:
         self, tmp_path, monkeypatch
     ):
         """extraction.json on disk uses stable FieldRequirement.id as key."""
-        from clauditor.grader import ExtractionReport, FieldExtractionResult
-
         monkeypatch.chdir(tmp_path)
         output_file = tmp_path / "output.txt"
         output_file.write_text("some output")
 
         spec = _make_spec(eval_spec=self._make_sectioned_eval_spec())
         grading_report = self._make_grading_report()
-        extraction_report = ExtractionReport(
-            skill_name="test-skill",
-            model="claude-haiku-4-5-20251001",
-            results=[
-                FieldExtractionResult(
-                    field_id="venues.primary.venue_name.v1",
-                    field_name="venue_name",
-                    section="Venues",
-                    tier="primary",
-                    entry_index=0,
-                    required=True,
-                    presence_passed=True,
-                    format_passed=None,
-                    evidence="Cafe Foo",
-                ),
-            ],
+        # ExtractionReport without explicit tokens (default None) to exercise
+        # the "no token_counts" branch separately from the happy path.
+        extraction_report = self._make_extraction_report(
+            input_tokens=None, output_tokens=None,
         )
 
         with (
@@ -1629,32 +1479,12 @@ class TestBaselineFlag:
     """US-004 (#25): --baseline flag on cmd_grade writes baseline sidecars."""
 
     def _make_grading_report(self):
-        return GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="Is the output relevant?",
-                    passed=True,
-                    score=0.9,
-                    evidence="ok",
-                    reasoning="ok",
-                )
-            ],
-            duration_seconds=1.0,
-            thresholds=GradeThresholds(),
-            metrics={},
-        )
+        return make_grading_report(passed=True, score=0.9)
 
     def _make_baseline_skill_result(self, output="baseline output"):
-        return SkillResult(
-            output=output,
-            exit_code=0,
-            skill_name="__baseline__",
-            args="",
-            duration_seconds=0.75,
-            input_tokens=11,
-            output_tokens=22,
+        return make_skill_result(
+            output=output, skill_name="__baseline__",
+            duration_seconds=0.75, input_tokens=11, output_tokens=22,
         )
 
     def _make_sectioned_eval_spec(self):
@@ -1713,6 +1543,70 @@ class TestBaselineFlag:
         spec.runner.run_raw.return_value = self._make_baseline_skill_result()
         return spec
 
+    def _prepare_live_spec(self, eval_spec=None):
+        """Like _prepare_spec but wires spec.run() with a hello-world
+        SkillResult so compute_benchmark has non-None duration/tokens."""
+        spec = self._prepare_spec(
+            eval_spec if eval_spec is not None else self._make_sectioned_eval_spec()
+        )
+        spec.run = MagicMock(
+            return_value=make_skill_result(
+                output="hello world",
+                stream_events=[{"type": "assistant", "text": "hello world"}],
+                input_tokens=100, output_tokens=50, duration_seconds=2.5,
+            )
+        )
+        return spec
+
+    @staticmethod
+    def _pair_reports_c1c2():
+        """Return (primary, baseline) GradingReports where delta.pass_rate=+0.5.
+
+        Primary has one passing 'c1'; baseline has passing 'c1' + failing 'c2'.
+        Delta of 1.0 (primary) - 0.5 (baseline) = +0.50 exercises the
+        signed delta arithmetic + format specifiers used by every delta-block
+        test in this class.
+        """
+        primary = make_grading_report(criterion="c1", passed=True, score=0.9)
+        baseline = make_grading_report(
+            criterion="c1", passed=True, score=0.9,
+            duration_seconds=0.5,
+            extra_results=[
+                GradingResult(
+                    criterion="c2", passed=False, score=0.3,
+                    evidence="no", reasoning="no",
+                ),
+            ],
+        )
+        return primary, baseline
+
+    @staticmethod
+    def _patches(spec, grading_report=None, extraction_report=None,
+                 grading_side_effect=None):
+        """Build the standard trio of patches for a baseline grade test."""
+        grading_kwargs = (
+            dict(side_effect=grading_side_effect)
+            if grading_side_effect is not None
+            else dict(return_value=grading_report)
+        )
+        extraction_kwargs = (
+            dict(return_value=extraction_report)
+            if extraction_report is not None else {}
+        )
+        return (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                **grading_kwargs,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                **extraction_kwargs,
+            ),
+        )
+
     def test_grade_without_baseline_flag_writes_no_baseline_files(
         self, tmp_path, monkeypatch
     ):
@@ -1722,25 +1616,12 @@ class TestBaselineFlag:
         output_file.write_text("hello world")
 
         spec = self._prepare_spec(self._make_sectioned_eval_spec())
-        grading_report = self._make_grading_report()
-        extraction_report = self._make_extraction_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                return_value=grading_report,
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-                return_value=extraction_report,
-            ),
-        ):
-            rc = main(
-                ["grade", "skill.md", "--output", str(output_file)]
-            )
+        p1, p2, p3 = self._patches(
+            spec, grading_report=self._make_grading_report(),
+            extraction_report=self._make_extraction_report(),
+        )
+        with p1, p2, p3:
+            rc = main(["grade", "skill.md", "--output", str(output_file)])
 
         assert rc == 0
         spec.runner.run_raw.assert_not_called()
@@ -1759,30 +1640,13 @@ class TestBaselineFlag:
         output_file.write_text("hello world")
 
         spec = self._prepare_spec(self._make_sectioned_eval_spec())
-        grading_report = self._make_grading_report()
-        extraction_report = self._make_extraction_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                return_value=grading_report,
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-                return_value=extraction_report,
-            ),
-        ):
+        p1, p2, p3 = self._patches(
+            spec, grading_report=self._make_grading_report(),
+            extraction_report=self._make_extraction_report(),
+        )
+        with p1, p2, p3:
             rc = main(
-                [
-                    "grade",
-                    "skill.md",
-                    "--output",
-                    str(output_file),
-                    "--baseline",
-                ]
+                ["grade", "skill.md", "--output", str(output_file), "--baseline"]
             )
 
         assert rc == 0
@@ -1824,30 +1688,13 @@ class TestBaselineFlag:
         output_file.write_text("hello world")
 
         spec = self._prepare_spec(self._make_sectioned_eval_spec())
-        grading_report = self._make_grading_report()
-        extraction_report = self._make_extraction_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                return_value=grading_report,
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-                return_value=extraction_report,
-            ),
-        ):
+        p1, p2, p3 = self._patches(
+            spec, grading_report=self._make_grading_report(),
+            extraction_report=self._make_extraction_report(),
+        )
+        with p1, p2, p3:
             rc = main(
-                [
-                    "grade",
-                    "skill.md",
-                    "--output",
-                    str(output_file),
-                    "--baseline",
-                ]
+                ["grade", "skill.md", "--output", str(output_file), "--baseline"]
             )
 
         assert rc == 0
@@ -1872,30 +1719,13 @@ class TestBaselineFlag:
         output_file = tmp_path / "output.txt"
         output_file.write_text("hello world")
 
-        eval_spec = _make_eval_spec(sections=[])
-        spec = self._prepare_spec(eval_spec)
-        grading_report = self._make_grading_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                return_value=grading_report,
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-            ) as mock_extract,
-        ):
+        spec = self._prepare_spec(_make_eval_spec(sections=[]))
+        p1, p2, p3 = self._patches(
+            spec, grading_report=self._make_grading_report(),
+        )
+        with p1, p2, p3 as mock_extract:
             rc = main(
-                [
-                    "grade",
-                    "skill.md",
-                    "--output",
-                    str(output_file),
-                    "--baseline",
-                ]
+                ["grade", "skill.md", "--output", str(output_file), "--baseline"]
             )
 
         assert rc == 0
@@ -1912,78 +1742,17 @@ class TestBaselineFlag:
         """#28 US-002: --baseline also writes benchmark.json with the delta."""
         monkeypatch.chdir(tmp_path)
 
-        spec = self._prepare_spec(self._make_sectioned_eval_spec())
-        # Non --output mode: mock spec.run() so the primary arm has a real
-        # SkillResult that compute_benchmark can read duration / tokens from.
-        spec.run = MagicMock(
-            return_value=SkillResult(
-                output="hello world",
-                exit_code=0,
-                skill_name="test-skill",
-                args="",
-                stream_events=[{"type": "assistant", "text": "hello world"}],
-                input_tokens=100,
-                output_tokens=50,
-                duration_seconds=2.5,
-            )
-        )
+        spec = self._prepare_live_spec()
         # side_effect: primary arm passes 1.0, baseline arm passes 0.5 →
         # delta.pass_rate == +0.50. Exercises real arithmetic in the
         # persisted benchmark.json.
-        primary_report = GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="c1",
-                    passed=True,
-                    score=0.9,
-                    evidence="ok",
-                    reasoning="ok",
-                ),
-            ],
-            duration_seconds=1.0,
-            thresholds=GradeThresholds(),
-            metrics={},
+        primary_report, baseline_report = self._pair_reports_c1c2()
+        p1, p2, p3 = self._patches(
+            spec,
+            grading_side_effect=[primary_report, baseline_report],
+            extraction_report=self._make_extraction_report(),
         )
-        baseline_report = GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="c1",
-                    passed=True,
-                    score=0.9,
-                    evidence="ok",
-                    reasoning="ok",
-                ),
-                GradingResult(
-                    criterion="c2",
-                    passed=False,
-                    score=0.3,
-                    evidence="no",
-                    reasoning="no",
-                ),
-            ],
-            duration_seconds=0.5,
-            thresholds=GradeThresholds(),
-            metrics={},
-        )
-        extraction_report = self._make_extraction_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                side_effect=[primary_report, baseline_report],
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-                return_value=extraction_report,
-            ),
-        ):
+        with p1, p2, p3:
             rc = main(["grade", "skill.md", "--baseline"])
 
         assert rc == 0
@@ -2008,35 +1777,12 @@ class TestBaselineFlag:
         """#28 US-002: benchmark.json is absent when --baseline is not passed."""
         monkeypatch.chdir(tmp_path)
 
-        spec = self._prepare_spec(self._make_sectioned_eval_spec())
-        spec.run = MagicMock(
-            return_value=SkillResult(
-                output="hello world",
-                exit_code=0,
-                skill_name="test-skill",
-                args="",
-                stream_events=[{"type": "assistant", "text": "hello world"}],
-                input_tokens=100,
-                output_tokens=50,
-                duration_seconds=2.5,
-            )
+        spec = self._prepare_live_spec()
+        p1, p2, p3 = self._patches(
+            spec, grading_report=self._make_grading_report(),
+            extraction_report=self._make_extraction_report(),
         )
-        grading_report = self._make_grading_report()
-        extraction_report = self._make_extraction_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                return_value=grading_report,
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-                return_value=extraction_report,
-            ),
-        ):
+        with p1, p2, p3:
             rc = main(["grade", "skill.md"])
 
         assert rc == 0
@@ -2050,75 +1796,16 @@ class TestBaselineFlag:
         """#28 US-003: --baseline prints the plain delta block on stdout."""
         monkeypatch.chdir(tmp_path)
 
-        spec = self._prepare_spec(self._make_sectioned_eval_spec())
-        spec.run = MagicMock(
-            return_value=SkillResult(
-                output="hello world",
-                exit_code=0,
-                skill_name="test-skill",
-                args="",
-                stream_events=[{"type": "assistant", "text": "hello world"}],
-                input_tokens=100,
-                output_tokens=50,
-                duration_seconds=2.5,
-            )
-        )
+        spec = self._prepare_live_spec()
         # Use side_effect so primary and baseline arms differ — exercises
         # the signed delta and the format specifiers in the delta block.
-        primary_report = GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="c1",
-                    passed=True,
-                    score=0.9,
-                    evidence="ok",
-                    reasoning="ok",
-                ),
-            ],
-            duration_seconds=1.0,
-            thresholds=GradeThresholds(),
-            metrics={},
+        primary_report, baseline_report = self._pair_reports_c1c2()
+        p1, p2, p3 = self._patches(
+            spec,
+            grading_side_effect=[primary_report, baseline_report],
+            extraction_report=self._make_extraction_report(),
         )
-        baseline_report = GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="c1",
-                    passed=True,
-                    score=0.9,
-                    evidence="ok",
-                    reasoning="ok",
-                ),
-                GradingResult(
-                    criterion="c2",
-                    passed=False,
-                    score=0.3,
-                    evidence="no",
-                    reasoning="no",
-                ),
-            ],
-            duration_seconds=0.5,
-            thresholds=GradeThresholds(),
-            metrics={},
-        )
-        extraction_report = self._make_extraction_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                side_effect=[primary_report, baseline_report],
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-                return_value=extraction_report,
-            ),
-        ):
+        with p1, p2, p3:
             rc = main(["grade", "skill.md", "--baseline"])
 
         assert rc == 0
@@ -2155,73 +1842,24 @@ class TestBaselineFlag:
         stays parseable JSON (same pattern as --diff routing)."""
         monkeypatch.chdir(tmp_path)
 
-        spec = self._prepare_spec(self._make_sectioned_eval_spec())
-        spec.run = MagicMock(
-            return_value=SkillResult(
-                output="hello world",
-                exit_code=0,
-                skill_name="test-skill",
-                args="",
-                stream_events=[{"type": "assistant", "text": "hello world"}],
-                input_tokens=100,
-                output_tokens=50,
-                duration_seconds=2.5,
-            )
-        )
-        primary_report = GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="c1",
-                    passed=True,
-                    score=0.9,
-                    evidence="ok",
-                    reasoning="ok",
-                ),
-            ],
-            duration_seconds=1.0,
-            thresholds=GradeThresholds(),
-            metrics={},
-        )
-        baseline_report = GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="c1",
-                    passed=True,
-                    score=0.9,
-                    evidence="ok",
-                    reasoning="ok",
-                ),
-                GradingResult(
-                    criterion="c2",
-                    passed=False,
-                    score=0.3,
-                    evidence="no",
-                    reasoning="no",
-                ),
-            ],
+        spec = self._prepare_live_spec()
+        primary_report = make_grading_report(criterion="c1", passed=True, score=0.9)
+        baseline_report = make_grading_report(
+            criterion="c1", passed=True, score=0.9,
             duration_seconds=0.5,
-            thresholds=GradeThresholds(),
-            metrics={},
+            extra_results=[
+                GradingResult(
+                    criterion="c2", passed=False, score=0.3,
+                    evidence="no", reasoning="no",
+                ),
+            ],
         )
-        extraction_report = self._make_extraction_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                side_effect=[primary_report, baseline_report],
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-                return_value=extraction_report,
-            ),
-        ):
+        p1, p2, p3 = self._patches(
+            spec,
+            grading_side_effect=[primary_report, baseline_report],
+            extraction_report=self._make_extraction_report(),
+        )
+        with p1, p2, p3:
             rc = main(["grade", "skill.md", "--baseline", "--json"])
 
         assert rc == 0
@@ -2250,35 +1888,12 @@ class TestBaselineFlag:
         """#28 US-003: no --baseline => no 'baseline delta:' line on stdout."""
         monkeypatch.chdir(tmp_path)
 
-        spec = self._prepare_spec(self._make_sectioned_eval_spec())
-        spec.run = MagicMock(
-            return_value=SkillResult(
-                output="hello world",
-                exit_code=0,
-                skill_name="test-skill",
-                args="",
-                stream_events=[{"type": "assistant", "text": "hello world"}],
-                input_tokens=100,
-                output_tokens=50,
-                duration_seconds=2.5,
-            )
+        spec = self._prepare_live_spec()
+        p1, p2, p3 = self._patches(
+            spec, grading_report=self._make_grading_report(),
+            extraction_report=self._make_extraction_report(),
         )
-        grading_report = self._make_grading_report()
-        extraction_report = self._make_extraction_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                return_value=grading_report,
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-                return_value=extraction_report,
-            ),
-        ):
+        with p1, p2, p3:
             rc = main(["grade", "skill.md"])
 
         assert rc == 0
@@ -2360,166 +1975,51 @@ class TestBaselineFlag:
     def _prepare_gate_spec(self):
         """Spec used by gate tests — non-``--output`` path with a real
         primary SkillResult (benchmark requires it to be non-None)."""
-        spec = self._prepare_spec(self._make_sectioned_eval_spec())
-        spec.run = MagicMock(
-            return_value=SkillResult(
-                output="hello world",
-                exit_code=0,
-                skill_name="test-skill",
-                args="",
-                stream_events=[{"type": "assistant", "text": "hello world"}],
-                input_tokens=100,
-                output_tokens=50,
-                duration_seconds=2.5,
-            )
+        return self._prepare_live_spec()
+
+    @pytest.mark.parametrize(
+        "primary_pass, baseline_pass, threshold, expected_rc, err_substrs",
+        [
+            # delta 0.50 >= threshold 0.40 → exit 0.
+            pytest.param((2, 2), (1, 2), "0.4", 0, (), id="above-threshold"),
+            # delta 0.30 < threshold 0.40 → exit 1 with message.
+            pytest.param(
+                (10, 10), (7, 10), "0.4", 1,
+                ("baseline delta", "0.30", "0.40"),
+                id="below-threshold",
+            ),
+            # DEC-009: observed delta 0.0 with threshold 0.0 → exit 0.
+            pytest.param((2, 2), (2, 2), "0.0", 0, (), id="zero-equality"),
+            # DEC-009: observed delta -0.05 with threshold 0.0 → exit 1.
+            pytest.param((19, 20), (20, 20), "0.0", 1, (), id="zero-regression"),
+        ],
+    )
+    def test_grade_min_baseline_delta_gate(
+        self, tmp_path, monkeypatch, capsys,
+        primary_pass, baseline_pass, threshold, expected_rc, err_substrs,
+    ):
+        """Primary/baseline pass-rates drive the gate exit code."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._prepare_gate_spec()
+        primary = self._make_report_with_pass_rate(*primary_pass)
+        baseline = self._make_report_with_pass_rate(*baseline_pass)
+        p1, p2, p3 = self._patches(
+            spec, grading_side_effect=[primary, baseline],
+            extraction_report=self._make_extraction_report(),
         )
-        return spec
-
-    def test_grade_min_baseline_delta_above_threshold_passes(
-        self, tmp_path, monkeypatch
-    ):
-        """Observed delta 0.50 >= threshold 0.40 → exit 0."""
-        monkeypatch.chdir(tmp_path)
-        spec = self._prepare_gate_spec()
-        primary = self._make_report_with_pass_rate(2, 2)  # pass_rate=1.0
-        baseline = self._make_report_with_pass_rate(1, 2)  # pass_rate=0.5
-        extraction_report = self._make_extraction_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                side_effect=[primary, baseline],
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-                return_value=extraction_report,
-            ),
-        ):
+        with p1, p2, p3:
             rc = main(
                 [
-                    "grade",
-                    "skill.md",
-                    "--baseline",
-                    "--min-baseline-delta",
-                    "0.4",
+                    "grade", "skill.md", "--baseline",
+                    "--min-baseline-delta", threshold,
                 ]
             )
 
-        assert rc == 0
-
-    def test_grade_min_baseline_delta_below_threshold_fails(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        """Observed delta 0.30 < threshold 0.40 → exit 1 + stderr."""
-        monkeypatch.chdir(tmp_path)
-        spec = self._prepare_gate_spec()
-        primary = self._make_report_with_pass_rate(10, 10)  # 1.0
-        baseline = self._make_report_with_pass_rate(7, 10)  # 0.7
-        extraction_report = self._make_extraction_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                side_effect=[primary, baseline],
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-                return_value=extraction_report,
-            ),
-        ):
-            rc = main(
-                [
-                    "grade",
-                    "skill.md",
-                    "--baseline",
-                    "--min-baseline-delta",
-                    "0.4",
-                ]
-            )
-
-        assert rc == 1
-        err = capsys.readouterr().err
-        assert "baseline delta" in err
-        assert "0.30" in err
-        assert "0.40" in err
-
-    def test_grade_min_baseline_delta_zero_equality_passes(
-        self, tmp_path, monkeypatch
-    ):
-        """DEC-009: --min-baseline-delta 0.0 with observed delta 0.0 → exit 0."""
-        monkeypatch.chdir(tmp_path)
-        spec = self._prepare_gate_spec()
-        primary = self._make_report_with_pass_rate(2, 2)
-        baseline = self._make_report_with_pass_rate(2, 2)
-        extraction_report = self._make_extraction_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                side_effect=[primary, baseline],
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-                return_value=extraction_report,
-            ),
-        ):
-            rc = main(
-                [
-                    "grade",
-                    "skill.md",
-                    "--baseline",
-                    "--min-baseline-delta",
-                    "0.0",
-                ]
-            )
-
-        assert rc == 0
-
-    def test_grade_min_baseline_delta_zero_regression_fails(
-        self, tmp_path, monkeypatch
-    ):
-        """DEC-009: observed delta -0.05 with threshold 0.0 → exit 1."""
-        monkeypatch.chdir(tmp_path)
-        spec = self._prepare_gate_spec()
-        # primary 19/20 = 0.95; baseline 20/20 = 1.0; delta = -0.05.
-        # Primary still passes default thresholds (pass_rate >= 0.7).
-        primary = self._make_report_with_pass_rate(19, 20)
-        baseline = self._make_report_with_pass_rate(20, 20)
-        extraction_report = self._make_extraction_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                side_effect=[primary, baseline],
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-                return_value=extraction_report,
-            ),
-        ):
-            rc = main(
-                [
-                    "grade",
-                    "skill.md",
-                    "--baseline",
-                    "--min-baseline-delta",
-                    "0.0",
-                ]
-            )
-
-        assert rc == 1
+        assert rc == expected_rc
+        if err_substrs:
+            err = capsys.readouterr().err
+            for s in err_substrs:
+                assert s in err
 
     def test_min_baseline_delta_without_baseline_errors(
         self, tmp_path, monkeypatch, capsys
@@ -2582,21 +2082,11 @@ class TestBaselineFlag:
         # no gate is applied, so the run still exits 0.
         primary = self._make_report_with_pass_rate(10, 10)
         baseline = self._make_report_with_pass_rate(10, 10)
-        extraction_report = self._make_extraction_report()
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.quality_grader.grade_quality",
-                new_callable=AsyncMock,
-                side_effect=[primary, baseline],
-            ),
-            patch(
-                "clauditor.grader.extract_and_report",
-                new_callable=AsyncMock,
-                return_value=extraction_report,
-            ),
-        ):
+        p1, p2, p3 = self._patches(
+            spec, grading_side_effect=[primary, baseline],
+            extraction_report=self._make_extraction_report(),
+        )
+        with p1, p2, p3:
             rc = main(["grade", "skill.md", "--baseline"])
 
         assert rc == 0
@@ -2623,68 +2113,65 @@ class TestCmdCompare:
         self, tmp_path, name: str, *, criterion_passes: dict[str, bool]
     ):
         """Write a GradingReport to a .grade.json file and return the path."""
+        path = tmp_path / f"{name}.grade.json"
+        # _write_grading_json_dir writes under dir_path/grading.json; here
+        # we want a flat .grade.json file so we inline a tiny variant.
         results = [
             GradingResult(
-                criterion=c,
-                passed=p,
-                score=0.9 if p else 0.3,
-                evidence="",
-                reasoning="",
+                criterion=c, passed=p, score=0.9 if p else 0.3,
+                evidence="", reasoning="",
             )
             for c, p in criterion_passes.items()
         ]
         report = GradingReport(
-            skill_name=name,
-            model="test-model",
-            results=results,
-            duration_seconds=0.0,
-            thresholds=GradeThresholds(),
-            metrics={},
+            skill_name=name, model="test-model", results=results,
+            duration_seconds=0.0, thresholds=GradeThresholds(), metrics={},
         )
-        path = tmp_path / f"{name}.grade.json"
         path.write_text(report.to_json())
         return path
 
-    def test_compare_two_grade_json_no_flips(self, tmp_path, capsys):
-        """Two identical .grade.json files produce no flips and exit 0."""
+    @pytest.mark.parametrize(
+        "before_passes, after_passes, expected_rc, expected_out_substrs",
+        [
+            pytest.param(
+                {"c1": True, "c2": True},
+                {"c1": True, "c2": True},
+                0,
+                ("no flips",),
+                id="no-flips",
+            ),
+            pytest.param(
+                {"c1": True, "c2": True},
+                {"c1": True, "c2": False},
+                1,
+                ("[REGRESSION]", "c2"),
+                id="regression",
+            ),
+            pytest.param(
+                {"c1": True, "c2": False},
+                {"c1": True, "c2": True},
+                0,
+                ("[IMPROVEMENT]", "c2"),
+                id="improvement",
+            ),
+        ],
+    )
+    def test_compare_two_grade_json(
+        self, tmp_path, capsys,
+        before_passes, after_passes, expected_rc, expected_out_substrs,
+    ):
+        """Compare of two .grade.json files yields flip outcomes + rc."""
         before = self._make_saved_grade_json(
-            tmp_path, "before", criterion_passes={"c1": True, "c2": True}
+            tmp_path, "before", criterion_passes=before_passes
         )
         after = self._make_saved_grade_json(
-            tmp_path, "after", criterion_passes={"c1": True, "c2": True}
+            tmp_path, "after", criterion_passes=after_passes
         )
         rc = main(["compare", str(before), str(after)])
-        assert rc == 0
+        assert rc == expected_rc
         out = capsys.readouterr().out
-        assert "no flips" in out
-
-    def test_compare_two_grade_json_regression(self, tmp_path, capsys):
-        """A flipped-to-fail criterion yields [REGRESSION] and exit 1."""
-        before = self._make_saved_grade_json(
-            tmp_path, "before", criterion_passes={"c1": True, "c2": True}
-        )
-        after = self._make_saved_grade_json(
-            tmp_path, "after", criterion_passes={"c1": True, "c2": False}
-        )
-        rc = main(["compare", str(before), str(after)])
-        assert rc == 1
-        out = capsys.readouterr().out
-        assert "[REGRESSION]" in out
-        assert "c2" in out
-
-    def test_compare_two_grade_json_improvement(self, tmp_path, capsys):
-        """A flipped-to-pass criterion yields [IMPROVEMENT] and exit 0."""
-        before = self._make_saved_grade_json(
-            tmp_path, "before", criterion_passes={"c1": True, "c2": False}
-        )
-        after = self._make_saved_grade_json(
-            tmp_path, "after", criterion_passes={"c1": True, "c2": True}
-        )
-        rc = main(["compare", str(before), str(after)])
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "[IMPROVEMENT]" in out
-        assert "c2" in out
+        for s in expected_out_substrs:
+            assert s in out
 
     def test_compare_two_txt_with_spec(self, tmp_path, capsys):
         """Two .txt files plus --spec re-grade both and diff Layer 1 results."""
@@ -2737,38 +2224,40 @@ class TestCmdCompare:
         assert "Mismatched" in err
 
 
+def _write_grading_json_dir(dir_path, criterion_passes):
+    """Write a grading.json with the given criterion pass map."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    results = [
+        GradingResult(
+            criterion=c,
+            passed=p,
+            score=0.9 if p else 0.3,
+            evidence="",
+            reasoning="",
+        )
+        for c, p in criterion_passes.items()
+    ]
+    report = GradingReport(
+        skill_name=dir_path.name,
+        model="test-model",
+        results=results,
+        duration_seconds=0.0,
+        thresholds=GradeThresholds(),
+        metrics={},
+    )
+    (dir_path / "grading.json").write_text(report.to_json())
+    return dir_path
+
+
 class TestCmdCompareIterationDirs:
     """compare auto-detects iteration directory layouts (clauditor-yng.6)."""
 
-    def _make_grading_json(self, dir_path, criterion_passes):
-        dir_path.mkdir(parents=True, exist_ok=True)
-        results = [
-            GradingResult(
-                criterion=c,
-                passed=p,
-                score=0.9 if p else 0.3,
-                evidence="",
-                reasoning="",
-            )
-            for c, p in criterion_passes.items()
-        ]
-        report = GradingReport(
-            skill_name=dir_path.name,
-            model="test-model",
-            results=results,
-            duration_seconds=0.0,
-            thresholds=GradeThresholds(),
-            metrics={},
-        )
-        (dir_path / "grading.json").write_text(report.to_json())
-        return dir_path
-
     def test_compare_two_iteration_dirs(self, tmp_path, capsys):
-        before_dir = self._make_grading_json(
+        before_dir = _write_grading_json_dir(
             tmp_path / ".clauditor" / "iteration-1" / "foo",
             {"c1": True, "c2": True},
         )
-        after_dir = self._make_grading_json(
+        after_dir = _write_grading_json_dir(
             tmp_path / ".clauditor" / "iteration-2" / "foo",
             {"c1": True, "c2": False},
         )
@@ -2792,36 +2281,14 @@ class TestCmdCompareIterationDirs:
 class TestCmdCompareNumericRefs:
     """compare --skill/--from/--to numeric ref form (clauditor-yng.6)."""
 
-    def _make_grading_json(self, dir_path, criterion_passes):
-        dir_path.mkdir(parents=True, exist_ok=True)
-        results = [
-            GradingResult(
-                criterion=c,
-                passed=p,
-                score=0.9 if p else 0.3,
-                evidence="",
-                reasoning="",
-            )
-            for c, p in criterion_passes.items()
-        ]
-        report = GradingReport(
-            skill_name=dir_path.name,
-            model="test-model",
-            results=results,
-            duration_seconds=0.0,
-            thresholds=GradeThresholds(),
-            metrics={},
-        )
-        (dir_path / "grading.json").write_text(report.to_json())
-
     def test_compare_numeric_refs(self, tmp_path, monkeypatch, capsys):
         # Set up a fake repo root marker so resolve_clauditor_dir() finds it.
         (tmp_path / ".git").mkdir()
-        self._make_grading_json(
+        _write_grading_json_dir(
             tmp_path / ".clauditor" / "iteration-1" / "foo",
             {"c1": True, "c2": True},
         )
-        self._make_grading_json(
+        _write_grading_json_dir(
             tmp_path / ".clauditor" / "iteration-2" / "foo",
             {"c1": True, "c2": False},
         )
@@ -2831,6 +2298,45 @@ class TestCmdCompareNumericRefs:
         out = capsys.readouterr().out
         assert "[REGRESSION]" in out
         assert "c2" in out
+
+    @pytest.mark.parametrize(
+        "argv_tail, cd_git, err_substrs",
+        [
+            # Missing --to
+            pytest.param(
+                ["compare", "--skill", "foo", "--from", "1"],
+                False,
+                ("all be provided together",),
+                id="partial-args",
+            ),
+            # No positional, no --skill
+            pytest.param(
+                ["compare"],
+                False,
+                ("positional paths", "--skill"),  # either/or is fine
+                id="missing-positional",
+            ),
+            # --skill with path-traversal name
+            pytest.param(
+                ["compare", "--skill", "../evil", "--from", "1", "--to", "2"],
+                True,
+                ("invalid skill name",),
+                id="path-traversal-skill",
+            ),
+        ],
+    )
+    def test_compare_numeric_ref_errors(
+        self, tmp_path, monkeypatch, capsys, argv_tail, cd_git, err_substrs
+    ):
+        """Numeric-ref CLI errors all surface as rc=2 with clear stderr."""
+        if cd_git:
+            (tmp_path / ".git").mkdir()
+            monkeypatch.chdir(tmp_path)
+        rc = main(argv_tail)
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Accept if any substring appears (some tests use "A or B" semantics).
+        assert any(s in err for s in err_substrs), err
 
     def test_compare_positional_and_numeric_conflict_errors(
         self, tmp_path, capsys
@@ -2852,157 +2358,157 @@ class TestCmdCompareNumericRefs:
                 "compare",
                 str(before),
                 str(after),
-                "--skill",
-                "foo",
-                "--from",
-                "1",
-                "--to",
-                "2",
+                "--skill", "foo",
+                "--from", "1", "--to", "2",
             ]
         )
         assert rc == 2
         err = capsys.readouterr().err
         assert "cannot combine" in err or "--skill" in err
 
-    def test_compare_numeric_refs_partial_args_error(self, tmp_path, capsys):
-        """--skill without --from/--to errors with clear message."""
-        rc = main(["compare", "--skill", "foo", "--from", "1"])
-        assert rc == 2
-        err = capsys.readouterr().err
-        assert "all be provided together" in err
-
-    def test_compare_missing_positional_args_error(self, tmp_path, capsys):
-        """No positional paths and no --skill: clear error."""
-        rc = main(["compare"])
-        assert rc == 2
-        err = capsys.readouterr().err
-        assert "positional paths" in err or "--skill" in err
-
-    def test_compare_invalid_skill_name_in_numeric_form(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        """--skill with path-traversal name surfaces a clean error."""
-        (tmp_path / ".git").mkdir()
-        monkeypatch.chdir(tmp_path)
-        rc = main(
-            ["compare", "--skill", "../evil", "--from", "1", "--to", "2"]
+    def test_compare_mismatched_file_types_exits_2(self, tmp_path, capsys):
+        """A .txt and a .grade.json pair surfaces as rc=2 with kind mismatch."""
+        txt = tmp_path / "before.txt"
+        txt.write_text("some output")
+        gj = tmp_path / "after.grade.json"
+        report = GradingReport(
+            skill_name="x", model="m", results=[],
+            duration_seconds=0.0, thresholds=GradeThresholds(), metrics={},
         )
+        gj.write_text(report.to_json())
+        rc = main(["compare", str(txt), str(gj)])
         assert rc == 2
         err = capsys.readouterr().err
-        assert "invalid skill name" in err
+        assert "Mismatched file types" in err
 
+    def test_compare_unsupported_file_type_exits_2(self, tmp_path, capsys):
+        """A pair with unsupported extensions (e.g. .json, .log) rc=2."""
+        a = tmp_path / "a.log"
+        b = tmp_path / "b.log"
+        a.write_text("x")
+        b.write_text("y")
+        rc = main(["compare", str(a), str(b)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Unsupported file type" in err
+
+
+
+def _make_blind_report(**overrides):
+    """Build a BlindReport for compare --blind tests."""
+    from clauditor.quality_grader import BlindReport
+
+    defaults = dict(
+        preference="b",
+        confidence=0.8,
+        score_a=0.72,
+        score_b=0.85,
+        reasoning="After is clearer and more complete.",
+        model="claude-sonnet-4-6",
+        position_agreement=True,
+    )
+    defaults.update(overrides)
+    return BlindReport(**defaults)
+
+
+def _write_pair(tmp_path, before_text="before content", after_text="after content"):
+    before = tmp_path / "before.txt"
+    after = tmp_path / "after.txt"
+    before.write_text(before_text)
+    after.write_text(after_text)
+    return before, after
+
+
+def _blind_argv(before, after):
+    return [
+        "compare",
+        str(before),
+        str(after),
+        "--spec",
+        "skill.md",
+        "--blind",
+    ]
 
 
 class TestCmdCompareBlind:
     """--blind flag on compare subcommand (clauditor-dmw.3, #24 US-003)."""
 
-    def _make_blind_report(self, **overrides):
-        from clauditor.quality_grader import BlindReport
+    @pytest.mark.parametrize(
+        "report_overrides, expected_substr",
+        [
+            pytest.param(
+                dict(preference="b", reasoning="After is clearer."),
+                ("preference: AFTER", "0.80", "After is clearer."),
+                id="after-branch",
+            ),
+            pytest.param(
+                dict(preference="a"),
+                ("preference: BEFORE",),
+                id="before-branch",
+            ),
+            pytest.param(
+                dict(preference="tie"),
+                ("preference: TIE",),
+                id="tie",
+            ),
+            pytest.param(
+                dict(position_agreement=False),
+                ("position agreement: no",),
+                id="position-bias",
+            ),
+        ],
+    )
+    def test_blind_outcomes_render(
+        self, tmp_path, capsys, report_overrides, expected_substr
+    ):
+        """The BlindReport fields drive the stdout rendering."""
+        before, after = _write_pair(tmp_path)
+        spec = _make_spec(eval_spec=_make_eval_spec(user_prompt="Write a hello world"))
+        report = _make_blind_report(**report_overrides)
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.blind_compare",
+                new=AsyncMock(return_value=report),
+            ),
+        ):
+            rc = main(_blind_argv(before, after))
+        assert rc == 0
+        out = capsys.readouterr().out
+        for s in expected_substr:
+            assert s in out
 
-        defaults = dict(
-            preference="b",
-            confidence=0.8,
-            score_a=0.72,
-            score_b=0.85,
-            reasoning="After is clearer and more complete.",
-            model="claude-sonnet-4-6",
-            position_agreement=True,
+    def test_compare_blind_reads_both_txt_files(self, tmp_path):
+        """Pair of .txt files are forwarded positionally to blind_compare."""
+        before, after = _write_pair(
+            tmp_path,
+            before_text="UNIQUE_BEFORE_CONTENT_XYZ",
+            after_text="UNIQUE_AFTER_CONTENT_XYZ",
         )
-        defaults.update(overrides)
-        return BlindReport(**defaults)
-
-    def _write_pair(self, tmp_path, before_text="before content",
-                    after_text="after content"):
-        before = tmp_path / "before.txt"
-        after = tmp_path / "after.txt"
-        before.write_text(before_text)
-        after.write_text(after_text)
-        return before, after
-
-    def test_compare_blind_happy_path(self, tmp_path, capsys):
-        before, after = self._write_pair(tmp_path)
-        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
-        spec = _make_spec(eval_spec=eval_spec)
-        report = self._make_blind_report(
-            preference="b",
-            confidence=0.8,
-            score_a=0.72,
-            score_b=0.85,
-            reasoning="After is clearer.",
-        )
-        with patch(
-            "clauditor.cli.SkillSpec.from_file", return_value=spec
-        ), patch(
-            "clauditor.quality_grader.blind_compare",
-            new=AsyncMock(return_value=report),
+        spec = _make_spec(eval_spec=_make_eval_spec(user_prompt="Do a thing"))
+        mock_blind = AsyncMock(return_value=_make_blind_report())
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch("clauditor.quality_grader.blind_compare", new=mock_blind),
         ):
-            rc = main(
-                [
-                    "compare",
-                    str(before),
-                    str(after),
-                    "--spec",
-                    "skill.md",
-                    "--blind",
-                ]
-            )
+            rc = main(_blind_argv(before, after))
         assert rc == 0
-        out = capsys.readouterr().out
-        assert "preference: AFTER" in out
-        assert "before.txt" in out
-        assert "after.txt" in out
-        assert "0.80" in out
-        assert "After is clearer." in out
+        assert mock_blind.call_count == 1
+        args = mock_blind.call_args.args
+        # user_prompt, output_a, output_b, rubric_hint
+        assert args[0] == "Do a thing"
+        assert args[1] == "UNIQUE_BEFORE_CONTENT_XYZ"
+        assert args[2] == "UNIQUE_AFTER_CONTENT_XYZ"
 
-    def test_compare_blind_tie_output(self, tmp_path, capsys):
-        before, after = self._write_pair(tmp_path)
-        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
-        spec = _make_spec(eval_spec=eval_spec)
-        report = self._make_blind_report(preference="tie")
-        with patch(
-            "clauditor.cli.SkillSpec.from_file", return_value=spec
-        ), patch(
-            "clauditor.quality_grader.blind_compare",
-            new=AsyncMock(return_value=report),
-        ):
-            rc = main(
-                [
-                    "compare",
-                    str(before),
-                    str(after),
-                    "--spec",
-                    "skill.md",
-                    "--blind",
-                ]
-            )
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "preference: TIE" in out
+    # ---- error paths --------------------------------------------------
 
-    def test_compare_blind_surfaces_position_bias(self, tmp_path, capsys):
-        before, after = self._write_pair(tmp_path)
-        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
-        spec = _make_spec(eval_spec=eval_spec)
-        report = self._make_blind_report(position_agreement=False)
-        with patch(
-            "clauditor.cli.SkillSpec.from_file", return_value=spec
-        ), patch(
-            "clauditor.quality_grader.blind_compare",
-            new=AsyncMock(return_value=report),
-        ):
-            rc = main(
-                [
-                    "compare",
-                    str(before),
-                    str(after),
-                    "--spec",
-                    "skill.md",
-                    "--blind",
-                ]
-            )
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "position agreement: no" in out
+    def test_compare_blind_requires_spec(self, tmp_path, capsys):
+        before, after = _write_pair(tmp_path)
+        rc = main(["compare", str(before), str(after), "--blind"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--spec" in err
+        assert "blind" in err.lower()
 
     def test_compare_blind_with_iteration_refs_errors(
         self, tmp_path, monkeypatch, capsys
@@ -3011,221 +2517,114 @@ class TestCmdCompareBlind:
         monkeypatch.chdir(tmp_path)
         rc = main(
             [
-                "compare",
-                "--skill",
-                "foo",
-                "--from",
-                "3",
-                "--to",
-                "4",
-                "--spec",
-                "skill.md",
-                "--blind",
+                "compare", "--skill", "foo",
+                "--from", "3", "--to", "4",
+                "--spec", "skill.md", "--blind",
             ]
         )
         assert rc == 2
-        err = capsys.readouterr().err
-        assert "file-pair form" in err
+        assert "file-pair form" in capsys.readouterr().err
 
-    def test_compare_blind_requires_spec(self, tmp_path, capsys):
-        before, after = self._write_pair(tmp_path)
-        rc = main(
-            [
-                "compare",
-                str(before),
-                str(after),
-                "--blind",
-            ]
-        )
+    @pytest.mark.parametrize(
+        "before_content, after_content, expected_substrs",
+        [
+            pytest.param(
+                ("text", "ok"),
+                "_MISSING_",
+                ("does not exist", "after.txt"),
+                id="missing-file",
+            ),
+            pytest.param(
+                ("bytes", b"\xff\xfe\xfd"),
+                ("text", "ok"),
+                ("UTF-8", "before.txt"),
+                id="non-utf8-before",
+            ),
+            pytest.param(
+                ("text", "before content"),
+                ("bytes", b"\xff\xfe\xfd"),
+                ("UTF-8", "after.txt"),
+                id="non-utf8-after",
+            ),
+        ],
+    )
+    def test_compare_blind_file_errors(
+        self, tmp_path, capsys, before_content, after_content, expected_substrs
+    ):
+        """rc=2 for missing / non-UTF-8 inputs, with file name in stderr."""
+        def _mk(name, content):
+            p = tmp_path / name
+            if content == "_MISSING_":
+                return p  # intentionally not created
+            kind, data = content
+            if kind == "bytes":
+                p.write_bytes(data)
+            else:
+                p.write_text(data)
+            return p
+
+        before = _mk("before.txt", before_content)
+        after = _mk("after.txt", after_content)
+        spec = _make_spec(eval_spec=_make_eval_spec(user_prompt="Write a hello world"))
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(_blind_argv(before, after))
         assert rc == 2
         err = capsys.readouterr().err
-        assert "--spec" in err
-        assert "blind" in err.lower()
-
-    def test_compare_blind_reads_both_txt_files(self, tmp_path, capsys):
-        before, after = self._write_pair(
-            tmp_path,
-            before_text="UNIQUE_BEFORE_CONTENT_XYZ",
-            after_text="UNIQUE_AFTER_CONTENT_XYZ",
-        )
-        eval_spec = _make_eval_spec(user_prompt="Do a thing")
-        spec = _make_spec(eval_spec=eval_spec)
-        report = self._make_blind_report()
-        mock_blind = AsyncMock(return_value=report)
-        with patch(
-            "clauditor.cli.SkillSpec.from_file", return_value=spec
-        ), patch(
-            "clauditor.quality_grader.blind_compare", new=mock_blind
-        ):
-            rc = main(
-                [
-                    "compare",
-                    str(before),
-                    str(after),
-                    "--spec",
-                    "skill.md",
-                    "--blind",
-                ]
-            )
-        assert rc == 0
-        assert mock_blind.call_count == 1
-        call_args = mock_blind.call_args
-        # user_prompt, output_a, output_b, rubric_hint as positional args
-        assert call_args.args[0] == "Do a thing"
-        assert call_args.args[1] == "UNIQUE_BEFORE_CONTENT_XYZ"
-        assert call_args.args[2] == "UNIQUE_AFTER_CONTENT_XYZ"
-
-    def test_compare_blind_before_branch(self, tmp_path, capsys):
-        before, after = self._write_pair(tmp_path)
-        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
-        spec = _make_spec(eval_spec=eval_spec)
-        report = self._make_blind_report(preference="a")
-        with patch(
-            "clauditor.cli.SkillSpec.from_file", return_value=spec
-        ), patch(
-            "clauditor.quality_grader.blind_compare",
-            new=AsyncMock(return_value=report),
-        ):
-            rc = main(
-                [
-                    "compare",
-                    str(before),
-                    str(after),
-                    "--spec",
-                    "skill.md",
-                    "--blind",
-                ]
-            )
-        assert rc == 0
-        out = capsys.readouterr().out
-        assert "preference: BEFORE" in out
-
-    def test_compare_blind_missing_file(self, tmp_path, capsys):
-        before = tmp_path / "before.txt"
-        after = tmp_path / "after.txt"
-        before.write_text("ok")
-        # after intentionally not created
-        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
-        spec = _make_spec(eval_spec=eval_spec)
-        with patch(
-            "clauditor.cli.SkillSpec.from_file", return_value=spec
-        ):
-            rc = main(
-                [
-                    "compare",
-                    str(before),
-                    str(after),
-                    "--spec",
-                    "skill.md",
-                    "--blind",
-                ]
-            )
-        assert rc == 2
-        err = capsys.readouterr().err
-        assert "does not exist" in err
-        assert "after.txt" in err
-
-    def test_compare_blind_non_utf8_file(self, tmp_path, capsys):
-        before = tmp_path / "before.txt"
-        after = tmp_path / "after.txt"
-        before.write_bytes(b"\xff\xfe\xfd")
-        after.write_text("ok")
-        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
-        spec = _make_spec(eval_spec=eval_spec)
-        with patch(
-            "clauditor.cli.SkillSpec.from_file", return_value=spec
-        ):
-            rc = main(
-                [
-                    "compare",
-                    str(before),
-                    str(after),
-                    "--spec",
-                    "skill.md",
-                    "--blind",
-                ]
-            )
-        assert rc == 2
-        err = capsys.readouterr().err
-        assert "UTF-8" in err
-        assert "before.txt" in err
-
-    def test_compare_blind_non_utf8_after_file(self, tmp_path, capsys):
-        # Covers the after_path UnicodeDecodeError branch separately from
-        # the before_path branch (cli.py lines 783-791).
-        before, _ = self._write_pair(tmp_path)
-        after = tmp_path / "after.txt"
-        after.write_bytes(b"\xff\xfe\xfd")
-        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
-        spec = _make_spec(eval_spec=eval_spec)
-        with patch(
-            "clauditor.cli.SkillSpec.from_file", return_value=spec
-        ):
-            rc = main(
-                [
-                    "compare",
-                    str(before),
-                    str(after),
-                    "--spec",
-                    "skill.md",
-                    "--blind",
-                ]
-            )
-        assert rc == 2
-        err = capsys.readouterr().err
-        assert "UTF-8" in err
-        assert "after.txt" in err
+        for s in expected_substrs:
+            assert s in err
 
     def test_compare_blind_no_eval_spec_errors(self, tmp_path, capsys):
         # Covers the "No eval spec found" branch (cli.py lines 745-750).
-        before, after = self._write_pair(tmp_path)
+        before, after = _write_pair(tmp_path)
         spec = _make_spec(eval_spec=None)
-        with patch(
-            "clauditor.cli.SkillSpec.from_file", return_value=spec
-        ):
-            rc = main(
-                [
-                    "compare",
-                    str(before),
-                    str(after),
-                    "--spec",
-                    "skill.md",
-                    "--blind",
-                ]
-            )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(_blind_argv(before, after))
         assert rc == 2
-        err = capsys.readouterr().err
-        # Helper (blind_compare_from_spec) raises ValueError; CLI maps to
-        # "ERROR: ..." with the helper's message substring.
-        assert "No eval spec" in err
+        assert "No eval spec" in capsys.readouterr().err
 
     def test_compare_blind_empty_user_prompt_errors(self, tmp_path, capsys):
-        # Covers the whitespace-only user_prompt path through
-        # validate_blind_compare_spec for `clauditor compare --blind`.
-        before, after = self._write_pair(tmp_path)
-        eval_spec = _make_eval_spec(user_prompt="   \n")
-        spec = _make_spec(eval_spec=eval_spec)
-        with patch(
-            "clauditor.cli.SkillSpec.from_file", return_value=spec
-        ):
-            rc = main(
-                [
-                    "compare",
-                    str(before),
-                    str(after),
-                    "--spec",
-                    "skill.md",
-                    "--blind",
-                ]
-            )
+        # Covers the whitespace-only user_prompt path.
+        before, after = _write_pair(tmp_path)
+        spec = _make_spec(eval_spec=_make_eval_spec(user_prompt="   \n"))
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(_blind_argv(before, after))
         assert rc == 2
         err = capsys.readouterr().err
         assert "user_prompt" in err
         # Fail-fast: the "Running blind A/B judge" progress line must NOT
-        # appear when validation fails. Previously the CLI printed the
-        # progress message before validating, misleading users into
-        # thinking API calls had happened.
+        # appear when validation fails.
         assert "Running blind A/B judge" not in err
+
+    def test_compare_blind_without_positional_args_exits_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--blind with no positional file args exits 2 with file-pair hint."""
+        # No before/after; not numeric-form either. Must hit the
+        # "requires file-pair form" branch (cli/compare.py:277-283).
+        monkeypatch.chdir(tmp_path)
+        rc = main(["compare", "--blind", "--spec", "skill.md"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "file-pair form" in err
+
+    def test_compare_blind_with_grade_json_pair_exits_2(self, tmp_path, capsys):
+        """--blind with .grade.json pair (not .txt) exits 2."""
+        # Both positional args are .grade.json — hit the file-kind check
+        # at cli/compare.py:286-295 that rejects non-txt pairs under --blind.
+        gj_a = tmp_path / "a.grade.json"
+        gj_b = tmp_path / "b.grade.json"
+        report = GradingReport(
+            skill_name="x", model="m", results=[],
+            duration_seconds=0.0, thresholds=GradeThresholds(), metrics={},
+        )
+        gj_a.write_text(report.to_json())
+        gj_b.write_text(report.to_json())
+        rc = main(
+            ["compare", str(gj_a), str(gj_b), "--spec", "skill.md", "--blind"]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "file-pair form" in err
 
 
 class TestCmdGradeCompareFlagRemoved:
@@ -3302,15 +2701,23 @@ class TestCmdTriggers:
         assert "should_trigger" in out
         assert "should_not_trigger" in out
 
-    def test_triggers_no_eval_spec(self, capsys):
-        """Returns 1 when no eval spec is found."""
-        spec = _make_spec(eval_spec=None)
-
+    def test_triggers_no_model_exits_2(self, capsys):
+        """Missing grading_model (neither --model nor spec) exits 2."""
+        eval_spec = _make_eval_spec(
+            grading_model="",
+            trigger_tests=TriggerTests(
+                should_trigger=["q"],
+                should_not_trigger=[],
+            ),
+        )
+        spec = _make_spec(eval_spec=eval_spec)
         with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
             rc = main(["triggers", "skill.md"])
 
-        assert rc == 1
-        assert "No eval spec" in capsys.readouterr().err
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "No grading model specified" in err
+        assert "--model" in err
 
 
 class TestCmdInit:
@@ -3355,6 +2762,380 @@ class TestCmdInit:
         assert rc == 0
         data = json.loads(eval_path.read_text())
         assert data["skill_name"] == "my-skill"
+
+
+@pytest.fixture
+def setup_env(tmp_path, monkeypatch):
+    """Scratch project root + fake installed-package skill dir.
+
+    Creates a ``.git`` marker at ``tmp_path`` so
+    :func:`clauditor.setup.find_project_root` resolves, and plants a
+    sentinel SKILL.md inside a fake ``site-packages/clauditor/skills/
+    clauditor/`` tree whose location is returned by the monkeypatched
+    ``clauditor.cli.setup.files`` callable.
+    """
+    # Project root with a .git marker.
+    (tmp_path / ".git").mkdir()
+    # Fake installed-package skill tree.
+    pkg_skill = tmp_path / "fake-pkg" / "clauditor" / "skills" / "clauditor"
+    pkg_skill.mkdir(parents=True)
+    (pkg_skill / "SKILL.md").write_text("# sentinel\n")
+    monkeypatch.chdir(tmp_path)
+
+    # Replace cli.files so `files("clauditor") / "skills" / "clauditor"`
+    # lands in the fake tree.
+    def fake_files(pkg_name):
+        assert pkg_name == "clauditor"
+        return tmp_path / "fake-pkg" / "clauditor"
+
+    # Patch both seams: cmd_setup calls files() from cli.setup, and
+    # cmd_doctor calls files() from cli.doctor — tests that chain
+    # setup fixtures into doctor assertions need both.
+    monkeypatch.setattr("clauditor.cli.setup.files", fake_files)
+    monkeypatch.setattr("clauditor.cli.doctor.files", fake_files)
+    return {
+        "project_root": tmp_path,
+        "pkg_skill_root": pkg_skill,
+        "dest": tmp_path / ".claude" / "skills" / "clauditor",
+    }
+
+
+class TestCmdSetup:
+    """Tests for the ``clauditor setup`` subcommand."""
+
+    def test_setup_creates_symlink_when_absent(self, setup_env, capsys):
+        """Dest doesn't exist → creates symlink, exit 0, stdout ok."""
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        assert not dest.exists()
+
+        rc = main(["setup"])
+
+        assert rc == 0
+        assert dest.is_symlink()
+        # Resolved target should match the bundled pkg skill root.
+        assert dest.resolve() == pkg_skill.resolve()
+        out = capsys.readouterr().out
+        assert "Installed /clauditor" in out
+        assert str(dest) in out
+
+    def test_setup_noop_when_already_our_symlink(self, setup_env, capsys):
+        """Dest is symlink → pkg_skill → 'already installed', exit 0."""
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        import os as _os
+        _os.symlink(pkg_skill, dest)
+
+        rc = main(["setup"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "already installed" in out
+
+    def test_setup_refuses_existing_regular_file(self, setup_env, capsys):
+        """Dest is regular file → exit 1, stderr contains 'use --force'."""
+        dest = setup_env["dest"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("not a symlink\n")
+
+        rc = main(["setup"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "use --force" in err
+        assert "regular file" in err
+
+    def test_setup_refuses_existing_real_dir(self, setup_env, capsys):
+        """Real directory at dest (not a symlink) without --force → exit 1."""
+        dest = setup_env["dest"]
+        dest.mkdir(parents=True)
+        (dest / "user-authored.txt").write_text("not ours\n")
+
+        rc = main(["setup"])
+
+        assert rc == 1
+        assert dest.is_dir()  # preserved — no silent clobber
+        assert not dest.is_symlink()
+        err = capsys.readouterr().err
+        assert "exists (directory)" in err
+        assert "--force" in err
+
+    def test_setup_refuses_wrong_symlink(self, setup_env, capsys, tmp_path):
+        """Dest is symlink → elsewhere → exit 1."""
+        dest = setup_env["dest"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        import os as _os
+        _os.symlink(elsewhere, dest)
+
+        rc = main(["setup"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "pointing elsewhere" in err
+
+    def test_setup_force_replaces_regular_file(self, setup_env, capsys):
+        """Regular file + --force → replaced with symlink, exit 0."""
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("not a symlink\n")
+
+        rc = main(["setup", "--force"])
+
+        assert rc == 0
+        assert dest.is_symlink()
+        assert dest.resolve() == pkg_skill.resolve()
+        assert "Installed /clauditor" in capsys.readouterr().out
+
+    def test_setup_force_replaces_real_dir(self, setup_env, capsys):
+        """Regular directory + --force → replaced with symlink, exit 0."""
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        dest.mkdir(parents=True)
+        (dest / "some-file.txt").write_text("junk\n")
+
+        rc = main(["setup", "--force"])
+
+        assert rc == 0
+        assert dest.is_symlink()
+        assert dest.resolve() == pkg_skill.resolve()
+        assert "Installed /clauditor" in capsys.readouterr().out
+
+    def test_setup_unlink_removes_our_symlink(self, setup_env, capsys):
+        """--unlink on our symlink → removed, exit 0."""
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        import os as _os
+        _os.symlink(pkg_skill, dest)
+
+        rc = main(["setup", "--unlink"])
+
+        assert rc == 0
+        assert not dest.exists()
+        assert not dest.is_symlink()
+        out = capsys.readouterr().out
+        assert "Removed .claude/skills/clauditor" in out
+
+    def test_setup_unlink_refuses_non_symlink(self, setup_env, capsys):
+        """--unlink on regular file → exit 1, stderr 'not a symlink'."""
+        dest = setup_env["dest"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("not a symlink\n")
+
+        rc = main(["setup", "--unlink"])
+
+        assert rc == 1
+        # File still there, not removed.
+        assert dest.exists()
+        err = capsys.readouterr().err
+        assert "not a symlink" in err
+
+    def test_setup_unlink_noop_when_absent(self, setup_env, capsys):
+        """--unlink with nothing present → exit 0, 'not installed' info."""
+        dest = setup_env["dest"]
+        assert not dest.exists()
+
+        rc = main(["setup", "--unlink"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "not installed" in out
+
+    def test_setup_unlink_refuses_wrong_target_symlink(self, setup_env, capsys):
+        """--unlink on a symlink pointing elsewhere → exit 1, preserved."""
+        dest = setup_env["dest"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        elsewhere = setup_env["project_root"] / "other-dir"
+        elsewhere.mkdir()
+        import os as _os
+
+        _os.symlink(elsewhere, dest)
+
+        rc = main(["setup", "--unlink"])
+
+        assert rc == 1
+        # Symlink preserved — we do NOT silently delete user-authored
+        # symlinks just because `--unlink` was passed (DEC-009).
+        assert dest.is_symlink()
+        assert dest.resolve() == elsewhere.resolve()
+        err = capsys.readouterr().err
+        assert "target does not match" in err or "does not match" in err
+
+    def test_setup_retries_on_race_then_succeeds(
+        self, setup_env, monkeypatch, capsys
+    ):
+        """FileExistsError on first os.symlink → re-plan → success (DEC-010)."""
+        from clauditor.cli import setup as cli_module
+
+        call_count = {"n": 0}
+        original_install = cli_module._install_symlink
+
+        def racy_install(dest, pkg_skill_root):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise FileExistsError("simulated TOCTOU race")
+            return original_install(dest, pkg_skill_root)
+
+        monkeypatch.setattr("clauditor.cli.setup._install_symlink", racy_install)
+
+        rc = main(["setup"])
+
+        assert rc == 0
+        assert call_count["n"] == 2  # first raced, second succeeded
+        dest = setup_env["dest"]
+        assert dest.is_symlink()
+        assert "Installed /clauditor" in capsys.readouterr().out
+
+    def test_setup_exits_1_after_two_race_attempts(
+        self, setup_env, monkeypatch, capsys
+    ):
+        """Persistent FileExistsError → exit 1 with concurrent-mod error."""
+
+        def always_race(dest, pkg_skill_root):
+            raise FileExistsError("persistent race")
+
+        monkeypatch.setattr("clauditor.cli.setup._install_symlink", always_race)
+
+        rc = main(["setup"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "concurrent modification" in err
+
+    def test_setup_rejects_zip_style_install(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """files() returning a non-Path (e.g. zip-style Traversable) → exit 2.
+        Symlinking into a zip extraction would leave a dangling pointer when
+        the as_file context exits, so we refuse up front.
+        """
+        # Fake cwd with project marker so project-root resolution succeeds
+        # if we ever reach it (we shouldn't — the early-return fires first).
+        (tmp_path / ".git").mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        class FakeTraversable:
+            """Not a Path subclass — simulates importlib.resources returning
+            a MultiplexedPath / zipfile.Path for a zipped install.
+            """
+
+            def __truediv__(self, _other):
+                return self
+
+        monkeypatch.setattr(
+            "clauditor.cli.setup.files", lambda _pkg: FakeTraversable()
+        )
+
+        rc = main(["setup"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "stable filesystem path" in err
+        assert "zip" in err.lower() or "pex" in err.lower()
+
+    def test_remove_existing_tolerates_missing_path(self, tmp_path):
+        """_remove_existing on a path that does not exist is a no-op
+        (exotic/vanished type falls through to unlink(missing_ok=True)).
+        """
+        from clauditor.cli import setup as cli_module
+
+        ghost = tmp_path / "never-existed"
+        assert not ghost.exists()
+
+        # Must not raise — exotic/missing type falls through to the
+        # missing-ok unlink branch.
+        cli_module._remove_existing(ghost)
+
+        assert not ghost.exists()
+
+    def test_setup_unlink_race_target_already_gone(
+        self, setup_env, monkeypatch, capsys
+    ):
+        """--unlink where the symlink was removed before our unlink call →
+        treat as success (user wanted it gone, it's gone). Symmetric with
+        the install-side retry loop (DEC-010).
+        """
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        import os as _os
+
+        _os.symlink(pkg_skill, dest)  # plan_setup sees it
+        # Race: remove the symlink right before cmd_setup dispatches
+        # the REMOVE_SYMLINK branch. We simulate this by chaining the
+        # side effect into the real dispatch via monkeypatch.
+        real_plan = clauditor_setup.plan_setup
+
+        def racy_plan(cwd, pkg_skill_root, *, force, unlink):
+            action = real_plan(cwd, pkg_skill_root, force=force, unlink=unlink)
+            if action is clauditor_setup.SetupAction.REMOVE_SYMLINK:
+                dest.unlink()  # concurrent peer gets there first
+            return action
+
+        monkeypatch.setattr("clauditor.cli.setup.setup_module.plan_setup", racy_plan)
+
+        rc = main(["setup", "--unlink"])
+
+        assert rc == 0
+        assert "Removed .claude/skills/clauditor" in capsys.readouterr().out
+
+    def test_setup_errors_when_no_project_root(self, tmp_path, monkeypatch, capsys):
+        """No .git, no .claude → exit 2, stderr 'no project root'."""
+        # Fake package skill tree outside any git checkout.
+        pkg_skill = tmp_path / "fake-pkg" / "clauditor" / "skills" / "clauditor"
+        pkg_skill.mkdir(parents=True)
+        (pkg_skill / "SKILL.md").write_text("# sentinel\n")
+
+        # Run from a subdir with no project markers in its ancestry.
+        subdir = tmp_path / "nope"
+        subdir.mkdir()
+        monkeypatch.chdir(subdir)
+
+        def fake_files(pkg_name):
+            assert pkg_name == "clauditor"
+            return tmp_path / "fake-pkg" / "clauditor"
+
+        monkeypatch.setattr("clauditor.cli.setup.files", fake_files)
+
+        rc = main(["setup"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "no project root" in err
+
+    def test_setup_project_dir_override(self, tmp_path, monkeypatch, capsys):
+        """--project-dir overrides cwd for project-root resolution."""
+        # Project root for the override.
+        override = tmp_path / "override-proj"
+        override.mkdir()
+        (override / ".git").mkdir()
+        # Fake package tree.
+        pkg_skill = tmp_path / "fake-pkg" / "clauditor" / "skills" / "clauditor"
+        pkg_skill.mkdir(parents=True)
+        (pkg_skill / "SKILL.md").write_text("# sentinel\n")
+
+        # cwd is a markerless subdir — without --project-dir it would fail.
+        sub = tmp_path / "elsewhere"
+        sub.mkdir()
+        monkeypatch.chdir(sub)
+
+        def fake_files(pkg_name):
+            assert pkg_name == "clauditor"
+            return tmp_path / "fake-pkg" / "clauditor"
+
+        monkeypatch.setattr("clauditor.cli.setup.files", fake_files)
+
+        rc = main(["setup", "--project-dir", str(override)])
+
+        assert rc == 0
+        dest = override / ".claude" / "skills" / "clauditor"
+        assert dest.is_symlink()
+        assert dest.resolve() == pkg_skill.resolve()
+        assert "Installed /clauditor" in capsys.readouterr().out
 
 
 def _make_sections():
@@ -3427,15 +3208,37 @@ class TestCmdExtract:
         assert rc == 1
         assert "No sections defined" in capsys.readouterr().err
 
-    def test_extract_no_eval_spec(self, capsys):
-        """Returns 1 when no eval spec is found."""
-        spec = _make_spec(eval_spec=None)
+    def test_extract_output_file_missing_exits_2(self, capsys, tmp_path):
+        """--output pointing at a non-existent path exits 2 with clean error."""
+        missing = tmp_path / "no-such-file.txt"
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["extract", "skill.md", "--output", str(missing)])
 
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Traceback" not in err
+        assert "Output file not found" in err
+        assert str(missing) in err
+
+    def test_extract_live_skill_failure_exits_1(self, capsys):
+        """Live-run path: a skill that returns ``not succeeded`` → rc=1
+        with a stderr 'Skill failed' line. Covers the non-output-file
+        branch at cli/extract.py:97-99.
+        """
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.return_value = make_skill_result(
+            output="", exit_code=1, duration_seconds=0.2, error="boom",
+        )
         with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
             rc = main(["extract", "skill.md"])
-
         assert rc == 1
-        assert "No eval spec" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "Skill failed" in err
+        assert "boom" in err
+
 
     def test_extract_with_output_file(self, tmp_path):
         """Reads output file, calls extract_and_grade, returns 0 on pass."""
@@ -3576,19 +3379,15 @@ class TestCmdCapture:
     """Tests for the capture subcommand (US-006)."""
 
     def _mock_result(self, output: str = "captured stdout") -> SkillResult:
-        return SkillResult(
-            output=output,
-            exit_code=0,
-            skill_name="find-restaurants",
-            args="",
-            duration_seconds=1.0,
+        return make_skill_result(
+            output=output, skill_name="find-restaurants", duration_seconds=1.0,
         )
 
     def test_capture_default_path(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         mock_runner = MagicMock()
         mock_runner.run.return_value = self._mock_result()
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "find-restaurants"])
         assert rc == 0
         out_path = tmp_path / "tests/eval/captured/find-restaurants.txt"
@@ -3600,7 +3399,7 @@ class TestCmdCapture:
         mock_runner = MagicMock()
         mock_runner.run.return_value = self._mock_result("abc")
         target = tmp_path / "sub" / "custom.txt"
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "find-restaurants", "--out", str(target)])
         assert rc == 0
         assert target.read_text() == "abc"
@@ -3609,7 +3408,7 @@ class TestCmdCapture:
         monkeypatch.chdir(tmp_path)
         mock_runner = MagicMock()
         mock_runner.run.return_value = self._mock_result()
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "find-restaurants", "--versioned"])
         assert rc == 0
         captured_dir = tmp_path / "tests/eval/captured"
@@ -3625,7 +3424,7 @@ class TestCmdCapture:
         mock_runner = MagicMock()
         mock_runner.run.return_value = self._mock_result()
         target = tmp_path / "snap.txt"
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main([
                 "capture", "find-restaurants",
                 "--out", str(target), "--versioned",
@@ -3638,7 +3437,7 @@ class TestCmdCapture:
         monkeypatch.chdir(tmp_path)
         mock_runner = MagicMock()
         mock_runner.run.return_value = self._mock_result()
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "/find-restaurants"])
         assert rc == 0
         mock_runner.run.assert_called_once_with("find-restaurants", "")
@@ -3648,7 +3447,7 @@ class TestCmdCapture:
         monkeypatch.chdir(tmp_path)
         mock_runner = MagicMock()
         mock_runner.run.return_value = self._mock_result()
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "find-restaurants", "--", "near", "San Jose"])
         assert rc == 0
         mock_runner.run.assert_called_once_with("find-restaurants", "near San Jose")
@@ -3658,15 +3457,11 @@ class TestCmdCapture:
     ):
         monkeypatch.chdir(tmp_path)
         mock_runner = MagicMock()
-        mock_runner.run.return_value = SkillResult(
-            output="",
-            exit_code=2,
-            skill_name="find-restaurants",
-            args="",
-            duration_seconds=0.1,
-            error="boom",
+        mock_runner.run.return_value = make_skill_result(
+            output="", exit_code=2, skill_name="find-restaurants",
+            duration_seconds=0.1, error="boom",
         )
-        with patch("clauditor.cli.SkillRunner", return_value=mock_runner):
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "find-restaurants"])
         assert rc == 1
         assert "boom" in capsys.readouterr().err
@@ -3733,6 +3528,249 @@ class TestCmdDoctor:
         # Expect fail marker for missing claude CLI
         lines = [line for line in out.splitlines() if "claude-cli" in line]
         assert any("[fail]" in line for line in lines)
+
+    # --- DEC-013 clauditor-skill-symlink check (5 states) ---------------
+
+    def test_doctor_reports_info_when_skill_not_installed(
+        self, setup_env, capsys
+    ):
+        """Dest doesn't exist → info with 'run clauditor setup'."""
+        dest = setup_env["dest"]
+        assert not dest.exists()
+
+        rc = main(["doctor"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "clauditor-skill-symlink" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[info]")
+        assert "not installed" in lines[0]
+        assert "clauditor setup" in lines[0]
+
+    def test_doctor_reports_ok_when_our_symlink_installed(
+        self, setup_env, capsys
+    ):
+        """Dest is our symlink → ok with resolved target."""
+        import os as _os
+
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _os.symlink(pkg_skill, dest)
+
+        rc = main(["doctor"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "clauditor-skill-symlink" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[ok]")
+        assert str(pkg_skill.resolve()) in lines[0]
+
+    def test_doctor_reports_warn_for_stale_symlink(
+        self, setup_env, capsys, tmp_path
+    ):
+        """Dangling symlink (target removed) → warn with '--force to fix'."""
+        import os as _os
+
+        dest = setup_env["dest"]
+        # Create a symlink pointing at a target that we then delete.
+        vanished = tmp_path / "vanished-target"
+        vanished.mkdir()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _os.symlink(vanished, dest)
+        # Now remove the target, leaving a dangling symlink.
+        vanished.rmdir()
+
+        assert dest.is_symlink()
+        assert not dest.exists()
+
+        rc = main(["doctor"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "clauditor-skill-symlink" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[warn]")
+        assert "stale symlink" in lines[0]
+        assert "--force" in lines[0]
+
+    def test_doctor_reports_warn_for_wrong_target_symlink(
+        self, setup_env, capsys, tmp_path
+    ):
+        """Symlink → somewhere else → warn 'doesn't match'."""
+        import os as _os
+
+        dest = setup_env["dest"]
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _os.symlink(elsewhere, dest)
+
+        rc = main(["doctor"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "clauditor-skill-symlink" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[warn]")
+        assert "doesn't match" in lines[0]
+        assert str(elsewhere.resolve()) in lines[0]
+
+    @pytest.mark.parametrize("kind", ["file", "dir"])
+    def test_doctor_reports_warn_for_non_symlink_file_or_dir(
+        self, setup_env, capsys, kind
+    ):
+        """Regular file or real directory (not a symlink) → warn 'unmanaged'."""
+        dest = setup_env["dest"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if kind == "file":
+            dest.write_text("not a symlink\n")
+            expected_kind = "file"
+        else:
+            dest.mkdir()
+            (dest / "junk.txt").write_text("stuff\n")
+            expected_kind = "directory"
+
+        rc = main(["doctor"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "clauditor-skill-symlink" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[warn]")
+        assert expected_kind in lines[0]
+        assert "unmanaged" in lines[0]
+
+    def test_doctor_reports_info_when_no_project_root(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """No .git or .claude in ancestry → info line (DEC-013, 6th state)."""
+        pkg_skill = tmp_path / "fake-pkg" / "clauditor" / "skills" / "clauditor"
+        pkg_skill.mkdir(parents=True)
+        (pkg_skill / "SKILL.md").write_text("# sentinel\n")
+
+        # cwd is a markerless subdir under tmp_path.
+        subdir = tmp_path / "nowhere"
+        subdir.mkdir()
+        monkeypatch.chdir(subdir)
+
+        def fake_files(pkg_name):
+            assert pkg_name == "clauditor"
+            return tmp_path / "fake-pkg" / "clauditor"
+
+        monkeypatch.setattr("clauditor.cli.doctor.files", fake_files)
+
+        rc = main(["doctor"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "clauditor-skill-symlink" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[info]")
+        assert "no project root found; run from a project directory" in lines[0]
+        # doctor has no --project-dir flag, so must not suggest one.
+        assert "--project-dir" not in lines[0]
+
+
+class TestDoctorPep660Detection:
+    """Tests for ``_is_pep660_editable`` — PEP 660 editable-install signal.
+
+    The doctor's symlink-based fallback misses import-hook / .pth editable
+    installs; this helper reads ``direct_url.json`` from the dist-info as
+    the primary signal. Tests mock ``importlib.metadata.distribution`` so
+    they don't depend on the worker's actual install method.
+    """
+
+    def _fake_dist(self, *, direct_url_body):
+        """Return a stub Distribution whose read_text returns the body."""
+        dist = MagicMock()
+        dist.read_text.return_value = direct_url_body
+        return dist
+
+    def test_editable_true(self):
+        """direct_url.json with dir_info.editable == True → editable."""
+        from clauditor.cli.doctor import _is_pep660_editable
+
+        body = '{"url": "file:///abs/path", "dir_info": {"editable": true}}'
+        with patch(
+            "importlib.metadata.distribution",
+            return_value=self._fake_dist(direct_url_body=body),
+        ):
+            assert _is_pep660_editable() is True
+
+    def test_editable_false(self):
+        """direct_url.json with dir_info.editable == False → not editable."""
+        from clauditor.cli.doctor import _is_pep660_editable
+
+        body = '{"url": "file:///abs", "dir_info": {"editable": false}}'
+        with patch(
+            "importlib.metadata.distribution",
+            return_value=self._fake_dist(direct_url_body=body),
+        ):
+            assert _is_pep660_editable() is False
+
+    def test_editable_missing_dir_info(self):
+        """direct_url.json without dir_info → not editable (non-dir URL)."""
+        from clauditor.cli.doctor import _is_pep660_editable
+
+        body = '{"url": "https://example.com/wheel"}'
+        with patch(
+            "importlib.metadata.distribution",
+            return_value=self._fake_dist(direct_url_body=body),
+        ):
+            assert _is_pep660_editable() is False
+
+    def test_malformed_direct_url_json(self):
+        """Malformed JSON → not editable (falls through)."""
+        from clauditor.cli.doctor import _is_pep660_editable
+
+        with patch(
+            "importlib.metadata.distribution",
+            return_value=self._fake_dist(direct_url_body="{not json"),
+        ):
+            assert _is_pep660_editable() is False
+
+    def test_no_direct_url_json(self):
+        """Missing direct_url.json → not editable (read_text returns None)."""
+        from clauditor.cli.doctor import _is_pep660_editable
+
+        with patch(
+            "importlib.metadata.distribution",
+            return_value=self._fake_dist(direct_url_body=None),
+        ):
+            assert _is_pep660_editable() is False
+
+    def test_package_not_found(self):
+        """Distribution lookup failure → not editable."""
+        import importlib.metadata
+
+        from clauditor.cli.doctor import _is_pep660_editable
+
+        with patch(
+            "importlib.metadata.distribution",
+            side_effect=importlib.metadata.PackageNotFoundError("clauditor"),
+        ):
+            assert _is_pep660_editable() is False
 
 
 class TestCmdTrend:
@@ -3910,6 +3948,50 @@ class TestCmdTrendCommandFilter:
         err = capsys.readouterr().err
         assert "pass_rate" in err
 
+    def test_positive_int_rejects_non_integer(self):
+        """--last type=_positive_int rejects non-integer values via
+        argparse (covers trend._positive_int ValueError branch)."""
+        from clauditor.cli.trend import _positive_int
+
+        with pytest.raises(argparse.ArgumentTypeError, match="not an integer"):
+            _positive_int("abc")
+
+    def test_positive_int_rejects_zero_and_negative(self):
+        """_positive_int enforces >= 1 (covers trend._positive_int < 1 branch)."""
+        from clauditor.cli.trend import _positive_int
+
+        with pytest.raises(argparse.ArgumentTypeError, match=">= 1"):
+            _positive_int("0")
+        with pytest.raises(argparse.ArgumentTypeError, match=">= 1"):
+            _positive_int("-5")
+
+    def test_command_filter_empty_result_exits_1(self, tmp_path, monkeypatch, capsys):
+        """Requesting a command filter that matches zero records surfaces
+        as rc=1 with 'Try --command all' hint."""
+        from clauditor import history
+
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".clauditor" / "history.jsonl"
+        # Seed only grade records, then filter by validate → zero matches.
+        history.append_record(
+            skill="test-skill",
+            pass_rate=0.8,
+            mean_score=0.7,
+            metrics={},
+            command="grade",
+            path=path,
+        )
+        rc = main(
+            [
+                "trend", "test-skill", "--metric", "pass_rate",
+                "--command", "validate",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "validate" in err
+        assert "--command all" in err
+
 
 class TestCmdTrendDottedPath:
     """cmd_trend dotted-path resolution (US-006)."""
@@ -4046,23 +4128,23 @@ class TestCmdTrendListMetrics:
 
 
 class TestCmdTrendMutuallyExclusive:
-    def test_metric_and_list_metrics_conflict(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            pytest.param(
+                ["trend", "test-skill", "--metric", "pass_rate", "--list-metrics"],
+                id="metric-and-list-metrics-conflict",
+            ),
+            pytest.param(
+                ["trend", "test-skill"],
+                id="neither-required",
+            ),
+        ],
+    )
+    def test_argparse_rejects(self, tmp_path, monkeypatch, argv):
         monkeypatch.chdir(tmp_path)
         with pytest.raises(SystemExit):
-            main(
-                [
-                    "trend",
-                    "test-skill",
-                    "--metric",
-                    "pass_rate",
-                    "--list-metrics",
-                ]
-            )
-
-    def test_neither_required(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
-        with pytest.raises(SystemExit):
-            main(["trend", "test-skill"])
+            main(argv)
 
 
 class TestCmdGradeHistory:
@@ -4074,24 +4156,8 @@ class TestCmdGradeHistory:
         output_file = tmp_path / "output.txt"
         output_file.write_text("some skill output")
 
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-        report = GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="Is the output relevant?",
-                    passed=True,
-                    score=0.9,
-                    evidence="ok",
-                    reasoning="ok",
-                )
-            ],
-            duration_seconds=1.0,
-            thresholds=GradeThresholds(),
-            metrics={},
-        )
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        report = make_grading_report(passed=True, score=0.9)
 
         with (
             patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
@@ -4105,10 +4171,7 @@ class TestCmdGradeHistory:
 
         assert rc == 0
         history_path = tmp_path / ".clauditor" / "history.jsonl"
-        assert history_path.exists()
-        lines = [ln for ln in history_path.read_text().splitlines() if ln]
-        assert len(lines) == 1
-        record = json.loads(lines[0])
+        record = json.loads(history_path.read_text().splitlines()[0])
         assert record["skill"] == "test-skill"
         assert record["pass_rate"] == 1.0
         assert record["mean_score"] == 0.9
@@ -4122,25 +4185,12 @@ class TestCmdGradeHistory:
         output_file = tmp_path / "output.txt"
         output_file.write_text("some skill output")
 
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-        report = GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="c",
-                    passed=True,
-                    score=1.0,
-                    evidence="",
-                    reasoning="",
-                )
-            ],
-            duration_seconds=1.0,
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        report = make_grading_report(
+            criterion="c",
+            score=1.0,
             input_tokens=500,
             output_tokens=200,
-            thresholds=GradeThresholds(),
-            metrics={},
         )
 
         with (
@@ -4176,19 +4226,12 @@ class TestCmdGradeHistory:
         output_file = tmp_path / "output.txt"
         output_file.write_text("some output")
 
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
+        spec = _make_spec(eval_spec=_make_eval_spec())
         # Each variance run: 10 in / 5 out skill tokens, 0.5s duration.
         spec.run.side_effect = [
-            SkillResult(
-                output=f"v{i}",
-                exit_code=0,
-                skill_name="test-skill",
-                args="",
-                duration_seconds=0.5,
-                input_tokens=10,
-                output_tokens=5,
-                stream_events=[],
+            make_skill_result(
+                output=f"v{i}", duration_seconds=0.5,
+                input_tokens=10, output_tokens=5,
             )
             for i in range(3)
         ]
@@ -4196,23 +4239,8 @@ class TestCmdGradeHistory:
         # Each grade_quality call returns the same per-run report shape:
         # 200 in / 100 out grader tokens. Total runs = 1 primary + 3 variance
         # = 4 grader calls -> quality totals 800 / 400.
-        per_run_report = GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="c",
-                    passed=True,
-                    score=1.0,
-                    evidence="",
-                    reasoning="",
-                )
-            ],
-            duration_seconds=1.0,
-            input_tokens=200,
-            output_tokens=100,
-            thresholds=GradeThresholds(),
-            metrics={},
+        per_run_report = make_grading_report(
+            criterion="c", score=1.0, input_tokens=200, output_tokens=100
         )
 
         with (
@@ -4262,25 +4290,9 @@ class TestCmdGradeHistory:
         output_file = tmp_path / "output.txt"
         output_file.write_text("some output")
 
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-        report = GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="c",
-                    passed=True,
-                    score=1.0,
-                    evidence="",
-                    reasoning="",
-                )
-            ],
-            duration_seconds=1.0,
-            input_tokens=300,
-            output_tokens=100,
-            thresholds=GradeThresholds(),
-            metrics={},
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        report = make_grading_report(
+            criterion="c", score=1.0, input_tokens=300, output_tokens=100
         )
 
         with (
@@ -4317,22 +4329,7 @@ class TestCmdGradeHistory:
         output_file.write_text("hi")
 
         spec = _make_spec(eval_spec=_make_eval_spec())
-        report = GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="c",
-                    passed=True,
-                    score=1.0,
-                    evidence="",
-                    reasoning="",
-                )
-            ],
-            duration_seconds=1.0,
-            thresholds=GradeThresholds(),
-            metrics={},
-        )
+        report = make_grading_report(criterion="c", score=1.0)
 
         with (
             patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
@@ -4365,24 +4362,10 @@ class TestCmdGradeHistory:
         output_file = tmp_path / "output.txt"
         output_file.write_text("some output")
 
-        eval_spec = _make_eval_spec(grading_criteria=["foo bar", "baz"])
-        spec = _make_spec(eval_spec=eval_spec)
-        report = GradingReport(
-            skill_name="test-skill",
-            model="claude-sonnet-4-6",
-            results=[
-                GradingResult(
-                    criterion="foo bar",
-                    passed=True,
-                    score=1.0,
-                    evidence="",
-                    reasoning="",
-                )
-            ],
-            duration_seconds=1.0,
-            thresholds=GradeThresholds(),
-            metrics={},
+        spec = _make_spec(
+            eval_spec=_make_eval_spec(grading_criteria=["foo bar", "baz"])
         )
+        report = make_grading_report(criterion="foo bar", score=1.0)
 
         with (
             patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
@@ -4470,28 +4453,19 @@ class TestCmdExtractHistory:
         """Live skill run records skill tokens + grader tokens; total=850."""
         monkeypatch.chdir(tmp_path)
 
-        eval_spec = _make_eval_spec(sections=_make_sections())
-        spec = _make_spec(eval_spec=eval_spec)
-        spec.run.return_value = SkillResult(
+        spec = _make_spec(eval_spec=_make_eval_spec(sections=_make_sections()))
+        spec.run.return_value = make_skill_result(
             output="some skill output",
-            exit_code=0,
-            skill_name="test-skill",
-            args="",
-            duration_seconds=2.5,
-            input_tokens=100,
-            output_tokens=50,
+            duration_seconds=2.5, input_tokens=100, output_tokens=50,
         )
         results = AssertionSet(
             results=[
                 AssertionResult(
                     name="section:Results:count",
-                    passed=True,
-                    message="ok",
-                    kind="count",
+                    passed=True, message="ok", kind="count",
                 )
             ],
-            input_tokens=500,
-            output_tokens=200,
+            input_tokens=500, output_tokens=200,
         )
 
         with (
@@ -4526,16 +4500,10 @@ class TestCmdValidateHistory:
         """Layer 1 live run records skill tokens only; pass_rate from assertions."""
         monkeypatch.chdir(tmp_path)
 
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-        spec.run.return_value = SkillResult(
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
             output="hello world output",
-            exit_code=0,
-            skill_name="test-skill",
-            args="",
-            duration_seconds=1.5,
-            input_tokens=100,
-            output_tokens=50,
+            duration_seconds=1.5, input_tokens=100, output_tokens=50,
         )
 
         with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
@@ -4592,16 +4560,10 @@ class TestCmdValidateWorkspace:
     """cmd_validate persists an iteration workspace on live runs (US-006)."""
 
     def _live_spec(self, output_text: str = "hello world output"):
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-        spec.run.return_value = SkillResult(
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
             output=output_text,
-            exit_code=0,
-            skill_name="test-skill",
-            args="",
-            duration_seconds=1.5,
-            input_tokens=100,
-            output_tokens=50,
+            duration_seconds=1.5, input_tokens=100, output_tokens=50,
             stream_events=[
                 {"type": "system", "session_id": "abc"},
                 {
@@ -4693,15 +4655,9 @@ class TestCmdValidateWorkspace:
     ):
         """Failed skill run cleans up the staging dir and returns 1."""
         monkeypatch.chdir(tmp_path)
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-        spec.run.return_value = SkillResult(
-            output="",
-            exit_code=1,
-            skill_name="test-skill",
-            args="",
-            duration_seconds=0.5,
-            error="boom",
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="", exit_code=1, duration_seconds=0.5, error="boom",
         )
 
         with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
@@ -4713,41 +4669,34 @@ class TestCmdValidateWorkspace:
         assert not (clauditor_dir / "iteration-1").exists()
         assert not (clauditor_dir / "iteration-1-tmp").exists()
 
-    def test_validate_invalid_skill_name_returns_2(
-        self, tmp_path, monkeypatch, capsys
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            pytest.param("InvalidSkillNameError", id="invalid-skill-name"),
+            pytest.param(ValueError("boom"), id="value-error"),
+        ],
+    )
+    def test_validate_allocate_error_returns_2(
+        self, tmp_path, monkeypatch, capsys, exc
     ):
-        """allocate_iteration raising InvalidSkillNameError returns exit 2."""
+        """allocate_iteration exceptions all return exit 2 with ERROR on stderr."""
         from clauditor.workspace import InvalidSkillNameError
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".git").mkdir()
         spec = _make_spec(eval_spec=_make_eval_spec())
 
+        # Late-bind InvalidSkillNameError so the test import still runs.
+        side_effect = (
+            InvalidSkillNameError("bad/name")
+            if exc == "InvalidSkillNameError"
+            else exc
+        )
         with (
             patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
             patch(
-                "clauditor.cli.allocate_iteration",
-                side_effect=InvalidSkillNameError("bad/name"),
-            ),
-        ):
-            rc = main(["validate", "skill.md"])
-
-        assert rc == 2
-        assert "ERROR" in capsys.readouterr().err
-
-    def test_validate_allocate_value_error_returns_2(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        """allocate_iteration raising ValueError returns exit 2."""
-        monkeypatch.chdir(tmp_path)
-        (tmp_path / ".git").mkdir()
-        spec = _make_spec(eval_spec=_make_eval_spec())
-
-        with (
-            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
-            patch(
-                "clauditor.cli.allocate_iteration",
-                side_effect=ValueError("boom"),
+                "clauditor.cli.validate.allocate_iteration",
+                side_effect=side_effect,
             ),
         ):
             rc = main(["validate", "skill.md"])
@@ -4762,20 +4711,15 @@ class TestCmdValidateWorkspace:
         re-raises, leaving no iteration published and no iteration-N-tmp
         dir behind. Exercises the generic except branch."""
         monkeypatch.chdir(tmp_path)
-        eval_spec = _make_eval_spec()
-        spec = _make_spec(eval_spec=eval_spec)
-        spec.run.return_value = SkillResult(
-            output="hello world",
-            exit_code=0,
-            skill_name="test-skill",
-            args="",
-            duration_seconds=0.5,
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world", duration_seconds=0.5,
         )
 
         with (
             patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
             patch(
-                "clauditor.cli.run_assertions",
+                "clauditor.cli.validate.run_assertions",
                 side_effect=RuntimeError("boom in staging"),
             ),
             pytest.raises(RuntimeError, match="boom in staging"),
@@ -4817,57 +4761,34 @@ class TestCmdSuggest:
         )
         (skill_dir / "grading.json").write_text(report.to_json())
 
-    def _write_passing_assertions(self, skill_dir):
+    def _write_assertions(self, skill_dir, *, passed: bool):
         # Schema mirrors cmd_grade at cli.py:849 — results nested under
         # runs[].results so load_suggest_input exercises the real path.
         payload = {
             "schema_version": 1,
             "skill": "my-skill",
             "iteration": 1,
-            "runs": [
-                {
-                    "run": 0,
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "results": [
-                        {
-                            "id": "a1",
-                            "name": "contains hello",
-                            "passed": True,
-                            "kind": "contains",
-                            "message": "ok",
-                            "transcript_path": None,
-                        }
-                    ],
-                }
-            ],
+            "runs": [{
+                "run": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "results": [{
+                    "id": "a1",
+                    "name": "contains hello",
+                    "passed": passed,
+                    "kind": "contains",
+                    "message": "ok" if passed else "no match",
+                    "transcript_path": None,
+                }],
+            }],
         }
         (skill_dir / "assertions.json").write_text(json.dumps(payload))
 
+    def _write_passing_assertions(self, skill_dir):
+        self._write_assertions(skill_dir, passed=True)
+
     def _write_failing_assertions(self, skill_dir):
-        payload = {
-            "schema_version": 1,
-            "skill": "my-skill",
-            "iteration": 1,
-            "runs": [
-                {
-                    "run": 0,
-                    "input_tokens": 0,
-                    "output_tokens": 0,
-                    "results": [
-                        {
-                            "id": "a1",
-                            "name": "contains hello",
-                            "passed": False,
-                            "kind": "contains",
-                            "message": "no match",
-                            "transcript_path": None,
-                        }
-                    ],
-                }
-            ],
-        }
-        (skill_dir / "assertions.json").write_text(json.dumps(payload))
+        self._write_assertions(skill_dir, passed=False)
 
     def _fake_report(self, **overrides):
         from clauditor.suggest import EditProposal, SuggestReport
@@ -4899,6 +4820,18 @@ class TestCmdSuggest:
         defaults.update(overrides)
         return SuggestReport(**defaults)
 
+    def _setup_failing_run(self, tmp_path, monkeypatch):
+        """Stage the common "failing iteration-1 run" fixture used by most
+        suggest tests: a .git marker, the skill file, a failing grading.json,
+        and a failing assertions.json under iteration-1/my-skill."""
+        (tmp_path / ".git").mkdir()
+        self._write_skill(tmp_path)
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(skill_dir, all_pass=False)
+        self._write_failing_assertions(skill_dir)
+        monkeypatch.chdir(tmp_path)
+        return skill_dir
+
     def test_no_prior_grade_exits_1_with_message(self, tmp_path, monkeypatch, capsys):
         (tmp_path / ".git").mkdir()
         self._write_skill(tmp_path)
@@ -4923,7 +4856,7 @@ class TestCmdSuggest:
         monkeypatch.chdir(tmp_path)
 
         sentinel = AsyncMock()
-        with patch("clauditor.cli.propose_edits", new=sentinel):
+        with patch("clauditor.cli.suggest.propose_edits", new=sentinel):
             rc = main(["suggest", "my-skill.md"])
 
         assert rc == 0
@@ -4935,16 +4868,10 @@ class TestCmdSuggest:
     def test_success_prints_diff_and_writes_sidecar(
         self, tmp_path, monkeypatch, capsys
     ):
-        (tmp_path / ".git").mkdir()
-        self._write_skill(tmp_path)
-        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
-        self._write_grading_json(skill_dir, all_pass=False)
-        self._write_failing_assertions(skill_dir)
-        monkeypatch.chdir(tmp_path)
-
+        self._setup_failing_run(tmp_path, monkeypatch)
         report = self._fake_report()
         with patch(
-            "clauditor.cli.propose_edits",
+            "clauditor.cli.suggest.propose_edits",
             new=AsyncMock(return_value=report),
         ):
             rc = main(["suggest", "my-skill.md"])
@@ -4964,16 +4891,10 @@ class TestCmdSuggest:
     def test_json_flag_prints_sidecar_json_to_stdout(
         self, tmp_path, monkeypatch, capsys
     ):
-        (tmp_path / ".git").mkdir()
-        self._write_skill(tmp_path)
-        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
-        self._write_grading_json(skill_dir, all_pass=False)
-        self._write_failing_assertions(skill_dir)
-        monkeypatch.chdir(tmp_path)
-
+        self._setup_failing_run(tmp_path, monkeypatch)
         report = self._fake_report()
         with patch(
-            "clauditor.cli.propose_edits",
+            "clauditor.cli.suggest.propose_edits",
             new=AsyncMock(return_value=report),
         ):
             rc = main(["suggest", "my-skill.md", "--json"])
@@ -5003,24 +4924,19 @@ class TestCmdSuggest:
             captured["source_iteration"] = suggest_input.source_iteration
             return self._fake_report(source_iteration=suggest_input.source_iteration)
 
-        with patch("clauditor.cli.propose_edits", new=_fake_propose):
+        with patch("clauditor.cli.suggest.propose_edits", new=_fake_propose):
             rc = main(["suggest", "my-skill.md", "--from-iteration", "1"])
 
         assert rc == 0
         assert captured["source_iteration"] == 1
 
     def test_with_transcripts_forwarded(self, tmp_path, monkeypatch):
-        (tmp_path / ".git").mkdir()
-        self._write_skill(tmp_path)
-        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
-        self._write_grading_json(skill_dir, all_pass=False)
-        self._write_failing_assertions(skill_dir)
+        skill_dir = self._setup_failing_run(tmp_path, monkeypatch)
         run_dir = skill_dir / "run-0"
         run_dir.mkdir()
         (run_dir / "output.jsonl").write_text(
             json.dumps({"type": "assistant", "text": "hi"}) + "\n"
         )
-        monkeypatch.chdir(tmp_path)
 
         captured = {}
 
@@ -5028,7 +4944,7 @@ class TestCmdSuggest:
             captured["transcripts"] = suggest_input.transcript_events
             return self._fake_report()
 
-        with patch("clauditor.cli.propose_edits", new=_fake_propose):
+        with patch("clauditor.cli.suggest.propose_edits", new=_fake_propose):
             rc = main(
                 ["suggest", "my-skill.md", "--with-transcripts"]
             )
@@ -5038,97 +4954,74 @@ class TestCmdSuggest:
         assert len(captured["transcripts"]) == 1
         assert len(captured["transcripts"][0]) == 1
 
-    def test_anthropic_error_exits_3(self, tmp_path, monkeypatch, capsys):
-        (tmp_path / ".git").mkdir()
-        self._write_skill(tmp_path)
-        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
-        self._write_grading_json(skill_dir, all_pass=False)
-        self._write_failing_assertions(skill_dir)
-        monkeypatch.chdir(tmp_path)
-
-        report = self._fake_report(
-            api_error="anthropic API error: RuntimeError('boom')",
-            edit_proposals=[],
-            summary_rationale="",
-        )
-        with patch(
-            "clauditor.cli.propose_edits",
-            new=AsyncMock(return_value=report),
-        ):
-            rc = main(["suggest", "my-skill.md"])
-
-        assert rc == 3
-        err = capsys.readouterr().err
-        assert "anthropic API error" in err
-        assert not (tmp_path / ".clauditor" / "suggestions").exists()
-
-    def test_parse_error_exits_1_no_sidecar(
-        self, tmp_path, monkeypatch, capsys
+    @pytest.mark.parametrize(
+        "report_overrides, expected_rc, expected_err_substrs",
+        [
+            pytest.param(
+                dict(
+                    api_error="anthropic API error: RuntimeError('boom')",
+                    edit_proposals=[],
+                    summary_rationale="",
+                ),
+                3,
+                ("anthropic API error",),
+                id="anthropic-error-rc3",
+            ),
+            pytest.param(
+                dict(
+                    parse_error="ValueError: missing 'edits' key",
+                    edit_proposals=[],
+                    summary_rationale="",
+                ),
+                1,
+                ("unparseable JSON",),
+                id="parse-error-rc1",
+            ),
+            pytest.param(
+                dict(
+                    edit_proposals=[],
+                    validation_errors=[
+                        "edit-0 (motivated_by=['a1']): anchor not found in SKILL.md"
+                    ],
+                ),
+                2,
+                ("anchor validation", "edit-0"),
+                id="anchor-validation-rc2",
+            ),
+        ],
+    )
+    def test_suggest_report_errors_no_sidecar(
+        self,
+        tmp_path,
+        monkeypatch,
+        capsys,
+        report_overrides,
+        expected_rc,
+        expected_err_substrs,
     ):
-        (tmp_path / ".git").mkdir()
-        self._write_skill(tmp_path)
-        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
-        self._write_grading_json(skill_dir, all_pass=False)
-        self._write_failing_assertions(skill_dir)
-        monkeypatch.chdir(tmp_path)
-
-        report = self._fake_report(
-            parse_error="ValueError: missing 'edits' key",
-            edit_proposals=[],
-            summary_rationale="",
-        )
+        """Various SuggestReport error fields surface with distinct exit codes
+        and no sidecar is written."""
+        self._setup_failing_run(tmp_path, monkeypatch)
+        report = self._fake_report(**report_overrides)
         with patch(
-            "clauditor.cli.propose_edits",
+            "clauditor.cli.suggest.propose_edits",
             new=AsyncMock(return_value=report),
         ):
             rc = main(["suggest", "my-skill.md"])
 
-        assert rc == 1
+        assert rc == expected_rc
         err = capsys.readouterr().err
-        assert "unparseable JSON" in err
-        assert not (tmp_path / ".clauditor" / "suggestions").exists()
-
-    def test_anchor_validation_error_exits_2_no_sidecar(
-        self, tmp_path, monkeypatch, capsys
-    ):
-        (tmp_path / ".git").mkdir()
-        self._write_skill(tmp_path)
-        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
-        self._write_grading_json(skill_dir, all_pass=False)
-        self._write_failing_assertions(skill_dir)
-        monkeypatch.chdir(tmp_path)
-
-        report = self._fake_report(
-            edit_proposals=[],
-            validation_errors=[
-                "edit-0 (motivated_by=['a1']): anchor not found in SKILL.md"
-            ],
-        )
-        with patch(
-            "clauditor.cli.propose_edits",
-            new=AsyncMock(return_value=report),
-        ):
-            rc = main(["suggest", "my-skill.md"])
-
-        assert rc == 2
-        err = capsys.readouterr().err
-        assert "anchor validation" in err
-        assert "edit-0" in err
+        for s in expected_err_substrs:
+            assert s in err
         assert not (tmp_path / ".clauditor" / "suggestions").exists()
 
     def test_verbose_emits_stderr_bundle_summary(
         self, tmp_path, monkeypatch, capsys
     ):
-        (tmp_path / ".git").mkdir()
-        self._write_skill(tmp_path)
-        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
-        self._write_grading_json(skill_dir, all_pass=False)
-        self._write_failing_assertions(skill_dir)
-        monkeypatch.chdir(tmp_path)
-
+        self._setup_failing_run(tmp_path, monkeypatch)
         report = self._fake_report()
         with patch(
-            "clauditor.cli.propose_edits",
+            "clauditor.cli.suggest.propose_edits",
             new=AsyncMock(return_value=report),
         ):
             rc = main(["suggest", "my-skill.md", "-v"])
@@ -5144,21 +5037,15 @@ class TestCmdSuggest:
         # Regression: an OSError from write_sidecar (disk full, read-only
         # .clauditor, whatever) must exit 1 with a stderr message, not
         # propagate a bare traceback through cmd_suggest.
-        (tmp_path / ".git").mkdir()
-        self._write_skill(tmp_path)
-        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
-        self._write_grading_json(skill_dir, all_pass=False)
-        self._write_failing_assertions(skill_dir)
-        monkeypatch.chdir(tmp_path)
-
+        self._setup_failing_run(tmp_path, monkeypatch)
         report = self._fake_report()
         with (
             patch(
-                "clauditor.cli.propose_edits",
+                "clauditor.cli.suggest.propose_edits",
                 new=AsyncMock(return_value=report),
             ),
             patch(
-                "clauditor.cli.write_sidecar",
+                "clauditor.cli.suggest.write_sidecar",
                 side_effect=OSError("disk full"),
             ),
         ):
@@ -5209,15 +5096,10 @@ class TestCmdSuggest:
         # exists-check and the read, load_suggest_input raises
         # FileNotFoundError. The CLI must catch OSError and exit 1
         # instead of leaking a traceback.
-        (tmp_path / ".git").mkdir()
-        self._write_skill(tmp_path)
-        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
-        self._write_grading_json(skill_dir, all_pass=False)
-        self._write_failing_assertions(skill_dir)
-        monkeypatch.chdir(tmp_path)
+        self._setup_failing_run(tmp_path, monkeypatch)
 
         with patch(
-            "clauditor.cli.load_suggest_input",
+            "clauditor.cli.suggest.load_suggest_input",
             side_effect=FileNotFoundError(
                 "iteration-1/my-skill/grading.json vanished"
             ),

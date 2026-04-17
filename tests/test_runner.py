@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import subprocess
 from unittest.mock import patch
 
 import pytest
@@ -10,6 +11,7 @@ import clauditor.runner as _runner_mod
 
 importlib.reload(_runner_mod)
 
+from clauditor.asserters import SkillAsserter  # noqa: E402
 from clauditor.runner import SkillResult, SkillRunner  # noqa: E402
 from tests.conftest import _FakePopen, make_fake_skill_stream  # noqa: E402
 
@@ -113,16 +115,16 @@ class TestSkillResultSucceeded:
 
 
 # ---------------------------------------------------------------------------
-# SkillResult assertion helpers
+# SkillAsserter — Layer 1 test-helper wrapper (US-006)
 # ---------------------------------------------------------------------------
 
 
-class TestSkillResultAssertions:
+class TestSkillAsserter:
     """Each assertion method should pass or raise AssertionError."""
 
-    def _make(self, output: str) -> SkillResult:
-        return SkillResult(
-            output=output, exit_code=0, skill_name="test", args=""
+    def _make(self, output: str) -> SkillAsserter:
+        return SkillAsserter(
+            SkillResult(output=output, exit_code=0, skill_name="test", args="")
         )
 
     # assert_contains
@@ -183,11 +185,32 @@ class TestSkillResultAssertions:
 
     # run_assertions delegates
     def test_run_assertions_delegates(self):
-        result = self._make("hello world")
-        assertion_set = result.run_assertions(
+        asserter = self._make("hello world")
+        assertion_set = asserter.run_assertions(
             [{"type": "contains", "value": "hello"}]
         )
         assert assertion_set.passed
+
+    def test_asserter_stores_result_reference(self):
+        """SkillAsserter should expose the wrapped result for introspection."""
+        result = SkillResult(
+            output="hi", exit_code=0, skill_name="t", args=""
+        )
+        asserter = SkillAsserter(result)
+        assert asserter.result is result
+
+    def test_assert_from_convenience_factory(self):
+        """``assert_from(result)`` wraps a result in a SkillAsserter."""
+        from clauditor.asserters import assert_from
+
+        result = SkillResult(
+            output="hello world", exit_code=0, skill_name="t", args=""
+        )
+        asserter = assert_from(result)
+        assert isinstance(asserter, SkillAsserter)
+        assert asserter.result is result
+        # Sanity: the wrapper works end-to-end.
+        asserter.assert_contains("hello")
 
 
 # ---------------------------------------------------------------------------
@@ -319,8 +342,9 @@ class TestSkillResultOutputs:
             output="hello world",
             outputs={"other.txt": "completely different text"},
         )
-        result.assert_contains("hello world")
-        result.assert_not_contains("completely different text")
+        asserter = SkillAsserter(result)
+        asserter.assert_contains("hello world")
+        asserter.assert_not_contains("completely different text")
 
 
 # ---------------------------------------------------------------------------
@@ -707,11 +731,13 @@ class TestStreamJsonDefensiveBranches:
         fake.terminate = _terminate
 
         stdout_closed = {"hit": False}
-        original_stdout = fake.stdout
+        # Capture the original bound close method BEFORE overriding so the
+        # wrapper does not recurse into itself.
+        original_close = fake.stdout.close
 
         def _close_stdout():
             stdout_closed["hit"] = True
-            original_stdout.close()
+            original_close()
 
         fake.stdout.close = _close_stdout
 
@@ -754,13 +780,13 @@ class TestStreamJsonDefensiveBranches:
         assert result.input_tokens == 1
 
     def test_cleanup_terminate_succeeds_but_wait_raises(self):
-        """runner.py:340-345 — terminate() succeeds but proc.wait(timeout=1)
-        raises, so the kill() + wait() fallback runs."""
+        """runner.py — terminate() succeeds but proc.wait(timeout=1) raises
+        TimeoutExpired, so the kill() + wait() fallback runs."""
         fake = make_fake_skill_stream("ok")
 
         call_log = {"terminate": 0, "kill": 0, "wait_during_cleanup": 0}
 
-        def _boom_wait(timeout=None):
+        def _boom_wait(timeout=None):  # noqa: ARG001
             # The first wait (in the read loop) raises the real error.
             # Subsequent waits are from cleanup — the first cleanup wait
             # raises TimeoutExpired so kill() runs; the second succeeds.
@@ -769,7 +795,7 @@ class TestStreamJsonDefensiveBranches:
                 raise RuntimeError("parse failure")
             if call_log["wait_during_cleanup"] == 2:
                 # terminate() was called, but cleanup wait times out.
-                raise RuntimeError("cleanup wait timeout")
+                raise subprocess.TimeoutExpired(cmd=["claude"], timeout=1)
             return 0
 
         fake.wait = _boom_wait
@@ -795,9 +821,9 @@ class TestStreamJsonDefensiveBranches:
         assert call_log["kill"] == 1  # kill fallback ran after terminate-wait raised
 
     def test_cleanup_wait_after_kill_also_raises(self):
-        """runner.py:344-345 — kill() + wait(timeout=1) cascade: if the
-        wait AFTER kill also raises, the innermost except swallows it
-        and the original exception still propagates."""
+        """runner.py — kill() + wait(timeout=1) cascade: if the wait AFTER
+        kill also raises (TimeoutExpired), the innermost handler swallows
+        it and the original exception still propagates."""
         fake = make_fake_skill_stream("ok")
 
         cleanup_wait_calls = {"n": 0}
@@ -807,9 +833,10 @@ class TestStreamJsonDefensiveBranches:
             if cleanup_wait_calls["n"] == 0:
                 cleanup_wait_calls["n"] = 1
                 raise RuntimeError("parse failure")
-            # Every subsequent call (cleanup waits) also raises
+            # Every subsequent call (cleanup waits) raises TimeoutExpired,
+            # the realistic subprocess exception type the cleanup catches.
             cleanup_wait_calls["n"] += 1
-            raise RuntimeError(f"cleanup wait #{cleanup_wait_calls['n']} boom")
+            raise subprocess.TimeoutExpired(cmd=["claude"], timeout=1)
 
         fake.wait = _always_boom_wait
         # Don't let terminate mark the child as dead, so cleanup proceeds.
@@ -826,8 +853,8 @@ class TestStreamJsonDefensiveBranches:
         assert cleanup_wait_calls["n"] >= 3
 
     def test_cleanup_terminate_exception_is_swallowed(self):
-        """runner.py:340-347 — if terminate() itself raises, the kill
-        fallback still runs and the run's exception propagates."""
+        """runner.py — if terminate() itself raises OSError, the cleanup
+        chain still runs and the run's original exception propagates."""
         fake = make_fake_skill_stream("ok")
 
         def _boom_wait(timeout=None):  # noqa: ARG001
@@ -836,7 +863,7 @@ class TestStreamJsonDefensiveBranches:
         fake.wait = _boom_wait
 
         def _terminate_raises():
-            raise RuntimeError("terminate failed")
+            raise OSError("terminate failed")
 
         fake.terminate = _terminate_raises
         kill_called = {"hit": False}
@@ -945,3 +972,221 @@ class TestStreamEvents:
         assert a.stream_events == []
         a.stream_events.append({"type": "foo"})
         assert b.stream_events == []
+
+
+# ---------------------------------------------------------------------------
+# US-007: SkillResult.warnings observability
+# ---------------------------------------------------------------------------
+
+
+class TestSkillResultWarnings:
+    """Tests for the new warnings field added in US-007."""
+
+    def test_warnings_default_empty_list(self):
+        """SkillResult default factory gives each instance its own list."""
+        a = SkillResult(output="", exit_code=0, skill_name="x", args="")
+        b = SkillResult(output="", exit_code=0, skill_name="y", args="")
+        assert a.warnings == []
+        a.warnings.append("hello")
+        assert b.warnings == []
+
+    def test_happy_path_has_empty_warnings(self):
+        """A clean run should produce zero warnings."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=make_fake_skill_stream("fine"),
+        ):
+            result = runner.run("skill")
+        assert result.output == "fine"
+        assert result.warnings == []
+
+    def test_malformed_line_appends_to_warnings(self):
+        """Malformed stream-json line must ALSO show up in warnings, not just
+        stderr (the stderr print is preserved per stream-json-schema.md)."""
+        lines = [
+            "this is not json",
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "ok"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 1, "output_tokens": 1}}
+            ),
+        ]
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+        ):
+            result = runner.run("skill")
+        assert result.output == "ok"
+        assert any(
+            "malformed stream-json line" in w for w in result.warnings
+        ), f"expected malformed warning, got {result.warnings!r}"
+
+    def test_missing_result_appends_to_warnings(self):
+        """An EOF without a 'result' message must surface in warnings."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "no result"}],
+                    },
+                }
+            ),
+        ]
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+        ):
+            result = runner.run("skill")
+        assert result.output == "no result"
+        assert any(
+            "without a 'result' message" in w for w in result.warnings
+        ), f"expected EOF warning, got {result.warnings!r}"
+
+    def test_cleanup_kill_oserror_records_warning(self):
+        """US-007 acceptance: simulate OSError from proc.kill() during the
+        outer-finally cleanup chain and assert the resulting
+        SkillResult.warnings contains a message naming the failing step."""
+        fake = make_fake_skill_stream("ok")
+
+        # Normal parse completes (wait returns the fake's returncode). Then
+        # the outer-finally cleanup runs because we force poll() -> None
+        # (child appears still alive). terminate() is a no-op; wait(timeout=1)
+        # raises TimeoutExpired -> we fall through to kill(), which raises
+        # OSError. Its message should land in SkillResult.warnings.
+        # Save original wait (used by the main parse loop).
+        original_wait = fake.wait
+        cleanup_wait_count = {"n": 0}
+
+        def _wait_shim(timeout=None):
+            # First call: main parse wait — return normally.
+            # Subsequent calls: cleanup waits — raise TimeoutExpired.
+            if cleanup_wait_count["n"] == 0:
+                cleanup_wait_count["n"] = 1
+                return original_wait(timeout=timeout)
+            cleanup_wait_count["n"] += 1
+            raise subprocess.TimeoutExpired(cmd=["claude"], timeout=1)
+
+        fake.wait = _wait_shim
+
+        # Keep poll() reporting alive so the cleanup actually runs.
+        # Override terminate + kill: terminate is a no-op; kill raises OSError.
+        fake.terminate = lambda: None
+
+        def _kill_raises():
+            raise OSError("simulated kill failure")
+
+        fake.kill = _kill_raises
+        # Make _killed stay False so poll() keeps returning None.
+        fake._killed = False
+
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            result = runner.run("skill")
+
+        assert result.output == "ok"
+        assert any(
+            "cleanup kill failed" in w and "simulated kill failure" in w
+            for w in result.warnings
+        ), (
+            f"expected warning naming the failing step, got {result.warnings!r}"
+        )
+
+    def test_stderr_drainer_exception_records_warning(self):
+        """An unexpected exception in the stderr drain thread must record
+        a descriptive warning (drained into SkillResult.warnings) rather
+        than silently vanishing."""
+
+        class _RaisingIter:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                raise RuntimeError("stderr blew up")
+
+        fake = make_fake_skill_stream("ok")
+        fake.stderr = _RaisingIter()
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            result = runner.run("skill")
+        assert result.output == "ok"
+        assert any(
+            "stderr drainer" in w and "RuntimeError" in w for w in result.warnings
+        ), f"expected stderr-drainer warning, got {result.warnings!r}"
+
+    def test_stderr_drainer_oserror_records_warning(self):
+        """An OSError (broken pipe, EBADF) in the stderr drain is the
+        expected terminal state and must still record into warnings."""
+
+        class _RaisingIter:
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                raise OSError("EBADF")
+
+        fake = make_fake_skill_stream("ok")
+        fake.stderr = _RaisingIter()
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            result = runner.run("skill")
+        assert result.output == "ok"
+        assert any(
+            "stderr drainer stopped" in w and "OSError" in w
+            for w in result.warnings
+        ), f"expected stderr drainer OSError warning, got {result.warnings!r}"
+
+    def test_cleanup_wait_oserror_records_warning(self):
+        """OSError (not TimeoutExpired) from wait(timeout=1) after terminate
+        takes the OSError branch and records a warning."""
+        fake = make_fake_skill_stream("ok")
+        original_wait = fake.wait
+        cleanup_wait_count = {"n": 0}
+
+        def _wait_shim(timeout=None):
+            if cleanup_wait_count["n"] == 0:
+                cleanup_wait_count["n"] = 1
+                return original_wait(timeout=timeout)
+            cleanup_wait_count["n"] += 1
+            raise OSError("wait syscall blew up")
+
+        fake.wait = _wait_shim
+        # terminate() is a no-op: leaves _killed False so poll() keeps
+        # reporting alive and the outer-finally cleanup runs.
+        fake.terminate = lambda: None
+
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            result = runner.run("skill")
+        assert result.output == "ok"
+        assert any(
+            "cleanup wait after terminate failed" in w and "OSError" in w
+            for w in result.warnings
+        ), f"expected wait OSError warning, got {result.warnings!r}"
+
+    def test_cleanup_close_oserror_records_warning(self):
+        """OSError from stream.close() during cleanup records a warning
+        naming the stream (stdout/stderr)."""
+        fake = make_fake_skill_stream("ok")
+
+        def _close_raises():
+            raise OSError("close EBADF")
+
+        fake.stdout.close = _close_raises
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            result = runner.run("skill")
+        assert result.output == "ok"
+        assert any(
+            "cleanup close(stdout)" in w and "OSError" in w
+            for w in result.warnings
+        ), f"expected stdout close warning, got {result.warnings!r}"

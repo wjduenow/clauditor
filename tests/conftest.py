@@ -15,12 +15,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from clauditor.quality_grader import GradingReport, GradingResult
 from clauditor.runner import SkillResult, SkillRunner
 from clauditor.schemas import (
     EvalSpec,
     FieldRequirement,
+    GradeThresholds,
     SectionRequirement,
 )
+from clauditor.spec import SkillSpec
 
 
 class _FakePopen:
@@ -53,6 +56,14 @@ class _FakePopen:
         # After kill, poll reports a non-None exit signal.
         if self.returncode == 0:
             self.returncode = -9
+
+    def terminate(self):
+        # Default terminate: mark as dead so the outer-finally cleanup
+        # short-circuits instead of cascading to kill+wait. Tests that need
+        # to exercise the terminate→kill fallback override this attribute.
+        self._killed = True
+        if self.returncode == 0:
+            self.returncode = -15
 
     def poll(self) -> int | None:
         # Immediate-timer tests want poll() to report "still running" so the
@@ -280,3 +291,151 @@ def mock_runner():
         return mock
 
     return _factory
+
+
+# ---------------------------------------------------------------------------
+# Factories used by the CLI tests. These live as module-level helpers (not
+# fixtures) so they can be imported directly into tests/test_cli.py and used
+# inside @pytest.mark.parametrize data and class helpers.
+# ---------------------------------------------------------------------------
+
+
+def make_skill_result(
+    *,
+    output: str = "mock output",
+    exit_code: int = 0,
+    skill_name: str = "test-skill",
+    args: str = "",
+    duration_seconds: float = 1.0,
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    error: str | None = None,
+    stream_events: list[dict] | None = None,
+) -> SkillResult:
+    """Build a real SkillResult with sensible defaults.
+
+    Prefer this over MagicMock for tests that only need a value object;
+    keeping it a real dataclass means attribute typos fail loudly.
+    """
+    return SkillResult(
+        output=output,
+        exit_code=exit_code,
+        skill_name=skill_name,
+        args=args,
+        duration_seconds=duration_seconds,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        error=error,
+        stream_events=stream_events if stream_events is not None else [],
+    )
+
+
+def build_eval_spec(**overrides) -> EvalSpec:
+    """Minimal EvalSpec with sensible defaults for CLI tests.
+
+    Accepts any EvalSpec field as keyword overrides.
+    """
+    defaults = dict(
+        skill_name="test-skill",
+        description="A test skill",
+        test_args="--depth quick",
+        assertions=[{"type": "contains", "value": "hello"}],
+        sections=[],
+        grading_criteria=["Is the output relevant?"],
+        grading_model="claude-sonnet-4-6",
+        trigger_tests=None,
+        variance=None,
+    )
+    defaults.update(overrides)
+    return EvalSpec(**defaults)
+
+
+def make_spec(eval_spec=None, skill_name: str = "test-skill") -> MagicMock:
+    """Build a MagicMock SkillSpec carrying an optional EvalSpec."""
+    spec = MagicMock(spec=SkillSpec)
+    spec.skill_name = skill_name
+    spec.eval_spec = eval_spec
+    return spec
+
+
+def make_grading_report(
+    *,
+    skill_name: str = "test-skill",
+    passed: bool = True,
+    score: float | None = None,
+    criterion: str = "Is the output relevant?",
+    model: str = "claude-sonnet-4-6",
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    duration_seconds: float = 1.0,
+    thresholds: GradeThresholds | None = None,
+    extra_results: list[GradingResult] | None = None,
+) -> GradingReport:
+    """Build a GradingReport with one criterion result (extra_results appended)."""
+    actual_score = score if score is not None else (0.9 if passed else 0.3)
+    results: list[GradingResult] = [
+        GradingResult(
+            criterion=criterion,
+            passed=passed,
+            score=actual_score,
+            evidence="Found relevant content",
+            reasoning="Output addresses the query",
+        )
+    ]
+    if extra_results:
+        results.extend(extra_results)
+    return GradingReport(
+        skill_name=skill_name,
+        model=model,
+        results=results,
+        duration_seconds=duration_seconds,
+        thresholds=thresholds if thresholds is not None else GradeThresholds(),
+        metrics={},
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+
+
+def assert_iteration_dir(
+    skill_dir: Path,
+    *,
+    has_grading: bool = True,
+    has_assertions: bool = False,
+    has_extraction: bool = False,
+    has_timing: bool = True,
+    has_run0: bool = True,
+    n_runs: int | None = None,
+) -> None:
+    """Assert the structure of a post-grade iteration directory.
+
+    ``skill_dir`` is ``.clauditor/iteration-N/<skill>/``. Pass
+    ``n_runs`` to assert exactly N run-K subdirs are present (and no
+    extras). Otherwise ``has_run0`` is the weaker "run-0/ exists"
+    check.
+    """
+    assert skill_dir.is_dir(), f"{skill_dir} is not a directory"
+    if has_grading:
+        assert (skill_dir / "grading.json").is_file(), "missing grading.json"
+    if has_assertions:
+        assert (skill_dir / "assertions.json").is_file(), (
+            "missing assertions.json"
+        )
+    if has_extraction:
+        assert (skill_dir / "extraction.json").is_file(), (
+            "missing extraction.json"
+        )
+    if has_timing:
+        assert (skill_dir / "timing.json").is_file(), "missing timing.json"
+    if n_runs is not None:
+        present = sorted(
+            p.name for p in skill_dir.iterdir() if p.name.startswith("run-")
+        )
+        expected = [f"run-{i}" for i in range(n_runs)]
+        assert present == expected, (
+            f"expected run-dirs {expected!r}, got {present!r}"
+        )
+        for i in range(n_runs):
+            assert (skill_dir / f"run-{i}" / "output.txt").is_file()
+            assert (skill_dir / f"run-{i}" / "output.jsonl").is_file()
+    elif has_run0:
+        assert (skill_dir / "run-0").is_dir(), "missing run-0/"

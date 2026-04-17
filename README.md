@@ -62,6 +62,101 @@ cd clauditor
 uv sync --dev
 ```
 
+## Installing the /clauditor slash command
+
+clauditor ships a bundled Claude Code skill that exposes its
+capture/validate/grade workflow as a `/clauditor` slash command. After
+installing the CLI (pip/uv), run one command from your project root:
+
+```bash
+uv run clauditor setup
+```
+
+Expected output:
+
+```
+Installed /clauditor: <project root>/.claude/skills/clauditor -> <site-packages path>/clauditor/skills/clauditor
+```
+
+`setup` creates a single symlink at `.claude/skills/clauditor` pointing
+at the bundled skill directory inside the installed clauditor package,
+so `pip install --upgrade clauditor` picks up skill updates automatically
+without re-running `setup`.
+
+**Flags:**
+
+- `--unlink` — remove the `/clauditor` symlink. Refuses to delete regular
+  files or symlinks that don't point at the installed clauditor package,
+  so it won't touch user-authored skills.
+- `--force` — overwrite an existing file or symlink at
+  `.claude/skills/clauditor`. Without `--force`, `setup` refuses to
+  clobber any pre-existing entry. Use `--force` only when you know the
+  entry is ours.
+- `--project-dir PATH` — override project-root detection. By default,
+  `setup` walks up from the current directory looking for a `.git/` or
+  `.claude/` marker; pass `--project-dir` to target a different root.
+
+**Restart note:** if `.claude/skills/` did not exist before
+`clauditor setup` ran, restart Claude Code once so it picks up the new
+directory. Subsequent edits under `.claude/skills/clauditor/` are
+hot-reloaded — see the Claude Code
+[live change detection](https://code.claude.com/docs/en/skills#live-change-detection)
+reference.
+
+**Diagnostic:** `uv run clauditor doctor` reports the skill symlink's
+health (absent / installed / stale / wrong-target / unmanaged).
+
+**Maintainers:** the bundled skill has a pre-release dogfood gate — see
+[`CONTRIBUTING.md`](CONTRIBUTING.md#pre-release-dogfood).
+
+## Using /clauditor in Claude Code
+
+Once `clauditor setup` has installed the symlink, the bundled skill is
+available as a slash command in any Claude Code session rooted at this
+project. The command is manual-only — Claude won't auto-invoke it,
+because validating a skill has side effects (subprocess runs, sidecar
+writes, potential token spend on L3 grading).
+
+**Invoke with the path to the skill you want to evaluate:**
+
+```text
+/clauditor .claude/commands/my-skill.md
+```
+
+or, for a directory-layout skill:
+
+```text
+/clauditor .claude/skills/my-skill/SKILL.md
+```
+
+Running `/clauditor` without an argument prompts Claude to ask which
+skill to evaluate.
+
+**What Claude does:**
+
+1. Locates the skill's eval spec — a sibling `<skill-name>.eval.json`
+   file, or `<skill-dir>/assets/<skill-name>.eval.json` for directory
+   skills. If neither exists, Claude asks you to author one or stops.
+2. Runs L1 validation first (`clauditor validate`) — free, sub-second,
+   reports failing assertion ids.
+3. If L1 passes, asks before running L3 grading (`clauditor grade`) —
+   costs Sonnet tokens, writes a full `grading.json` sidecar.
+4. Summarizes: which layers ran, pass/fail counts, sidecar paths you
+   can open for details.
+
+**When to use `/clauditor` vs. the CLI directly:**
+
+- Use `/clauditor` when you're in a Claude Code conversation and want
+  conversational context (Claude can explain failures, suggest fixes,
+  iterate on the spec).
+- Use `clauditor validate` / `clauditor grade` directly in CI,
+  Makefiles, or scripted workflows where you want deterministic exit
+  codes and no LLM narration.
+
+The full skill playbook lives at
+[`src/clauditor/skills/clauditor/SKILL.md`](src/clauditor/skills/clauditor/SKILL.md)
+(what Claude reads when the slash command fires).
+
 ## Quick Start
 
 ### 1. Create an eval spec for your skill
@@ -111,11 +206,12 @@ clauditor validate .claude/commands/my-skill.md --json
 ### 3. Use in pytest
 
 ```python
-def test_my_skill(clauditor_runner):
+def test_my_skill(clauditor_runner, clauditor_asserter):
     result = clauditor_runner.run("my-skill", '"San Jose, CA" --depth quick')
-    result.assert_contains("Results")
-    result.assert_has_entries(minimum=3)
-    result.assert_has_urls(minimum=3)
+    asserter = clauditor_asserter(result)
+    asserter.assert_contains("Results")
+    asserter.assert_has_entries(minimum=3)
+    asserter.assert_has_urls(minimum=3)
 
 def test_with_eval_spec(clauditor_spec):
     spec = clauditor_spec(".claude/commands/my-skill.md")
@@ -169,12 +265,15 @@ flowchart TD
 No API calls. Regex, string matching, and counting.
 
 ```python
-result.assert_contains("Venues")           # substring check
-result.assert_not_contains("Error")        # absence check
-result.assert_matches(r"\*\*\d+\.")        # regex
-result.assert_has_entries(minimum=5)        # numbered entries
-result.assert_has_urls(minimum=3)           # URL count
-result.assert_min_length(500)              # output length
+from clauditor import SkillAsserter
+
+asserter = SkillAsserter(result)
+asserter.assert_contains("Venues")           # substring check
+asserter.assert_not_contains("Error")        # absence check
+asserter.assert_matches(r"\*\*\d+\.")        # regex
+asserter.assert_has_entries(minimum=5)        # numbered entries
+asserter.assert_has_urls(minimum=3)           # URL count
+asserter.assert_min_length(500)              # output length
 ```
 
 Or define in `eval.json`:
@@ -437,6 +536,7 @@ clauditor trend <skill> --list-metrics           # List available metric paths
 clauditor trend <skill> --metric grader.input_tokens --command extract  # Filter by subcommand
 clauditor triggers <skill.md>          # Trigger precision testing
 clauditor capture <skill> -- "args"    # Run skill, save stdout to tests/eval/captured/
+clauditor suggest <skill.md>           # Propose SKILL.md edits from prior failing iterations
 clauditor doctor                       # Report environment diagnostics
 ```
 
@@ -469,11 +569,25 @@ Use `clauditor trend <skill> --metric <dotted.path>` to view a series. Paths wal
 
 Runs with `--only-criterion` skip the history append to keep longitudinal data comparable.
 
+## Exit Codes
+
+clauditor uses structured exit codes so scripts and CI pipelines can distinguish "the tool itself failed" from "the tool ran fine but the skill under test failed its gate."
+
+| Code | Meaning                                                                                                                                              |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | Success. The command completed and, where applicable, the skill passed its gate (all assertions satisfied, all criteria above threshold, no regression detected, no trigger miss). |
+| `1`  | Signal failed. The tool ran fine, but the skill did not meet its bar: an L1 assertion failed, an L3 criterion scored below threshold, `clauditor compare` detected a regression relative to baseline, or a trigger classification was wrong. The on-disk artifacts are complete and valid; the skill needs fixing, not the tool. |
+| `2`  | Input error. A user-supplied argument was missing, malformed, or incompatible with another flag (e.g. `--iteration` without an integer value, a skill `.md` file that does not exist, an eval spec that fails schema validation). The command exited before doing work; re-run with corrected arguments. |
+| `3`  | Anthropic API error. `clauditor suggest` only. The Anthropic SDK returned a non-retriable failure (auth, malformed request, exhausted retries). No sidecar is written; re-run once the upstream issue is resolved. |
+
+Commands that only invoke the Anthropic API transiently (`extract`, `grade`, `triggers`) funnel API failures through the same retry policy as `suggest` but surface them as exit 1 with an `ERROR:` line on stderr rather than a distinct code.
+
 ## Pytest Integration
 
 clauditor registers as a pytest plugin automatically. Available fixtures:
 
 - `clauditor_runner` — pre-configured `SkillRunner`
+- `clauditor_asserter` — factory wrapping a `SkillResult` with `assert_*` helpers (`assert_contains`, `assert_matches`, `assert_has_urls`, `assert_has_entries`, `assert_min_count`, `assert_min_length`, `run_assertions`) — see `.claude/rules/data-vs-asserter-split.md`
 - `clauditor_spec` — factory for loading `SkillSpec` from skill files
 - `clauditor_grader` — factory for Layer 3 quality grading
 - `clauditor_triggers` — factory for trigger precision testing
