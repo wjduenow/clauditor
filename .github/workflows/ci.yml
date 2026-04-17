@@ -18,6 +18,22 @@ jobs:
       - uses: astral-sh/setup-uv@v4
       - run: uv run ruff check src/ tests/
 
+  validate-skill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Validate bundled skill frontmatter (agentskills.io core)
+        # Uses an inline fallback instead of `skills-ref validate`: the
+        # upstream validator rejects Claude Code extension fields
+        # (argument-hint, disable-model-invocation) that DEC-004 of
+        # plans/super/43-setup-slash-command.md mandates on the bundled
+        # SKILL.md. The fallback enforces only the core agentskills.io
+        # invariants the spec actually requires.
+        run: python scripts/validate_skill_frontmatter.py src/clauditor/skills/clauditor
+
   test:
     runs-on: ubuntu-latest
     strategy:
