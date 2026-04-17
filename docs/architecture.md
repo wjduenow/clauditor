@@ -1,5 +1,32 @@
 # Architecture Diagrams
 
+## Overview
+
+At a glance, a `clauditor grade` run invokes the skill, then fans the
+skill's output into three independent evaluation layers whose results
+are persisted and reported together:
+
+```mermaid
+flowchart LR
+    A["clauditor grade\nskill.md"] --> B["Run skill\n(claude -p)"]
+    B --> C["Skill output"]
+    C --> D["L1 Assertions\n(free)"]
+    C --> E["L2 Extraction\n(Haiku)"]
+    C --> F["L3 Quality\n(Sonnet)"]
+    D --> G["Persist + Report"]
+    E --> G
+    F --> G
+
+    style D fill:#c8e6c9
+    style E fill:#fff9c4
+    style F fill:#ffccbc
+```
+
+Results land under `.clauditor/iteration-N/<skill>/` and are appended to
+`history.jsonl` for trend tracking. The sections below expand each
+stage: §1 walks through the full command end-to-end, §2 details the
+three-layer pipeline.
+
 ## 1. Grade Command — End-to-End Flow
 
 What happens when you run `clauditor grade skill.md`:
