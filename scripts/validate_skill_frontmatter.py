@@ -21,8 +21,10 @@ Exits 0 on success, 1 on any violation. All violations found are reported
 before exiting (the script does not bail on the first one) so CI logs show
 every problem in a single pass.
 
-Zero third-party dependencies — uses only the Python standard library so
-it runs without ``uv sync`` / ``pip install`` in CI.
+The YAML-subset parser lives in :mod:`clauditor._frontmatter` so the
+propose-eval and init CLIs can reuse it. The shared module is pure
+stdlib so this script still runs without ``uv sync`` / ``pip install``
+in CI.
 """
 
 from __future__ import annotations
@@ -31,51 +33,41 @@ import re
 import sys
 from pathlib import Path
 
+# Make ``clauditor._frontmatter`` importable when this script is run
+# directly from the repo root (the documented usage, and the shape CI
+# invokes). An editable install (``uv sync --dev``) also works, but the
+# script must not require one.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_SRC_ROOT = _REPO_ROOT / "src"
+if _SRC_ROOT.is_dir() and str(_SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(_SRC_ROOT))
+
+from clauditor._frontmatter import parse_frontmatter  # noqa: E402
+
 NAME_REGEX = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 NAME_MAX_LEN = 64
 DESCRIPTION_MAX_LEN = 1024
 
 
-def _extract_frontmatter(text: str) -> tuple[str | None, str | None]:
-    """Split a SKILL.md body into (frontmatter_block, error).
+def _extract_frontmatter(text: str) -> tuple[dict | None, str | None]:
+    """Return ``(frontmatter_dict, error)``.
 
-    Returns ``(block, None)`` on success, ``(None, reason)`` on failure.
-    The frontmatter is the YAML region bounded by ``---`` delimiters at
-    the very start of the file. A missing opening delimiter or a missing
-    closing delimiter is an error.
+    ``error`` is ``None`` on success and a human-readable string on
+    failure. Missing opening delimiter, missing closing delimiter, and
+    malformed YAML-subset lines are all reported via the error slot so
+    the caller can surface them in the same way.
     """
+    # Explicit opening-delimiter check to preserve the legacy error
+    # message shape CI logs + tests already anchor on.
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return None, "missing opening frontmatter delimiter '---' on line 1"
-    for idx in range(1, len(lines)):
-        if lines[idx].strip() == "---":
-            return "\n".join(lines[1:idx]), None
-    return None, "missing closing frontmatter delimiter '---'"
 
-
-def _parse_top_level_string(block: str, key: str) -> str | None:
-    """Extract a top-level ``key: value`` string from a YAML-ish block.
-
-    Handles optional single/double quoting. Returns ``None`` if the key
-    is absent. This is intentionally a tiny
-    parser, not a full YAML engine — the bundled skill's frontmatter is a
-    fixed shape (a handful of scalar strings, one nested mapping, one
-    list).
-    """
-    pattern = re.compile(rf"^{re.escape(key)}:\s*(.*?)\s*$")
-    for raw in block.splitlines():
-        # Skip nested entries (indented lines belong to a parent mapping).
-        if raw.startswith((" ", "\t")):
-            continue
-        m = pattern.match(raw)
-        if not m:
-            continue
-        value = m.group(1)
-        # Strip surrounding quotes.
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        return value
-    return None
+    try:
+        parsed, _body = parse_frontmatter(text)
+    except ValueError as exc:
+        return None, str(exc)
+    return parsed, None
 
 
 def validate_skill(skill_dir: Path) -> list[str]:
@@ -99,15 +91,15 @@ def validate_skill(skill_dir: Path) -> list[str]:
     except OSError as exc:
         return [f"{skill_md}: unreadable ({exc})"]
 
-    block, fm_error = _extract_frontmatter(text)
-    if fm_error is not None or block is None:
+    parsed, fm_error = _extract_frontmatter(text)
+    if fm_error is not None or parsed is None:
         return [f"{skill_md}: {fm_error}"]
 
     # name: present, non-empty, regex, length, matches parent dir.
-    name = _parse_top_level_string(block, "name")
+    name = parsed.get("name")
     if name is None:
         errors.append(f"{skill_md}: 'name' field missing from frontmatter")
-    elif name == "":
+    elif not isinstance(name, str) or name == "":
         errors.append(f"{skill_md}: 'name' must be a non-empty string")
     else:
         if not NAME_REGEX.match(name):
@@ -127,10 +119,10 @@ def validate_skill(skill_dir: Path) -> list[str]:
             )
 
     # description: present, non-empty, length <=1024.
-    description = _parse_top_level_string(block, "description")
+    description = parsed.get("description")
     if description is None:
         errors.append(f"{skill_md}: 'description' field missing from frontmatter")
-    elif description == "":
+    elif not isinstance(description, str) or description == "":
         errors.append(f"{skill_md}: 'description' must be a non-empty string")
     elif len(description) > DESCRIPTION_MAX_LEN:
         errors.append(
