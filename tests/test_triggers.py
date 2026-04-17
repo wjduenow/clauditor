@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from clauditor._anthropic import AnthropicResult
 from clauditor.schemas import EvalSpec, TriggerTests
 from clauditor.triggers import (
     TriggerReport,
@@ -61,15 +62,32 @@ def _make_eval_spec(
     )
 
 
-def _mock_client(response_text: str) -> AsyncMock:
-    """Create a mock AsyncAnthropic client returning the given text."""
-    client = AsyncMock()
-    mock_content = MagicMock()
-    mock_content.text = response_text
-    mock_response = MagicMock(usage=MagicMock(input_tokens=500, output_tokens=200))
-    mock_response.content = [mock_content]
-    client.messages.create = AsyncMock(return_value=mock_response)
-    return client
+def _mock_anthropic_result(
+    response_text: str,
+    *,
+    input_tokens: int = 500,
+    output_tokens: int = 200,
+) -> AnthropicResult:
+    """Return an :class:`AnthropicResult` shaped like a successful helper call.
+
+    After bead ``clauditor-24h.3`` triggers.py routes through
+    ``clauditor._anthropic.call_anthropic`` instead of instantiating its
+    own ``AsyncAnthropic`` client, so tests stub the helper and hand
+    back an ``AnthropicResult`` directly.
+    """
+    text_blocks = [response_text] if response_text else []
+    return AnthropicResult(
+        response_text=response_text,
+        text_blocks=text_blocks,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        raw_message=None,
+    )
+
+
+def _mock_call_anthropic(response_text: str) -> AsyncMock:
+    """Return an ``AsyncMock`` that yields a canned :class:`AnthropicResult`."""
+    return AsyncMock(return_value=_mock_anthropic_result(response_text))
 
 
 # --- TriggerReport tests ---
@@ -238,69 +256,90 @@ class TestBuildTriggerPrompt:
 class TestClassifyQuery:
     @pytest.mark.asyncio
     async def test_correct_positive(self):
-        client = _mock_client(
+        call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "match"}'
         )
-        result = await classify_query(
-            "skill", "desc", "do it", True, client, "test-model"
-        )
+        with patch("clauditor._anthropic.call_anthropic", call):
+            result = await classify_query(
+                "skill", "desc", "do it", True, "test-model"
+            )
         assert result.predicted_trigger is True
         assert result.passed is True
         assert result.confidence == 0.9
 
     @pytest.mark.asyncio
     async def test_correct_negative(self):
-        client = _mock_client(
+        call = _mock_call_anthropic(
             '{"triggered": false, "confidence": 0.8, "reasoning": "nope"}'
         )
-        result = await classify_query(
-            "skill", "desc", "unrelated", False, client, "test-model"
-        )
+        with patch("clauditor._anthropic.call_anthropic", call):
+            result = await classify_query(
+                "skill", "desc", "unrelated", False, "test-model"
+            )
         assert result.predicted_trigger is False
         assert result.passed is True
 
     @pytest.mark.asyncio
     async def test_false_positive(self):
-        client = _mock_client(
+        call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.6, "reasoning": "maybe"}'
         )
-        result = await classify_query(
-            "skill", "desc", "unrelated", False, client, "test-model"
-        )
+        with patch("clauditor._anthropic.call_anthropic", call):
+            result = await classify_query(
+                "skill", "desc", "unrelated", False, "test-model"
+            )
         assert result.predicted_trigger is True
         assert result.passed is False
 
     @pytest.mark.asyncio
     async def test_parse_failure_defaults(self):
-        client = _mock_client("garbage response")
-        result = await classify_query(
-            "skill", "desc", "query", True, client, "test-model"
-        )
+        call = _mock_call_anthropic("garbage response")
+        with patch("clauditor._anthropic.call_anthropic", call):
+            result = await classify_query(
+                "skill", "desc", "query", True, "test-model"
+            )
         assert result.predicted_trigger is False
         assert result.passed is False
         assert result.confidence == 0.0
 
     @pytest.mark.asyncio
     async def test_captures_token_usage(self):
-        client = _mock_client(
+        call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "ok"}'
         )
-        result = await classify_query(
-            "skill", "desc", "query", True, client, "test-model"
-        )
+        with patch("clauditor._anthropic.call_anthropic", call):
+            result = await classify_query(
+                "skill", "desc", "query", True, "test-model"
+            )
         assert result.input_tokens == 500
         assert result.output_tokens == 200
 
     @pytest.mark.asyncio
-    async def test_calls_client_with_correct_model(self):
-        client = _mock_client(
+    async def test_calls_helper_with_correct_model(self):
+        call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "ok"}'
         )
-        await classify_query(
-            "skill", "desc", "query", True, client, "my-model"
-        )
-        call_kwargs = client.messages.create.call_args
-        assert call_kwargs.kwargs["model"] == "my-model"
+        with patch("clauditor._anthropic.call_anthropic", call):
+            await classify_query(
+                "skill", "desc", "query", True, "my-model"
+            )
+        call.assert_awaited_once()
+        assert call.await_args.kwargs["model"] == "my-model"
+        assert call.await_args.kwargs["max_tokens"] == 1024
+
+    @pytest.mark.asyncio
+    async def test_empty_text_blocks_falls_back_to_no_text(self):
+        """A helper response with zero text blocks yields the 'no text' branch."""
+        call = AsyncMock(return_value=_mock_anthropic_result(""))
+        with patch("clauditor._anthropic.call_anthropic", call):
+            result = await classify_query(
+                "skill", "desc", "query", True, "test-model"
+            )
+        assert result.predicted_trigger is False
+        # expected=True so passed is False
+        assert result.passed is False
+        assert result.confidence == 0.0
+        assert "no text content" in result.reasoning
 
 
 # --- test_triggers tests ---
@@ -315,74 +354,50 @@ class TestTestTriggers:
         assert report.skill_name == "test-skill"
 
     @pytest.mark.asyncio
-    async def test_all_queries_classified(self, monkeypatch):
+    async def test_all_queries_classified(self):
         spec = _make_eval_spec(
             should_trigger=["do it", "run it"],
             should_not_trigger=["weather today"],
         )
 
-        mock_client = _mock_client(
+        call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
         )
-
-        # Patch AsyncAnthropic to return our mock client
-        mock_cls = MagicMock(return_value=mock_client)
-        monkeypatch.setattr(
-            "clauditor.triggers.AsyncAnthropic", mock_cls, raising=False
-        )
-        # Also need to make the lazy import work
-        import clauditor.triggers as triggers_mod
-
-        monkeypatch.setattr(triggers_mod, "AsyncAnthropic", mock_cls, raising=False)
-
-        # We need to patch at the import level
-        import anthropic  # noqa: F811
-
-        monkeypatch.setattr(anthropic, "AsyncAnthropic", mock_cls)
-
-        report = await run_test_triggers(spec, model="test-model")
+        with patch("clauditor._anthropic.call_anthropic", call):
+            report = await run_test_triggers(spec, model="test-model")
         assert len(report.results) == 3
         assert report.model == "test-model"
 
     @pytest.mark.asyncio
-    async def test_aggregates_token_usage(self, monkeypatch):
+    async def test_aggregates_token_usage(self):
         """TriggerReport sums tokens across all classify_query calls."""
         spec = _make_eval_spec(
             should_trigger=["a", "b"],
             should_not_trigger=["c"],
         )
-        mock_client = _mock_client(
+        call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
         )
-        mock_cls = MagicMock(return_value=mock_client)
-        import anthropic
-
-        monkeypatch.setattr(anthropic, "AsyncAnthropic", mock_cls)
-
-        report = await run_test_triggers(spec)
+        with patch("clauditor._anthropic.call_anthropic", call):
+            report = await run_test_triggers(spec)
         # 3 queries × 500/200 per mock
         assert report.input_tokens == 1500
         assert report.output_tokens == 600
 
     @pytest.mark.asyncio
-    async def test_parallel_execution(self, monkeypatch):
+    async def test_parallel_execution(self):
         """Verify all queries run via asyncio.gather (in parallel)."""
         spec = _make_eval_spec(
             should_trigger=["a", "b"],
             should_not_trigger=["c"],
         )
 
-        mock_client = _mock_client(
+        call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
         )
-        mock_cls = MagicMock(return_value=mock_client)
+        with patch("clauditor._anthropic.call_anthropic", call):
+            report = await run_test_triggers(spec)
 
-        import anthropic
-
-        monkeypatch.setattr(anthropic, "AsyncAnthropic", mock_cls)
-
-        report = await run_test_triggers(spec)
-
-        # All 3 queries should have been sent
-        assert mock_client.messages.create.call_count == 3
+        # All 3 queries should have been sent through the helper
+        assert call.await_count == 3
         assert len(report.results) == 3
