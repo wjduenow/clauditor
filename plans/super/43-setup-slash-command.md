@@ -971,11 +971,13 @@ captured in beads memory.
 ### Dependency graph
 
 ```
-US-001 ─┬─► US-002 ──► US-003 ──┐
-        │                        │
-        └──────► US-007 ◄────────┤
-                                 │
-US-004 ───────────────► US-005 ──┼─► US-006 ──┐
+US-001 ──► US-002 ─┬─► US-003 ──┐
+                   │             │
+                   ├─► US-007 ───┤
+                   │             │
+                   └─► US-005 ───┼─► US-006 ──┐
+                                 │            │
+US-004 ───────────► US-005       │            │
                                  │            │
                          US-008 ─┤            │
                                  ├─► US-010 ─► US-011
@@ -983,9 +985,10 @@ US-004 ───────────────► US-005 ──┼─► U
 ```
 
 US-004 and US-009 are fully independent of the others and can start
-immediately. US-001 unlocks US-002/US-003/US-007 in sequence.
-US-005 needs both US-002 (target exists) and US-004 (resolver).
-US-006 and US-008 need US-005.
+immediately. US-001 unlocks US-002; US-002 then unlocks US-003,
+US-005, and US-007 (each consumes the bundled skill content). US-005
+additionally needs US-004 (the resolver). US-006 and US-008 need
+US-005.
 
 ---
 
