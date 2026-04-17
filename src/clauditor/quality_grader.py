@@ -305,13 +305,7 @@ async def blind_compare(
     if not output_b or not output_b.strip():
         raise ValueError("blind_compare: output_b must be non-empty")
 
-    try:
-        from anthropic import AsyncAnthropic
-    except ImportError:
-        raise ImportError(
-            "Layer 3 blind comparison requires the anthropic SDK. "
-            "Install with: pip install clauditor[grader]"
-        )
+    from clauditor._anthropic import call_anthropic
 
     effective_rng = rng if rng is not None else random.Random()
 
@@ -329,38 +323,30 @@ async def blind_compare(
             return output_a, output_b
         return output_b, output_a
 
-    client = AsyncAnthropic()
-
-    async def call_judge(shared_client, mapping: str):
+    async def call_judge(mapping: str):
         slot_1, slot_2 = slots_for(mapping)
         prompt = build_blind_prompt(user_prompt, slot_1, slot_2, rubric_hint)
-        return await shared_client.messages.create(
-            model=model,
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
+        return await call_anthropic(prompt, model=model, max_tokens=2048)
 
     start = _monotonic()
     import asyncio as _asyncio
-    response1, response2 = await _asyncio.gather(
-        call_judge(client, run1_mapping),
-        call_judge(client, run2_mapping),
+    result1, result2 = await _asyncio.gather(
+        call_judge(run1_mapping),
+        call_judge(run2_mapping),
     )
 
-    input_tokens = getattr(response1.usage, "input_tokens", 0) + getattr(
-        response2.usage, "input_tokens", 0
-    )
-    output_tokens = getattr(response1.usage, "output_tokens", 0) + getattr(
-        response2.usage, "output_tokens", 0
-    )
+    input_tokens = result1.input_tokens + result2.input_tokens
+    output_tokens = result1.output_tokens + result2.output_tokens
 
-    def text_of(resp) -> str:
-        if not resp.content or not hasattr(resp.content[0], "text"):
-            return ""
-        return resp.content[0].text
+    def text_of(res) -> str:
+        # Preserve pre-refactor semantics: return the FIRST text block
+        # only (or "") rather than the joined concatenation, so downstream
+        # JSON parsers see the same string they saw before the helper
+        # existed.
+        return res.text_blocks[0] if res.text_blocks else ""
 
-    text1 = text_of(response1)
-    text2 = text_of(response2)
+    text1 = text_of(result1)
+    text2 = text_of(result2)
     parsed1 = _parse_blind_response(text1)
     parsed2 = _parse_blind_response(text2)
 
@@ -708,44 +694,24 @@ async def grade_quality(
     Requires the 'grader' extra: pip install clauditor[grader]
     """
     thresholds = thresholds if thresholds is not None else GradeThresholds()
-    try:
-        from anthropic import AsyncAnthropic
-    except ImportError:
-        raise ImportError(
-            "Layer 3 quality grading requires the anthropic SDK. "
-            "Install with: pip install clauditor[grader]"
-        )
+    from clauditor._anthropic import call_anthropic
 
-    client = AsyncAnthropic()
     prompt = build_grading_prompt(eval_spec)
+    full_prompt = (
+        f"{prompt}\n\n## Output to Evaluate\n"
+        f"<skill_output>\n{output}\n</skill_output>"
+    )
 
     start = _monotonic()
-    response = await client.messages.create(
-        model=model,
-        max_tokens=4096,
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"{prompt}\n\n## Output to Evaluate\n"
-                    f"<skill_output>\n{output}\n</skill_output>"
-                ),
-            },
-        ],
-    )
+    result = await call_anthropic(full_prompt, model=model, max_tokens=4096)
     duration = _monotonic() - start
-    input_tokens = getattr(response.usage, "input_tokens", 0)
-    output_tokens = getattr(response.usage, "output_tokens", 0)
+    input_tokens = result.input_tokens
+    output_tokens = result.output_tokens
 
     # Defensive unpack: filter for text blocks so non-text-first items
     # (tool_use, refusal) don't crash the indexer. Covers both empty
     # content and tool_use-before-text scenarios.
-    text_blocks = [
-        b.text
-        for b in (response.content or [])
-        if getattr(b, "type", None) == "text" and hasattr(b, "text")
-    ]
-    if not text_blocks:
+    if not result.text_blocks:
         return GradingReport(
             skill_name=eval_spec.skill_name,
             results=[
@@ -764,7 +730,7 @@ async def grade_quality(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
-    response_text = text_blocks[0]
+    response_text = result.text_blocks[0]
     try:
         results = parse_grading_response(
             response_text, eval_spec.grading_criteria

@@ -1363,8 +1363,12 @@ def _blind_response(
             input_tokens=input_tokens, output_tokens=output_tokens
         )
     )
+    # After bead clauditor-24h.3 the helper's _extract_result filters
+    # content blocks by ``type == "text"``. Real Anthropic responses
+    # always carry the type tag, so the fixture does too.
     resp.content = [
         MagicMock(
+            type="text",
             text=json.dumps(
                 {
                     "preference": preference,
@@ -1373,7 +1377,7 @@ def _blind_response(
                     "score_2": score_2,
                     "reasoning": reasoning,
                 }
-            )
+            ),
         )
     ]
     return resp

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -1842,55 +1842,58 @@ class TestValidateAnchors:
         assert "2 times" in errors[0]
 
 
-def _mock_anthropic_response(
+def _mock_anthropic_result(
     *,
     text: str,
     input_tokens: int = 100,
     output_tokens: int = 50,
-) -> MagicMock:
-    block = MagicMock()
-    block.type = "text"
-    block.text = text
-    response = MagicMock()
-    response.content = [block]
-    response.usage = MagicMock(
-        input_tokens=input_tokens, output_tokens=output_tokens
+):
+    """Return an AnthropicResult shaped like a successful helper call.
+
+    After bead ``clauditor-24h.3`` the suggest call path goes through
+    ``clauditor._anthropic.call_anthropic`` rather than constructing
+    its own client, so tests that used to stub ``AsyncAnthropic`` now
+    stub the helper and hand back an ``AnthropicResult`` directly.
+    """
+    from clauditor._anthropic import AnthropicResult
+
+    return AnthropicResult(
+        response_text=text,
+        text_blocks=[text] if text else [],
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        raw_message=None,
     )
-    return response
 
 
 class TestProposeEdits:
     @pytest.mark.asyncio
     async def test_calls_sonnet_with_built_prompt(self) -> None:
         si = _suggest_input_with_signals()
-        response = _mock_anthropic_response(
+        result = _mock_anthropic_result(
             text=_good_envelope_text(motivated_by=["a1"])
         )
-        client = AsyncMock()
-        client.messages.create = AsyncMock(return_value=response)
-        with patch(
-            "clauditor.suggest.AsyncAnthropic", return_value=client
-        ):
+        call_mock = AsyncMock(return_value=result)
+        with patch("clauditor._anthropic.call_anthropic", call_mock):
             report = await propose_edits(si)
-        client.messages.create.assert_awaited_once()
-        kwargs = client.messages.create.await_args.kwargs
+        call_mock.assert_awaited_once()
+        kwargs = call_mock.await_args.kwargs
+        args = call_mock.await_args.args
         assert kwargs["model"] == "claude-sonnet-4-6"
         assert kwargs["max_tokens"] == 4096
-        assert len(kwargs["messages"]) == 1
-        assert kwargs["messages"][0]["role"] == "user"
-        assert "exactly once" in kwargs["messages"][0]["content"]
+        assert len(args) == 1
+        assert "exactly once" in args[0]
         assert report.parse_error is None
 
     @pytest.mark.asyncio
     async def test_uses_monotonic_alias_for_duration(self) -> None:
         si = _suggest_input_with_signals()
-        response = _mock_anthropic_response(
+        result = _mock_anthropic_result(
             text=_good_envelope_text(motivated_by=["a1"])
         )
-        client = AsyncMock()
-        client.messages.create = AsyncMock(return_value=response)
         with patch(
-            "clauditor.suggest.AsyncAnthropic", return_value=client
+            "clauditor._anthropic.call_anthropic",
+            AsyncMock(return_value=result),
         ), patch(
             "clauditor.suggest._monotonic", side_effect=[0.0, 1.25]
         ):
@@ -1902,12 +1905,9 @@ class TestProposeEdits:
         self,
     ) -> None:
         si = _suggest_input_with_signals()
-        client = AsyncMock()
-        client.messages.create = AsyncMock(
-            side_effect=RuntimeError("boom")
-        )
         with patch(
-            "clauditor.suggest.AsyncAnthropic", return_value=client
+            "clauditor._anthropic.call_anthropic",
+            AsyncMock(side_effect=RuntimeError("boom")),
         ):
             report = await propose_edits(si)
         assert report.edit_proposals == []
@@ -1919,11 +1919,10 @@ class TestProposeEdits:
     @pytest.mark.asyncio
     async def test_malformed_json_response_sets_parse_error(self) -> None:
         si = _suggest_input_with_signals()
-        response = _mock_anthropic_response(text="this is not json {{{")
-        client = AsyncMock()
-        client.messages.create = AsyncMock(return_value=response)
+        result = _mock_anthropic_result(text="this is not json {{{")
         with patch(
-            "clauditor.suggest.AsyncAnthropic", return_value=client
+            "clauditor._anthropic.call_anthropic",
+            AsyncMock(return_value=result),
         ):
             report = await propose_edits(si)
         assert report.edit_proposals == []
@@ -1934,15 +1933,14 @@ class TestProposeEdits:
     @pytest.mark.asyncio
     async def test_successful_response_populates_report(self) -> None:
         si = _suggest_input_with_signals()
-        response = _mock_anthropic_response(
+        result = _mock_anthropic_result(
             text=_good_envelope_text(motivated_by=["a1", "g1"]),
             input_tokens=200,
             output_tokens=80,
         )
-        client = AsyncMock()
-        client.messages.create = AsyncMock(return_value=response)
         with patch(
-            "clauditor.suggest.AsyncAnthropic", return_value=client
+            "clauditor._anthropic.call_anthropic",
+            AsyncMock(return_value=result),
         ):
             report = await propose_edits(si)
         assert report.parse_error is None
@@ -1959,16 +1957,15 @@ class TestProposeEdits:
     async def test_anchor_validation_errors_flow_into_report(self) -> None:
         si = _suggest_input_with_signals()
         # anchor that does NOT exist in skill_md_text
-        response = _mock_anthropic_response(
+        result = _mock_anthropic_result(
             text=_good_envelope_text(
                 anchor="this string is not in skill md",
                 motivated_by=["a1"],
             )
         )
-        client = AsyncMock()
-        client.messages.create = AsyncMock(return_value=response)
         with patch(
-            "clauditor.suggest.AsyncAnthropic", return_value=client
+            "clauditor._anthropic.call_anthropic",
+            AsyncMock(return_value=result),
         ):
             report = await propose_edits(si)
         assert report.parse_error is None
