@@ -3951,6 +3951,135 @@ class TestCmdDoctor:
         lines = [line for line in out.splitlines() if "claude-cli" in line]
         assert any("[fail]" in line for line in lines)
 
+    # --- DEC-013 clauditor-skill-symlink check (5 states) ---------------
+
+    def test_doctor_reports_info_when_skill_not_installed(
+        self, setup_env, capsys
+    ):
+        """Dest doesn't exist → info with 'run clauditor setup'."""
+        dest = setup_env["dest"]
+        assert not dest.exists()
+
+        rc = main(["doctor"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "clauditor-skill-symlink" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[info]")
+        assert "not installed" in lines[0]
+        assert "clauditor setup" in lines[0]
+
+    def test_doctor_reports_ok_when_our_symlink_installed(
+        self, setup_env, capsys
+    ):
+        """Dest is our symlink → ok with resolved target."""
+        import os as _os
+
+        dest = setup_env["dest"]
+        pkg_skill = setup_env["pkg_skill_root"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _os.symlink(pkg_skill, dest)
+
+        rc = main(["doctor"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "clauditor-skill-symlink" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[ok]")
+        assert str(pkg_skill.resolve()) in lines[0]
+
+    def test_doctor_reports_warn_for_stale_symlink(
+        self, setup_env, capsys, tmp_path
+    ):
+        """Dangling symlink (target removed) → warn with '--force to fix'."""
+        import os as _os
+
+        dest = setup_env["dest"]
+        # Create a symlink pointing at a target that we then delete.
+        vanished = tmp_path / "vanished-target"
+        vanished.mkdir()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _os.symlink(vanished, dest)
+        # Now remove the target, leaving a dangling symlink.
+        vanished.rmdir()
+
+        assert dest.is_symlink()
+        assert not dest.exists()
+
+        rc = main(["doctor"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "clauditor-skill-symlink" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[warn]")
+        assert "stale symlink" in lines[0]
+        assert "--force" in lines[0]
+
+    def test_doctor_reports_warn_for_wrong_target_symlink(
+        self, setup_env, capsys, tmp_path
+    ):
+        """Symlink → somewhere else → warn 'doesn't match'."""
+        import os as _os
+
+        dest = setup_env["dest"]
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _os.symlink(elsewhere, dest)
+
+        rc = main(["doctor"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "clauditor-skill-symlink" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[warn]")
+        assert "doesn't match" in lines[0]
+        assert str(elsewhere.resolve()) in lines[0]
+
+    @pytest.mark.parametrize("kind", ["file", "dir"])
+    def test_doctor_reports_warn_for_non_symlink_file_or_dir(
+        self, setup_env, capsys, kind
+    ):
+        """Regular file or real directory (not a symlink) → warn 'unmanaged'."""
+        dest = setup_env["dest"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if kind == "file":
+            dest.write_text("not a symlink\n")
+            expected_kind = "file"
+        else:
+            dest.mkdir()
+            (dest / "junk.txt").write_text("stuff\n")
+            expected_kind = "directory"
+
+        rc = main(["doctor"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "clauditor-skill-symlink" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[warn]")
+        assert expected_kind in lines[0]
+        assert "unmanaged" in lines[0]
+
 
 class TestCmdTrend:
     """Tests for the trend subcommand (US-006)."""

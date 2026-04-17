@@ -1681,8 +1681,73 @@ def cmd_capture(args: argparse.Namespace) -> int:
     return 0
 
 
+def _check_clauditor_skill_symlink(
+    project_root: Path | None,
+    pkg_skill_root: Path,
+) -> tuple[str, str, str]:
+    """Return a ``(check_name, status, detail)`` tuple describing the health
+    of ``<project_root>/.claude/skills/clauditor`` per DEC-013.
+
+    Five states:
+
+    - project root missing → ``info`` (doctor keeps running outside projects)
+    - dest does not exist → ``info`` ("run ``clauditor setup``")
+    - dest is our symlink → ``ok`` (resolves to ``pkg_skill_root``)
+    - dest is a broken symlink → ``warn`` (stale — target removed by pip
+      uninstall/upgrade)
+    - dest is a symlink to the wrong target → ``warn``
+    - dest is a regular file or directory → ``warn`` ("unmanaged")
+    """
+    check_name = "clauditor-skill-symlink"
+
+    if project_root is None:
+        return (
+            check_name,
+            "info",
+            "no project root found; run from a project directory",
+        )
+
+    dest = project_root / ".claude" / "skills" / "clauditor"
+
+    if dest.is_symlink():
+        # Handle symlinks first: ``dest.exists()`` is False for broken
+        # symlinks but ``is_symlink()`` is True — this is how we detect
+        # dangling symlinks after a pip uninstall/upgrade.
+        if not dest.exists():
+            target = os.readlink(dest)
+            return (
+                check_name,
+                "warn",
+                (
+                    f"stale symlink; 'clauditor setup --force' to fix "
+                    f"(target: {target})"
+                ),
+            )
+        if dest.resolve() == pkg_skill_root.resolve():
+            return (check_name, "ok", f"symlink -> {dest.resolve()}")
+        return (
+            check_name,
+            "warn",
+            (
+                f"symlink target doesn't match installed package "
+                f"(points to {dest.resolve()})"
+            ),
+        )
+
+    if not dest.exists():
+        return (
+            check_name,
+            "info",
+            "clauditor skill not installed; run 'clauditor setup'",
+        )
+
+    # Regular file or real directory (not a symlink).
+    kind = "file" if dest.is_file() else "directory"
+    return (check_name, "warn", f"{kind}; unmanaged by clauditor")
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
-    """Read-only environment diagnostics (DEC-005/008/014).
+    """Read-only environment diagnostics (DEC-005/008/013/014).
 
     Always exits 0 — this is a reporting tool, not a CI gate.
     """
@@ -1773,6 +1838,20 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             checks.append(("editable-install", "ok", str(origin.parent)))
     else:
         checks.append(("editable-install", "fail", "clauditor package not importable"))
+
+    # DEC-013: inspect the /clauditor skill symlink and report its health.
+    try:
+        traversable = files("clauditor") / "skills" / "clauditor"
+        with as_file(traversable) as pkg_skill_root_path:
+            pkg_skill_root = Path(pkg_skill_root_path).resolve()
+            project_root = setup_module.find_project_root(Path.cwd())
+            checks.append(
+                _check_clauditor_skill_symlink(project_root, pkg_skill_root)
+            )
+    except Exception as e:  # pragma: no cover - defensive
+        checks.append(
+            ("clauditor-skill-symlink", "warn", f"check failed: {e}")
+        )
 
     width = max(len(name) for name, _, _ in checks)
     for name, status, detail in checks:
