@@ -75,7 +75,7 @@ uv run clauditor setup
 Expected output:
 
 ```
-Installed /clauditor: .claude/skills/clauditor -> <site-packages path>/clauditor/skills/clauditor
+Installed /clauditor: <project root>/.claude/skills/clauditor -> <site-packages path>/clauditor/skills/clauditor
 ```
 
 `setup` creates a single symlink at `.claude/skills/clauditor` pointing

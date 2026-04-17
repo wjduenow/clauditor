@@ -1,8 +1,9 @@
 """Tests for the fallback SKILL.md frontmatter validator.
 
-The canonical CI validator is the upstream ``skills-ref`` package; this
-fallback at ``scripts/validate_skill_frontmatter.py`` exists because
-``skills-ref`` is stricter than our hybrid frontmatter (DEC-004 of
+The upstream reference validator is the ``skills-ref`` package; this
+repository's CI runs the fallback at
+``scripts/validate_skill_frontmatter.py`` because ``skills-ref`` is
+stricter than our hybrid frontmatter (DEC-004 of
 ``plans/super/43-setup-slash-command.md``) and rejects the Claude Code
 extension fields we legitimately ship. These tests guard the fallback's
 core-spec checks: name shape, description length, parent-dir match,

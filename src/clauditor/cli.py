@@ -1688,7 +1688,7 @@ def _check_clauditor_skill_symlink(
     """Return a ``(check_name, status, detail)`` tuple describing the health
     of ``<project_root>/.claude/skills/clauditor`` per DEC-013.
 
-    Five states:
+    Six states:
 
     - project root missing → ``info`` (doctor keeps running outside projects)
     - dest does not exist → ``info`` ("run ``clauditor setup``")
@@ -2055,6 +2055,19 @@ def cmd_setup(args: argparse.Namespace) -> int:
     (atomic create-or-fail, no check-then-create).
     """
     traversable = files("clauditor") / "skills" / "clauditor"
+    # Reject zip/PEX-style installs up front: as_file() would extract to a
+    # tmp dir that gets cleaned up when the context exits, leaving a
+    # dangling symlink and making doctor comparisons always mismatch.
+    if not isinstance(traversable, Path):
+        print(
+            "ERROR: bundled clauditor skill is not available as a stable "
+            "filesystem path; `clauditor setup` requires an unpacked "
+            "installation and does not support zip/PEX-style package "
+            "resources",
+            file=sys.stderr,
+        )
+        return 2
+
     with as_file(traversable) as pkg_skill_root_path:
         pkg_skill_root = Path(pkg_skill_root_path).resolve()
 
@@ -2088,7 +2101,8 @@ def cmd_setup(args: argparse.Namespace) -> int:
                 if attempt == 1:
                     print(
                         "ERROR: .claude/skills/clauditor changed during "
-                        "setup (concurrent modification); retry",
+                        "setup (concurrent modification); aborting, "
+                        "please retry manually",
                         file=sys.stderr,
                     )
                     return 1
@@ -2733,7 +2747,8 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Remove the /clauditor symlink instead of creating it. "
             "Only removes our own symlinks; refuses to remove files or "
-            "symlinks pointing elsewhere (use --force with care)."
+            "symlinks pointing elsewhere. --force does not override this "
+            "refusal in --unlink mode."
         ),
     )
     p_setup.add_argument(

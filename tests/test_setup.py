@@ -119,6 +119,23 @@ class TestFindProjectRoot:
         sub.mkdir()
         assert find_project_root(sub) == fake_home
 
+    def test_find_project_root_tolerates_home_lookup_failure(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Path.home() raises on containerized envs with no HOME. The
+        # exception must not abort the walk — we just fall through to
+        # "no home exclusion" and let the walk proceed normally.
+        project = tmp_path / "p"
+        project.mkdir()
+        (project / ".claude").mkdir()
+
+        def _raise(cls):
+            raise RuntimeError("no HOME in this environment")
+
+        monkeypatch.setattr(Path, "home", classmethod(_raise))
+
+        assert find_project_root(project) == project
+
 
 class TestPlanSetupInstall:
     def test_plan_setup_returns_create_symlink(self, tmp_path: Path) -> None:

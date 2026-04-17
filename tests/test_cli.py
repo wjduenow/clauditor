@@ -3436,6 +3436,21 @@ class TestCmdSetup:
         assert "use --force" in err
         assert "regular file" in err
 
+    def test_setup_refuses_existing_real_dir(self, setup_env, capsys):
+        """Real directory at dest (not a symlink) without --force → exit 1."""
+        dest = setup_env["dest"]
+        dest.mkdir(parents=True)
+        (dest / "user-authored.txt").write_text("not ours\n")
+
+        rc = main(["setup"])
+
+        assert rc == 1
+        assert dest.is_dir()  # preserved — no silent clobber
+        assert not dest.is_symlink()
+        err = capsys.readouterr().err
+        assert "exists (directory)" in err
+        assert "--force" in err
+
     def test_setup_refuses_wrong_symlink(self, setup_env, capsys, tmp_path):
         """Dest is symlink → elsewhere → exit 1."""
         dest = setup_env["dest"]
@@ -3580,6 +3595,52 @@ class TestCmdSetup:
         assert rc == 1
         err = capsys.readouterr().err
         assert "concurrent modification" in err
+
+    def test_setup_rejects_zip_style_install(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """files() returning a non-Path (e.g. zip-style Traversable) → exit 2.
+        Symlinking into a zip extraction would leave a dangling pointer when
+        the as_file context exits, so we refuse up front.
+        """
+        # Fake cwd with project marker so project-root resolution succeeds
+        # if we ever reach it (we shouldn't — the early-return fires first).
+        (tmp_path / ".git").mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        class FakeTraversable:
+            """Not a Path subclass — simulates importlib.resources returning
+            a MultiplexedPath / zipfile.Path for a zipped install.
+            """
+
+            def __truediv__(self, _other):
+                return self
+
+        monkeypatch.setattr(
+            "clauditor.cli.files", lambda _pkg: FakeTraversable()
+        )
+
+        rc = main(["setup"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "stable filesystem path" in err
+        assert "zip" in err.lower() or "pex" in err.lower()
+
+    def test_remove_existing_tolerates_missing_path(self, tmp_path):
+        """_remove_existing on a path that does not exist is a no-op
+        (exotic/vanished type falls through to unlink(missing_ok=True)).
+        """
+        from clauditor import cli as cli_module
+
+        ghost = tmp_path / "never-existed"
+        assert not ghost.exists()
+
+        # Must not raise — exotic/missing type falls through to the
+        # missing-ok unlink branch.
+        cli_module._remove_existing(ghost)
+
+        assert not ghost.exists()
 
     def test_setup_unlink_race_target_already_gone(
         self, setup_env, monkeypatch, capsys
