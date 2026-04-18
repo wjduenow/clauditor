@@ -87,11 +87,12 @@ install clauditor` in the wild.
 - `test` job: `uv sync --dev` + `pytest --cov` on Python 3.11/3.12/3.13.
   **No `uv build`, no `pip install`.** Ticket claim confirmed.
 
-**Runtime cost baseline:** `uv build --wheel` completes in ~374 ms on
-this machine (Codebase Scout measurement). Resulting wheel is ~151 KB.
-This is fast enough that an in-suite pytest test is feasible without
-a `@pytest.mark.slow` gate, though a cold venv create will add
-seconds.
+**Runtime cost baseline:** `uv build --wheel` completes in ~374 ms
+(Session 1 Codebase Scout measurement, warm cache) / 472 ms (Session
+2 runtime agent re-measurement, cold cache). Resulting wheel is ~151
+KB. This is fast enough that an in-suite pytest test is feasible,
+though a cold venv create will add seconds. Budget validation below
+uses the conservative 472 ms number.
 
 **`pyproject.toml` anchors:**
 - `[project].version = "0.1.0"` (line 7) — what the stamp must equal.
@@ -376,13 +377,18 @@ setup` from a scratch dir without any marker exits 2. Assert exit
 code only. _Traces to:_ Q4=D + R5=A.
 
 **DEC-005 — Runtime + coverage.** <3 s total budget (empirically
-validated at 1.93 s for 8 projected tests). The E2E test is
-excluded from the 80 % coverage gate via a pytest marker +
-`.coveragerc` (or equivalent) entry. Subprocess coverage is NOT
-wired at this time; the decision to wire `COVERAGE_PROCESS_START` +
-`.coveragerc`'s `[run].concurrency = multiprocessing` can be a
-separate ticket if the `cli/setup.py` I/O-branch coverage gap
-becomes a concern. _Traces to:_ Q5=B.
+validated at 1.93 s for 8 projected tests). Exclusion from the 80 %
+coverage gate is **automatic, not explicit**: the E2E test spawns
+all clauditor code in a subprocess via `subprocess.run`, and
+subprocess coverage is NOT wired
+(no `COVERAGE_PROCESS_START`, no `.coveragerc` `[run].concurrency =
+multiprocessing`). The parent pytest's `--cov=clauditor` therefore
+records zero coverage contribution from this test — the 80 % gate
+measures only the unit tests' in-process coverage of the clauditor
+package, unchanged from before. **No `.coveragerc` edits required.**
+If a future ticket wants real coverage of `cli/setup.py`'s I/O
+branches, wire subprocess coverage as a separate decision and revisit
+this DEC. _Traces to:_ Q5=B.
 
 **DEC-006 — Windows guard.** Every test in the file is further
 guarded by `@pytest.mark.skipif(sys.platform == "win32",
@@ -450,6 +456,27 @@ contract, stderr is a hint). _Traces to:_ R5=A.
   written before `uv` became the canonical dev workflow; we do
   NOT touch it in #55. Future ticket may harmonize.
 
+### Tooling considerations (ticket AC #3)
+
+- **`pytest-xdist` safety:** the session-scoped wheel-build + venv
+  fixture is xdist-compatible because `UV_CACHE_DIR` is overridden
+  per-subprocess to `tmp_path / ".uv-cache"` (DEC-007) — each
+  `tmp_path` is unique per xdist worker, so there's no cross-
+  worker cache collision. Cost: each xdist worker pays its own
+  ~500 ms session setup; at 4-way parallelism the wall-clock is
+  unchanged (~2 s amortized across workers).
+- **`uv build` output stability:** `uv build --wheel` is
+  deterministic given a pinned `pyproject.toml` version. The
+  session-scoped fixture builds once per session, so any mid-
+  session version bump (e.g., a test that rewrites
+  `pyproject.toml`) would not trigger a rebuild. No test in the
+  proposed design rewrites `pyproject.toml`, so this is not a
+  present hazard; flag it for any future test that might.
+- **Session-scoped fixture + pytest teardown order:** the venv
+  directory lands under `tmp_path_factory.mktemp("e2e-venv")`,
+  which pytest cleans up at session end. No explicit teardown
+  hook needed.
+
 ---
 
 ## Detailed Breakdown
@@ -478,8 +505,8 @@ the plan doc).
       for bundled-skill packaging + setup round-trip (plan)`.
 - [ ] PR body links to issue #55 + summarizes each of DEC-001
       through DEC-009 in one line.
-- [ ] Plan doc's Meta section `PR:` field updated with the PR
-      URL and re-committed.
+- [x] Plan doc's Meta section `PR:` field updated with the PR
+      URL and re-committed. _(Done: commit `55f478a`.)_
 
 **Done when:** Draft PR URL pasted into the plan's `Meta.PR`
 field and the plan passes `pytest tests/test_bundled_skill.py` +
