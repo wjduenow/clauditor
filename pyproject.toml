@@ -65,6 +65,9 @@ select = ["E", "F", "I", "N", "W", "UP"]
 testpaths = ["tests"]
 asyncio_mode = "strict"
 addopts = "--import-mode=importlib --cov-fail-under=80"
+markers = [
+    "slow: end-to-end tests that build wheels and spin up venvs (~2s each; opt out via -m 'not slow')",
+]
 
 [dependency-groups]
 dev = [
