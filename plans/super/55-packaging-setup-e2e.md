@@ -4,8 +4,10 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/55
 - **Branch:** `feature/55-packaging-setup-e2e`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/55-packaging-setup-e2e`
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **PR:** https://github.com/wjduenow/clauditor/pull/57
+- **Follow-up implementation ticket:** https://github.com/wjduenow/clauditor/issues/58
+- **Beads epic:** `clauditor-8xk` (auto-closed after all 4 stories completed in-session)
 - **Sessions:** 1
 - **Last session:** 2026-04-18
 
@@ -637,7 +639,18 @@ to land real patterns before codifying them.
 ---
 
 ## Beads Manifest
-_(Phase 7 — epic ID, task IDs, dependencies.)_
+
+- **Epic:** `clauditor-8xk` — #55: E2E test for bundled-skill
+  packaging + setup round-trip (design). Auto-closed.
+- **Stories (all closed in-session; kept for audit trail):**
+  - `clauditor-8xk.1` — US-001 Commit plan doc + publish draft PR
+    (→ PR #57)
+  - `clauditor-8xk.2` — US-002 File follow-up implementation
+    ticket (→ GH issue #58). Depends on `.1`.
+  - `clauditor-8xk.3` — US-003 Quality Gate. Depends on `.1`.
+  - `clauditor-8xk.4` — US-004 Patterns & Memory (deferred to
+    #58). Depends on `.3`.
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/55-packaging-setup-e2e`.
 
 ---
 
@@ -666,6 +679,34 @@ _(Phase 7 — epic ID, task IDs, dependencies.)_
   branch `feature/55-packaging-setup-e2e` to origin, opened draft
   PR https://github.com/wjduenow/clauditor/pull/57 targeting `dev`.
   Meta.Phase bumped to `published`.
+
+### Session 3 — 2026-04-18 (approve + devolve)
+
+- User said "approve and devolve".
+- **Quality Gate (US-003):** code-reviewer pass 1 — 0 blockers,
+  3 concerns (C1 DEC-005 coverage mechanism ambiguity, C2 runtime
+  number drift 374ms→472ms, C3 AC#3 tooling considerations thin),
+  4 nits. Addressed C1/C2/C3 + N3/N4 in commit `986cf36`. Pass 2
+  verified clean.
+- **US-002 — Follow-up implementation ticket:** filed
+  https://github.com/wjduenow/clauditor/issues/58. Links back to
+  #55; body includes full DEC-001..009 summary, 3 seam-verification
+  targets, and 10-item acceptance-criteria checklist.
+- **US-004 — Patterns & Memory decision: DEFER.** Rationale:
+  the E2E test design in this plan introduces three candidate
+  patterns (session venv + per-test scratch, subprocess env
+  whitelist, `skipif(win32)` for symlink tests) that could become
+  `.claude/rules/*.md` entries. But stub rules without real code
+  to anchor them tend to drift. Existing rules
+  (`project-root-home-exclusion.md`, `subprocess-cwd.md`,
+  `pytester-inprocess-coverage-hazard.md`) cover all design
+  constraints cited in the plan. The follow-up implementation
+  ticket (#58) is the right moment to crystallize new rules —
+  the code will exist to anchor them, the patterns will have
+  been tested, and any surprise-learnings will have happened.
+  Codification at #58's own Patterns & Memory step.
+- Phase bumped to `devolved`. Beads epic + tasks recorded for
+  audit trail (all stories closed — work completed in-session).
 
 ### Session 1 — 2026-04-18
 
