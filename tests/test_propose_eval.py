@@ -910,3 +910,42 @@ class TestProposeEval:
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
         assert len(report.validation_errors) >= 1
+
+    @pytest.mark.asyncio
+    async def test_result_without_response_text_joins_text_blocks(
+        self, tmp_path: Path
+    ) -> None:
+        """Review #53 fallback path: if the SDK helper returns a result
+        object without a ``response_text`` attribute, ``propose_eval``
+        must join the ``text_blocks`` list rather than silently dropping
+        the response. Covers the ``getattr(result, "response_text",
+        None) is None`` branch in ``propose_eval``."""
+
+        class ResultWithoutResponseText:
+            """Stub shaped like ``AnthropicResult`` but missing
+            the pre-joined ``response_text`` attribute."""
+
+            def __init__(self, blocks: list[str]) -> None:
+                self.text_blocks = blocks
+                self.input_tokens = 10
+                self.output_tokens = 5
+                self.raw_message = None
+
+        pi = _make_propose_input()
+        # Split a valid JSON response across two text blocks so the
+        # join must happen for parsing to succeed.
+        full = _good_response_text()
+        half = len(full) // 2
+        split_result = ResultWithoutResponseText([full[:half], full[half:]])
+
+        with patch(
+            "clauditor._anthropic.call_anthropic",
+            AsyncMock(return_value=split_result),
+        ):
+            report = await propose_eval(pi, spec_dir=tmp_path)
+
+        # Joining the two blocks reconstructs valid JSON → spec parsed
+        # cleanly, no validation_errors and no api_error.
+        assert report.api_error is None
+        assert report.validation_errors == []
+        assert report.proposed_spec.get("test_args") == "hello world"
