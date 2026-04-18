@@ -36,15 +36,19 @@ entry point before running validate/grade.
    the path to a `SKILL.md` (or a legacy `.claude/commands/<name>.md`).
    Otherwise ask the user which skill to evaluate.
 
-2. **Locate the eval spec.** Look for a sibling file named
-   `<skill-name>.eval.json` next to the skill. For skill-directory layouts,
-   check `<skill-dir>/assets/<skill-name>.eval.json` as well. If neither
-   exists, proceed to Step 3 to bootstrap one.
+2. **Locate the eval spec.** Look for a sibling `.eval.json` next to the
+   skill — `clauditor validate`/`grade` auto-discover the path produced
+   by `skill_path.with_suffix('.eval.json')` (e.g. `foo.md` → `foo.eval.json`,
+   `SKILL.md` → `SKILL.eval.json`). Other layouts (for example
+   `<skill-dir>/assets/<skill-name>.eval.json`) are supported only via
+   an explicit `--eval <path>` flag. If no sibling exists, proceed to
+   Step 3 to bootstrap one.
 
 3. **Bootstrap eval spec if missing.** Use `clauditor propose-eval` — an
    LLM-assisted bootstrap that reads the SKILL.md (plus any captured skill
-   run) and proposes a full three-layer EvalSpec, writing a sibling
-   `<skill>.eval.json`. Start with `--dry-run` for a cost-free preview of
+   run) and proposes a full three-layer EvalSpec, writing
+   `<skill_stem>.eval.json` next to the file you pass (e.g. `SKILL.md` →
+   `SKILL.eval.json`). Start with `--dry-run` for a cost-free preview of
    the proposer prompt, review it, then drop the flag to write the spec:
 
    ```bash

@@ -27,14 +27,17 @@ skill to evaluate.
 
 **What Claude does:**
 
-1. Locates the skill's eval spec — a sibling `<skill-name>.eval.json`
-   file, or `<skill-dir>/assets/<skill-name>.eval.json` for directory
-   skills.
+1. Locates the skill's eval spec — the sibling `.eval.json` auto-discovered
+   by `skill_path.with_suffix('.eval.json')` (e.g. `SKILL.md` →
+   `SKILL.eval.json`). Other locations (for example
+   `<skill-dir>/assets/<skill-name>.eval.json`) require passing `--eval <path>`
+   explicitly.
 2. If no spec exists, bootstraps one via `clauditor propose-eval` —
-   an LLM-assisted bootstrap that writes a sibling `<skill>.eval.json`.
-   Claude starts with `--dry-run` for a cost-free preview of the
-   proposer prompt, reviews it with you, then drops the flag to write
-   the spec. See [`docs/cli-reference.md#propose-eval`](cli-reference.md#propose-eval)
+   an LLM-assisted bootstrap that writes `<skill_stem>.eval.json` next to
+   the file you pass. Claude starts with `--dry-run` for a cost-free
+   preview of the proposer prompt, reviews it with you, then drops the
+   flag to write the spec. See
+   [`docs/cli-reference.md#propose-eval`](cli-reference.md#propose-eval)
    for the full flag reference.
 3. Runs L1 validation first (`clauditor validate`) — free, sub-second,
    reports failing assertion ids.
