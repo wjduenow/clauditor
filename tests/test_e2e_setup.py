@@ -104,9 +104,19 @@ def e2e_venv(tmp_path_factory: pytest.TempPathFactory) -> Path:
     test error), never a skip.
     """
     # DEC-008: uv presence check — fail hard if missing.
-    probe = subprocess.run(
-        ["uv", "--version"], capture_output=True, text=True
-    )
+    # ``subprocess.run`` raises ``FileNotFoundError`` when ``uv`` is not on
+    # PATH at all (before it ever returns a CompletedProcess); catch that
+    # explicitly so the diagnostic RuntimeError actually fires.
+    try:
+        probe = subprocess.run(
+            ["uv", "--version"], capture_output=True, text=True
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "uv is required for E2E tests (DEC-008) but is not on PATH. "
+            "Install via `pip install uv` or `curl -LsSf "
+            "https://astral.sh/uv/install.sh | sh`."
+        ) from exc
     if probe.returncode != 0:
         raise RuntimeError(
             "uv is required for E2E tests (DEC-008). "
@@ -149,18 +159,22 @@ def scratch_project(tmp_path: Path) -> Path:
     return project
 
 
+def _write_empty_git_file(project: Path) -> None:
+    """Create an empty ``.git`` file (discards ``write_text``'s byte count)."""
+    (project / ".git").write_text("")
+
+
+def _make_claude_dir(project: Path) -> None:
+    (project / ".claude").mkdir()
+
+
 # DEC-003: parametrize ``.git`` as empty file (git-worktree style) + ``.claude``
 # as empty dir. ``.claude``-as-file is NOT parametrized — production code
-# rejects it.
+# rejects it. Using named helpers keeps the ``Callable[[Path], None]`` type
+# contract honest (lambdas over ``write_text`` leak an ``int`` return).
 _MARKER_PARAMS = [
-    pytest.param(
-        lambda project: (project / ".git").write_text(""),
-        id="git-worktree-file",
-    ),
-    pytest.param(
-        lambda project: (project / ".claude").mkdir(),
-        id="claude-dir",
-    ),
+    pytest.param(_write_empty_git_file, id="git-worktree-file"),
+    pytest.param(_make_claude_dir, id="claude-dir"),
 ]
 
 
