@@ -32,11 +32,11 @@ clauditor doctor                       # Report environment diagnostics
 
 ## propose-eval
 
-LLM-assisted EvalSpec bootstrap. `clauditor propose-eval <skill.md>` reads the SKILL.md file and (optionally) a captured skill run, asks Sonnet to propose a full three-layer EvalSpec (L1 assertions, L2 tiered extraction, L3 rubric), validates the proposal through `EvalSpec.from_dict`, and writes `eval.json` next to the SKILL.md. Use it to skip the blank-spec drudgery when onboarding a new skill.
+LLM-assisted EvalSpec bootstrap. `clauditor propose-eval <skill.md>` reads the SKILL.md file and (optionally) a captured skill run, asks Sonnet to propose a full three-layer EvalSpec (L1 assertions, L2 tiered extraction, L3 rubric), validates the proposal through `EvalSpec.from_dict`, and writes a sibling `<skill>.eval.json` next to the SKILL.md (the same path `SkillSpec.from_file` and `clauditor init` auto-discover). Use it to skip the blank-spec drudgery when onboarding a new skill.
 
 ### Required inputs
 
-- `<skill_md>` (positional) — path to the SKILL.md file. Its parent directory is the target for `eval.json`.
+- `<skill_md>` (positional) — path to the SKILL.md file. The generated spec is written to the sibling `<skill_stem>.eval.json` (e.g. `foo.md` → `foo.eval.json`, `SKILL.md` → `SKILL.eval.json`).
 
 ### Flags
 
@@ -44,7 +44,7 @@ LLM-assisted EvalSpec bootstrap. `clauditor propose-eval <skill.md>` reads the S
 | ---- | ------- |
 | `--from-capture PATH` | Override capture discovery with an explicit file. Wins over `--from-iteration`. |
 | `--from-iteration N` | Load the capture from `.clauditor/runs/iteration-N/<skill>/run-0/output.txt` (N must be a positive integer). |
-| `--force` | Overwrite an existing `eval.json` at `<skill_md_dir>/eval.json`. Without it, the command refuses with exit 1. |
+| `--force` | Overwrite an existing sibling `<skill>.eval.json`. Without it, the command refuses with exit 1. |
 | `--dry-run` | Print the built proposer prompt to stdout and exit; do not call Anthropic and do not write a file. Cost-free preview. |
 | `--model MODEL` | Override the proposer model (default: `claude-sonnet-4-6`). |
 | `--json` | Emit the full `ProposeEvalReport` JSON envelope on stdout (includes `schema_version`, tokens, duration, validation errors). |

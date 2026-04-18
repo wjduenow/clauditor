@@ -344,13 +344,19 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
 
     # DEC-006 row: success. Two output modes:
     # 1. --json: print the full report envelope (schema_version first).
-    # 2. default: write eval.json (respecting --force / DEC-003),
+    # 2. default: write <skill>.eval.json (respecting --force / DEC-003),
     #    print human summary.
     if args.json:
         print(report.to_json(), end="")
         return 0
 
-    target = skill_md_path.parent / "eval.json"
+    # Mirror the discovery convention used by `SkillSpec.from_file` and
+    # `clauditor init`: sibling file at `<skill_stem>.eval.json`
+    # (greeter.md → greeter.eval.json, SKILL.md → SKILL.eval.json).
+    # Writing to a non-conventional path (e.g. eval.json without the
+    # stem) would mean `validate`/`grade` can't auto-discover the
+    # generated spec without an explicit --eval flag (review #53).
+    target = skill_md_path.with_suffix(".eval.json")
     if target.exists() and not args.force:
         print(
             f"ERROR: {target} already exists (use --force to overwrite)",

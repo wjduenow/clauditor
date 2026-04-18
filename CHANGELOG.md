@@ -45,7 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bootstrap. Reads SKILL.md and an optional captured run, asks
   Sonnet to propose a full 3-layer EvalSpec (L1 assertions, L2
   tiered extraction, L3 rubric), validates the proposal through
-  `EvalSpec.from_dict`, and writes `eval.json` next to SKILL.md.
+  `EvalSpec.from_dict`, and writes the sibling `<skill>.eval.json`
+  (the same discovery path `SkillSpec.from_file` and
+  `clauditor init` use, so `validate` / `grade` auto-discover it).
   Captures are scrubbed through `transcripts.redact` (DEC-008) and
   the sidecar preserves the non-mutating-scrub invariant. See
   `docs/cli-reference.md#propose-eval` for flags and exit codes.

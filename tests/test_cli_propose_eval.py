@@ -78,7 +78,7 @@ class TestCmdProposeEval:
             rc = main(["propose-eval", str(skill_md)])
 
         assert rc == 0
-        target = skill_md.parent / "eval.json"
+        target = skill_md.with_suffix(".eval.json")
         assert target.exists()
         data = json.loads(target.read_text())
         assert data["assertions"][0]["id"] == "greets-user"
@@ -110,7 +110,7 @@ class TestCmdProposeEval:
             rc = main(["propose-eval", str(skill_md), "--dry-run"])
 
         assert rc == 0
-        target = skill_md.parent / "eval.json"
+        target = skill_md.with_suffix(".eval.json")
         assert not target.exists()
 
         out = capsys.readouterr().out
@@ -137,7 +137,7 @@ class TestCmdProposeEval:
             rc = main(["propose-eval", str(skill_md), "--json"])
 
         assert rc == 0
-        target = skill_md.parent / "eval.json"
+        target = skill_md.with_suffix(".eval.json")
         assert not target.exists()
 
         out = capsys.readouterr().out
@@ -156,7 +156,7 @@ class TestCmdProposeEval:
         self, tmp_path: Path, monkeypatch, capsys
     ):
         skill_md = _write_skill(tmp_path)
-        target = skill_md.parent / "eval.json"
+        target = skill_md.with_suffix(".eval.json")
         target.write_text("{}")
         monkeypatch.chdir(tmp_path)
 
@@ -179,7 +179,7 @@ class TestCmdProposeEval:
         self, tmp_path: Path, monkeypatch, capsys
     ):
         skill_md = _write_skill(tmp_path)
-        target = skill_md.parent / "eval.json"
+        target = skill_md.with_suffix(".eval.json")
         target.write_text("{}")
         monkeypatch.chdir(tmp_path)
 
@@ -253,7 +253,7 @@ class TestCmdProposeEval:
         err = capsys.readouterr().err
         assert "anthropic API error" in err
         # No file written on API failure.
-        assert not (skill_md.parent / "eval.json").exists()
+        assert not (skill_md.with_suffix(".eval.json")).exists()
 
     # ------------------------------------------------------------------
     # Parse error → exit 1 (parse_propose_eval_response: prefix)
@@ -279,7 +279,7 @@ class TestCmdProposeEval:
         assert rc == 1
         err = capsys.readouterr().err
         assert "parse_propose_eval_response" in err
-        assert not (skill_md.parent / "eval.json").exists()
+        assert not (skill_md.with_suffix(".eval.json")).exists()
 
     # ------------------------------------------------------------------
     # Validation error → exit 2
@@ -307,7 +307,7 @@ class TestCmdProposeEval:
         err = capsys.readouterr().err
         assert "validation error" in err
         assert "missing 'id'" in err
-        assert not (skill_md.parent / "eval.json").exists()
+        assert not (skill_md.with_suffix(".eval.json")).exists()
 
     # ------------------------------------------------------------------
     # --from-capture path override (with scrub)

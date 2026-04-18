@@ -604,9 +604,13 @@ async def propose_eval(
 
     input_tokens = result.input_tokens
     output_tokens = result.output_tokens
-    response_text = (
-        result.text_blocks[0] if result.text_blocks else ""
-    )
+    # Use the joined response_text so multi-block responses don't get
+    # silently truncated (review #53: SDK can split JSON across blocks).
+    # Fall back to joining text_blocks if the SDK returns a result
+    # without a pre-joined response_text attribute.
+    response_text = getattr(result, "response_text", None)
+    if response_text is None:
+        response_text = "".join(result.text_blocks) if result.text_blocks else ""
 
     try:
         proposed_spec = parse_propose_eval_response(response_text)

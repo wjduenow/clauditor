@@ -180,6 +180,14 @@ class EvalSpec:
         Raises ``ValueError`` on any structural problem in ``data`` — see
         the ``from_file`` test suite for the full error matrix.
         """
+        # Top-level shape guard: a JSON file whose top value is a list,
+        # scalar, or null would otherwise crash with AttributeError on
+        # the first `.get()` call below (review #53).
+        if not isinstance(data, dict):
+            raise ValueError(
+                "EvalSpec: top-level JSON value must be an object, "
+                f"got {type(data).__name__}"
+            )
         skill_name = data.get("skill_name", "")
         # Path resolution split (intentional): `input_files` are pre-existing
         # static assets and resolve HERE at load time, relative to

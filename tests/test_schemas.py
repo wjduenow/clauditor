@@ -1499,6 +1499,27 @@ class TestEvalSpecFromDict:
         assert spec.test_args == ""
         assert spec.input_files == []
 
+    @pytest.mark.parametrize(
+        "bad_payload",
+        [
+            [],                     # list
+            [{"skill_name": "x"}],  # list with a dict inside
+            "not a dict",           # bare string
+            42,                     # number
+            None,                   # null
+        ],
+    )
+    def test_non_dict_top_level_raises_value_error(
+        self, tmp_path, bad_payload
+    ):
+        """Review #53: a non-dict JSON top-level used to crash with
+        AttributeError on `.get()`; now it must surface a clean
+        ``ValueError`` for the caller to translate into exit-2."""
+        with pytest.raises(
+            ValueError, match="top-level JSON value must be an object"
+        ):
+            EvalSpec.from_dict(bad_payload, spec_dir=tmp_path)
+
     def test_full_spec_fields(self, tmp_path):
         spec = EvalSpec.from_dict(SAMPLE_EVAL, spec_dir=tmp_path)
         assert spec.skill_name == "find-kid-activities"
