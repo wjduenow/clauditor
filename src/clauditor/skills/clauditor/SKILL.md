@@ -6,7 +6,7 @@ metadata:
   clauditor-version: "0.0.0-dev"
 argument-hint: "[skill-path]"
 disable-model-invocation: true
-allowed-tools: Bash(clauditor *), Bash(uv run clauditor *)
+allowed-tools: Bash(clauditor *), Bash(clauditor propose-eval *), Bash(uv run clauditor *)
 ---
 
 # /clauditor — Validate and grade a Claude Code skill
@@ -28,6 +28,10 @@ explaining what it would do.
 
 ## Workflow
 
+If the skill already has a sibling `<skill>.eval.json`, jump to Step 4. If
+not, use `clauditor propose-eval` in Step 3 as the LLM-assisted bootstrap
+entry point before running validate/grade.
+
 1. **Identify the skill file.** If `$ARGUMENTS` is non-empty, treat it as
    the path to a `SKILL.md` (or a legacy `.claude/commands/<name>.md`).
    Otherwise ask the user which skill to evaluate.
@@ -35,10 +39,31 @@ explaining what it would do.
 2. **Locate the eval spec.** Look for a sibling file named
    `<skill-name>.eval.json` next to the skill. For skill-directory layouts,
    check `<skill-dir>/assets/<skill-name>.eval.json` as well. If neither
-   exists, ask the user whether to point at an explicit `--eval` path or
-   stop.
+   exists, proceed to Step 3 to bootstrap one.
 
-3. **Run L1 validation first.** It is fast and free:
+3. **Bootstrap eval spec if missing.** Use `clauditor propose-eval` — an
+   LLM-assisted bootstrap that reads the SKILL.md (plus any captured skill
+   run) and proposes a full three-layer EvalSpec, writing a sibling
+   `<skill>.eval.json`. Start with `--dry-run` for a cost-free preview of
+   the proposer prompt, review it, then drop the flag to write the spec:
+
+   ```bash
+   # Cost-free preview — prints the built prompt and exits, no Anthropic call.
+   uv run clauditor propose-eval <skill-path> --dry-run
+
+   # After reviewing the prompt, generate and write the sibling eval.json.
+   uv run clauditor propose-eval <skill-path>
+   ```
+
+   Capture discovery: `propose-eval` auto-discovers a captured skill run at
+   `tests/eval/captured/<skill>.txt` first, then `.clauditor/captures/<skill>.txt`.
+   If no capture exists, the proposer still runs against the SKILL.md alone
+   — but for a higher-quality proposal, run `clauditor capture <skill>`
+   first so the model sees real output. See
+   `docs/cli-reference.md#propose-eval` for the full flag reference
+   (`--from-capture`, `--from-iteration`, `--force`, `--model`, `--json`).
+
+4. **Run L1 validation first.** It is fast and free:
 
    ```bash
    uv run clauditor validate <skill-path>
@@ -49,7 +74,7 @@ explaining what it would do.
    assertion fails, report the failing ids and stop — grading a broken
    skill wastes tokens.
 
-4. **If L1 passes, offer L3 grading.** Ask the user to confirm (this
+5. **If L1 passes, offer L3 grading.** Ask the user to confirm (this
    costs Sonnet tokens):
 
    ```bash
@@ -61,7 +86,7 @@ explaining what it would do.
    Report the overall `pass_rate`, any failing criterion ids, and the
    path to the sidecar for follow-up.
 
-5. **Report concisely.** Surface:
+6. **Report concisely.** Surface:
    - Which layers ran (L1 / L2 / L3)
    - Pass/fail counts per layer
    - Sidecar paths the user can open to inspect full results
