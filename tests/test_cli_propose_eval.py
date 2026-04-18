@@ -613,6 +613,165 @@ class TestCmdProposeEval:
         assert "disk full" in err
 
     # ------------------------------------------------------------------
+    # Error-handler branches in --from-capture override + loader
+    # (codecov/patch gate — cover error-only branches that never fire
+    # through the happy-path tests above).
+    # ------------------------------------------------------------------
+
+    def test_from_capture_read_oserror_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """Trigger the generic OSError branch (not FileNotFoundError)
+        in _apply_from_capture_override — e.g. permission error on read."""
+        skill_md = _write_skill(tmp_path)
+        capture = tmp_path / "locked.txt"
+        capture.write_text("x\n")
+        monkeypatch.chdir(tmp_path)
+
+        real_read_text = Path.read_text
+
+        def _selective_read_text(self, *a, **kw):
+            if self == capture:
+                raise PermissionError("locked")
+            return real_read_text(self, *a, **kw)
+
+        with patch("pathlib.Path.read_text", new=_selective_read_text):
+            rc = main(
+                ["propose-eval", str(skill_md),
+                 "--from-capture", str(capture)]
+            )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "could not read capture file" in err
+
+    def test_from_capture_unicode_decode_error_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """Non-UTF-8 capture file surfaces as a pre-call input error."""
+        skill_md = _write_skill(tmp_path)
+        capture = tmp_path / "binary.txt"
+        capture.write_bytes(b"\xff\xfe\x00\x01not utf-8")
+        monkeypatch.chdir(tmp_path)
+
+        with patch(
+            "clauditor.cli.propose_eval.propose_eval",
+            new=AsyncMock(return_value=_make_report()),
+        ):
+            rc = main(
+                ["propose-eval", str(skill_md),
+                 "--from-capture", str(capture)]
+            )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "not valid UTF-8" in err
+
+    def test_from_capture_outside_project_dir_uses_absolute(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """When the capture path lives outside project_dir, the
+        relative_to() call raises and capture_source falls back to the
+        full string (covers the `except (ValueError, OSError)` branch)."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        skill_md = _write_skill(project_root)
+
+        # Capture lives in a sibling dir, NOT under project_root.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        capture = outside / "cap.txt"
+        capture.write_text("content\n")
+
+        monkeypatch.chdir(project_root)
+
+        captured = {}
+
+        async def _fake(pi, **kw):
+            captured["capture_source"] = pi.capture_source
+            return _make_report()
+
+        with patch("clauditor.cli.propose_eval.propose_eval", new=_fake):
+            rc = main(
+                ["propose-eval", str(skill_md),
+                 "--from-capture", str(capture)]
+            )
+        assert rc == 0
+        # Fallback path: absolute string, not a relative path.
+        assert captured["capture_source"] == str(capture)
+
+    def test_load_unicode_decode_error_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """SKILL.md with non-UTF-8 bytes → exit 2 via
+        ``_cmd_propose_eval_impl``'s UnicodeDecodeError handler."""
+        skill_dir = tmp_path / ".claude" / "skills" / "broken"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_bytes(b"---\nname: broken\n\xff\xfe not utf-8\n")
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(["propose-eval", str(skill_md)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "could not decode input file as UTF-8" in err
+
+    def test_load_oserror_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """OSError from loader (e.g. PermissionError on SKILL.md)
+        routes to exit 2."""
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        real_read_text = Path.read_text
+
+        def _selective_read_text(self, *a, **kw):
+            if self == skill_md:
+                raise PermissionError("locked skill.md")
+            return real_read_text(self, *a, **kw)
+
+        with patch("pathlib.Path.read_text", new=_selective_read_text):
+            rc = main(["propose-eval", str(skill_md)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "could not load SKILL.md" in err
+
+    def test_from_iteration_zero_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """--from-iteration 0 triggers the explicit `must be >= 1`
+        ValueError branch inside the try block."""
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(
+            ["propose-eval", str(skill_md), "--from-iteration", "0"]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--from-iteration must be a positive integer" in err
+        assert "must be >= 1" in err
+
+    def test_from_iteration_missing_output_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """--from-iteration N where the computed iteration path does
+        NOT exist routes through _apply_from_capture_override's
+        FileNotFoundError branch and returns 2 — covers the
+        `if rc is not None: return rc` branch at the --from-iteration
+        call site."""
+        skill_md = _write_skill(tmp_path, name="greeter")
+        # No .clauditor/runs/iteration-3/... staged, so the computed
+        # path won't exist.
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(
+            ["propose-eval", str(skill_md), "--from-iteration", "3"]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "capture file not found" in err
+
+    # ------------------------------------------------------------------
     # --project-dir override
     # ------------------------------------------------------------------
 
