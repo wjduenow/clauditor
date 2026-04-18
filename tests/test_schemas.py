@@ -1477,3 +1477,331 @@ class TestEvalSpecUserPrompt:
         path.write_text(json.dumps(original.to_dict()))
         loaded = EvalSpec.from_file(path)
         assert loaded.user_prompt == "Is ramen good?"
+
+
+class TestEvalSpecFromDict:
+    """Direct tests for :meth:`EvalSpec.from_dict` (DEC-007 of #52).
+
+    Mirror the coverage of ``TestFromFile`` against the in-memory
+    entry point. Every ``ValueError`` message must remain byte-
+    identical to the ``from_file`` path (callers and tests anchor on
+    substrings).
+    """
+
+    def test_valid_minimal_spec(self, tmp_path):
+        data = {"skill_name": "test"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.skill_name == "test"
+        assert spec.assertions == []
+        assert spec.sections == []
+        assert spec.grading_criteria == []
+        assert spec.grading_model == "claude-sonnet-4-6"
+        assert spec.test_args == ""
+        assert spec.input_files == []
+
+    @pytest.mark.parametrize(
+        "bad_payload",
+        [
+            [],                     # list
+            [{"skill_name": "x"}],  # list with a dict inside
+            "not a dict",           # bare string
+            42,                     # number
+            None,                   # null
+        ],
+    )
+    def test_non_dict_top_level_raises_value_error(
+        self, tmp_path, bad_payload
+    ):
+        """Review #53: a non-dict JSON top-level used to crash with
+        AttributeError on `.get()`; now it must surface a clean
+        ``ValueError`` for the caller to translate into exit-2."""
+        with pytest.raises(
+            ValueError, match="top-level JSON value must be an object"
+        ):
+            EvalSpec.from_dict(bad_payload, spec_dir=tmp_path)
+
+    def test_full_spec_fields(self, tmp_path):
+        spec = EvalSpec.from_dict(SAMPLE_EVAL, spec_dir=tmp_path)
+        assert spec.skill_name == "find-kid-activities"
+        assert len(spec.assertions) == 2
+        assert len(spec.sections) == 2
+        assert spec.sections[0].name == "Venues"
+        tier = spec.sections[0].tiers[0]
+        assert tier.label == "default"
+        assert tier.min_entries == 3
+        assert len(tier.fields) == 5
+
+    def test_empty_assertions_list_valid(self, tmp_path):
+        """Empty assertions list is allowed (not required to have any)."""
+        data = {"skill_name": "s", "assertions": []}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.assertions == []
+
+    def test_missing_skill_name_defaults_to_empty(self, tmp_path):
+        """Without a skill_name key, defaults to empty string (no path stem)."""
+        data: dict = {}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.skill_name == ""
+
+    def test_duplicate_assertion_id_rejected(self, tmp_path):
+        data = {
+            "skill_name": "s",
+            "assertions": [
+                {"id": "dup", "type": "contains", "value": "a"},
+                {"id": "dup", "type": "contains", "value": "b"},
+            ],
+        }
+        with pytest.raises(
+            ValueError, match=r"assertions\[1\]: duplicate id 'dup'"
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_duplicate_id_across_layers_rejected(self, tmp_path):
+        """An assertion id clashing with a grading_criterion id is rejected."""
+        data = {
+            "skill_name": "s",
+            "assertions": [
+                {"id": "shared", "type": "contains", "value": "x"},
+            ],
+            "grading_criteria": [
+                {"id": "shared", "criterion": "Is it good?"},
+            ],
+        }
+        with pytest.raises(ValueError, match=r"duplicate id 'shared'"):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_missing_assertion_id_rejected(self, tmp_path):
+        data = {
+            "skill_name": "s",
+            "assertions": [
+                {"id": "ok", "type": "contains", "value": "a"},
+                {"type": "contains", "value": "b"},
+            ],
+        }
+        with pytest.raises(
+            ValueError, match=r"assertions\[1\]: missing 'id'"
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_missing_field_id_rejected(self, tmp_path):
+        data = {
+            "skill_name": "s",
+            "sections": [
+                {
+                    "name": "S",
+                    "tiers": [
+                        {
+                            "label": "default",
+                            "min_entries": 1,
+                            "fields": [
+                                {"id": "ok", "name": "a", "required": True},
+                                {"name": "b", "required": True},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        with pytest.raises(
+            ValueError,
+            match=r"sections\[0\]\.tiers\[0\]\.fields\[1\]: missing 'id'",
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_missing_criterion_id_rejected(self, tmp_path):
+        data = {
+            "skill_name": "s",
+            "grading_criteria": [
+                {"id": "ok", "criterion": "a?"},
+                {"criterion": "b?"},
+            ],
+        }
+        with pytest.raises(
+            ValueError, match=r"grading_criteria\[1\]: missing 'id'"
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_grading_criteria_as_plain_strings_rejected(self, tmp_path):
+        """Criteria must be dicts with id+criterion, not plain strings."""
+        data = {
+            "skill_name": "s",
+            "grading_criteria": ["is it good?"],
+        }
+        with pytest.raises(
+            ValueError,
+            match=r"grading_criteria\[0\] — expected object, got str",
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_tiered_sections_shape_valid(self, tmp_path):
+        """Sections with the canonical tiered shape load fine."""
+        data = {
+            "skill_name": "s",
+            "sections": [
+                {
+                    "name": "Venues",
+                    "tiers": [
+                        {
+                            "label": "default",
+                            "min_entries": 2,
+                            "fields": [
+                                {"id": "fn", "name": "name", "required": True},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert len(spec.sections) == 1
+        assert spec.sections[0].tiers[0].min_entries == 2
+
+    def test_legacy_flat_sections_rejected(self, tmp_path):
+        """Legacy flat shape (``fields`` at top level) raises migration hint."""
+        data = {
+            "skill_name": "s",
+            "sections": [
+                {
+                    "name": "Venues",
+                    "fields": [
+                        {"id": "fn", "name": "name", "required": True},
+                    ],
+                }
+            ],
+        }
+        with pytest.raises(
+            ValueError, match=r"flat .fields. without .tiers"
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_sections_missing_tiers_rejected(self, tmp_path):
+        data = {
+            "skill_name": "s",
+            "sections": [{"name": "Venues"}],
+        }
+        with pytest.raises(ValueError, match=r"missing 'tiers'"):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_input_files_absolute_rejected(self, tmp_path):
+        data = {"skill_name": "s", "input_files": ["/etc/passwd"]}
+        with pytest.raises(ValueError, match="absolute"):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_input_files_missing_file_rejected(self, tmp_path):
+        data = {"skill_name": "s", "input_files": ["nope.csv"]}
+        with pytest.raises(ValueError, match="not found"):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_input_files_path_traversal_rejected(self, tmp_path):
+        """``../escape.csv`` resolves outside spec_dir and is rejected."""
+        subdir = tmp_path / "spec"
+        subdir.mkdir()
+        (tmp_path / "escape.csv").write_text("x")
+        data = {"skill_name": "s", "input_files": ["../escape.csv"]}
+        with pytest.raises(ValueError, match="escapes"):
+            EvalSpec.from_dict(data, spec_dir=subdir.resolve())
+
+    def test_input_files_resolves_against_spec_dir(self, tmp_path):
+        """Relative path resolves against the caller-provided spec_dir."""
+        f = tmp_path / "data.csv"
+        f.write_text("x")
+        data = {"skill_name": "s", "input_files": ["data.csv"]}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path.resolve())
+        assert spec.input_files == [str(f.resolve())]
+
+    def test_criterion_empty_string_rejected(self, tmp_path):
+        data = {
+            "skill_name": "s",
+            "grading_criteria": [{"id": "c1", "criterion": ""}],
+        }
+        with pytest.raises(
+            ValueError,
+            match=r"grading_criteria\[0\]: 'criterion' must be a non-empty string",
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_user_prompt_empty_string_rejected(self, tmp_path):
+        data = {"skill_name": "s", "user_prompt": "   "}
+        with pytest.raises(
+            ValueError, match="user_prompt must be a non-empty, non-whitespace"
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_from_file_delegates_to_from_dict(self, tmp_path):
+        """Loading via from_file yields the same spec as direct from_dict.
+
+        Covers every field on EvalSpec to catch a drift regression in
+        any branch of ``from_dict`` (per QG pass 2: the per-field
+        asserts this used to have missed ``sections`` / ``user_prompt``
+        / ``variance`` / etc).
+        """
+        import dataclasses
+
+        f = tmp_path / "data.csv"
+        f.write_text("x")
+        payload = {
+            "skill_name": "delegate-test",
+            "description": "d",
+            "user_prompt": "Do the thing",
+            "test_args": "--flag",
+            "assertions": [{"id": "a1", "type": "contains", "value": "ok"}],
+            "sections": [
+                {
+                    "name": "Items",
+                    "tiers": [
+                        {
+                            "label": "default",
+                            "min_entries": 1,
+                            "fields": [
+                                {
+                                    "id": "f1",
+                                    "name": "title",
+                                    "required": True,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+            "input_files": ["data.csv"],
+            "grading_criteria": [
+                {"id": "c1", "criterion": "Is it good?"},
+            ],
+        }
+        spec_path = tmp_path / "test.eval.json"
+        spec_path.write_text(json.dumps(payload))
+
+        via_file = EvalSpec.from_file(spec_path)
+        via_dict = EvalSpec.from_dict(payload, spec_dir=tmp_path.resolve())
+
+        # Byte-level equivalence via asdict — catches drift in any
+        # field (sections, user_prompt, trigger_tests, variance,
+        # grade_thresholds, output_file[s], grading_model, etc).
+        assert dataclasses.asdict(via_file) == dataclasses.asdict(via_dict)
+
+    def test_from_file_and_from_dict_emit_identical_value_errors(
+        self, tmp_path
+    ):
+        """Both paths must emit byte-identical ValueError messages.
+
+        Pre-1.0 convention + QG pass 2 concern: the class docstring
+        promises byte-identical error messages but every existing
+        match pattern was substring regex. This test pins one bad
+        payload and asserts equality on str(exc).
+        """
+        bad_payload = {
+            "skill_name": "s",
+            "assertions": [
+                # Missing 'id' field triggers _require_id failure.
+                {"type": "contains", "value": "ok"}
+            ],
+        }
+        spec_path = tmp_path / "bad.eval.json"
+        spec_path.write_text(json.dumps(bad_payload))
+
+        with pytest.raises(ValueError) as ei_file:
+            EvalSpec.from_file(spec_path)
+        with pytest.raises(ValueError) as ei_dict:
+            EvalSpec.from_dict(bad_payload, spec_dir=tmp_path.resolve())
+
+        assert str(ei_file.value) == str(ei_dict.value)

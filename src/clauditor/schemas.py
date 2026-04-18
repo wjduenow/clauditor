@@ -149,17 +149,50 @@ class EvalSpec:
 
     @classmethod
     def from_file(cls, path: str | Path) -> EvalSpec:
-        """Load an eval spec from a JSON file."""
-        path = Path(path)
-        with open(path) as f:
-            data = json.load(f)
+        """Load an eval spec from a JSON file.
 
-        skill_name = data.get("skill_name", path.stem)
-        spec_dir = path.parent.resolve()
+        Thin wrapper around :meth:`from_dict`: opens the file, decodes JSON,
+        and delegates validation/construction to ``from_dict``. The file's
+        parent directory is passed as ``spec_dir`` so that ``input_files``
+        path resolution (strict containment relative to the spec dir)
+        matches the previous behavior.
+        """
+        path = Path(path)
+        with path.open() as f:
+            data = json.load(f)
+        # Preserve the prior behavior where a missing ``skill_name`` in the
+        # JSON defaults to the file stem. Injected via a new dict so the
+        # caller's data is not mutated (non-mutating rule applies to the
+        # input they own on disk, but defensive here too).
+        if isinstance(data, dict) and "skill_name" not in data:
+            data = {"skill_name": path.stem, **data}
+        return cls.from_dict(data, spec_dir=path.parent.resolve())
+
+    @classmethod
+    def from_dict(cls, data: dict, spec_dir: Path) -> EvalSpec:
+        """Construct an :class:`EvalSpec` from an in-memory dict.
+
+        ``spec_dir`` is used for ``input_files`` path resolution (strict
+        containment, no absolute paths, no traversal out of ``spec_dir``).
+        All validation currently performed by :meth:`from_file` lives here;
+        ``from_file`` is a thin loader wrapper.
+
+        Raises ``ValueError`` on any structural problem in ``data`` — see
+        the ``from_file`` test suite for the full error matrix.
+        """
+        # Top-level shape guard: a JSON file whose top value is a list,
+        # scalar, or null would otherwise crash with AttributeError on
+        # the first `.get()` call below (review #53).
+        if not isinstance(data, dict):
+            raise ValueError(
+                "EvalSpec: top-level JSON value must be an object, "
+                f"got {type(data).__name__}"
+            )
+        skill_name = data.get("skill_name", "")
         # Path resolution split (intentional): `input_files` are pre-existing
-        # static assets and resolve HERE at load time, relative to the spec
-        # file's parent dir, with strict source-containment. `output_files`
-        # are runtime artifacts and resolve at run time against the runner's
+        # static assets and resolve HERE at load time, relative to
+        # ``spec_dir``, with strict source-containment. `output_files` are
+        # runtime artifacts and resolve at run time against the runner's
         # effective CWD (staging dir when inputs are declared, else
         # project_dir) — see `spec.py` `_collect_outputs` / `effective_cwd`.
         # Any new path-bearing field must pick a side of this split.
@@ -178,7 +211,7 @@ class EvalSpec:
                     f"input_files[{i}]={entry!r} — absolute paths not allowed"
                 )
             try:
-                candidate = (path.parent / entry).resolve(strict=True)
+                candidate = (spec_dir / entry).resolve(strict=True)
             except FileNotFoundError as e:
                 raise ValueError(
                     f"EvalSpec(skill_name={skill_name!r}): "
