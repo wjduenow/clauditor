@@ -4,8 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/54
 - **Branch:** `feature/54-teach-propose-eval`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/54-teach-propose-eval`
-- **Phase:** `detailing`
-- **PR:** _pending_
+- **Phase:** `published`
+- **PR:** https://github.com/wjduenow/clauditor/pull/56
 - **Sessions:** 1
 - **Last session:** 2026-04-17
 
