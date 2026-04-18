@@ -199,6 +199,22 @@ class TestSkillMdFrontmatter:
         )
 
 
+class TestSkillMdBody:
+    def test_body_mentions_propose_eval(
+        self, frontmatter_and_body: tuple[dict, str]
+    ) -> None:
+        # Regression guard (DEC-007 of
+        # plans/super/54-teach-propose-eval-workflow.md): the bundled
+        # SKILL.md body must reference `propose-eval` so Step 3 of the
+        # workflow (LLM-assisted eval bootstrap) does not silently
+        # disappear on a future edit.
+        _, body = frontmatter_and_body
+        assert "propose-eval" in body, (
+            "bundled SKILL.md body must mention 'propose-eval' "
+            "(DEC-007 regression guard)"
+        )
+
+
 class TestBundledEvalSpec:
     def test_eval_spec_loads_via_eval_spec_from_file(self) -> None:
         # This must not raise — a raise here means the bundled eval spec
