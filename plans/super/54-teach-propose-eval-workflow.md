@@ -4,7 +4,7 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/54
 - **Branch:** `feature/54-teach-propose-eval`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/54-teach-propose-eval`
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **PR:** https://github.com/wjduenow/clauditor/pull/56
 - **Sessions:** 1
 - **Last session:** 2026-04-17
@@ -321,4 +321,25 @@ pulls its weight; otherwise just update memory.
 
 ## Beads Manifest
 
-_Pending devolve phase._
+**Worktree:** `/home/wesd/dev/worktrees/clauditor/54-teach-propose-eval`
+**Branch:** `feature/54-teach-propose-eval`
+
+| Role | Bead ID | Title |
+|---|---|---|
+| Epic | `clauditor-3kj` | #54: Teach /clauditor skill the propose-eval workflow |
+| US-001 | `clauditor-smv` | Rewrite SKILL.md Workflow with propose-eval bootstrap step |
+| US-002 | `clauditor-axx` | Sync docs/skill-usage.md and README.md to 6-step workflow |
+| US-003 | `clauditor-bih` | Regression assertion for SKILL.md mentions propose-eval |
+| Quality Gate | `clauditor-njj` | Code review x4 + CodeRabbit + wheel round-trip verification |
+| Patterns & Memory | `clauditor-c10` | Codify bundled-skill docs-sync pattern |
+
+**Dependency graph:**
+
+```
+US-001 ──┬── US-002 ──┐
+         ├── US-003 ──┼── Quality Gate ── Patterns & Memory
+         └───────────┘
+```
+
+**Ready queue at devolve time:** `clauditor-smv` (US-001) is the only
+unblocked implementation task.
