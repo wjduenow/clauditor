@@ -29,12 +29,18 @@ skill to evaluate.
 
 1. Locates the skill's eval spec — a sibling `<skill-name>.eval.json`
    file, or `<skill-dir>/assets/<skill-name>.eval.json` for directory
-   skills. If neither exists, Claude asks you to author one or stops.
-2. Runs L1 validation first (`clauditor validate`) — free, sub-second,
+   skills.
+2. Bootstraps a missing spec via `clauditor propose-eval` — an
+   LLM-assisted bootstrap that writes a sibling `<skill>.eval.json`.
+   Claude starts with `--dry-run` for a cost-free preview of the
+   proposer prompt, reviews it with you, then drops the flag to write
+   the spec. See [`docs/cli-reference.md#propose-eval`](cli-reference.md#propose-eval)
+   for the full flag reference.
+3. Runs L1 validation first (`clauditor validate`) — free, sub-second,
    reports failing assertion ids.
-3. If L1 passes, asks before running L3 grading (`clauditor grade`) —
+4. If L1 passes, asks before running L3 grading (`clauditor grade`) —
    costs Sonnet tokens, writes a full `grading.json` sidecar.
-4. Summarizes: which layers ran, pass/fail counts, sidecar paths you
+5. Summarizes: which layers ran, pass/fail counts, sidecar paths you
    can open for details.
 
 **When to use `/clauditor` vs. the CLI directly:**
