@@ -94,8 +94,9 @@ entry point before running validate/grade.
 
 ## Common errors
 
-- **`no eval spec found`** — the skill has no sibling `.eval.json`. Ask
-  the user to author one or point `--eval` at an existing spec.
+- **`no eval spec found`** — the skill has no sibling `.eval.json`.
+  Offer `clauditor propose-eval` to bootstrap one (Step 3), or point
+  `--eval` at an existing spec.
 - **`duplicate id` / `missing id`** — every assertion, field, and
   criterion needs a unique string `id`. Edit the spec and re-run.
 - **`no project root found`** — `clauditor` expects to run inside a

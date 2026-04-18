@@ -30,8 +30,8 @@ skill to evaluate.
 1. Locates the skill's eval spec — a sibling `<skill-name>.eval.json`
    file, or `<skill-dir>/assets/<skill-name>.eval.json` for directory
    skills.
-2. Bootstraps a missing spec via `clauditor propose-eval` — an
-   LLM-assisted bootstrap that writes a sibling `<skill>.eval.json`.
+2. If no spec exists, bootstraps one via `clauditor propose-eval` —
+   an LLM-assisted bootstrap that writes a sibling `<skill>.eval.json`.
    Claude starts with `--dry-run` for a cost-free preview of the
    proposer prompt, reviews it with you, then drops the flag to write
    the spec. See [`docs/cli-reference.md#propose-eval`](cli-reference.md#propose-eval)
