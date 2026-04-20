@@ -170,6 +170,13 @@ def derive_project_dir(skill_path: Path) -> Path:
          ``<project>/.claude/commands/<name>.md`` and the 3-deep ascent
          lands at ``<project>``.
 
+    Note: the fallback assumes the documented layout depth. A skill
+    placed at an unusually shallow path (e.g. ``/a/SKILL.md``) would
+    see the ascent saturate at the filesystem root — but such a
+    placement is not valid under either layout convention, and the
+    marker-walk step normally short-circuits the fallback anyway for
+    any real repo.
+
     Pure — no I/O beyond the marker-walk inside ``find_project_root``.
     """
     # Local import avoids a circular dependency: ``clauditor.setup``
