@@ -835,7 +835,7 @@ Notes contain "evaluated X, Y, Z — chose to defer because …".
 
 ### Follow-ups filed
 
-- *(to be populated by US-005 — GitHub issue number for semantic-key schema redesign)*
+- **#67** — Redesign assertion schema with per-type semantic keys. Filed per DEC-009. URL: https://github.com/wjduenow/clauditor/issues/67
 
 ### Ready to work
 
