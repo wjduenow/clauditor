@@ -88,11 +88,14 @@ def _load_spec_or_report(
     Returns the loaded spec on success. On ``FileNotFoundError`` (the
     skill ``.md`` is missing), prints an ``ERROR:`` line to stderr that
     names the path AND suggests ``clauditor init`` as the next step,
-    then returns ``None``. On other ``OSError`` subclasses
-    (``PermissionError``, ``IsADirectoryError``, etc.), prints
-    ``ERROR: cannot read {path}: {exc}`` to stderr and returns
-    ``None``. Callers map ``None`` to exit code 2 (input error, per
-    DEC-008 / DEC-010) rather than letting the traceback escape.
+    then returns ``None``. On other unreadable-file errors — any
+    ``OSError`` subclass (``PermissionError``, ``IsADirectoryError``,
+    etc.) and ``UnicodeDecodeError`` (for example, a non-UTF-8 skill
+    file, which ``SkillSpec.from_file`` surfaces via
+    ``read_text(encoding="utf-8")``) — prints ``ERROR: cannot read
+    {path}: {exc}`` to stderr and returns ``None``. Callers map
+    ``None`` to exit code 2 (input error, per DEC-008 / DEC-010)
+    rather than letting the traceback escape.
 
     Note the ``except`` order: ``FileNotFoundError`` is a subclass of
     ``OSError``, so its branch must come first to preserve the

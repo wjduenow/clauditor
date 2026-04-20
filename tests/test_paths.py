@@ -69,6 +69,54 @@ class TestResolveClauditorDir:
         assert result != fake_home / ".clauditor"
         assert result == project / ".clauditor"
 
+    def test_home_lookup_failure_falls_through(
+        self, tmp_path, monkeypatch
+    ):
+        """``Path.home().resolve()`` failure degrades to ``home = None``.
+
+        Exercises the defensive ``except (RuntimeError, OSError)`` guard
+        at the top of :func:`resolve_clauditor_dir`. In containerized or
+        rootless environments where ``$HOME`` is unset, ``Path.home()``
+        raises ``RuntimeError``; the walk continues without the
+        home-exclusion and the legitimate ``.git`` marker still wins.
+        """
+        (tmp_path / ".git").mkdir()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "clauditor.paths.Path.home",
+            lambda: (_ for _ in ()).throw(RuntimeError("no HOME")),
+        )
+        assert resolve_clauditor_dir() == tmp_path / ".clauditor"
+
+    def test_candidate_resolve_failure_uses_unresolved(
+        self, tmp_path, monkeypatch
+    ):
+        """``candidate.resolve()`` failure degrades to the raw candidate.
+
+        Exercises the defensive ``except OSError`` guard in the marker-
+        walk loop. On filesystems where ``resolve()`` fails mid-walk
+        (transient I/O error, broken symlink chain), the helper falls
+        back to the unresolved candidate for the home comparison and
+        keeps walking.
+        """
+        (tmp_path / ".git").mkdir()
+        monkeypatch.chdir(tmp_path)
+
+        real_resolve = Path.resolve
+
+        def flaky_resolve(self, strict=False):
+            # Raise only for the candidate passed to the loop's resolve;
+            # let Path.home().resolve() succeed so the home lookup lands
+            # and the at_home guard still runs.
+            if self == tmp_path:
+                raise OSError("I/O error")
+            return real_resolve(self, strict=strict)
+
+        monkeypatch.setattr(
+            "clauditor.paths.Path.resolve", flaky_resolve
+        )
+        assert resolve_clauditor_dir() == tmp_path / ".clauditor"
+
 
 class TestSkillNameRe:
     def test_matches_known_good_identifier(self):

@@ -35,14 +35,11 @@ def derive_skill_name(
     except ValueError:
         return fs_name, None  # malformed frontmatter → treat as absent
 
-    if not isinstance(parsed, dict):
-        return fs_name, None
+    if not isinstance(parsed, dict) or "name" not in parsed:
+        return fs_name, None  # no name: key → silent fallback
 
-    fm_name = parsed.get("name")
-    if not isinstance(fm_name, str):
-        return fs_name, None  # missing or non-string → silent fallback
-
-    if not re.fullmatch(SKILL_NAME_RE, fm_name):
+    fm_name = parsed["name"]
+    if not isinstance(fm_name, str) or re.fullmatch(SKILL_NAME_RE, fm_name) is None:
         return fs_name, (
             f"clauditor.spec: frontmatter name {fm_name!r} is not a "
             f"valid skill identifier — using {fs_name!r}"
