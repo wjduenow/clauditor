@@ -11,6 +11,8 @@ import clauditor.schemas as _schemas_mod
 importlib.reload(_schemas_mod)
 
 from clauditor.schemas import (  # noqa: E402
+    ASSERTION_TYPE_REQUIRED_KEYS,
+    AssertionKeySpec,
     EvalSpec,
     FieldRequirement,
     GradeThresholds,
@@ -1805,3 +1807,82 @@ class TestEvalSpecFromDict:
             EvalSpec.from_dict(bad_payload, spec_dir=tmp_path.resolve())
 
         assert str(ei_file.value) == str(ei_dict.value)
+
+
+class TestAssertionKeySpec:
+    """Tests for ``AssertionKeySpec`` + ``ASSERTION_TYPE_REQUIRED_KEYS``
+    (DEC-008 of #61). The constant is the single source of truth that
+    the loader validator (US-002) and the ``propose-eval`` prompt
+    builder (US-003) both consume.
+    """
+
+    EXPECTED_REQUIRED_KEYS: dict[str, set[str]] = {
+        "contains": {"value"},
+        "not_contains": {"value"},
+        "regex": {"value"},
+        "min_count": {"value", "minimum"},
+        "min_length": {"value"},
+        "max_length": {"value"},
+        "has_urls": {"value"},
+        "has_entries": {"value"},
+        "urls_reachable": {"value"},
+        "has_format": {"format", "value"},
+    }
+
+    def test_constant_contains_all_ten_assertion_types(self):
+        """The constant's keys are exactly the 10 canonical types."""
+        assert set(ASSERTION_TYPE_REQUIRED_KEYS.keys()) == set(
+            self.EXPECTED_REQUIRED_KEYS.keys()
+        )
+        assert len(ASSERTION_TYPE_REQUIRED_KEYS) == 10
+
+    @pytest.mark.parametrize(
+        "atype,expected",
+        sorted(EXPECTED_REQUIRED_KEYS.items(), key=lambda pair: pair[0]),
+    )
+    def test_contains_expected_required_keys(self, atype, expected):
+        """Each type's ``required`` set matches the canonical spec."""
+        spec = ASSERTION_TYPE_REQUIRED_KEYS[atype]
+        assert isinstance(spec, AssertionKeySpec)
+        assert spec.required == frozenset(expected)
+        # Required set is a frozenset (dataclass is frozen; the field
+        # type is the load-bearing hashable contract for downstream
+        # callers that want to use these as dict keys or set members).
+        assert isinstance(spec.required, frozenset)
+
+    def test_handler_signature_agrees_with_constant(self):
+        """Drift guard: every required key appears in the handler's
+        lambda source as a quoted key name.
+
+        Catches a future handler edit that silently drops a key (e.g.
+        swapping ``a.get("format", "")`` for ``a.get("fmt", "")`` in
+        the ``has_format`` handler). Uses ``inspect.getsource`` on each
+        ``_ASSERTION_HANDLERS`` entry and looks for the key as a
+        single- or double-quoted literal substring.
+        """
+        import inspect
+
+        from clauditor.assertions import _ASSERTION_HANDLERS
+
+        # The constant and the dispatch table must cover the same
+        # type set first; otherwise the per-handler check below could
+        # silently pass by not iterating over the missing type.
+        assert set(ASSERTION_TYPE_REQUIRED_KEYS.keys()) == set(
+            _ASSERTION_HANDLERS.keys()
+        )
+
+        for atype, spec in ASSERTION_TYPE_REQUIRED_KEYS.items():
+            handler = _ASSERTION_HANDLERS[atype]
+            source = inspect.getsource(handler)
+            for key in spec.required:
+                double_quoted = f'"{key}"'
+                single_quoted = f"'{key}'"
+                assert (
+                    double_quoted in source or single_quoted in source
+                ), (
+                    f"handler for type={atype!r} does not reference "
+                    f"required key {key!r} in its source "
+                    f"(expected {double_quoted!r} or "
+                    f"{single_quoted!r} substring); source was: "
+                    f"{source!r}"
+                )
