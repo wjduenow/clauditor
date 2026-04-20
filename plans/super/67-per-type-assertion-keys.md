@@ -4,7 +4,7 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/67
 - **Branch:** `feature/67-per-type-assertion-keys`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/67-per-type-assertion-keys`
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **PR:** https://github.com/wjduenow/clauditor/pull/69
 - **Sessions:** 1
 - **Last session:** 2026-04-20
@@ -1020,4 +1020,22 @@ Notes contain "evaluated X, Y, Z — chose to defer because …".
 
 ## Beads Manifest
 
-*(Phase 7 — populated on devolve.)*
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/67-per-type-assertion-keys`
+- **Branch:** `feature/67-per-type-assertion-keys`
+- **PR:** https://github.com/wjduenow/clauditor/pull/69
+
+### Task graph
+
+| Bead ID | Story | Priority | Depends on |
+|---|---|---|---|
+| `clauditor-xo7` | Epic — #67: Redesign assertion schema with per-type semantic keys | P2 | — |
+| `clauditor-xo7.1` | US-001 — Rename assertion keys in constant, handlers, and drift-hints | P2 | none (ready) |
+| `clauditor-xo7.2` | US-002 — Migrate in-repo eval specs and cli/init.py scaffolding | P2 | US-001 |
+| `clauditor-xo7.3` | US-003 — Migrate test fixtures and drop stale hint tests | P2 | US-001 |
+| `clauditor-xo7.4` | US-004 — Update docs, README, and propose-eval prompt prose | P2 | US-001 |
+| `clauditor-xo7.5` | US-005 — Quality Gate (code-reviewer ×4 + CodeRabbit + validation) | P2 | US-001, US-002, US-003, US-004 |
+| `clauditor-xo7.6` | US-006 — Patterns & Memory (rules and docs from redesign) | P3 | US-005 |
+
+### Ready to work
+
+- `clauditor-xo7.1` (US-001) — **entry point; US-002, US-003, US-004 unblock in parallel once this lands.**
