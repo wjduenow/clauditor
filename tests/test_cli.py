@@ -2778,6 +2778,83 @@ class TestCmdInit:
         data = json.loads(eval_path.read_text())
         assert data["skill_name"] == "my-skill"
 
+    def test_init_modern_layout_uses_parent_dir_name(self, tmp_path):
+        """Modern layout (``<dir>/SKILL.md``) derives name from parent dir
+        via frontmatter ``name:`` — not the ``"SKILL"`` file stem."""
+        skill_dir = tmp_path / ".claude" / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text(
+            "---\n"
+            "name: foo\n"
+            "description: A test skill\n"
+            "---\n"
+            "\n"
+            "# Body\n"
+        )
+
+        rc = main(["init", str(skill_path)])
+
+        assert rc == 0
+        eval_path = skill_dir / "SKILL.eval.json"
+        assert eval_path.exists()
+        data = json.loads(eval_path.read_text())
+        assert data["skill_name"] == "foo"
+        assert data["description"] == "Eval spec for /foo"
+
+    def test_init_missing_skill_file(self, tmp_path, capsys):
+        """Missing skill file exits 1 with a descriptive stderr error."""
+        skill_path = tmp_path / "does-not-exist.md"
+
+        rc = main(["init", str(skill_path)])
+
+        assert rc == 1
+        assert "skill file not found" in capsys.readouterr().err
+
+    def test_init_unreadable_skill_file(self, tmp_path, capsys):
+        """OSError while reading the skill file exits 1 with an error message
+        that includes the underlying exception string."""
+        skill_path = tmp_path / "foo.md"
+        skill_path.write_text("# foo")
+
+        with patch(
+            "clauditor.cli.init.Path.read_text",
+            side_effect=OSError("Permission denied"),
+        ):
+            rc = main(["init", str(skill_path)])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "cannot read" in err
+        assert "Permission denied" in err
+
+    def test_init_warns_on_frontmatter_disagreement(self, tmp_path, capsys):
+        """When frontmatter ``name:`` disagrees with the filesystem-derived
+        name, stderr carries the DEC-009 warning and frontmatter wins."""
+        skill_dir = tmp_path / ".claude" / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text(
+            "---\n"
+            "name: bar\n"
+            "description: Disagreement test\n"
+            "---\n"
+            "\n"
+            "# Body\n"
+        )
+
+        rc = main(["init", str(skill_path)])
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "clauditor.spec:" in captured.err
+        assert "'bar'" in captured.err
+        assert "'foo'" in captured.err
+        eval_path = skill_dir / "SKILL.eval.json"
+        data = json.loads(eval_path.read_text())
+        assert data["skill_name"] == "bar"
+        assert data["description"] == "Eval spec for /bar"
+
 
 @pytest.fixture
 def setup_env(tmp_path, monkeypatch):

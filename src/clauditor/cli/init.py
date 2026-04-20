@@ -7,6 +7,8 @@ import json
 import sys
 from pathlib import Path
 
+from clauditor.paths import derive_skill_name
+
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``init`` subparser."""
@@ -31,9 +33,23 @@ def cmd_init(args: argparse.Namespace) -> int:
         )
         return 1
 
+    if not skill_path.is_file():
+        print(f"ERROR: skill file not found: {skill_path}", file=sys.stderr)
+        return 1
+
+    try:
+        skill_md_text = skill_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"ERROR: cannot read {skill_path}: {exc}", file=sys.stderr)
+        return 1
+
+    skill_name, warning = derive_skill_name(skill_path, skill_md_text)
+    if warning is not None:
+        print(warning, file=sys.stderr)
+
     starter = {
-        "skill_name": skill_path.stem,
-        "description": f"Eval spec for /{skill_path.stem}",
+        "skill_name": skill_name,
+        "description": f"Eval spec for /{skill_name}",
         "test_args": "",
         "assertions": [
             {"id": "min_length_500", "type": "min_length", "value": "500"},
