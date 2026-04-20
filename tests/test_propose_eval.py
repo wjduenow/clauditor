@@ -439,6 +439,81 @@ class TestBuildProposeEvalPrompt:
         # Should not raise.
         _ = build_propose_eval_prompt(pi)
 
+    def test_prompt_contains_per_type_table(self) -> None:
+        """DEC-003 / DEC-008 of #61 — the prompt must enumerate each
+        assertion type's required keys (rendered from
+        ``ASSERTION_TYPE_REQUIRED_KEYS``) so the model has a literal
+        reference table for key names.
+        """
+        pi = _make_propose_input()
+        prompt = build_propose_eval_prompt(pi)
+        # 1-key shape.
+        assert "contains → required: value" in prompt
+        # 2-key-different-shape (format + value). Keys sorted
+        # alphabetically → ``format`` precedes ``value``.
+        assert "has_format → required: format, value" in prompt
+        # 2-key-same-shape (value + minimum). Keys sorted
+        # alphabetically → ``minimum`` precedes ``value``. (The
+        # bead's instructions gave the sample as "value, minimum"
+        # but also stated "sorted alphabetically"; the latter rule
+        # governs the rendered order and the other sample —
+        # ``has_format → required: format, value`` — confirms
+        # ASCII-alphabetical ordering.)
+        assert "min_count → required: minimum, value" in prompt
+        # Additional type rows to broaden coverage.
+        assert "not_contains → required: value" in prompt
+        assert "regex → required: value" in prompt
+        assert "has_urls → required: value" in prompt
+        assert "has_entries → required: value" in prompt
+        assert "urls_reachable → required: value" in prompt
+        assert "min_length → required: value" in prompt
+        assert "max_length → required: value" in prompt
+
+    def test_prompt_has_no_alias_keys(self) -> None:
+        """The drift-source ellipsis ("pattern", "min", "max" alias
+        key names) must not appear in the new prompt — per DEC-003
+        of #61, these keys are *not* accepted by the validator.
+        """
+        pi = _make_propose_input()
+        prompt = build_propose_eval_prompt(pi)
+        # Alias JSON key-name literals must not appear.
+        assert '"pattern"' not in prompt
+        assert '"min"' not in prompt
+        assert '"max"' not in prompt
+        # The old drift-source line must also be gone verbatim.
+        assert 'e.g. "value", "pattern"' not in prompt
+
+    def test_prompt_table_is_rendered_from_constant(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The per-type table is RENDERED from
+        ``ASSERTION_TYPE_REQUIRED_KEYS`` at call time, not hardcoded
+        — monkeypatching the constant must change the rendered rows.
+        """
+        from clauditor.schemas import AssertionKeySpec
+
+        fake_constant = {
+            "fake_type_a": AssertionKeySpec(
+                required=frozenset({"fake_key"})
+            ),
+            "fake_type_b": AssertionKeySpec(
+                required=frozenset({"k1", "k2"})
+            ),
+        }
+        monkeypatch.setattr(
+            "clauditor.propose_eval.ASSERTION_TYPE_REQUIRED_KEYS",
+            fake_constant,
+        )
+        pi = _make_propose_input()
+        prompt = build_propose_eval_prompt(pi)
+        assert "fake_type_a → required: fake_key" in prompt
+        assert "fake_type_b → required: k1, k2" in prompt
+        # The real rows must NOT be present — proves the table came
+        # from the (monkeypatched) constant, not from a hardcoded
+        # string.
+        assert "contains → required" not in prompt
+        assert "min_count → required" not in prompt
+
 
 # --------------------------------------------------------------------------
 # TestEstimateTokens
