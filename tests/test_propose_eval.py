@@ -1551,7 +1551,7 @@ class TestValidateProposedSpecNonListFields:
         assert "got dict" in errors[0]
 
 
-class TestSinglePropseAttemptImportError:
+class TestSingleProposeAttemptImportError:
     """Covers the defensive ``ImportError`` branch in
     :func:`_single_propose_attempt` when the ``anthropic`` SDK (imported
     lazily inside the attempt) is not installed. The attempt returns
