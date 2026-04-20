@@ -19,6 +19,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass
@@ -37,6 +38,13 @@ class SkillResult:
     args: str
     duration_seconds: float = 0.0
     error: str | None = None
+    # runtime-only — do not serialize to sidecars without bumping schema_version
+    error_category: (
+        Literal[
+            "rate_limit", "auth", "api", "interactive", "subprocess", "timeout"
+        ]
+        | None
+    ) = None
     outputs: dict[str, str] = field(default_factory=dict)
     input_tokens: int = 0
     output_tokens: int = 0
@@ -47,6 +55,26 @@ class SkillResult:
     @property
     def succeeded(self) -> bool:
         return self.exit_code == 0 and self.output.strip() != ""
+
+    @property
+    def succeeded_cleanly(self) -> bool:
+        """True only when the run had zero error signals.
+
+        Stricter than :attr:`succeeded`: requires no ``error`` text,
+        no ``error_category``, and no interactive-hang warning tag in
+        ``warnings``. US-003 wires the real interactive-hang detector
+        to this ``"interactive-hang:"`` prefix.
+        """
+        if not self.succeeded:
+            return False
+        if self.error is not None:
+            return False
+        if self.error_category is not None:
+            return False
+        for w in self.warnings:
+            if w.startswith("interactive-hang:"):
+                return False
+        return True
 
 
 class SkillRunner:

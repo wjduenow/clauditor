@@ -79,6 +79,7 @@ def make_fake_skill_stream(
     input_tokens: int = 100,
     output_tokens: int = 50,
     extra_messages: list[dict] | None = None,
+    error_text: str | None = None,
 ) -> _FakePopen:
     """Build a ``_FakePopen`` emitting a realistic stream-json sequence.
 
@@ -86,6 +87,12 @@ def make_fake_skill_stream(
       1. one assistant message with a single ``text`` block containing ``text``
       2. any ``extra_messages`` verbatim, in order
       3. a final ``result`` message carrying token usage
+
+    When ``error_text`` is not ``None``, the final ``result`` message
+    carries ``is_error: True`` and ``result: <error_text>`` (per DEC-014
+    of ``plans/super/63-runner-error-surfacing.md``). The default
+    (``error_text=None``) preserves today's ``is_error: False`` output
+    byte-for-byte so every pre-existing test keeps working.
     """
     messages: list[dict] = [
         {
@@ -98,17 +105,78 @@ def make_fake_skill_stream(
     ]
     if extra_messages:
         messages.extend(extra_messages)
-    messages.append(
+    result_msg: dict = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        },
+    }
+    if error_text is not None:
+        result_msg["is_error"] = True
+        result_msg["result"] = error_text
+    messages.append(result_msg)
+    return _FakePopen([json.dumps(m) for m in messages])
+
+
+def make_fake_interactive_hang_stream(
+    text: str = "What would you like?",
+    use_tool_use: bool = False,
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+) -> _FakePopen:
+    """Build a ``_FakePopen`` emitting an interactive-hang stream-json sequence.
+
+    Models the failure mode where a skill ends its single turn by
+    asking the user a clarifying question (per DEC-014 of
+    ``plans/super/63-runner-error-surfacing.md``):
+
+      - A single ``assistant`` message with ``stop_reason: "end_turn"``.
+        Its content is either a single ``text`` block ending in ``?``
+        (when ``use_tool_use=False``) or a ``text`` block *and* a
+        ``tool_use`` block for ``AskUserQuestion`` (when
+        ``use_tool_use=True``).
+      - A final ``result`` message with ``is_error: False``,
+        ``subtype: "success"``, ``num_turns: 1`` (so downstream
+        detection can check the turn count), and the usual
+        ``usage`` block.
+
+    The caller is responsible for the ``text`` shape; passing a
+    non-``?`` string will still emit, but the interactive-hang
+    detector may not fire.
+    """
+    content: list[dict] = [{"type": "text", "text": text}]
+    if use_tool_use:
+        content.append(
+            {
+                "type": "tool_use",
+                "id": "toolu_fake",
+                "name": "AskUserQuestion",
+                "input": {"questions": [{"question": text}]},
+            }
+        )
+    messages: list[dict] = [
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "content": content,
+            },
+        },
         {
             "type": "result",
             "subtype": "success",
             "is_error": False,
+            "num_turns": 1,
             "usage": {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
             },
-        }
-    )
+        },
+    ]
     return _FakePopen([json.dumps(m) for m in messages])
 
 
