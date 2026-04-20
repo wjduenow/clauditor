@@ -846,13 +846,13 @@ class TestProposeEval:
             "clauditor._anthropic.call_anthropic",
             AsyncMock(return_value=result),
         ), patch(
-            # US-004 of #61: propose_eval now takes more _monotonic
-            # samples (outer start + attempt start + attempt end +
-            # outer finalize). Outer start=0.0 and outer finalize=2.5
-            # drive the aggregate duration; the middle values are
-            # fillers.
+            # Aggregate ``duration_seconds`` is the SUM of per-attempt
+            # durations (matching ``input_tokens`` / ``output_tokens``).
+            # ``_single_propose_attempt`` samples ``_monotonic`` twice
+            # per call — start and end — so two samples for one attempt
+            # with diff 2.5 yield ``report.duration_seconds == 2.5``.
             "clauditor.propose_eval._monotonic",
-            side_effect=[0.0, 0.1, 0.2, 2.5],
+            side_effect=[0.0, 2.5],
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
         assert report.duration_seconds == pytest.approx(2.5)

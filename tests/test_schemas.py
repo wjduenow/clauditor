@@ -2153,11 +2153,11 @@ class TestRequireAssertionKeys:
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         assert spec.assertions == [entry]
 
-    def test_optional_key_also_rejects_none(self, tmp_path):
-        """An optional key with a ``None`` value is treated as
-        "provided" — we allow it but don't special-case None the way
-        we do for required keys. This documents the boundary: None
-        is only rejected when the key is REQUIRED.
+    def test_optional_key_allows_none(self, tmp_path):
+        """An optional key with a ``None`` value is accepted — we
+        allow it but don't special-case None the way we do for
+        required keys. This documents the boundary: None is only
+        rejected when the key is REQUIRED.
         """
         entry = {"id": "a1", "type": "has_urls", "value": None}
         data = {

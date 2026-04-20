@@ -408,11 +408,13 @@ def build_propose_eval_prompt(propose_input: ProposeEvalInput) -> str:
     parts.append('  "assertions": [')
     parts.append("    {")
     parts.append('      "id": "<kebab-case unique id>",')
-    parts.append(
-        '      "type": "<contains|not_contains|regex|min_count|'
-        'min_length|max_length|has_urls|has_entries|has_format|'
-        'urls_reachable>",'
-    )
+    # Render the allowed-type union from
+    # ``ASSERTION_TYPE_REQUIRED_KEYS`` so there is exactly ONE source
+    # of truth for the enumeration — adding or removing a type in the
+    # constant propagates here automatically, matching the per-type
+    # key table rendered further below.
+    _type_union = "|".join(sorted(ASSERTION_TYPE_REQUIRED_KEYS.keys()))
+    parts.append(f'      "type": "<{_type_union}>",')
     parts.append('      "name": "<human name>",')
     parts.append(
         "      ...plus the type-specific required keys listed below..."
@@ -810,7 +812,6 @@ async def propose_eval(
     load-bearing, but it lets the CLI wire the real skill directory
     through when the flag is set.
     """
-    start = _monotonic()
     effective_spec_dir = spec_dir if spec_dir is not None else Path.cwd()
 
     def _finalize(
@@ -824,6 +825,18 @@ async def propose_eval(
         attempt_list = list(attempts) if attempts is not None else []
         total_input = sum(a.input_tokens for a in attempt_list)
         total_output = sum(a.output_tokens for a in attempt_list)
+        # Aggregate ``duration_seconds`` is the SUM of per-attempt
+        # durations, matching ``input_tokens``/``output_tokens``
+        # (summed across attempts) rather than wallclock. Consumers
+        # that want wallclock can compute it themselves; the
+        # sum-of-attempts form keeps all three aggregate fields
+        # semantically parallel and isolates prompt-building /
+        # parsing overhead from per-attempt accounting. Prompt-
+        # build / validation failures that happen before any
+        # ``call_anthropic`` fires report ``duration_seconds=0.0``
+        # alongside ``attempts=[]`` — which is accurate: zero API
+        # time was spent.
+        total_duration = sum(a.duration_seconds for a in attempt_list)
         return ProposeEvalReport(
             skill_name=propose_input.skill_name,
             model=model,
@@ -831,7 +844,7 @@ async def propose_eval(
             capture_source=propose_input.capture_source,
             api_error=api_error,
             validation_errors=list(validation_errors or []),
-            duration_seconds=_monotonic() - start,
+            duration_seconds=total_duration,
             input_tokens=total_input,
             output_tokens=total_output,
             attempts=attempt_list,
