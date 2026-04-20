@@ -180,7 +180,7 @@ def _skill_name_from_frontmatter(
             candidates.append(raw.strip())
     candidates.append(skill_md_path.parent.name)
     for candidate in candidates:
-        if candidate and re.match(SKILL_NAME_RE, candidate):
+        if candidate and re.fullmatch(SKILL_NAME_RE, candidate):
             return candidate
     return "skill"
 

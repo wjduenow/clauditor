@@ -166,20 +166,34 @@ class TestDeriveProjectDir:
         skill_path.write_text("---\nname: foo\n---\n")
         assert derive_project_dir(skill_path) == tmp_path
 
-    def test_project_dir_fallback_modern_ascent(self):
-        # Non-existent path is fine — helper only does path arithmetic
-        # once find_project_root returns None (no markers above `/`).
+    def test_project_dir_fallback_modern_ascent(self, monkeypatch):
+        # Non-existent path; force find_project_root to return None so
+        # the layout-aware fallback is exercised deterministically
+        # regardless of `.git`/`.claude` markers that may exist at `/`
+        # or other ancestors on the host.
+        monkeypatch.setattr(
+            "clauditor.setup.find_project_root", lambda _p: None
+        )
         skill_path = Path("/a/b/c/d/e/SKILL.md")
         assert derive_project_dir(skill_path) == Path("/a/b")
 
-    def test_project_dir_fallback_legacy_ascent(self):
+    def test_project_dir_fallback_legacy_ascent(self, monkeypatch):
+        monkeypatch.setattr(
+            "clauditor.setup.find_project_root", lambda _p: None
+        )
         skill_path = Path("/a/b/c/d/foo.md")
         assert derive_project_dir(skill_path) == Path("/a/b")
 
-    def test_project_dir_fallback_modern_when_no_marker(self, tmp_path):
-        # tmp_path lives under /tmp with no .git/.claude up the tree;
-        # find_project_root returns None and the helper falls back to
-        # 4-deep ascent for the modern SKILL.md layout.
+    def test_project_dir_fallback_modern_when_no_marker(
+        self, tmp_path, monkeypatch
+    ):
+        # tmp_path may have unexpected ancestors with `.git`/`.claude`
+        # (some CI sandboxes do). Force the marker-walk to return None
+        # so the 4-deep fallback for the modern SKILL.md layout is
+        # exercised deterministically.
+        monkeypatch.setattr(
+            "clauditor.setup.find_project_root", lambda _p: None
+        )
         skills_dir = tmp_path / "a" / "b" / "c" / "d" / "foo"
         skills_dir.mkdir(parents=True)
         skill_path = skills_dir / "SKILL.md"
