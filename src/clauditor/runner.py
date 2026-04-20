@@ -77,6 +77,80 @@ class SkillResult:
         return True
 
 
+# Soft cap applied to stream-json ``result`` text surfaced on
+# ``SkillResult.error``. Per DEC-008 of
+# ``plans/super/63-runner-error-surfacing.md`` — bound the memory
+# cost of a pathological multi-MB error payload without truncating
+# realistic 100-300 byte provider-error strings.
+_RESULT_TEXT_MAX_BYTES = 4096
+
+
+def _classify_result_message(msg: dict) -> tuple[str | None, str | None]:
+    """Classify a stream-json ``type="result"`` message's error payload.
+
+    Pure helper. Given the full message dict, returns a
+    ``(error_text, error_category)`` pair:
+
+    - ``(None, None)`` when ``msg["is_error"]`` is not strictly
+      ``True`` (absent key, ``False``, or any non-True value like the
+      string ``"true"``).
+    - ``(<text>, <category>)`` otherwise. ``<text>`` is the
+      ``msg["result"]`` field, truncated to ``_RESULT_TEXT_MAX_BYTES``
+      (with a ``" ... (truncated)"`` suffix when clipped). A missing
+      or non-string ``result`` field falls back to
+      ``"API error (no detail)"``.
+
+    Category inference (per DEC-010) is a keyword match on the
+    error text, ordered to resolve ambiguity deterministically:
+
+    - ``"rate_limit"`` — any of ``"429"``, ``"rate limit"`` (case-
+      insensitive), ``"rate-limit"`` (case-insensitive).
+    - ``"auth"`` — any of ``"401"``, ``"403"``, ``"unauthorized"``
+      (case-insensitive), ``"authentication"`` (case-insensitive),
+      ``"auth error"`` (case-insensitive), or the substring
+      ``"ANTHROPIC_API_KEY"``.
+    - ``"api"`` — the fallback when no keyword matches.
+
+    The rate-limit check runs before the auth check so a message
+    that happens to contain both ``"429"`` and ``"auth"`` is
+    classified as a rate-limit failure.
+
+    Per ``.claude/rules/pure-compute-vs-io-split.md`` this helper
+    performs no I/O: no stderr writes, no global mutations. Callers
+    surface the result on ``SkillResult.error`` /
+    ``SkillResult.error_category`` at the I/O boundary in
+    :meth:`SkillRunner._invoke`.
+    """
+    if msg.get("is_error") is not True:
+        return None, None
+
+    result_text = msg.get("result")
+    if not isinstance(result_text, str):
+        error_text = "API error (no detail)"
+    else:
+        error_text = result_text
+
+    if len(error_text) > _RESULT_TEXT_MAX_BYTES:
+        error_text = error_text[:_RESULT_TEXT_MAX_BYTES] + " ... (truncated)"
+
+    lower = error_text.lower()
+    if "429" in error_text or "rate limit" in lower or "rate-limit" in lower:
+        category = "rate_limit"
+    elif (
+        "401" in error_text
+        or "403" in error_text
+        or "unauthorized" in lower
+        or "authentication" in lower
+        or "auth error" in lower
+        or "ANTHROPIC_API_KEY" in error_text
+    ):
+        category = "auth"
+    else:
+        category = "api"
+
+    return error_text, category
+
+
 class SkillRunner:
     """Executes Claude Code skills via the CLI and captures output."""
 
@@ -161,6 +235,12 @@ class SkillRunner:
         input_tokens = 0
         output_tokens = 0
         saw_result = False
+        # Stream-json ``is_error: true`` classification (US-002, DEC-001,
+        # DEC-010). Populated by :func:`_classify_result_message` when the
+        # ``result`` message signals an error. When set, takes precedence
+        # over stderr per DEC-001.
+        stream_json_error_text: str | None = None
+        stream_json_error_category: str | None = None
         result: SkillResult | None = None
         proc: subprocess.Popen | None = None
         stderr_thread: threading.Thread | None = None
@@ -301,6 +381,16 @@ class SkillRunner:
                                     text_chunks.append(block.get("text", ""))
                         elif mtype == "result":
                             saw_result = True
+                            # Classify is_error: true payload per DEC-001 /
+                            # DEC-008 / DEC-010. Only overwrite the
+                            # accumulator when the classifier reports an
+                            # error, so a benign later result message does
+                            # not erase a prior error classification
+                            # (defensive — in practice one result per run).
+                            err_text, err_category = _classify_result_message(msg)
+                            if err_text is not None:
+                                stream_json_error_text = err_text
+                                stream_json_error_category = err_category
                             usage = msg.get("usage") or {}
                             if isinstance(usage, dict):
                                 # Defensive int() casts — if the CLI ever
@@ -357,12 +447,28 @@ class SkillRunner:
                     "token usage unavailable"
                 )
 
+            # DEC-001: stream-json ``is_error: true`` wins over stderr.
+            # When classified, stderr (if any) moves into warnings so it
+            # is still observable to callers without shadowing the
+            # authoritative provider error on ``error``.
+            if stream_json_error_text is not None:
+                final_error: str | None = stream_json_error_text
+                final_category: str | None = stream_json_error_category
+                if stderr_text:
+                    warnings.append(stderr_text)
+            else:
+                final_error = (
+                    stderr_text if returncode != 0 and stderr_text else None
+                )
+                final_category = None
+
             result = SkillResult(
                 output="\n".join(text_chunks),
                 exit_code=returncode,
                 skill_name=skill_name,
                 args=args,
-                error=stderr_text if returncode != 0 and stderr_text else None,
+                error=final_error,
+                error_category=final_category,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 raw_messages=raw_messages,
