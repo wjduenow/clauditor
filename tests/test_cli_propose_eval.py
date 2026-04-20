@@ -144,7 +144,7 @@ class TestCmdProposeEval:
         data = json.loads(out)
         # schema_version first per .claude/rules/json-schema-version.md
         assert list(data.keys())[0] == "schema_version"
-        assert data["schema_version"] == 1
+        assert data["schema_version"] == 2
         assert data["skill_name"] == "greeter"
         assert data["input_tokens"] == 100
 
