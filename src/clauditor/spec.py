@@ -6,9 +6,11 @@ Combines the skill file, eval spec, and runner into a single interface.
 from __future__ import annotations
 
 import glob
+import sys
 from pathlib import Path
 
 from clauditor.assertions import AssertionSet, run_assertions
+from clauditor.paths import derive_project_dir, derive_skill_name
 from clauditor.runner import SkillResult, SkillRunner
 from clauditor.schemas import EvalSpec
 from clauditor.workspace import stage_inputs
@@ -32,11 +34,31 @@ class SkillSpec:
         skill_path: Path,
         eval_spec: EvalSpec | None = None,
         runner: SkillRunner | None = None,
+        *,
+        skill_name_override: str | None = None,
     ):
         self.skill_path = skill_path
-        self.skill_name = skill_path.stem
+        # Name derivation: `skill_name_override` is the happy path from
+        # `from_file`, which has already read the file and consulted
+        # frontmatter. When omitted (direct-constructor callers that may
+        # pass a non-existent path, e.g. tests/test_quality_grader.py
+        # uses `Path("dummy.md")`), fall back to layout-aware filesystem
+        # derivation without any file I/O. Modern (`SKILL.md` under a
+        # named dir) → parent.name; legacy → stem. See DEC-006.
+        if skill_name_override is not None:
+            self.skill_name = skill_name_override
+        elif skill_path.name == "SKILL.md":
+            self.skill_name = skill_path.parent.name
+        else:
+            self.skill_name = skill_path.stem
         self.eval_spec = eval_spec
-        self.runner = runner or SkillRunner(project_dir=skill_path.parent.parent.parent)
+        # Layout-aware project_dir derivation. `derive_project_dir`
+        # walks up for a `.git`/`.claude` marker first (with home-dir
+        # exclusion) and falls back to the appropriate ascent depth for
+        # modern vs legacy layouts. Replaces the previous hardcoded
+        # 3-deep ascent, which landed inside `.claude/` for modern
+        # skills. See DEC-003.
+        self.runner = runner or SkillRunner(project_dir=derive_project_dir(skill_path))
 
     @classmethod
     def from_file(
@@ -48,11 +70,25 @@ class SkillSpec:
         """Load a skill spec from a skill .md file.
 
         Automatically looks for a sibling eval.json if eval_path
-        is not specified. For `my-skill.md`, looks for `my-skill.eval.json`.
+        is not specified. For `my-skill.md`, looks for `my-skill.eval.json`;
+        for the modern `<dir>/SKILL.md` layout, looks for
+        `<dir>/SKILL.eval.json` (sibling of SKILL.md).
+
+        The skill's identity (``skill_name``) is derived from the file's
+        frontmatter ``name:`` field when present and valid; otherwise
+        from the filesystem (parent dir for modern, stem for legacy).
+        When frontmatter disagrees with the filesystem name, the
+        frontmatter wins and a warning is emitted to stderr. See DEC-001,
+        DEC-002, DEC-009.
         """
         skill_path = Path(skill_path)
         if not skill_path.exists():
             raise FileNotFoundError(f"Skill file not found: {skill_path}")
+
+        text = skill_path.read_text(encoding="utf-8")
+        skill_name, warning = derive_skill_name(skill_path, text)
+        if warning is not None:
+            print(warning, file=sys.stderr)
 
         # Auto-discover eval spec
         eval_spec = None
@@ -63,7 +99,12 @@ class SkillSpec:
             if default_eval.exists():
                 eval_spec = EvalSpec.from_file(default_eval)
 
-        return cls(skill_path=skill_path, eval_spec=eval_spec, runner=runner)
+        return cls(
+            skill_path=skill_path,
+            eval_spec=eval_spec,
+            runner=runner,
+            skill_name_override=skill_name,
+        )
 
     def run(
         self,
