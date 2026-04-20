@@ -4,7 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/61
 - **Branch:** `feature/61-propose-eval-key-mismatch`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/61-propose-eval-key-mismatch`
-- **Phase:** `detailing`
+- **Phase:** `devolved`
+- **PR:** https://github.com/wjduenow/clauditor/pull/65
 - **Sessions:** 1
 - **Last session:** 2026-04-20
 
@@ -815,4 +816,28 @@ Notes contain "evaluated X, Y, Z — chose to defer because …".
 
 ## Beads Manifest
 
-*(To be filled in Phase 7.)*
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/61-propose-eval-key-mismatch`
+- **Branch:** `feature/61-propose-eval-key-mismatch`
+- **PR:** https://github.com/wjduenow/clauditor/pull/65
+
+### Task graph
+
+| Bead ID | Story | Priority | Depends on |
+|---|---|---|---|
+| `clauditor-lof` | Epic — #61 propose-eval key-mismatch bug fix | P2 | — |
+| `clauditor-hyl` | US-001 — Export `ASSERTION_TYPE_REQUIRED_KEYS` + `AssertionKeySpec` | P2 | none (ready) |
+| `clauditor-o7q` | US-002 — Add `_require_assertion_keys` loader validator | P2 | US-001 |
+| `clauditor-5zl` | US-003 — Update propose-eval prompt with per-type table | P2 | US-001 |
+| `clauditor-0rl` | US-004 — One-shot repair-retry loop + repair prompt builder | P2 | US-002, US-003 |
+| `clauditor-vnn` | US-005 — File follow-up issue for semantic-key redesign | P3 | none (ready) |
+| `clauditor-6iq` | US-006 — Quality Gate (reviewer ×4 + CodeRabbit + validation) | P2 | US-001..US-005 |
+| `clauditor-5fj` | US-007 — Patterns & Memory | P3 | US-006 |
+
+### Follow-ups filed
+
+- *(to be populated by US-005 — GitHub issue number for semantic-key schema redesign)*
+
+### Ready to work
+
+- `clauditor-hyl` (US-001) — **entry point; US-002 and US-003 unblock once this lands.**
+- `clauditor-vnn` (US-005) — parallel-free, can be done any time.
