@@ -16,6 +16,13 @@ from pathlib import Path
 _MARKERS = (".git", ".claude")
 _CLAUDITOR_DIRNAME = ".clauditor"
 
+# Shared skill-identifier regex. Skill names are interpolated into
+# filesystem paths (e.g. `<project_dir>/tests/eval/captured/<name>.txt`);
+# clamping to basename-style tokens matching Claude Code's own convention
+# for skill directory names blocks path-traversal via a malicious
+# frontmatter `name:` field like `../../../etc/passwd`.
+SKILL_NAME_RE: str = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+
 
 def resolve_clauditor_dir() -> Path:
     """Return the ``.clauditor`` directory anchored at the nearest repo root.

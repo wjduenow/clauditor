@@ -1,12 +1,13 @@
 """Tests for repo-root detection in clauditor.paths."""
 
 import importlib
+import re
 
 import clauditor.paths as _paths_mod
 
 importlib.reload(_paths_mod)
 
-from clauditor.paths import resolve_clauditor_dir  # noqa: E402
+from clauditor.paths import SKILL_NAME_RE, resolve_clauditor_dir  # noqa: E402
 
 
 class TestResolveClauditorDir:
@@ -61,3 +62,12 @@ class TestResolveClauditorDir:
         # current working directory because no valid marker was found.
         assert result != fake_home / ".clauditor"
         assert result == project / ".clauditor"
+
+
+class TestSkillNameRe:
+    def test_matches_known_good_identifier(self):
+        assert re.fullmatch(SKILL_NAME_RE, "my-skill_123") is not None
+
+    def test_rejects_known_bad_identifier(self):
+        assert re.fullmatch(SKILL_NAME_RE, "bad;name") is None
+        assert re.fullmatch(SKILL_NAME_RE, "") is None
