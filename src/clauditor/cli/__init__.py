@@ -107,7 +107,7 @@ def _load_spec_or_report(
             file=sys.stderr,
         )
         return None
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         print(
             f"ERROR: cannot read {skill_path}: {exc}",
             file=sys.stderr,

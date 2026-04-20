@@ -2828,6 +2828,25 @@ class TestCmdInit:
         assert "cannot read" in err
         assert "Permission denied" in err
 
+    def test_init_non_utf8_skill_file(self, tmp_path, capsys):
+        """UnicodeDecodeError (non-UTF-8 skill file) exits 1 with a clean
+        message instead of an uncaught traceback. ``read_text`` is called
+        with ``encoding='utf-8'`` and ``UnicodeDecodeError`` is a
+        ``ValueError`` subclass (not ``OSError``), so the except clause
+        must catch both explicitly."""
+        skill_path = tmp_path / "bogus.md"
+        # Raw bytes that don't decode as UTF-8 (a Latin-1 é followed by
+        # high-range bytes).
+        skill_path.write_bytes(b"\xc3\x28\xa0\xa1")
+
+        rc = main(["init", str(skill_path)])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert f"cannot read {skill_path}" in err
+        # The underlying codec error is appended to the message.
+        assert "utf-8" in err or "codec" in err
+
     def test_init_warns_on_frontmatter_disagreement(self, tmp_path, capsys):
         """When frontmatter ``name:`` disagrees with the filesystem-derived
         name, stderr carries the DEC-009 warning and frontmatter wins."""
@@ -5288,4 +5307,28 @@ class TestLoadSpecOrReport:
         assert result is None
         err = capsys.readouterr().err
         assert f"ERROR: cannot read {tmp_path}:" in err
+        assert "clauditor init" not in err
+
+    def test_unicode_decode_error_emits_cannot_read_message(self, capsys):
+        """UnicodeDecodeError (ValueError subclass) routes to the generic branch.
+
+        ``SkillSpec.from_file`` reads the skill file with
+        ``encoding="utf-8"``; a non-UTF-8 file raises
+        ``UnicodeDecodeError``, which is NOT an ``OSError`` subclass.
+        The except clause explicitly catches both so the user sees a
+        clean error message instead of an uncaught traceback.
+        """
+        from clauditor.cli import _load_spec_or_report
+
+        with patch(
+            "clauditor.cli.SkillSpec.from_file",
+            side_effect=UnicodeDecodeError(
+                "utf-8", b"\xff\xfe", 0, 1, "invalid start byte"
+            ),
+        ):
+            result = _load_spec_or_report("weird.md", None)
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert "ERROR: cannot read weird.md:" in err
         assert "clauditor init" not in err

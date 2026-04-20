@@ -39,7 +39,7 @@ def cmd_init(args: argparse.Namespace) -> int:
 
     try:
         skill_md_text = skill_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         print(f"ERROR: cannot read {skill_path}: {exc}", file=sys.stderr)
         return 1
 
