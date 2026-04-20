@@ -10,6 +10,8 @@ project. The command is manual-only — Claude won't auto-invoke it,
 because validating a skill has side effects (subprocess runs, sidecar
 writes, potential token spend on L3 grading).
 
+clauditor works with both the legacy `.claude/commands/<name>.md` layout and the modern `.claude/skills/<name>/SKILL.md` layout.
+
 **Invoke with the path to the skill you want to evaluate:**
 
 ```text

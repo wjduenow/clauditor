@@ -223,9 +223,17 @@ def make_eval_spec():
 
 @pytest.fixture
 def tmp_skill_file(tmp_path):
-    """Factory fixture that creates a temporary .md skill file.
+    """Factory fixture that creates a temporary skill file.
 
-    Optionally creates a sibling .eval.json file.
+    Supports two layouts (DEC-011 of ``plans/super/62-skill-md-layout.md``):
+
+    - ``layout="legacy"`` (default): writes ``tmp_path/<name>.md``. The
+      sibling eval lives at ``tmp_path/<name>.eval.json``. Byte-identical
+      to the pre-DEC-011 behavior so every existing test keeps working.
+    - ``layout="modern"``: writes
+      ``tmp_path/.claude/skills/<name>/SKILL.md``. The sibling eval lives
+      at ``tmp_path/.claude/skills/<name>/SKILL.eval.json`` — next to the
+      SKILL.md, which is what :func:`SkillSpec.from_file` auto-discovers.
 
     Usage:
         def test_something(tmp_skill_file):
@@ -235,18 +243,32 @@ def tmp_skill_file(tmp_path):
                 content="# My Skill",
                 eval_data={"skill_name": "my-skill", "assertions": []},
             )
+            # Modern layout:
+            skill_path = tmp_skill_file("foo", layout="modern")
     """
 
     def _factory(
         name: str = "test-skill",
         content: str = "# Test Skill\n\nA test skill for unit tests.",
+        layout: str = "legacy",
         eval_data: dict | None = None,
     ) -> Path | tuple[Path, Path]:
-        skill_path = tmp_path / f"{name}.md"
+        if layout == "legacy":
+            skill_path = tmp_path / f"{name}.md"
+        elif layout == "modern":
+            skill_dir = tmp_path / ".claude" / "skills" / name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            skill_path = skill_dir / "SKILL.md"
+        else:
+            raise ValueError(
+                f"tmp_skill_file: layout must be 'legacy' or 'modern', "
+                f"got {layout!r}"
+            )
+
         skill_path.write_text(content)
 
         if eval_data is not None:
-            eval_path = tmp_path / f"{name}.eval.json"
+            eval_path = skill_path.with_suffix(".eval.json")
             eval_path.write_text(json.dumps(eval_data, indent=2))
             return skill_path, eval_path
 
