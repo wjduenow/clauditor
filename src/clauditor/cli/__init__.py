@@ -83,13 +83,20 @@ def _append_validate_history(
 def _load_spec_or_report(
     skill_path: str, eval_path: str | None
 ) -> SkillSpec | None:
-    """Load a :class:`SkillSpec`, printing an actionable error if missing.
+    """Load a :class:`SkillSpec`, printing an actionable error if unreadable.
 
     Returns the loaded spec on success. On ``FileNotFoundError`` (the
     skill ``.md`` is missing), prints an ``ERROR:`` line to stderr that
     names the path AND suggests ``clauditor init`` as the next step,
-    then returns ``None``. Callers map ``None`` to exit code 2 (input
-    error, per DEC-008) rather than letting the traceback escape.
+    then returns ``None``. On other ``OSError`` subclasses
+    (``PermissionError``, ``IsADirectoryError``, etc.), prints
+    ``ERROR: cannot read {path}: {exc}`` to stderr and returns
+    ``None``. Callers map ``None`` to exit code 2 (input error, per
+    DEC-008 / DEC-010) rather than letting the traceback escape.
+
+    Note the ``except`` order: ``FileNotFoundError`` is a subclass of
+    ``OSError``, so its branch must come first to preserve the
+    byte-identical "suggest init" message for the missing-file case.
     """
     try:
         return SkillSpec.from_file(skill_path, eval_path=eval_path)
@@ -97,6 +104,12 @@ def _load_spec_or_report(
         print(
             f"ERROR: Skill file not found: {skill_path}. "
             f"Run 'clauditor init {skill_path}' to create one.",
+            file=sys.stderr,
+        )
+        return None
+    except OSError as exc:
+        print(
+            f"ERROR: cannot read {skill_path}: {exc}",
             file=sys.stderr,
         )
         return None
