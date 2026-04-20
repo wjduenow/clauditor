@@ -12,7 +12,12 @@ import clauditor.runner as _runner_mod
 importlib.reload(_runner_mod)
 
 from clauditor.asserters import SkillAsserter  # noqa: E402
-from clauditor.runner import SkillResult, SkillRunner  # noqa: E402
+from clauditor.runner import (  # noqa: E402
+    _RESULT_TEXT_MAX_BYTES,
+    SkillResult,
+    SkillRunner,
+    _classify_result_message,
+)
 from tests.conftest import (  # noqa: E402
     _FakePopen,
     make_fake_interactive_hang_stream,
@@ -1318,6 +1323,386 @@ class TestSkillResultErrorCategory:
                 error_category=category,
             )
             assert result.error_category == category
+
+
+# ---------------------------------------------------------------------------
+# _classify_result_message pure helper (US-002, DEC-010, DEC-013)
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyResultMessage:
+    """Pure-unit tests for :func:`clauditor.runner._classify_result_message`.
+
+    Covers the keyword precedence (rate_limit before auth), the
+    non-True / missing-key short-circuit, the missing/non-string
+    ``result`` fallback, and the 4 KB truncation path — all without
+    any subprocess mocking. Traces to US-002 of
+    ``plans/super/63-runner-error-surfacing.md``.
+    """
+
+    def test_is_error_absent_returns_none_none(self):
+        """A ``result`` message without an ``is_error`` key is benign."""
+        assert _classify_result_message({"type": "result"}) == (None, None)
+
+    def test_is_error_false_returns_none_none(self):
+        """``is_error: False`` is the success path."""
+        msg = {"type": "result", "is_error": False, "result": "anything"}
+        assert _classify_result_message(msg) == (None, None)
+
+    def test_is_error_string_true_not_treated_as_error(self):
+        """Strict ``is True`` check — string ``"true"`` does NOT count."""
+        msg = {"type": "result", "is_error": "true", "result": "boom"}
+        assert _classify_result_message(msg) == (None, None)
+
+    def test_is_error_int_1_not_treated_as_error(self):
+        """Strict ``is True`` check — truthy int 1 does NOT count."""
+        msg = {"type": "result", "is_error": 1, "result": "boom"}
+        assert _classify_result_message(msg) == (None, None)
+
+    def test_429_classifies_as_rate_limit(self):
+        msg = {"type": "result", "is_error": True, "result": "got 429 back"}
+        assert _classify_result_message(msg) == ("got 429 back", "rate_limit")
+
+    def test_rate_limit_phrase_classifies_as_rate_limit(self):
+        msg = {"type": "result", "is_error": True, "result": "Rate Limit exceeded"}
+        text, category = _classify_result_message(msg)
+        assert category == "rate_limit"
+        assert text == "Rate Limit exceeded"
+
+    def test_rate_hyphen_limit_phrase_classifies_as_rate_limit(self):
+        msg = {
+            "type": "result",
+            "is_error": True,
+            "result": "provider rate-limit hit",
+        }
+        assert _classify_result_message(msg) == (
+            "provider rate-limit hit",
+            "rate_limit",
+        )
+
+    def test_401_classifies_as_auth(self):
+        msg = {"type": "result", "is_error": True, "result": "401 Unauthorized"}
+        assert _classify_result_message(msg) == ("401 Unauthorized", "auth")
+
+    def test_403_classifies_as_auth(self):
+        msg = {"type": "result", "is_error": True, "result": "403 forbidden"}
+        assert _classify_result_message(msg) == ("403 forbidden", "auth")
+
+    def test_anthropic_api_key_classifies_as_auth(self):
+        msg = {
+            "type": "result",
+            "is_error": True,
+            "result": "Please check your ANTHROPIC_API_KEY",
+        }
+        text, category = _classify_result_message(msg)
+        assert category == "auth"
+        assert text == "Please check your ANTHROPIC_API_KEY"
+
+    def test_authentication_phrase_classifies_as_auth(self):
+        msg = {"type": "result", "is_error": True, "result": "Authentication failed"}
+        assert _classify_result_message(msg) == ("Authentication failed", "auth")
+
+    def test_generic_error_classifies_as_api(self):
+        msg = {"type": "result", "is_error": True, "result": "Internal server error"}
+        assert _classify_result_message(msg) == ("Internal server error", "api")
+
+    def test_rate_limit_wins_over_auth_when_both_keywords_present(self):
+        """Ordering: ``rate_limit`` is checked before ``auth`` so a message
+        containing both 429 and an auth keyword is rate-limit."""
+        msg = {
+            "type": "result",
+            "is_error": True,
+            "result": "429 auth error mixed signal",
+        }
+        text, category = _classify_result_message(msg)
+        assert category == "rate_limit"
+        assert text == "429 auth error mixed signal"
+
+    def test_missing_result_field_falls_back_to_api_error_no_detail(self):
+        """``is_error: True`` without a ``result`` field → sentinel text."""
+        msg = {"type": "result", "is_error": True}
+        assert _classify_result_message(msg) == ("API error (no detail)", "api")
+
+    def test_non_string_result_field_falls_back_to_api_error_no_detail(self):
+        """``result: 123`` (number) triggers the isinstance guard."""
+        msg = {"type": "result", "is_error": True, "result": 123}
+        assert _classify_result_message(msg) == ("API error (no detail)", "api")
+
+    def test_none_result_field_falls_back_to_api_error_no_detail(self):
+        """``result: None`` explicitly (not missing) → sentinel text."""
+        msg = {"type": "result", "is_error": True, "result": None}
+        assert _classify_result_message(msg) == ("API error (no detail)", "api")
+
+    def test_4kb_truncation_appends_suffix(self):
+        """A huge payload is clipped at the soft cap plus the suffix."""
+        big = "X" * 5000
+        msg = {"type": "result", "is_error": True, "result": big}
+        text, category = _classify_result_message(msg)
+        assert text.endswith(" ... (truncated)")
+        assert len(text) == _RESULT_TEXT_MAX_BYTES + len(" ... (truncated)")
+        # Prefix is intact (for forensic value).
+        assert text.startswith("X" * 100)
+        # All X's → no classified keyword → "api" fallback.
+        assert category == "api"
+
+    def test_truncation_preserves_category_from_prefix(self):
+        """Classification runs against the truncated text, so a keyword
+        present in the surviving prefix is still detected."""
+        # Keyword at position 0 survives truncation; trailing X's fill to
+        # the 4 KB limit.
+        msg = {
+            "type": "result",
+            "is_error": True,
+            "result": "429 rate limit exceeded " + "X" * 5000,
+        }
+        text, category = _classify_result_message(msg)
+        assert category == "rate_limit"
+        assert text.endswith(" ... (truncated)")
+
+    def test_short_text_not_truncated(self):
+        """Text under the cap flows through verbatim."""
+        msg = {"type": "result", "is_error": True, "result": "X" * 100}
+        text, _ = _classify_result_message(msg)
+        assert text == "X" * 100
+        assert " ... (truncated)" not in text
+
+    def test_exact_cap_not_truncated(self):
+        """Text exactly ``_RESULT_TEXT_MAX_BYTES`` bytes is not clipped
+        (the ``>`` comparison is strict)."""
+        payload = "X" * _RESULT_TEXT_MAX_BYTES
+        msg = {"type": "result", "is_error": True, "result": payload}
+        text, _ = _classify_result_message(msg)
+        assert text == payload
+        assert " ... (truncated)" not in text
+
+
+# ---------------------------------------------------------------------------
+# Stream-json ``is_error: true`` integration (US-002, DEC-001, DEC-010)
+# ---------------------------------------------------------------------------
+
+
+class TestStreamJsonIsErrorResult:
+    """End-to-end tests that feed an ``is_error: true`` stream through
+    ``SkillRunner`` and assert the classification lands on
+    ``SkillResult.error`` / ``error_category`` with DEC-001 stderr
+    precedence honored. Traces to US-002 of
+    ``plans/super/63-runner-error-surfacing.md``.
+    """
+
+    def _run_with_stream(self, fake: _FakePopen) -> SkillResult:
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            return runner.run("skill")
+
+    def test_429_classified_as_rate_limit(self):
+        fake = make_fake_skill_stream(
+            "hello",
+            error_text="API Error: Request rejected (429). Rate limit exceeded.",
+        )
+        result = self._run_with_stream(fake)
+        assert result.error == (
+            "API Error: Request rejected (429). Rate limit exceeded."
+        )
+        assert result.error_category == "rate_limit"
+
+    def test_rate_limit_phrase_classified(self):
+        fake = make_fake_skill_stream("hello", error_text="Rate limit exceeded")
+        result = self._run_with_stream(fake)
+        assert result.error == "Rate limit exceeded"
+        assert result.error_category == "rate_limit"
+
+    def test_401_classified_as_auth(self):
+        fake = make_fake_skill_stream("hello", error_text="401 Unauthorized")
+        result = self._run_with_stream(fake)
+        assert result.error == "401 Unauthorized"
+        assert result.error_category == "auth"
+
+    def test_403_classified_as_auth(self):
+        fake = make_fake_skill_stream("hello", error_text="403 Permission denied")
+        result = self._run_with_stream(fake)
+        assert result.error == "403 Permission denied"
+        assert result.error_category == "auth"
+
+    def test_anthropic_api_key_classified_as_auth(self):
+        fake = make_fake_skill_stream(
+            "hello", error_text="Check your ANTHROPIC_API_KEY"
+        )
+        result = self._run_with_stream(fake)
+        assert result.error == "Check your ANTHROPIC_API_KEY"
+        assert result.error_category == "auth"
+
+    def test_generic_api_error_classified_as_api(self):
+        fake = make_fake_skill_stream(
+            "hello", error_text="Internal server error"
+        )
+        result = self._run_with_stream(fake)
+        assert result.error == "Internal server error"
+        assert result.error_category == "api"
+
+    def test_is_error_false_no_classification(self):
+        """Default stream (``is_error: False``) → no error, no category.
+        Regression guard: the wiring must not misclassify clean streams."""
+        fake = make_fake_skill_stream("hello")
+        result = self._run_with_stream(fake)
+        assert result.error is None
+        assert result.error_category is None
+
+    def test_is_error_absent_back_compat(self):
+        """A stream where the ``result`` message has no ``is_error`` key
+        at all (legacy shape) is treated as benign."""
+        extra_messages = [
+            {
+                "type": "result",
+                "subtype": "success",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+        ]
+        # Build the stream manually: a single assistant text + a result
+        # message that LACKS is_error entirely.
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "hello"}],
+                    },
+                }
+            ),
+            json.dumps(extra_messages[0]),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error is None
+        assert result.error_category is None
+
+    def test_is_error_string_true_not_treated_as_error(self):
+        """Result message with ``is_error: "true"`` (string) must not
+        activate the classifier (strict ``is True`` check)."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "hello"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "is_error": "true",
+                    "result": "boom",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error is None
+        assert result.error_category is None
+
+    def test_missing_result_field_falls_back(self):
+        """Result message with ``is_error: True`` but no ``result`` key
+        → sentinel error text + ``api`` category."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "hello"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "is_error": True,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error == "API error (no detail)"
+        assert result.error_category == "api"
+
+    def test_non_string_result_field_falls_back(self):
+        """``is_error: True, result: 123`` → sentinel text + ``api``."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "hello"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "is_error": True,
+                    "result": 123,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error == "API error (no detail)"
+        assert result.error_category == "api"
+
+    def test_4kb_truncation(self):
+        """A ~5 KB error payload is truncated to the soft cap + suffix,
+        and the classifier still matches on the surviving prefix."""
+        fake = make_fake_skill_stream("hello", error_text="X" * 5000)
+        result = self._run_with_stream(fake)
+        assert result.error is not None
+        assert result.error.endswith(" ... (truncated)")
+        assert len(result.error) == _RESULT_TEXT_MAX_BYTES + len(
+            " ... (truncated)"
+        )
+        # All X's with no classification keyword → "api".
+        assert result.error_category == "api"
+
+    def test_short_text_not_truncated(self):
+        """A 100-byte payload flows through verbatim."""
+        fake = make_fake_skill_stream("hello", error_text="X" * 100)
+        result = self._run_with_stream(fake)
+        assert result.error == "X" * 100
+        assert result.error is not None
+        assert " ... (truncated)" not in result.error
+
+    def test_stream_json_wins_over_stderr(self):
+        """DEC-001: when stream-json reports an error, it takes
+        precedence over stderr even on a clean exit code. Stderr is
+        preserved by moving it into ``warnings``."""
+        fake = make_fake_skill_stream("hello", error_text="429 rate limit")
+        fake.stderr = iter(["some stderr diagnostic\n"])
+        # Clean exit — the classifier still wins.
+        fake.returncode = 0
+        result = self._run_with_stream(fake)
+        assert result.error == "429 rate limit"
+        assert result.error_category == "rate_limit"
+        # Stderr text is captured on warnings, not silently dropped.
+        assert any(
+            "some stderr diagnostic" in w for w in result.warnings
+        ), f"expected stderr moved to warnings, got {result.warnings!r}"
+
+    def test_stderr_precedence_preserved_when_no_stream_json_error(self):
+        """When there is NO ``is_error: true`` payload, the pre-US-002
+        precedence is preserved exactly: non-zero returncode + stderr
+        becomes ``error`` with no category."""
+        fake = make_fake_skill_stream("hello")
+        fake.stderr = iter(["boom\n"])
+        fake.returncode = 1
+        result = self._run_with_stream(fake)
+        assert result.error is not None
+        assert "boom" in result.error
+        assert result.error_category is None
 
 
 # ---------------------------------------------------------------------------
