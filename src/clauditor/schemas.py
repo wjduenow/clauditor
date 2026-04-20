@@ -11,6 +11,68 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+@dataclass(frozen=True)
+class AssertionKeySpec:
+    """Per-assertion-type key invariant (DEC-008 of #61).
+
+    Single source of truth for which assertion-dict keys each
+    ``type`` value in :data:`ASSERTION_TYPE_REQUIRED_KEYS` accepts.
+    ``required`` keys must be present; ``optional`` keys are
+    allowed but the handler falls back to a safe default when
+    they are omitted. Any key outside the union of ``required``,
+    ``optional``, and the metadata set ``{"id", "type", "name"}``
+    is rejected by ``_require_assertion_keys``. Consumed by the
+    loader-side validator (US-002) and the ``propose-eval``
+    prompt builder (US-003); kept in lockstep with the
+    ``_ASSERTION_HANDLERS`` dispatch table in
+    :mod:`clauditor.assertions` via a test-side drift guard.
+    """
+
+    required: frozenset[str]
+    optional: frozenset[str] = frozenset()
+
+
+# Single source of truth (DEC-008 of #61): every assertion ``type``
+# string accepted by :func:`clauditor.assertions.run_assertions` maps
+# to the set of keys its handler reads from the assertion dict. The
+# split between ``required`` and ``optional`` mirrors handler runtime
+# behavior — if the handler reads ``.get(key, <default>)`` and the
+# default is a sensible value (e.g. ``1`` for a minimum count), the
+# key is optional; if the default is a sentinel that makes the
+# assertion vacuous (e.g. ``""`` for a regex pattern, ``0`` for a
+# length threshold), the key is required. Must stay in lockstep with
+# ``_ASSERTION_HANDLERS`` in :mod:`clauditor.assertions`; the drift
+# guard lives in ``tests/test_schemas.py::TestAssertionKeySpec``
+# (``test_handler_signature_agrees_with_constant``).
+ASSERTION_TYPE_REQUIRED_KEYS: dict[str, AssertionKeySpec] = {
+    "contains": AssertionKeySpec(required=frozenset({"value"})),
+    "not_contains": AssertionKeySpec(required=frozenset({"value"})),
+    "regex": AssertionKeySpec(required=frozenset({"value"})),
+    "min_count": AssertionKeySpec(
+        required=frozenset({"value"}),
+        optional=frozenset({"minimum"}),
+    ),
+    "min_length": AssertionKeySpec(required=frozenset({"value"})),
+    "max_length": AssertionKeySpec(required=frozenset({"value"})),
+    "has_urls": AssertionKeySpec(
+        required=frozenset(),
+        optional=frozenset({"value"}),
+    ),
+    "has_entries": AssertionKeySpec(
+        required=frozenset(),
+        optional=frozenset({"value"}),
+    ),
+    "urls_reachable": AssertionKeySpec(
+        required=frozenset(),
+        optional=frozenset({"value"}),
+    ),
+    "has_format": AssertionKeySpec(
+        required=frozenset({"format"}),
+        optional=frozenset({"value"}),
+    ),
+}
+
+
 @dataclass
 class FieldRequirement:
     """A required field in a structured entry (venue, event, etc.).
@@ -280,9 +342,63 @@ class EvalSpec:
             seen_ids.add(raw)
             return raw
 
+        def _require_assertion_keys(entry: dict, ctx: str) -> None:
+            """Hard-validate per-assertion required and allowed keys.
+
+            DEC-001 / DEC-002 / DEC-008 of #61: every assertion dict
+            must carry a known ``type`` value and exactly the keys
+            named by :data:`ASSERTION_TYPE_REQUIRED_KEYS` for that
+            type (plus the always-allowed ``id``, ``type``, ``name``
+            metadata keys). Missing required keys and unknown keys
+            both raise ``ValueError`` — strict rejection per
+            ``.claude/rules/pre-llm-contract-hard-validate.md``, with
+            a "did you mean X?" hint for the three known drift
+            aliases so hand-authors get a quick migration nudge.
+            """
+            type_val = entry.get("type")
+            if (
+                not isinstance(type_val, str)
+                or type_val not in ASSERTION_TYPE_REQUIRED_KEYS
+            ):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): {ctx}: "
+                    f"unknown or missing 'type' (got {type_val!r})"
+                )
+            spec = ASSERTION_TYPE_REQUIRED_KEYS[type_val]
+            for key in sorted(spec.required):
+                if key not in entry or entry[key] is None:
+                    raise ValueError(
+                        f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                        f"(type={type_val!r}): missing required key {key!r}"
+                    )
+            allowed = (
+                {"id", "type", "name"}
+                | set(spec.required)
+                | set(spec.optional)
+            )
+            for key in entry:
+                if key in allowed:
+                    continue
+                if key in {"pattern", "min", "max"}:
+                    hint = " — did you mean 'value'?"
+                elif key == "threshold":
+                    hint = " — did you mean 'minimum'?"
+                else:
+                    hint = ""
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                    f"(type={type_val!r}): unknown key {key!r}{hint}"
+                )
+
         raw_assertions = data.get("assertions", [])
+        if not isinstance(raw_assertions, list):
+            raise ValueError(
+                f"EvalSpec(skill_name={skill_name!r}): 'assertions' "
+                f"must be a list, got {type(raw_assertions).__name__}"
+            )
         for i, a in enumerate(raw_assertions):
             _require_id(a, f"assertions[{i}]")
+            _require_assertion_keys(a, f"assertions[{i}]")
 
         sections = []
         for si, s in enumerate(data.get("sections", [])):
@@ -332,6 +448,12 @@ class EvalSpec:
             )
 
         raw_criteria = data.get("grading_criteria", [])
+        if not isinstance(raw_criteria, list):
+            raise ValueError(
+                f"EvalSpec(skill_name={skill_name!r}): "
+                f"'grading_criteria' must be a list, got "
+                f"{type(raw_criteria).__name__}"
+            )
         for i, c in enumerate(raw_criteria):
             _require_id(c, f"grading_criteria[{i}]")
             crit = c.get("criterion")
