@@ -317,9 +317,54 @@ class EvalSpec:
             seen_ids.add(raw)
             return raw
 
+        def _require_assertion_keys(entry: dict, ctx: str) -> None:
+            """Hard-validate per-assertion required and allowed keys.
+
+            DEC-001 / DEC-002 / DEC-008 of #61: every assertion dict
+            must carry a known ``type`` value and exactly the keys
+            named by :data:`ASSERTION_TYPE_REQUIRED_KEYS` for that
+            type (plus the always-allowed ``id``, ``type``, ``name``
+            metadata keys). Missing required keys and unknown keys
+            both raise ``ValueError`` — strict rejection per
+            ``.claude/rules/pre-llm-contract-hard-validate.md``, with
+            a "did you mean X?" hint for the three known drift
+            aliases so hand-authors get a quick migration nudge.
+            """
+            type_val = entry.get("type")
+            if (
+                not isinstance(type_val, str)
+                or type_val not in ASSERTION_TYPE_REQUIRED_KEYS
+            ):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): {ctx}: "
+                    f"unknown or missing 'type' (got {type_val!r})"
+                )
+            spec = ASSERTION_TYPE_REQUIRED_KEYS[type_val]
+            for key in sorted(spec.required):
+                if key not in entry or entry[key] is None:
+                    raise ValueError(
+                        f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                        f"(type={type_val!r}): missing required key {key!r}"
+                    )
+            allowed = {"id", "type", "name"} | set(spec.required)
+            for key in entry:
+                if key in allowed:
+                    continue
+                if key in {"pattern", "min", "max"}:
+                    hint = " — did you mean 'value'?"
+                elif key == "threshold":
+                    hint = " — did you mean 'minimum'?"
+                else:
+                    hint = ""
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                    f"(type={type_val!r}): unknown key {key!r}{hint}"
+                )
+
         raw_assertions = data.get("assertions", [])
         for i, a in enumerate(raw_assertions):
             _require_id(a, f"assertions[{i}]")
+            _require_assertion_keys(a, f"assertions[{i}]")
 
         sections = []
         for si, s in enumerate(data.get("sections", [])):
