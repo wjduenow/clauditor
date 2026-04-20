@@ -11,6 +11,43 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+@dataclass(frozen=True)
+class AssertionKeySpec:
+    """Per-assertion-type required-key invariant (DEC-008 of #61).
+
+    Single source of truth for which assertion-dict keys each
+    ``type`` value in :data:`ASSERTION_TYPE_REQUIRED_KEYS` must
+    carry. Consumed by the loader-side ``_require_assertion_keys``
+    validator (US-002) and the ``propose-eval`` prompt builder
+    (US-003); kept in lockstep with the ``_ASSERTION_HANDLERS``
+    dispatch table in :mod:`clauditor.assertions` via a test-side
+    drift guard.
+    """
+
+    required: frozenset[str]
+
+
+# Single source of truth (DEC-008 of #61): every assertion ``type``
+# string accepted by :func:`clauditor.assertions.run_assertions` maps
+# to the set of keys its handler reads from the assertion dict. Must
+# stay in lockstep with ``_ASSERTION_HANDLERS`` in
+# :mod:`clauditor.assertions`; the drift guard lives in
+# ``tests/test_schemas.py::TestAssertionKeySpec``
+# (``test_handler_signature_agrees_with_constant``).
+ASSERTION_TYPE_REQUIRED_KEYS: dict[str, AssertionKeySpec] = {
+    "contains": AssertionKeySpec(required=frozenset({"value"})),
+    "not_contains": AssertionKeySpec(required=frozenset({"value"})),
+    "regex": AssertionKeySpec(required=frozenset({"value"})),
+    "min_count": AssertionKeySpec(required=frozenset({"value", "minimum"})),
+    "min_length": AssertionKeySpec(required=frozenset({"value"})),
+    "max_length": AssertionKeySpec(required=frozenset({"value"})),
+    "has_urls": AssertionKeySpec(required=frozenset({"value"})),
+    "has_entries": AssertionKeySpec(required=frozenset({"value"})),
+    "urls_reachable": AssertionKeySpec(required=frozenset({"value"})),
+    "has_format": AssertionKeySpec(required=frozenset({"format", "value"})),
+}
+
+
 @dataclass
 class FieldRequirement:
     """A required field in a structured entry (venue, event, etc.).
