@@ -4,8 +4,9 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/63
 - **Branch:** `feature/63-runner-error-surfacing`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/63-runner-error-surfacing`
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **PR:** https://github.com/wjduenow/clauditor/pull/68
+- **Epic:** `clauditor-cha`
 - **Sessions:** 1
 - **Last session:** 2026-04-20
 
@@ -1082,7 +1083,37 @@ reflect shipped state.
 
 ## Beads Manifest
 
-_(Populated on devolve.)_
+**Epic:** `clauditor-cha` — #63: Surface runner API errors and interactive-hang signals
+**Worktree:** `/home/wesd/dev/worktrees/clauditor/63-runner-error-surfacing`
+**Branch:** `feature/63-runner-error-surfacing`
+**Devolved:** 2026-04-20
+
+### Tasks
+
+| Bead | Story | Depends on |
+|---|---|---|
+| `clauditor-cha.1` | US-001 — Extend `SkillResult` + fixture hybrid | _none_ |
+| `clauditor-cha.2` | US-002 — Parser classifies `is_error: true` | `.1` |
+| `clauditor-cha.3` | US-003 — Interactive-hang detection + escape hatch | `.1` |
+| `clauditor-cha.4` | US-004 — Timeout path `error_category="timeout"` | `.1` |
+| `clauditor-cha.5` | US-005 — Shared CLI helper `_render_skill_error` | `.2`, `.3`, `.4` |
+| `clauditor-cha.6` | US-006 — Five CLI commands adopt helper + regression E2E | `.5` |
+| `clauditor-cha.7` | US-007 — `spec.py` → `succeeded_cleanly` | `.3` |
+| `clauditor-cha.8` | US-008 — Update `docs/stream-json-schema.md` + rule snippet | `.2` |
+| `clauditor-cha.9` | US-009 — Update `docs/pytest-plugin.md` fields | `.1` |
+| `clauditor-cha.10` | US-010 — Quality Gate | `.6`, `.7`, `.8`, `.9` |
+| `clauditor-cha.11` | US-011 — Patterns & Memory | `.10` |
+
+Dependency graph uses minimal edges; transitivity through `.2/.3/.4 → .1`
+and leaf-to-gate links covers everything. `bd ready` after devolve
+surfaces `clauditor-cha.1` as the first actionable task.
+
+### Ralph run handoff
+
+- Start: `bd ready` to confirm `clauditor-cha.1` is live.
+- Claim: `bd update clauditor-cha.1 --claim`.
+- Execute in the worktree above. Every bead PR should target `dev`.
+- Closeout: `/closeout` when `bd show clauditor-cha.11` is green.
 
 ---
 
