@@ -4,8 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/62
 - **Branch:** `feature/62-skill-md-layout`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/62-skill-md-layout`
-- **Phase:** `detailing`
-- **PR:** _not yet created_
+- **Phase:** `published`
+- **PR:** https://github.com/wjduenow/clauditor/pull/66
 - **Sessions:** 1
 - **Last session:** 2026-04-20
 
