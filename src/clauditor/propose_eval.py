@@ -283,7 +283,12 @@ def load_propose_eval_input(
         capture_text = scrubbed
         try:
             capture_source = str(chosen.relative_to(project_dir))
-        except ValueError:
+        except ValueError:  # pragma: no cover
+            # Defensive: ``chosen`` is constructed as
+            # ``project_dir / ...`` a few lines above, so by
+            # construction it is always relative to ``project_dir``.
+            # This branch exists as a defense-in-depth against a
+            # future refactor that widens the source of ``chosen``.
             capture_source = str(chosen)
 
     return ProposeEvalInput(
@@ -449,20 +454,27 @@ def build_propose_eval_prompt(propose_input: ProposeEvalInput) -> str:
     parts.append("  ]")
     parts.append("}")
     parts.append("")
-    # Per-type required-key table. Rendered from
+    # Per-type key table. Rendered from
     # ``ASSERTION_TYPE_REQUIRED_KEYS`` so adding an assertion type in
     # the schema automatically propagates here (DEC-003 / DEC-008 of
     # ``plans/super/61-propose-eval-key-mismatch.md``). The word
     # "required" appears in every row so the prompt-builder tests
     # can anchor on literal substrings like
-    # ``"min_count → required: minimum, value"``.
+    # ``"min_count → required: value · optional: minimum"``. Rows
+    # with no required keys render ``required: (none)`` so the
+    # model sees the type is still known, just fully-optional.
     parts.append(
-        "Assertion type → required keys (in addition to `id`, "
-        "`type`, `name`):"
+        "Assertion type → keys (in addition to `id`, `type`, `name`):"
     )
     for type_name, spec in sorted(ASSERTION_TYPE_REQUIRED_KEYS.items()):
-        required_keys = ", ".join(sorted(spec.required))
-        parts.append(f"- {type_name} → required: {required_keys}")
+        required_str = (
+            ", ".join(sorted(spec.required)) if spec.required else "(none)"
+        )
+        row = f"- {type_name} → required: {required_str}"
+        if spec.optional:
+            optional_str = ", ".join(sorted(spec.optional))
+            row += f" · optional: {optional_str}"
+        parts.append(row)
 
     prompt = "\n".join(parts) + "\n"
 
@@ -634,12 +646,11 @@ def validate_proposed_spec(
         # we cannot read the assertions/criteria reliably.
         return errors
 
+    # ``EvalSpec.from_dict`` above rejects non-list ``assertions``
+    # and ``grading_criteria`` with a ``ValueError``, so reaching this
+    # point guarantees both keys (when present) are lists.
     assertions = spec_dict.get("assertions", [])
     criteria = spec_dict.get("grading_criteria", [])
-    if not isinstance(assertions, list):
-        assertions = []
-    if not isinstance(criteria, list):
-        criteria = []
     if len(assertions) == 0 and len(criteria) == 0:
         errors.append(
             "proposed spec has no assertions and no grading_criteria "
@@ -884,6 +895,28 @@ async def propose_eval(
         first.response_text,
         first.validation_errors,
     )
+
+    # The repair prompt is strictly larger than the original (it
+    # appends the full previous response + the error list to the
+    # original prompt verbatim). If it exceeds the token budget,
+    # skip the retry and surface the first attempt's errors — turning
+    # a "recoverable validation failure" into "user-surfaced
+    # validation failure" is preferable to turning it into a silent
+    # API error. ``repair_attempted`` stays ``False`` because no
+    # second API call fires.
+    repair_tokens = _estimate_tokens(repair_prompt)
+    if repair_tokens > _TOKEN_BUDGET_CAP:
+        print(
+            f"propose-eval: repair prompt over token budget "
+            f"({repair_tokens} tokens > {_TOKEN_BUDGET_CAP} limit), "
+            "skipping retry",
+            file=sys.stderr,
+        )
+        return _finalize(
+            validation_errors=first.validation_errors,
+            attempts=[first.metrics],
+        )
+
     second = await _single_propose_attempt(
         repair_prompt,
         model=model,

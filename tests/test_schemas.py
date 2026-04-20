@@ -1816,49 +1816,79 @@ class TestAssertionKeySpec:
     builder (US-003) both consume.
     """
 
-    EXPECTED_REQUIRED_KEYS: dict[str, set[str]] = {
-        "contains": {"value"},
-        "not_contains": {"value"},
-        "regex": {"value"},
-        "min_count": {"value", "minimum"},
-        "min_length": {"value"},
-        "max_length": {"value"},
-        "has_urls": {"value"},
-        "has_entries": {"value"},
-        "urls_reachable": {"value"},
-        "has_format": {"format", "value"},
+    # Maps type → (required, optional) sets. Mirrors the split in the
+    # production ``ASSERTION_TYPE_REQUIRED_KEYS`` constant; any drift
+    # between this table and that constant is surfaced by the tests
+    # below.
+    EXPECTED_KEYS: dict[str, tuple[set[str], set[str]]] = {
+        "contains": ({"value"}, set()),
+        "not_contains": ({"value"}, set()),
+        "regex": ({"value"}, set()),
+        "min_count": ({"value"}, {"minimum"}),
+        "min_length": ({"value"}, set()),
+        "max_length": ({"value"}, set()),
+        "has_urls": (set(), {"value"}),
+        "has_entries": (set(), {"value"}),
+        "urls_reachable": (set(), {"value"}),
+        "has_format": ({"format"}, {"value"}),
     }
 
     def test_constant_contains_all_ten_assertion_types(self):
         """The constant's keys are exactly the 10 canonical types."""
         assert set(ASSERTION_TYPE_REQUIRED_KEYS.keys()) == set(
-            self.EXPECTED_REQUIRED_KEYS.keys()
+            self.EXPECTED_KEYS.keys()
         )
         assert len(ASSERTION_TYPE_REQUIRED_KEYS) == 10
 
     @pytest.mark.parametrize(
-        "atype,expected",
-        sorted(EXPECTED_REQUIRED_KEYS.items(), key=lambda pair: pair[0]),
+        "atype,expected_required,expected_optional",
+        sorted(
+            (atype, req, opt)
+            for atype, (req, opt) in EXPECTED_KEYS.items()
+        ),
     )
-    def test_contains_expected_required_keys(self, atype, expected):
-        """Each type's ``required`` set matches the canonical spec."""
+    def test_contains_expected_keys(
+        self, atype, expected_required, expected_optional
+    ):
+        """Each type's ``required`` and ``optional`` sets match the
+        canonical spec. The split mirrors handler runtime behavior:
+        keys whose ``.get(key, <default>)`` returns a safe default
+        (e.g. ``1`` for a minimum count) are optional; keys whose
+        default is a vacuous sentinel (``""``, ``0``) are required.
+        """
         spec = ASSERTION_TYPE_REQUIRED_KEYS[atype]
         assert isinstance(spec, AssertionKeySpec)
-        assert spec.required == frozenset(expected)
-        # Required set is a frozenset (dataclass is frozen; the field
-        # type is the load-bearing hashable contract for downstream
-        # callers that want to use these as dict keys or set members).
+        assert spec.required == frozenset(expected_required)
+        assert spec.optional == frozenset(expected_optional)
+        # Both sets are frozensets — load-bearing hashable contract
+        # for downstream callers that use them as dict keys or
+        # set members.
         assert isinstance(spec.required, frozenset)
+        assert isinstance(spec.optional, frozenset)
+
+    def test_required_and_optional_are_disjoint(self):
+        """A key is either required or optional for a given type, not
+        both. The validator's allowed-set takes the union, so overlap
+        would not cause a bug, but it would signal a confused spec.
+        """
+        for atype, spec in ASSERTION_TYPE_REQUIRED_KEYS.items():
+            overlap = spec.required & spec.optional
+            assert overlap == frozenset(), (
+                f"type={atype!r} has {overlap!r} in both required and "
+                "optional — each key must be in exactly one set"
+            )
 
     def test_handler_signature_agrees_with_constant(self):
-        """Drift guard: every required key appears in the handler's
-        lambda source as a quoted key name.
+        """Drift guard: every required AND optional key appears in
+        the handler's lambda source as a quoted key name.
 
         Catches a future handler edit that silently drops a key (e.g.
         swapping ``a.get("format", "")`` for ``a.get("fmt", "")`` in
-        the ``has_format`` handler). Uses ``inspect.getsource`` on each
-        ``_ASSERTION_HANDLERS`` entry and looks for the key as a
-        single- or double-quoted literal substring.
+        the ``has_format`` handler). Uses ``inspect.getsource`` on
+        each ``_ASSERTION_HANDLERS`` entry and looks for the key as
+        a single- or double-quoted literal substring. Both required
+        and optional keys must appear — if the handler doesn't even
+        read a key, the constant should not list it.
         """
         import inspect
 
@@ -1874,17 +1904,16 @@ class TestAssertionKeySpec:
         for atype, spec in ASSERTION_TYPE_REQUIRED_KEYS.items():
             handler = _ASSERTION_HANDLERS[atype]
             source = inspect.getsource(handler)
-            for key in spec.required:
+            for key in spec.required | spec.optional:
                 double_quoted = f'"{key}"'
                 single_quoted = f"'{key}'"
                 assert (
                     double_quoted in source or single_quoted in source
                 ), (
                     f"handler for type={atype!r} does not reference "
-                    f"required key {key!r} in its source "
-                    f"(expected {double_quoted!r} or "
-                    f"{single_quoted!r} substring); source was: "
-                    f"{source!r}"
+                    f"key {key!r} in its source (expected "
+                    f"{double_quoted!r} or {single_quoted!r} "
+                    f"substring); source was: {source!r}"
                 )
 
 
@@ -2061,3 +2090,83 @@ class TestRequireAssertionKeys:
         }
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         assert spec.assertions[0]["name"] == "human label"
+
+    @pytest.mark.parametrize(
+        "atype,opt_key",
+        sorted(
+            (atype, key)
+            for atype, spec in ASSERTION_TYPE_REQUIRED_KEYS.items()
+            for key in spec.optional
+        ),
+    )
+    def test_optional_key_is_allowed_when_present(
+        self, tmp_path, atype, opt_key
+    ):
+        """Specifying an optional key (e.g. ``minimum`` on ``min_count``
+        or ``value`` on ``has_urls``) is accepted; the validator does
+        not reject it as unknown.
+        """
+        entry = _minimal_assertion_entry(atype)
+        entry[opt_key] = "1"
+        data = {
+            "skill_name": "s",
+            "test_args": "y",
+            "assertions": [entry],
+        }
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.assertions[0][opt_key] == "1"
+
+    @pytest.mark.parametrize(
+        "atype",
+        sorted(
+            atype
+            for atype, spec in ASSERTION_TYPE_REQUIRED_KEYS.items()
+            if not spec.required
+        ),
+    )
+    def test_optional_key_not_required_by_validator(self, tmp_path, atype):
+        """Types with ONLY optional keys (``has_urls``, ``has_entries``,
+        ``urls_reachable``) load successfully with no payload keys at
+        all — the handler's default (count=1) applies at runtime.
+        """
+        entry = {"id": "a1", "type": atype}
+        data = {
+            "skill_name": "s",
+            "test_args": "y",
+            "assertions": [entry],
+        }
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.assertions == [entry]
+
+    def test_min_count_without_minimum_is_allowed(self, tmp_path):
+        """``min_count`` requires ``value`` (pattern) but ``minimum``
+        is optional — the handler defaults the count to 1 when
+        omitted. This mirrors the pre-#61 runtime behavior that
+        hand-authored specs relied on.
+        """
+        entry = {"id": "a1", "type": "min_count", "value": r"\d+"}
+        data = {
+            "skill_name": "s",
+            "test_args": "y",
+            "assertions": [entry],
+        }
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.assertions == [entry]
+
+    def test_optional_key_also_rejects_none(self, tmp_path):
+        """An optional key with a ``None`` value is treated as
+        "provided" — we allow it but don't special-case None the way
+        we do for required keys. This documents the boundary: None
+        is only rejected when the key is REQUIRED.
+        """
+        entry = {"id": "a1", "type": "has_urls", "value": None}
+        data = {
+            "skill_name": "s",
+            "test_args": "y",
+            "assertions": [entry],
+        }
+        # Optional + None currently passes validation (the
+        # downstream handler does its own None-tolerant coercion
+        # via `.get("value", "") if a.get("value", "") else 1`).
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.assertions == [entry]

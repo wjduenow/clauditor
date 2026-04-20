@@ -13,38 +13,63 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class AssertionKeySpec:
-    """Per-assertion-type required-key invariant (DEC-008 of #61).
+    """Per-assertion-type key invariant (DEC-008 of #61).
 
     Single source of truth for which assertion-dict keys each
-    ``type`` value in :data:`ASSERTION_TYPE_REQUIRED_KEYS` must
-    carry. Consumed by the loader-side ``_require_assertion_keys``
-    validator (US-002) and the ``propose-eval`` prompt builder
-    (US-003); kept in lockstep with the ``_ASSERTION_HANDLERS``
-    dispatch table in :mod:`clauditor.assertions` via a test-side
-    drift guard.
+    ``type`` value in :data:`ASSERTION_TYPE_REQUIRED_KEYS` accepts.
+    ``required`` keys must be present; ``optional`` keys are
+    allowed but the handler falls back to a safe default when
+    they are omitted. Any key outside the union of ``required``,
+    ``optional``, and the metadata set ``{"id", "type", "name"}``
+    is rejected by ``_require_assertion_keys``. Consumed by the
+    loader-side validator (US-002) and the ``propose-eval``
+    prompt builder (US-003); kept in lockstep with the
+    ``_ASSERTION_HANDLERS`` dispatch table in
+    :mod:`clauditor.assertions` via a test-side drift guard.
     """
 
     required: frozenset[str]
+    optional: frozenset[str] = frozenset()
 
 
 # Single source of truth (DEC-008 of #61): every assertion ``type``
 # string accepted by :func:`clauditor.assertions.run_assertions` maps
-# to the set of keys its handler reads from the assertion dict. Must
-# stay in lockstep with ``_ASSERTION_HANDLERS`` in
-# :mod:`clauditor.assertions`; the drift guard lives in
-# ``tests/test_schemas.py::TestAssertionKeySpec``
+# to the set of keys its handler reads from the assertion dict. The
+# split between ``required`` and ``optional`` mirrors handler runtime
+# behavior — if the handler reads ``.get(key, <default>)`` and the
+# default is a sensible value (e.g. ``1`` for a minimum count), the
+# key is optional; if the default is a sentinel that makes the
+# assertion vacuous (e.g. ``""`` for a regex pattern, ``0`` for a
+# length threshold), the key is required. Must stay in lockstep with
+# ``_ASSERTION_HANDLERS`` in :mod:`clauditor.assertions`; the drift
+# guard lives in ``tests/test_schemas.py::TestAssertionKeySpec``
 # (``test_handler_signature_agrees_with_constant``).
 ASSERTION_TYPE_REQUIRED_KEYS: dict[str, AssertionKeySpec] = {
     "contains": AssertionKeySpec(required=frozenset({"value"})),
     "not_contains": AssertionKeySpec(required=frozenset({"value"})),
     "regex": AssertionKeySpec(required=frozenset({"value"})),
-    "min_count": AssertionKeySpec(required=frozenset({"value", "minimum"})),
+    "min_count": AssertionKeySpec(
+        required=frozenset({"value"}),
+        optional=frozenset({"minimum"}),
+    ),
     "min_length": AssertionKeySpec(required=frozenset({"value"})),
     "max_length": AssertionKeySpec(required=frozenset({"value"})),
-    "has_urls": AssertionKeySpec(required=frozenset({"value"})),
-    "has_entries": AssertionKeySpec(required=frozenset({"value"})),
-    "urls_reachable": AssertionKeySpec(required=frozenset({"value"})),
-    "has_format": AssertionKeySpec(required=frozenset({"format", "value"})),
+    "has_urls": AssertionKeySpec(
+        required=frozenset(),
+        optional=frozenset({"value"}),
+    ),
+    "has_entries": AssertionKeySpec(
+        required=frozenset(),
+        optional=frozenset({"value"}),
+    ),
+    "urls_reachable": AssertionKeySpec(
+        required=frozenset(),
+        optional=frozenset({"value"}),
+    ),
+    "has_format": AssertionKeySpec(
+        required=frozenset({"format"}),
+        optional=frozenset({"value"}),
+    ),
 }
 
 
@@ -346,7 +371,11 @@ class EvalSpec:
                         f"EvalSpec(skill_name={skill_name!r}): {ctx} "
                         f"(type={type_val!r}): missing required key {key!r}"
                     )
-            allowed = {"id", "type", "name"} | set(spec.required)
+            allowed = (
+                {"id", "type", "name"}
+                | set(spec.required)
+                | set(spec.optional)
+            )
             for key in entry:
                 if key in allowed:
                     continue
@@ -362,6 +391,11 @@ class EvalSpec:
                 )
 
         raw_assertions = data.get("assertions", [])
+        if not isinstance(raw_assertions, list):
+            raise ValueError(
+                f"EvalSpec(skill_name={skill_name!r}): 'assertions' "
+                f"must be a list, got {type(raw_assertions).__name__}"
+            )
         for i, a in enumerate(raw_assertions):
             _require_id(a, f"assertions[{i}]")
             _require_assertion_keys(a, f"assertions[{i}]")
@@ -414,6 +448,12 @@ class EvalSpec:
             )
 
         raw_criteria = data.get("grading_criteria", [])
+        if not isinstance(raw_criteria, list):
+            raise ValueError(
+                f"EvalSpec(skill_name={skill_name!r}): "
+                f"'grading_criteria' must be a list, got "
+                f"{type(raw_criteria).__name__}"
+            )
         for i, c in enumerate(raw_criteria):
             _require_id(c, f"grading_criteria[{i}]")
             crit = c.get("criterion")

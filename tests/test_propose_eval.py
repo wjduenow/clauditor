@@ -443,33 +443,38 @@ class TestBuildProposeEvalPrompt:
 
     def test_prompt_contains_per_type_table(self) -> None:
         """DEC-003 / DEC-008 of #61 — the prompt must enumerate each
-        assertion type's required keys (rendered from
+        assertion type's required AND optional keys (rendered from
         ``ASSERTION_TYPE_REQUIRED_KEYS``) so the model has a literal
-        reference table for key names.
+        reference table for key names. Rows without optional keys
+        omit the ``· optional: …`` suffix; rows with no required
+        keys render ``required: (none)``.
         """
         pi = _make_propose_input()
         prompt = build_propose_eval_prompt(pi)
-        # 1-key shape.
+        # 1-required-key shape, no optional.
         assert "contains → required: value" in prompt
-        # 2-key-different-shape (format + value). Keys sorted
-        # alphabetically → ``format`` precedes ``value``.
-        assert "has_format → required: format, value" in prompt
-        # 2-key-same-shape (value + minimum). Keys sorted
-        # alphabetically → ``minimum`` precedes ``value``. (The
-        # bead's instructions gave the sample as "value, minimum"
-        # but also stated "sorted alphabetically"; the latter rule
-        # governs the rendered order and the other sample —
-        # ``has_format → required: format, value`` — confirms
-        # ASCII-alphabetical ordering.)
-        assert "min_count → required: minimum, value" in prompt
-        # Additional type rows to broaden coverage.
         assert "not_contains → required: value" in prompt
         assert "regex → required: value" in prompt
-        assert "has_urls → required: value" in prompt
-        assert "has_entries → required: value" in prompt
-        assert "urls_reachable → required: value" in prompt
         assert "min_length → required: value" in prompt
         assert "max_length → required: value" in prompt
+        # required + optional shape. Keys sorted alphabetically
+        # within each side.
+        assert (
+            "min_count → required: value · optional: minimum"
+        ) in prompt
+        assert (
+            "has_format → required: format · optional: value"
+        ) in prompt
+        # All-optional shape (no required keys) — ``(none)`` marker.
+        assert (
+            "has_urls → required: (none) · optional: value"
+        ) in prompt
+        assert (
+            "has_entries → required: (none) · optional: value"
+        ) in prompt
+        assert (
+            "urls_reachable → required: (none) · optional: value"
+        ) in prompt
 
     def test_prompt_has_no_alias_keys(self) -> None:
         """The drift-source ellipsis ("pattern", "min", "max" alias
@@ -1445,3 +1450,160 @@ class TestProposeEvalRepairRetry:
         # Aggregate matches sum.
         assert report.input_tokens == 111 + 333
         assert report.output_tokens == 22 + 44
+
+    @pytest.mark.asyncio
+    async def test_repair_skipped_when_over_token_budget(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """If the repair prompt exceeds ``_TOKEN_BUDGET_CAP``, the
+        retry is aborted before the second ``call_anthropic`` fires.
+        The first attempt's ``validation_errors`` surface on the
+        report (so the CLI still exits 2) and ``repair_attempted``
+        stays ``False`` because no second API call happened.
+        """
+        pi = _make_propose_input()
+        first_bad = _mock_anthropic_result(
+            text=_bad_response_text_missing_id(),
+            input_tokens=111,
+            output_tokens=22,
+        )
+
+        # Estimate is only "too big" for the repair prompt (detected
+        # by the ``<validation_errors>`` tag the repair builder
+        # appends). The original prompt keeps its real estimate, so
+        # the first ``build_propose_eval_prompt`` check passes.
+        import clauditor.propose_eval as pe_mod
+
+        real_estimate = pe_mod._estimate_tokens
+
+        def _fake_estimate(prompt: str) -> int:
+            if "<validation_errors>" in prompt:
+                return pe_mod._TOKEN_BUDGET_CAP + 1
+            return real_estimate(prompt)
+
+        monkeypatch.setattr(
+            pe_mod, "_estimate_tokens", _fake_estimate
+        )
+
+        mock_call = AsyncMock(side_effect=[first_bad])
+        with patch("clauditor._anthropic.call_anthropic", mock_call):
+            report = await propose_eval(pi, spec_dir=tmp_path)
+
+        # The retry was skipped: only one API call fired, only one
+        # metrics entry recorded, and ``repair_attempted`` is False.
+        assert mock_call.call_count == 1
+        assert len(report.attempts) == 1
+        assert report.repair_attempted is False
+        # The first attempt's validation errors drive exit 2.
+        assert report.validation_errors  # non-empty
+        assert report.api_error is None
+
+        # Operator-visible stderr signal explains the skip.
+        err = capsys.readouterr().err
+        assert "repair prompt over token budget" in err
+        assert "skipping retry" in err
+
+
+class TestValidateProposedSpecNonListFields:
+    """``EvalSpec.from_dict`` hard-rejects non-list ``assertions`` and
+    ``grading_criteria`` with a ``ValueError``; ``validate_proposed_spec``
+    catches that and surfaces it as a validation error in the list. This
+    replaces the pre-#61 "tolerate and normalize to empty" behavior,
+    which was defensive dead code (the loader's own iteration crashed
+    before the normalization branch ever fired).
+    """
+
+    def test_non_list_assertions_raises_validation_error(
+        self, tmp_path: Path
+    ):
+        """``assertions`` as a scalar (not a list) is surfaced as a
+        validation error naming the field and the offending type."""
+        spec_dict = {
+            "test_args": "x",
+            "assertions": "not-a-list",
+            "grading_criteria": [
+                {"id": "c1", "criterion": "ok"}
+            ],
+        }
+        errors = validate_proposed_spec(spec_dict, spec_dir=tmp_path)
+        assert len(errors) == 1
+        assert "'assertions' must be a list" in errors[0]
+        assert "got str" in errors[0]
+
+    def test_non_list_criteria_raises_validation_error(
+        self, tmp_path: Path
+    ):
+        """Symmetrical: non-list ``grading_criteria`` is rejected."""
+        spec_dict = {
+            "test_args": "x",
+            "assertions": [
+                {
+                    "id": "a1",
+                    "type": "contains",
+                    "value": "hi",
+                }
+            ],
+            "grading_criteria": {"not": "a list"},
+        }
+        errors = validate_proposed_spec(spec_dict, spec_dir=tmp_path)
+        assert len(errors) == 1
+        assert "'grading_criteria' must be a list" in errors[0]
+        assert "got dict" in errors[0]
+
+
+class TestSinglePropseAttemptImportError:
+    """Covers the defensive ``ImportError`` branch in
+    :func:`_single_propose_attempt` when the ``anthropic`` SDK (imported
+    lazily inside the attempt) is not installed. The attempt returns
+    an ``_AttemptResult`` with ``api_error`` set rather than raising,
+    so the orchestrator's existing ``api_error → exit 3`` routing
+    applies.
+    """
+
+    @pytest.mark.asyncio
+    async def test_missing_anthropic_sdk_returns_api_error(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """When ``from clauditor._anthropic import call_anthropic``
+        raises ``ImportError`` (SDK not installed), the first
+        attempt returns an ``api_error`` without making any network
+        call. The orchestrator surfaces it as ``report.api_error``
+        and ``report.repair_attempted`` stays ``False``.
+        """
+        import sys as _sys
+
+        real_anthropic = _sys.modules.get("clauditor._anthropic")
+        # Remove the cached helper module AND stub the raw SDK so
+        # re-import raises ImportError on
+        # ``from clauditor._anthropic import call_anthropic``. We
+        # restore the original module at the end to avoid polluting
+        # the rest of the test suite's module cache.
+        _sys.modules.pop("clauditor._anthropic", None)
+
+        def _raise_on_anthropic_import(name, *args, **kwargs):
+            if name == "clauditor._anthropic":
+                raise ImportError("fake SDK-missing error")
+            return _original_import(name, *args, **kwargs)
+
+        _original_import = __builtins__["__import__"] if isinstance(
+            __builtins__, dict
+        ) else __builtins__.__import__
+
+        monkeypatch.setattr(
+            "builtins.__import__", _raise_on_anthropic_import
+        )
+
+        try:
+            pi = _make_propose_input()
+            report = await propose_eval(pi, spec_dir=tmp_path)
+        finally:
+            if real_anthropic is not None:
+                _sys.modules["clauditor._anthropic"] = real_anthropic
+
+        # Attempt registered (with zero tokens since the API call
+        # never fired) and api_error surfaced.
+        assert report.api_error is not None
+        assert "fake SDK-missing error" in report.api_error or (
+            "anthropic" in report.api_error.lower()
+        )
+        assert report.repair_attempted is False
