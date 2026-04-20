@@ -4,8 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/67
 - **Branch:** `feature/67-per-type-assertion-keys`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/67-per-type-assertion-keys`
-- **Phase:** `detailing`
-- **PR:** TBD
+- **Phase:** `published`
+- **PR:** https://github.com/wjduenow/clauditor/pull/69
 - **Sessions:** 1
 - **Last session:** 2026-04-20
 
