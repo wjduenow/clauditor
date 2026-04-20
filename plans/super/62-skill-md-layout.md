@@ -4,7 +4,7 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/62
 - **Branch:** `feature/62-skill-md-layout`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/62-skill-md-layout`
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **PR:** https://github.com/wjduenow/clauditor/pull/66
 - **Sessions:** 1
 - **Last session:** 2026-04-20
@@ -574,7 +574,28 @@ Validated against `.claude/rules/` identified in Discovery:
 ---
 
 ## Beads Manifest
-_(filled in Phase 7 on devolve)_
+
+- **Epic:** `clauditor-600` — #62: modern `<name>/SKILL.md` layout support (P1)
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/62-skill-md-layout`
+- **Branch:** `feature/62-skill-md-layout`
+- **PR:** https://github.com/wjduenow/clauditor/pull/66
+
+### Tasks (priority P2 unless noted)
+
+| ID | Title | Depends on |
+|---|---|---|
+| `clauditor-600.1` | US-001 — Promote `SKILL_NAME_RE` to `paths.py` | — |
+| `clauditor-600.2` | US-002 — Pure skill-identity helpers in `paths.py` (TDD) | `.1` |
+| `clauditor-600.3` | US-003 — Wire helpers into `SkillSpec`; extend `tmp_skill_file`; integration tests | `.2` |
+| `clauditor-600.4` | US-004 — Fix `cli/init.py` via shared helper | `.2` |
+| `clauditor-600.5` | US-005 — Harden `_load_spec_or_report` I/O error handling | `.3` |
+| `clauditor-600.6` | US-006 — Bundled-skill regression test + docs polish | `.3` |
+| `clauditor-600.7` | Quality Gate — code review x4 + CodeRabbit | `.1`, `.2`, `.3`, `.4`, `.5`, `.6` |
+| `clauditor-600.8` | Patterns & Memory (P4) | `.7` |
+
+### Ready at devolve
+
+`bd ready` shows `clauditor-600.1` (US-001) as the only unblocked implementation task. US-003 and US-004 will unblock after US-002 completes; the two stories can run in parallel against separate worker contexts since neither depends on the other.
 
 ---
 
