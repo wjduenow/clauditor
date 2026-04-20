@@ -38,17 +38,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from clauditor._frontmatter import parse_frontmatter
+from clauditor.paths import SKILL_NAME_RE
 from clauditor.schemas import EvalSpec
 from clauditor.transcripts import redact
-
-# Skill names are interpolated into `<project_dir>/tests/eval/captured/
-# <name>.txt` and `<project_dir>/.clauditor/captures/<name>.txt` to find
-# an optional captured run. An attacker-authored SKILL.md with a
-# `name:` frontmatter field like `../../../etc/issue` or `/etc/passwd`
-# would otherwise escape the capture directory and leak arbitrary `.txt`
-# files into the Sonnet prompt. Clamp to basename-style tokens matching
-# Claude Code's own convention for skill directory names.
-_SKILL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 
 # Module-level alias lets tests patch this without clobbering the
 # asyncio event loop's own time.monotonic() calls. See
@@ -173,7 +165,7 @@ def _skill_name_from_frontmatter(
     (which is the convention for Claude Code skills living under
     ``.claude/skills/<skill_name>/SKILL.md``).
 
-    Values are validated against :data:`_SKILL_NAME_RE` — a name that
+    Values are validated against :data:`~clauditor.paths.SKILL_NAME_RE` — a name that
     contains path separators, leading dots, or non-ASCII-word
     characters is rejected in favor of the directory basename, which
     is itself only used if it also passes the regex. If neither
@@ -188,7 +180,7 @@ def _skill_name_from_frontmatter(
             candidates.append(raw.strip())
     candidates.append(skill_md_path.parent.name)
     for candidate in candidates:
-        if candidate and _SKILL_NAME_RE.match(candidate):
+        if candidate and re.fullmatch(SKILL_NAME_RE, candidate):
             return candidate
     return "skill"
 

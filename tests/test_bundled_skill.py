@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from clauditor.schemas import EvalSpec, criterion_text
+from clauditor.spec import SkillSpec
 
 SKILL_DIR = (
     Path(__file__).resolve().parent.parent
@@ -213,6 +214,22 @@ class TestSkillMdBody:
             "bundled SKILL.md body must mention 'propose-eval' "
             "(DEC-007 regression guard)"
         )
+
+
+class TestBundledSkillViaSpec:
+    def test_bundled_skill_loads_via_skillspec(self) -> None:
+        # Regression guard (DEC-005 of plans/super/62-skill-md-layout.md):
+        # the bundled SKILL.md must load cleanly through
+        # ``SkillSpec.from_file`` with modern-layout name derivation —
+        # ``skill_name`` comes from the frontmatter ``name:`` field, not
+        # the file stem. We do NOT assert on ``spec.eval_spec`` here
+        # because auto-discovery looks for a sibling ``SKILL.eval.json``
+        # and the bundled eval intentionally lives at
+        # ``assets/clauditor.eval.json`` (covered by ``TestBundledEvalSpec``).
+        spec = SkillSpec.from_file(SKILL_MD)
+        assert spec.skill_name == "clauditor"
+        assert spec.skill_path.name == "SKILL.md"
+        assert spec.skill_path.parent.name == "clauditor"
 
 
 class TestBundledEvalSpec:

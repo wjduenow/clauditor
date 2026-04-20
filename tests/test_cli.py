@@ -2778,6 +2778,102 @@ class TestCmdInit:
         data = json.loads(eval_path.read_text())
         assert data["skill_name"] == "my-skill"
 
+    def test_init_modern_layout_uses_parent_dir_name(self, tmp_path):
+        """Modern layout (``<dir>/SKILL.md``) derives name from parent dir
+        via frontmatter ``name:`` — not the ``"SKILL"`` file stem."""
+        skill_dir = tmp_path / ".claude" / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text(
+            "---\n"
+            "name: foo\n"
+            "description: A test skill\n"
+            "---\n"
+            "\n"
+            "# Body\n"
+        )
+
+        rc = main(["init", str(skill_path)])
+
+        assert rc == 0
+        eval_path = skill_dir / "SKILL.eval.json"
+        assert eval_path.exists()
+        data = json.loads(eval_path.read_text())
+        assert data["skill_name"] == "foo"
+        assert data["description"] == "Eval spec for /foo"
+
+    def test_init_missing_skill_file(self, tmp_path, capsys):
+        """Missing skill file exits 1 with a descriptive stderr error."""
+        skill_path = tmp_path / "does-not-exist.md"
+
+        rc = main(["init", str(skill_path)])
+
+        assert rc == 1
+        assert "skill file not found" in capsys.readouterr().err
+
+    def test_init_unreadable_skill_file(self, tmp_path, capsys):
+        """OSError while reading the skill file exits 1 with an error message
+        that includes the underlying exception string."""
+        skill_path = tmp_path / "foo.md"
+        skill_path.write_text("# foo")
+
+        with patch(
+            "clauditor.cli.init.Path.read_text",
+            side_effect=OSError("Permission denied"),
+        ):
+            rc = main(["init", str(skill_path)])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "cannot read" in err
+        assert "Permission denied" in err
+
+    def test_init_non_utf8_skill_file(self, tmp_path, capsys):
+        """UnicodeDecodeError (non-UTF-8 skill file) exits 1 with a clean
+        message instead of an uncaught traceback. ``read_text`` is called
+        with ``encoding='utf-8'`` and ``UnicodeDecodeError`` is a
+        ``ValueError`` subclass (not ``OSError``), so the except clause
+        must catch both explicitly."""
+        skill_path = tmp_path / "bogus.md"
+        # Raw bytes that don't decode as UTF-8 (a Latin-1 é followed by
+        # high-range bytes).
+        skill_path.write_bytes(b"\xc3\x28\xa0\xa1")
+
+        rc = main(["init", str(skill_path)])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert f"cannot read {skill_path}" in err
+        # The underlying codec error is appended to the message.
+        assert "utf-8" in err or "codec" in err
+
+    def test_init_warns_on_frontmatter_disagreement(self, tmp_path, capsys):
+        """When frontmatter ``name:`` disagrees with the filesystem-derived
+        name, stderr carries the DEC-009 warning and frontmatter wins."""
+        skill_dir = tmp_path / ".claude" / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text(
+            "---\n"
+            "name: bar\n"
+            "description: Disagreement test\n"
+            "---\n"
+            "\n"
+            "# Body\n"
+        )
+
+        rc = main(["init", str(skill_path)])
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "clauditor.spec:" in captured.err
+        assert "'bar'" in captured.err
+        assert "'foo'" in captured.err
+        eval_path = skill_dir / "SKILL.eval.json"
+        data = json.loads(eval_path.read_text())
+        assert data["skill_name"] == "bar"
+        assert data["description"] == "Eval spec for /bar"
+
 
 @pytest.fixture
 def setup_env(tmp_path, monkeypatch):
@@ -5144,3 +5240,95 @@ class TestCmdSuggest:
         assert rc == 1
         err = capsys.readouterr().err
         assert "UTF-8" in err or "decode" in err
+
+
+class TestLoadSpecOrReport:
+    """Direct tests for ``cli._load_spec_or_report`` I/O error handling.
+
+    US-005 (#62) expanded the except clause from ``FileNotFoundError``
+    only to ``(FileNotFoundError, OSError)`` with branched messages:
+    missing file keeps the existing ``clauditor init`` hint, other
+    ``OSError`` subclasses get a generic ``ERROR: cannot read ...``
+    message. Traces to DEC-010 of ``plans/super/62-skill-md-layout.md``.
+    """
+
+    def test_file_not_found_keeps_init_hint_message(self, capsys):
+        """FileNotFoundError preserves the byte-identical init-hint message."""
+        from clauditor.cli import _load_spec_or_report
+
+        with patch(
+            "clauditor.cli.SkillSpec.from_file",
+            side_effect=FileNotFoundError(
+                "Skill file not found: missing.md"
+            ),
+        ):
+            result = _load_spec_or_report("missing.md", None)
+
+        assert result is None
+        err = capsys.readouterr().err
+        # Byte-identical to the pre-US-005 message: name the path and
+        # suggest `clauditor init` as the next step.
+        assert (
+            "ERROR: Skill file not found: missing.md. "
+            "Run 'clauditor init missing.md' to create one."
+        ) in err
+
+    def test_permission_error_emits_cannot_read_message(self, capsys):
+        """PermissionError (OSError subclass) routes to the generic branch."""
+        from clauditor.cli import _load_spec_or_report
+
+        with patch(
+            "clauditor.cli.SkillSpec.from_file",
+            side_effect=PermissionError("Permission denied"),
+        ):
+            result = _load_spec_or_report("protected.md", None)
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert "ERROR: cannot read protected.md: Permission denied" in err
+        # The init hint must NOT appear on the generic-OSError branch —
+        # the file exists, it's just unreadable.
+        assert "clauditor init" not in err
+
+    def test_is_a_directory_error_emits_cannot_read_message(
+        self, tmp_path, capsys
+    ):
+        """IsADirectoryError (OSError subclass) routes to the generic branch.
+
+        Pass ``tmp_path`` itself (a directory) as the skill path; the
+        real ``SkillSpec.from_file`` will try to ``read_text()`` it and
+        raise ``IsADirectoryError``. This exercises the helper against
+        a real OS error rather than a mocked one.
+        """
+        from clauditor.cli import _load_spec_or_report
+
+        result = _load_spec_or_report(str(tmp_path), None)
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert f"ERROR: cannot read {tmp_path}:" in err
+        assert "clauditor init" not in err
+
+    def test_unicode_decode_error_emits_cannot_read_message(self, capsys):
+        """UnicodeDecodeError (ValueError subclass) routes to the generic branch.
+
+        ``SkillSpec.from_file`` reads the skill file with
+        ``encoding="utf-8"``; a non-UTF-8 file raises
+        ``UnicodeDecodeError``, which is NOT an ``OSError`` subclass.
+        The except clause explicitly catches both so the user sees a
+        clean error message instead of an uncaught traceback.
+        """
+        from clauditor.cli import _load_spec_or_report
+
+        with patch(
+            "clauditor.cli.SkillSpec.from_file",
+            side_effect=UnicodeDecodeError(
+                "utf-8", b"\xff\xfe", 0, 1, "invalid start byte"
+            ),
+        ):
+            result = _load_spec_or_report("weird.md", None)
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert "ERROR: cannot read weird.md:" in err
+        assert "clauditor init" not in err
