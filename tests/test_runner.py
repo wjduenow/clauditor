@@ -13,7 +13,11 @@ importlib.reload(_runner_mod)
 
 from clauditor.asserters import SkillAsserter  # noqa: E402
 from clauditor.runner import SkillResult, SkillRunner  # noqa: E402
-from tests.conftest import _FakePopen, make_fake_skill_stream  # noqa: E402
+from tests.conftest import (  # noqa: E402
+    _FakePopen,
+    make_fake_interactive_hang_stream,
+    make_fake_skill_stream,
+)
 
 # ---------------------------------------------------------------------------
 # SkillRunner.run_raw
@@ -1190,3 +1194,221 @@ class TestSkillResultWarnings:
             "cleanup close(stdout)" in w and "OSError" in w
             for w in result.warnings
         ), f"expected stdout close warning, got {result.warnings!r}"
+
+
+# ---------------------------------------------------------------------------
+# SkillResult.error_category + succeeded_cleanly (US-001)
+# ---------------------------------------------------------------------------
+
+
+class TestSkillResultErrorCategory:
+    """Covers the ``error_category`` field and ``succeeded_cleanly``
+    property added in US-001 of ``plans/super/63-runner-error-surfacing.md``
+    (DEC-010, DEC-015)."""
+
+    def _make(
+        self,
+        *,
+        output: str = "hello",
+        exit_code: int = 0,
+        error: str | None = None,
+        error_category=None,
+        warnings: list[str] | None = None,
+    ) -> SkillResult:
+        return SkillResult(
+            output=output,
+            exit_code=exit_code,
+            skill_name="test",
+            args="",
+            error=error,
+            error_category=error_category,
+            warnings=warnings if warnings is not None else [],
+        )
+
+    def test_error_category_default_none_minimal_kwargs(self):
+        """Constructing with only the currently-required kwargs leaves
+        ``error_category`` at ``None``. Regression guard that the field
+        addition stays additive for every existing call site."""
+        result = SkillResult(
+            output="anything",
+            exit_code=0,
+            skill_name="test",
+            args="",
+        )
+        assert result.error_category is None
+
+    def test_succeeded_cleanly_happy_path(self):
+        """All signals clean → True."""
+        result = self._make()
+        assert result.succeeded is True
+        assert result.succeeded_cleanly is True
+
+    def test_succeeded_cleanly_false_when_error_set(self):
+        """An ``error`` string disqualifies a clean success."""
+        result = self._make(error="something went wrong")
+        assert result.succeeded_cleanly is False
+
+    @pytest.mark.parametrize(
+        "category",
+        ["rate_limit", "auth", "api", "interactive", "subprocess", "timeout"],
+    )
+    def test_succeeded_cleanly_false_for_each_error_category(self, category):
+        """Every Literal value disqualifies ``succeeded_cleanly``; the
+        parametrization also documents that each value assigns cleanly
+        (Python does not enforce ``Literal`` at runtime, but a typo
+        here would raise in the parametrize data)."""
+        result = self._make(error_category=category)
+        assert result.error_category == category
+        assert result.succeeded_cleanly is False
+
+    def test_succeeded_cleanly_false_on_interactive_hang_warning(self):
+        """A ``warnings`` entry starting with the ``interactive-hang:``
+        prefix disqualifies the result even with error=None and
+        error_category=None. US-003 will wire real detection to this
+        prefix; US-001 codifies the check."""
+        result = self._make(
+            warnings=["interactive-hang: assistant ended turn with a question"]
+        )
+        assert result.error is None
+        assert result.error_category is None
+        assert result.succeeded_cleanly is False
+
+    def test_succeeded_cleanly_tolerates_other_warnings(self):
+        """Warnings that do NOT start with the interactive-hang prefix
+        do not disqualify a clean success — only the prefixed tag does."""
+        result = self._make(
+            warnings=[
+                "malformed stream-json line skipped: trailing garbage",
+                "cleanup close(stderr) failed: OSError: EBADF",
+            ]
+        )
+        assert result.succeeded_cleanly is True
+
+    def test_succeeded_cleanly_false_when_not_succeeded(self):
+        """If the underlying lenient ``succeeded`` is False (e.g. empty
+        output), ``succeeded_cleanly`` must be False too."""
+        result = self._make(output="")
+        assert result.succeeded is False
+        assert result.succeeded_cleanly is False
+
+    def test_succeeded_cleanly_false_on_nonzero_exit(self):
+        """Non-zero exit disqualifies via the underlying ``succeeded``."""
+        result = self._make(exit_code=1)
+        assert result.succeeded is False
+        assert result.succeeded_cleanly is False
+
+    def test_error_category_literal_values_assign_cleanly(self):
+        """Each Literal value round-trips through the constructor. Python
+        does not enforce ``Literal`` at runtime, so this is a self-
+        documenting regression assertion — a future rename of one of
+        the enum strings would fail here."""
+        for category in (
+            "rate_limit",
+            "auth",
+            "api",
+            "interactive",
+            "subprocess",
+            "timeout",
+        ):
+            result = SkillResult(
+                output="x",
+                exit_code=0,
+                skill_name="t",
+                args="",
+                error_category=category,
+            )
+            assert result.error_category == category
+
+
+# ---------------------------------------------------------------------------
+# Fixture helpers (US-001, DEC-014)
+# ---------------------------------------------------------------------------
+
+
+class TestFixtureHelpers:
+    """Covers the fixture-hybrid additions in ``tests/conftest.py``:
+
+    - ``make_fake_skill_stream`` gains an ``error_text`` kwarg.
+    - ``make_fake_interactive_hang_stream`` is a new sibling helper.
+
+    The NDJSON is parsed line-by-line with ``json.loads`` so the
+    assertions key on the actual fields, not the string layout.
+    """
+
+    @staticmethod
+    def _parse_ndjson(fake: _FakePopen) -> list[dict]:
+        """Drain the fake Popen's stdout and return the parsed messages."""
+        body = fake.stdout.getvalue()
+        return [json.loads(line) for line in body.splitlines() if line.strip()]
+
+    def test_make_fake_skill_stream_default_is_error_false(self):
+        """Back-compat: no ``error_text`` kwarg → ``is_error: False``."""
+        fake = make_fake_skill_stream("hello")
+        msgs = self._parse_ndjson(fake)
+        result_msgs = [m for m in msgs if m.get("type") == "result"]
+        assert len(result_msgs) == 1
+        assert result_msgs[0]["is_error"] is False
+        assert "result" not in result_msgs[0]
+
+    def test_make_fake_skill_stream_error_text_sets_is_error_and_result(self):
+        """``error_text="boom"`` → ``is_error: True`` and ``result: "boom"``."""
+        fake = make_fake_skill_stream("hello", error_text="boom")
+        msgs = self._parse_ndjson(fake)
+        result_msgs = [m for m in msgs if m.get("type") == "result"]
+        assert len(result_msgs) == 1
+        assert result_msgs[0]["is_error"] is True
+        assert result_msgs[0]["result"] == "boom"
+
+    def test_interactive_hang_stream_default_shape(self):
+        """Default hang stream: trailing ``?``, ``end_turn``, ``num_turns: 1``."""
+        fake = make_fake_interactive_hang_stream()
+        msgs = self._parse_ndjson(fake)
+
+        assistants = [m for m in msgs if m.get("type") == "assistant"]
+        assert len(assistants) == 1
+        assistant = assistants[0]
+        assert assistant["message"]["stop_reason"] == "end_turn"
+        content = assistant["message"]["content"]
+        # Default: no tool_use block, just a text block.
+        assert len(content) == 1
+        assert content[0]["type"] == "text"
+        assert content[0]["text"].endswith("?")
+
+        results = [m for m in msgs if m.get("type") == "result"]
+        assert len(results) == 1
+        assert results[0]["num_turns"] == 1
+        assert results[0]["is_error"] is False
+        assert results[0]["subtype"] == "success"
+
+    def test_interactive_hang_stream_with_tool_use_block(self):
+        """``use_tool_use=True`` injects an ``AskUserQuestion`` tool_use block."""
+        fake = make_fake_interactive_hang_stream(use_tool_use=True)
+        msgs = self._parse_ndjson(fake)
+
+        assistants = [m for m in msgs if m.get("type") == "assistant"]
+        assert len(assistants) == 1
+        content = assistants[0]["message"]["content"]
+
+        text_blocks = [b for b in content if b.get("type") == "text"]
+        tool_use_blocks = [b for b in content if b.get("type") == "tool_use"]
+        assert len(text_blocks) == 1
+        assert len(tool_use_blocks) == 1
+        assert tool_use_blocks[0]["name"] == "AskUserQuestion"
+        # The question should be carried in the standard input.questions shape.
+        assert "questions" in tool_use_blocks[0]["input"]
+
+    def test_interactive_hang_stream_custom_text(self):
+        """The ``text`` kwarg flows to both the text block and the tool input."""
+        fake = make_fake_interactive_hang_stream(
+            text="Which city?", use_tool_use=True
+        )
+        msgs = self._parse_ndjson(fake)
+        content = next(m for m in msgs if m.get("type") == "assistant")[
+            "message"
+        ]["content"]
+        text_block = next(b for b in content if b.get("type") == "text")
+        tool_use = next(b for b in content if b.get("type") == "tool_use")
+        assert text_block["text"] == "Which city?"
+        assert (
+            tool_use["input"]["questions"][0]["question"] == "Which city?"
+        )
