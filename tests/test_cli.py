@@ -5221,3 +5221,71 @@ class TestCmdSuggest:
         assert rc == 1
         err = capsys.readouterr().err
         assert "UTF-8" in err or "decode" in err
+
+
+class TestLoadSpecOrReport:
+    """Direct tests for ``cli._load_spec_or_report`` I/O error handling.
+
+    US-005 (#62) expanded the except clause from ``FileNotFoundError``
+    only to ``(FileNotFoundError, OSError)`` with branched messages:
+    missing file keeps the existing ``clauditor init`` hint, other
+    ``OSError`` subclasses get a generic ``ERROR: cannot read ...``
+    message. Traces to DEC-010 of ``plans/super/62-skill-md-layout.md``.
+    """
+
+    def test_file_not_found_keeps_init_hint_message(self, capsys):
+        """FileNotFoundError preserves the byte-identical init-hint message."""
+        from clauditor.cli import _load_spec_or_report
+
+        with patch(
+            "clauditor.cli.SkillSpec.from_file",
+            side_effect=FileNotFoundError(
+                "Skill file not found: missing.md"
+            ),
+        ):
+            result = _load_spec_or_report("missing.md", None)
+
+        assert result is None
+        err = capsys.readouterr().err
+        # Byte-identical to the pre-US-005 message: name the path and
+        # suggest `clauditor init` as the next step.
+        assert (
+            "ERROR: Skill file not found: missing.md. "
+            "Run 'clauditor init missing.md' to create one."
+        ) in err
+
+    def test_permission_error_emits_cannot_read_message(self, capsys):
+        """PermissionError (OSError subclass) routes to the generic branch."""
+        from clauditor.cli import _load_spec_or_report
+
+        with patch(
+            "clauditor.cli.SkillSpec.from_file",
+            side_effect=PermissionError("Permission denied"),
+        ):
+            result = _load_spec_or_report("protected.md", None)
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert "ERROR: cannot read protected.md: Permission denied" in err
+        # The init hint must NOT appear on the generic-OSError branch —
+        # the file exists, it's just unreadable.
+        assert "clauditor init" not in err
+
+    def test_is_a_directory_error_emits_cannot_read_message(
+        self, tmp_path, capsys
+    ):
+        """IsADirectoryError (OSError subclass) routes to the generic branch.
+
+        Pass ``tmp_path`` itself (a directory) as the skill path; the
+        real ``SkillSpec.from_file`` will try to ``read_text()`` it and
+        raise ``IsADirectoryError``. This exercises the helper against
+        a real OS error rather than a mocked one.
+        """
+        from clauditor.cli import _load_spec_or_report
+
+        result = _load_spec_or_report(str(tmp_path), None)
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert f"ERROR: cannot read {tmp_path}:" in err
+        assert "clauditor init" not in err
