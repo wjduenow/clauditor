@@ -1886,3 +1886,178 @@ class TestAssertionKeySpec:
                     f"{single_quoted!r} substring); source was: "
                     f"{source!r}"
                 )
+
+
+def _minimal_assertion_entry(atype: str, aid: str = "a1") -> dict:
+    """Build a minimal valid assertion dict for ``atype``.
+
+    Drives off :data:`ASSERTION_TYPE_REQUIRED_KEYS` so the shape
+    stays in lockstep with the production constant. Every required
+    key gets a non-None string sentinel — ``_require_assertion_keys``
+    only checks presence/non-None-ness, so the string sentinel is
+    valid regardless of whether the downstream handler expects a
+    string or numeric value.
+    """
+    entry: dict = {"id": aid, "type": atype}
+    for key in ASSERTION_TYPE_REQUIRED_KEYS[atype].required:
+        entry[key] = "1"
+    return entry
+
+
+class TestRequireAssertionKeys:
+    """Tests for the ``_require_assertion_keys`` loader validator
+    (US-002 of #61). Drives the parametrize tables off
+    :data:`ASSERTION_TYPE_REQUIRED_KEYS` so coverage stays exhaustive
+    when a new assertion type lands.
+    """
+
+    @pytest.mark.parametrize(
+        "atype",
+        sorted(ASSERTION_TYPE_REQUIRED_KEYS.keys()),
+    )
+    def test_valid_entry_passes(self, tmp_path, atype):
+        """A minimal entry (id + type + every required key) loads."""
+        entry = _minimal_assertion_entry(atype)
+        data = {
+            "skill_name": "s",
+            "test_args": "y",
+            "assertions": [entry],
+        }
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.assertions == [entry]
+
+    @pytest.mark.parametrize(
+        "atype,missing_key",
+        sorted(
+            (atype, key)
+            for atype, spec in ASSERTION_TYPE_REQUIRED_KEYS.items()
+            for key in spec.required
+        ),
+    )
+    def test_missing_required_key_rejected(
+        self, tmp_path, atype, missing_key
+    ):
+        """Dropping any required key for ``atype`` raises ValueError."""
+        entry = _minimal_assertion_entry(atype)
+        del entry[missing_key]
+        data = {
+            "skill_name": "s",
+            "assertions": [entry],
+        }
+        with pytest.raises(
+            ValueError,
+            match=(
+                rf"assertions\[0\] \(type='{atype}'\): "
+                rf"missing required key '{missing_key}'"
+            ),
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    @pytest.mark.parametrize(
+        "atype,missing_key",
+        sorted(
+            (atype, key)
+            for atype, spec in ASSERTION_TYPE_REQUIRED_KEYS.items()
+            for key in spec.required
+        ),
+    )
+    def test_none_valued_required_key_rejected(
+        self, tmp_path, atype, missing_key
+    ):
+        """A required key with a ``None`` value is also rejected —
+        the helper treats missing and null identically.
+        """
+        entry = _minimal_assertion_entry(atype)
+        entry[missing_key] = None
+        data = {
+            "skill_name": "s",
+            "assertions": [entry],
+        }
+        with pytest.raises(
+            ValueError,
+            match=(
+                rf"assertions\[0\] \(type='{atype}'\): "
+                rf"missing required key '{missing_key}'"
+            ),
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    @pytest.mark.parametrize(
+        "bad_key,hint_fragment",
+        [
+            ("pattern", "did you mean 'value'?"),
+            ("min", "did you mean 'value'?"),
+            ("max", "did you mean 'value'?"),
+            ("threshold", "did you mean 'minimum'?"),
+            ("foo_bar", None),  # generic case — no hint suffix.
+        ],
+    )
+    def test_unknown_key_rejected(self, tmp_path, bad_key, hint_fragment):
+        """Unknown keys raise ``ValueError`` with the right hint (or
+        no hint for keys outside the known drift alias set)."""
+        entry = _minimal_assertion_entry("contains")
+        entry[bad_key] = "whatever"
+        data = {
+            "skill_name": "s",
+            "assertions": [entry],
+        }
+        with pytest.raises(ValueError) as ei:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(ei.value)
+        assert f"unknown key {bad_key!r}" in msg
+        assert "assertions[0]" in msg
+        assert "(type='contains')" in msg
+        if hint_fragment is None:
+            # Generic unknown key — must NOT carry a "did you mean"
+            # hint so we don't teach the user a wrong alias.
+            assert "did you mean" not in msg
+        else:
+            assert hint_fragment in msg
+
+    def test_missing_type_rejected(self, tmp_path):
+        """An entry with no ``type`` field is rejected before any
+        required-key check fires."""
+        data = {
+            "skill_name": "s",
+            "assertions": [{"id": "a1", "value": "x"}],
+        }
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"assertions\[0\]: unknown or missing 'type' "
+                r"\(got None\)"
+            ),
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_unknown_type_rejected(self, tmp_path):
+        """A ``type`` value outside ``ASSERTION_TYPE_REQUIRED_KEYS``
+        is rejected with the same message shape as missing type."""
+        data = {
+            "skill_name": "s",
+            "assertions": [
+                {"id": "a1", "type": "nonexistent_type", "value": "x"}
+            ],
+        }
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"assertions\[0\]: unknown or missing 'type' "
+                r"\(got 'nonexistent_type'\)"
+            ),
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_name_and_id_are_allowed_metadata(self, tmp_path):
+        """``id``, ``type``, and ``name`` are always-allowed metadata
+        keys — adding ``name`` alongside the required payload keys
+        must not trigger the unknown-key branch.
+        """
+        entry = _minimal_assertion_entry("contains")
+        entry["name"] = "human label"
+        data = {
+            "skill_name": "s",
+            "assertions": [entry],
+        }
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.assertions[0]["name"] == "human label"
