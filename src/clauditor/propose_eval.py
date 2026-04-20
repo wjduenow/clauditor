@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from clauditor._frontmatter import parse_frontmatter
-from clauditor.schemas import EvalSpec
+from clauditor.schemas import ASSERTION_TYPE_REQUIRED_KEYS, EvalSpec
 from clauditor.transcripts import redact
 
 # Skill names are interpolated into `<project_dir>/tests/eval/captured/
@@ -386,8 +386,7 @@ def build_propose_eval_prompt(propose_input: ProposeEvalInput) -> str:
     )
     parts.append('      "name": "<human name>",')
     parts.append(
-        '      ...type-specific fields (e.g. "value", "pattern", '
-        '"format", "min", "max")...'
+        "      ...plus the type-specific required keys listed below..."
     )
     parts.append("    }")
     parts.append("  ],")
@@ -417,6 +416,21 @@ def build_propose_eval_prompt(propose_input: ProposeEvalInput) -> str:
     parts.append("    }")
     parts.append("  ]")
     parts.append("}")
+    parts.append("")
+    # Per-type required-key table. Rendered from
+    # ``ASSERTION_TYPE_REQUIRED_KEYS`` so adding an assertion type in
+    # the schema automatically propagates here (DEC-003 / DEC-008 of
+    # ``plans/super/61-propose-eval-key-mismatch.md``). The word
+    # "required" appears in every row so the prompt-builder tests
+    # can anchor on literal substrings like
+    # ``"min_count → required: minimum, value"``.
+    parts.append(
+        "Assertion type → required keys (in addition to `id`, "
+        "`type`, `name`):"
+    )
+    for type_name, spec in sorted(ASSERTION_TYPE_REQUIRED_KEYS.items()):
+        required_keys = ", ".join(sorted(spec.required))
+        parts.append(f"- {type_name} → required: {required_keys}")
 
     prompt = "\n".join(parts) + "\n"
 
