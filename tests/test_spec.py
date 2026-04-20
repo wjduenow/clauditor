@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -54,6 +55,101 @@ class TestFromFile:
         )
         assert spec.eval_spec is not None
         assert spec.eval_spec.test_args == "--depth quick"
+
+    # ── Layout-aware identity derivation (DEC-001, DEC-002, DEC-009) ──
+
+    def test_from_file_modern_layout_matching_frontmatter(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Modern layout, frontmatter ``name:`` matches parent dir → silent."""
+        skill_path = tmp_skill_file(
+            "foo",
+            content="---\nname: foo\n---\n# Foo\n",
+            layout="modern",
+        )
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec.skill_name == "foo"
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_from_file_modern_layout_disagreement_warns(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Modern layout, frontmatter ``name:`` disagrees → frontmatter
+        wins, stderr warning emitted per DEC-002 / DEC-009."""
+        skill_path = tmp_skill_file(
+            "foo",
+            content="---\nname: bar\n---\n# Bar\n",
+            layout="modern",
+        )
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec.skill_name == "bar"
+        captured = capsys.readouterr()
+        assert (
+            "frontmatter name 'bar' overrides filesystem name 'foo'"
+            in captured.err
+        )
+
+    def test_from_file_modern_layout_missing_name_silent(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Modern layout with no frontmatter → falls back to parent dir
+        name silently (DEC-001)."""
+        skill_path = tmp_skill_file(
+            "foo",
+            content="# Foo\n\nNo frontmatter here.\n",
+            layout="modern",
+        )
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec.skill_name == "foo"
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_from_file_legacy_layout_matching_frontmatter(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Legacy layout, frontmatter ``name:`` matches stem → silent."""
+        skill_path = tmp_skill_file(
+            "foo",
+            content="---\nname: foo\n---\n# Foo\n",
+            layout="legacy",
+        )
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec.skill_name == "foo"
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_from_file_legacy_layout_missing_name_silent(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Legacy layout with no frontmatter → falls back to stem
+        silently (DEC-001). This mirrors today's default legacy skill
+        shape (no frontmatter)."""
+        skill_path = tmp_skill_file(
+            "my-skill",
+            content="# My Skill\n\nNo frontmatter here.\n",
+            layout="legacy",
+        )
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec.skill_name == "my-skill"
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_init_with_nonexistent_path_uses_layout_fallback(self):
+        """Direct ``SkillSpec(...)`` construction with a non-existent path
+        must not call ``read_text`` and must derive ``skill_name`` from
+        the layout (modern → parent dir, legacy → stem). Regression guard
+        for DEC-006 — the path taken by
+        ``tests/test_quality_grader.py`` when building a spec with a
+        placeholder ``Path("dummy.md")``.
+        """
+        # Modern fallback: path is a named dir / SKILL.md.
+        spec_modern = SkillSpec(skill_path=Path("/nonexistent/foo/SKILL.md"))
+        assert spec_modern.skill_name == "foo"
+
+        # Legacy fallback: path is <stem>.md.
+        spec_legacy = SkillSpec(skill_path=Path("/nonexistent/bar.md"))
+        assert spec_legacy.skill_name == "bar"
 
 
 class TestRun:
