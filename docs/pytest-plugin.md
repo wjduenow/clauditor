@@ -14,6 +14,22 @@ clauditor registers as a pytest plugin automatically. Available fixtures:
 - `clauditor_blind_compare` — factory wrapping `blind_compare_from_spec` for A/B comparison of two skill outputs (requires `user_prompt` on the eval spec)
 - `clauditor_capture` — factory returning a `Path` to `tests/eval/captured/<skill>.txt` for captured-output tests
 
+### SkillResult fields
+
+The following fields on `SkillResult` are the supported public surface that tests may assert on:
+
+- `output: str` — concatenated assistant text from all turns.
+- `exit_code: int` — subprocess exit code (0 = clean exit, -1 = clauditor-internal failure like FileNotFound or timeout).
+- `error: str | None` — user-facing error message when the run failed. May come from subprocess stderr or from a stream-json `is_error: true` result message (see `docs/stream-json-schema.md`).
+- `error_category: Literal["rate_limit", "auth", "api", "interactive", "subprocess", "timeout"] | None` — classification of the failure when `error` is set. `None` on success. Enables category-aware test branching (e.g. `if result.error_category == "rate_limit": pytest.skip(...)`).
+- `succeeded: bool` — `True` when `exit_code == 0 and output.strip() != ""`. Lenient: a run that emitted output but also hit an API error may still be `succeeded`.
+- `succeeded_cleanly: bool` — stricter predicate: True only when `succeeded` AND no `error`, no `error_category`, and no interactive-hang warning. Use this when your test means "actually completed cleanly, with nothing weird in the transcript."
+- `input_tokens: int` — Anthropic input token count (0 if not reported).
+- `output_tokens: int` — Anthropic output token count (0 if not reported).
+- `duration_seconds: float` — wall-clock seconds from start of subprocess to exit.
+
+The following fields on `SkillResult` are internal-observability-only and may change without notice; do not assert on them in tests: `raw_messages`, `stream_events`, `warnings`, `outputs`.
+
 Options:
 
 ```bash
