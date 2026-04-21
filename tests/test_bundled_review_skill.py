@@ -38,8 +38,7 @@ from clauditor.spec import SkillSpec
 
 SKILL_DIR = (
     Path(__file__).resolve().parent.parent
-    / "src"
-    / "clauditor"
+    / ".claude"
     / "skills"
     / "review-agentskills-spec"
 )
@@ -312,11 +311,14 @@ class TestLiveSkillRun:
         if skip:
             pytest.skip(skip)
 
-        # The skill is deliberately excluded from `clauditor setup` (it is
-        # internal-only), so `.claude/skills/review-agentskills-spec/`
-        # does not exist in the real repo and the claude CLI would
-        # resolve `/review-agentskills-spec` to "Unknown command". Build
-        # a throwaway project dir with a one-off symlink so this test
+        # The skill is maintainer-only: its source lives at repo-root
+        # `.claude/skills/review-agentskills-spec/` rather than being
+        # installed under the package, and `clauditor setup` only
+        # symlinks the user-facing `/clauditor` skill. A live test
+        # invoked from an arbitrary `tmp_path` project dir would have
+        # no `.claude/skills/review-agentskills-spec/` to resolve, so
+        # the claude CLI would return "Unknown command". Build a
+        # throwaway project dir with a one-off symlink so this test
         # doesn't force the skill to become user-facing.
         project_dir = tmp_path / "project"
         (project_dir / ".claude" / "skills").mkdir(parents=True)

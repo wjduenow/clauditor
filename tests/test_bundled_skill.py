@@ -29,7 +29,13 @@ SKILLS_ROOT = (
 SKILL_DIR = SKILLS_ROOT / "clauditor"
 SKILL_MD = SKILL_DIR / "SKILL.md"
 EVAL_JSON = SKILL_DIR / "assets" / "clauditor.eval.json"
-REVIEW_SKILL_MD = SKILLS_ROOT / "review-agentskills-spec" / "SKILL.md"
+REVIEW_SKILL_MD = (
+    Path(__file__).resolve().parent.parent
+    / ".claude"
+    / "skills"
+    / "review-agentskills-spec"
+    / "SKILL.md"
+)
 
 # agentskills.io naming constraints: lowercase a-z + digits + hyphens, with
 # hyphens between segments, 1-64 chars total.
