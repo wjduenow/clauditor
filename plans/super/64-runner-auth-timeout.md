@@ -637,9 +637,12 @@ the line when the field is absent. Document the new field in
 - Parser in `_invoke` reads `apiKeySource` defensively from
   the first `type=="system"`/`subtype=="init"` message; later
   init messages are ignored.
-- Stderr line format: `clauditor.runner: apiKeySource=<value>
-  model=<value>` printed exactly once per run when
-  `api_key_source is not None`.
+- Stderr line format: `clauditor.runner: apiKeySource=<value>`
+  printed exactly once per run when `api_key_source is not None`.
+  (Implementation simplified from the original draft which also
+  included `model=<value>`: `model` isn't currently parsed from the
+  init message, and CodeRabbit flagged the drift between the draft
+  format and the actual implementation.)
 - No stderr line when `api_key_source is None` (older CLI
   builds missing the field).
 - `tests/conftest.py::make_fake_skill_stream` accepts an
@@ -765,7 +768,14 @@ already has `--timeout`; align its shape and add `--no-api-key`.
   already uses `type=int` with `default=180`, align the
   semantics with the new precedence pattern: the CLI default
   should become `None`, not `180`, so the spec/runner defaults
-  can kick in).
+  can kick in). This is behaviorally identical to the prior
+  default-180 shape because `SkillRunner.__init__(timeout=180)`
+  is unchanged — `runner.run(timeout=None)` falls back to
+  `self.timeout=180` — so no user invocation of `clauditor run`
+  changes wall-clock behavior. (CodeRabbit review flagged this
+  as a potential breaking change; verified false positive —
+  `cli/run.py` has no `EvalSpec` in its flow so the precedence
+  chain has only one producer.)
 - Shared validation gate passes.
 
 **Done when:** Seven new tests pass in `tests/test_cli.py`
