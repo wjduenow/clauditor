@@ -2874,6 +2874,37 @@ class TestCmdInit:
         assert data["skill_name"] == "bar"
         assert data["description"] == "Eval spec for /bar"
 
+    def test_init_generated_spec_uses_per_type_keys(self, tmp_path):
+        """Regression (DEC-001/DEC-002 of #67): generated eval.json loads
+        via ``EvalSpec.from_file`` (no legacy ``value`` keys) and uses
+        native JSON ints for counts/lengths — the starter scaffold must
+        stay in lockstep with the per-type validator.
+        """
+        from clauditor.schemas import EvalSpec
+
+        skill_path = tmp_path / "my-skill.md"
+        skill_path.write_text("# My Skill")
+
+        rc = main(["init", str(skill_path)])
+        assert rc == 0
+
+        eval_path = tmp_path / "my-skill.eval.json"
+        # Substring check: the generated file must not contain any
+        # legacy ``"value":`` assertion key. Cheap guard against a
+        # future regression that reverts the scaffold.
+        raw = eval_path.read_text(encoding="utf-8")
+        assert '"value":' not in raw, (
+            "generated eval.json must not contain legacy 'value' keys"
+        )
+
+        # Must load cleanly via EvalSpec.from_file — the per-type
+        # required-key + type-check validator from US-001 rejects the
+        # legacy shape at load time.
+        spec = EvalSpec.from_file(eval_path)
+        assert spec.skill_name == "my-skill"
+        # Starter scaffold ships 4 assertions per DEC-001 mapping.
+        assert len(spec.assertions) == 4
+
 
 @pytest.fixture
 def setup_env(tmp_path, monkeypatch):
