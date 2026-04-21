@@ -298,7 +298,10 @@ class TestCmdGradeInputFilesStaging:
         spec = _make_spec(eval_spec=eval_spec)
         outputs_iter = iter(outputs)
 
-        def _run(args=None, *, run_dir=None):
+        def _run(args=None, *, run_dir=None, **kwargs):
+            # kwargs absorbs US-006 ``timeout_override`` / ``env_override``
+            # plumbing without coupling this staging fixture to their
+            # presence.
             if run_dir is not None and eval_spec.input_files:
                 stage_inputs(
                     run_dir, [_Path(p) for p in eval_spec.input_files]
@@ -3549,7 +3552,9 @@ class TestCmdCapture:
         out_path = tmp_path / "tests/eval/captured/find-restaurants.txt"
         assert out_path.exists()
         assert out_path.read_text() == "captured stdout"
-        mock_runner.run.assert_called_once_with("find-restaurants", "")
+        mock_runner.run.assert_called_once_with(
+            "find-restaurants", "", env=None, timeout=None,
+        )
 
     def test_capture_custom_out(self, tmp_path):
         mock_runner = MagicMock()
@@ -3596,7 +3601,9 @@ class TestCmdCapture:
         with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "/find-restaurants"])
         assert rc == 0
-        mock_runner.run.assert_called_once_with("find-restaurants", "")
+        mock_runner.run.assert_called_once_with(
+            "find-restaurants", "", env=None, timeout=None,
+        )
         assert (tmp_path / "tests/eval/captured/find-restaurants.txt").exists()
 
     def test_capture_passes_trailing_args(self, tmp_path, monkeypatch):
@@ -3606,7 +3613,9 @@ class TestCmdCapture:
         with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "find-restaurants", "--", "near", "San Jose"])
         assert rc == 0
-        mock_runner.run.assert_called_once_with("find-restaurants", "near San Jose")
+        mock_runner.run.assert_called_once_with(
+            "find-restaurants", "near San Jose", env=None, timeout=None,
+        )
 
     def test_capture_runner_failure_returns_nonzero(
         self, tmp_path, monkeypatch, capsys
@@ -3621,6 +3630,201 @@ class TestCmdCapture:
             rc = main(["capture", "find-restaurants"])
         assert rc == 1
         assert "boom" in capsys.readouterr().err
+
+
+class TestNoApiKeyFlag:
+    """US-006: --no-api-key strips both auth env vars on every skill-invoking CLI.
+
+    Each test threads the new ``env_override`` / ``env`` kwarg through
+    and asserts the resulting dict does NOT contain ``ANTHROPIC_API_KEY``
+    or ``ANTHROPIC_AUTH_TOKEN`` (DEC-001, DEC-006, DEC-007).
+    """
+
+    def _assert_env_stripped(self, env: dict | None) -> None:
+        assert env is not None, "env_override must be a dict, got None"
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_AUTH_TOKEN" not in env
+
+    def test_validate_no_api_key_threads_env_override(
+        self, tmp_path, monkeypatch
+    ):
+        """validate --no-api-key → SkillSpec.run(env_override=<stripped>)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--no-api-key"])
+        assert rc == 0
+        spec.run.assert_called_once()
+        env = spec.run.call_args.kwargs.get("env_override")
+        self._assert_env_stripped(env)
+
+    def test_grade_no_api_key_threads_env_override(
+        self, tmp_path, monkeypatch
+    ):
+        """grade --no-api-key → SkillSpec.run(env_override=<stripped>)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token")
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.return_value = make_skill_result(
+            output="primary output", duration_seconds=0.5,
+            input_tokens=10, output_tokens=5,
+        )
+        report = make_grading_report(passed=True)
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--no-api-key"])
+        assert rc == 0
+        spec.run.assert_called()
+        env = spec.run.call_args.kwargs.get("env_override")
+        self._assert_env_stripped(env)
+
+    def test_capture_no_api_key_threads_env(self, tmp_path, monkeypatch):
+        """capture --no-api-key → SkillRunner.run(env=<stripped>)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token")
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="captured stdout", skill_name="find-restaurants",
+            duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "find-restaurants", "--no-api-key"])
+        assert rc == 0
+        mock_runner.run.assert_called_once()
+        env = mock_runner.run.call_args.kwargs.get("env")
+        self._assert_env_stripped(env)
+
+    def test_run_no_api_key_threads_env(self, monkeypatch):
+        """run --no-api-key → SkillRunner.run(env=<stripped>)."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token")
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="skill output", skill_name="my-skill",
+            duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--no-api-key"])
+        assert rc == 0
+        mock_runner.run.assert_called_once()
+        env = mock_runner.run.call_args.kwargs.get("env")
+        self._assert_env_stripped(env)
+
+    def test_validate_without_no_api_key_passes_env_none(
+        self, tmp_path, monkeypatch
+    ):
+        """Without --no-api-key, env_override stays None (today's behavior)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+        assert rc == 0
+        assert spec.run.call_args.kwargs.get("env_override") is None
+
+
+class TestTimeoutFlag:
+    """US-006: --timeout SECONDS threads to the runner, rejects <= 0 at parse time.
+
+    Covers argparse-level validation (exit 2 on 0, negative, non-int) and
+    the happy path (positive int → ``timeout_override`` / ``timeout``
+    kwarg on the underlying run call). Defaults to None (DEC-014).
+    """
+
+    def test_validate_timeout_300_threads_override(
+        self, tmp_path, monkeypatch
+    ):
+        """validate --timeout 300 → SkillSpec.run(timeout_override=300)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--timeout", "300"])
+        assert rc == 0
+        assert spec.run.call_args.kwargs.get("timeout_override") == 300
+
+    def test_validate_timeout_zero_exits_2(self, capsys):
+        """--timeout 0 → argparse rejects with exit 2."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["validate", "skill.md", "--timeout", "0"])
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "must be >= 1" in err or "must be > 0" in err
+
+    def test_validate_timeout_negative_exits_2(self, capsys):
+        """--timeout -5 → argparse rejects with exit 2."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["validate", "skill.md", "--timeout", "-5"])
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "must be >= 1" in err or "must be > 0" in err
+
+    def test_validate_timeout_non_int_exits_2(self, capsys):
+        """--timeout foo → argparse rejects with exit 2."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["validate", "skill.md", "--timeout", "foo"])
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "not an integer" in err or "invalid" in err.lower()
+
+    def test_run_timeout_default_none_preserves_fallback(self):
+        """run (no --timeout) → SkillRunner.run(timeout=None), so the runner's
+        self.timeout default of 180s kicks in."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="skill output", skill_name="my-skill",
+            duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill"])
+        assert rc == 0
+        assert mock_runner.run.call_args.kwargs.get("timeout") is None
+
+    def test_run_timeout_300_threads_to_runner(self):
+        """run --timeout 300 → SkillRunner.run(timeout=300)."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="skill output", skill_name="my-skill",
+            duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--timeout", "300"])
+        assert rc == 0
+        assert mock_runner.run.call_args.kwargs.get("timeout") == 300
+
+    def test_capture_timeout_300_threads_to_runner(self, tmp_path, monkeypatch):
+        """capture --timeout 300 → SkillRunner.run(timeout=300)."""
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="captured stdout", skill_name="find-restaurants",
+            duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "find-restaurants", "--timeout", "300"])
+        assert rc == 0
+        assert mock_runner.run.call_args.kwargs.get("timeout") == 300
 
 
 class TestCmdDoctor:
