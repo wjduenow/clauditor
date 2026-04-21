@@ -2915,9 +2915,14 @@ class TestCmdInit:
         # The underlying codec error is appended to the message.
         assert "utf-8" in err or "codec" in err
 
-    def test_init_warns_on_frontmatter_disagreement(self, tmp_path, capsys):
+    def test_init_frontmatter_disagreement_silent(self, tmp_path, capsys):
         """When frontmatter ``name:`` disagrees with the filesystem-derived
-        name, stderr carries the DEC-009 warning and frontmatter wins."""
+        name, frontmatter wins. Per DEC-008 of
+        ``plans/super/71-agentskills-lint.md``, ``derive_skill_name`` no
+        longer emits a stderr warning for this case — the equivalent
+        ``AGENTSKILLS_NAME_PARENT_DIR_MISMATCH`` conformance code moves
+        to ``clauditor.conformance.check_conformance``, wired in by
+        US-006."""
         skill_dir = tmp_path / ".claude" / "skills" / "foo"
         skill_dir.mkdir(parents=True)
         skill_path = skill_dir / "SKILL.md"
@@ -2934,9 +2939,8 @@ class TestCmdInit:
 
         assert rc == 0
         captured = capsys.readouterr()
-        assert "clauditor.spec:" in captured.err
-        assert "'bar'" in captured.err
-        assert "'foo'" in captured.err
+        assert "clauditor.spec:" not in captured.err
+        assert "frontmatter name" not in captured.err
         eval_path = skill_dir / "SKILL.eval.json"
         data = json.loads(eval_path.read_text())
         assert data["skill_name"] == "bar"

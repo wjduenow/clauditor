@@ -73,11 +73,16 @@ class TestFromFile:
         captured = capsys.readouterr()
         assert captured.err == ""
 
-    def test_from_file_modern_layout_disagreement_warns(
+    def test_from_file_modern_layout_disagreement_silent(
         self, tmp_skill_file, mock_runner, capsys
     ):
         """Modern layout, frontmatter ``name:`` disagrees → frontmatter
-        wins, stderr warning emitted per DEC-002 / DEC-009."""
+        wins (DEC-002). Per DEC-008 of
+        ``plans/super/71-agentskills-lint.md``, ``derive_skill_name`` no
+        longer emits a stderr warning for the mismatch — the equivalent
+        ``AGENTSKILLS_NAME_PARENT_DIR_MISMATCH`` conformance code is
+        routed through US-006's soft-warn hook (out of scope for this
+        test)."""
         skill_path = tmp_skill_file(
             "foo",
             content="---\nname: bar\n---\n# Bar\n",
@@ -86,10 +91,7 @@ class TestFromFile:
         spec = SkillSpec.from_file(skill_path, runner=mock_runner())
         assert spec.skill_name == "bar"
         captured = capsys.readouterr()
-        assert (
-            "frontmatter name 'bar' overrides filesystem name 'foo'"
-            in captured.err
-        )
+        assert "frontmatter name" not in captured.err
 
     def test_from_file_modern_layout_missing_name_silent(
         self, tmp_skill_file, mock_runner, capsys

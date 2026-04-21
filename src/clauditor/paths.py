@@ -88,10 +88,8 @@ def _filesystem_name(skill_path: Path) -> str:
     return skill_path.stem
 
 
-def derive_skill_name(
-    skill_path: Path, skill_md_text: str
-) -> tuple[str, str | None]:
-    """Return ``(skill_name, warning_or_None)`` — pure, no I/O.
+def derive_skill_name(skill_path: Path, skill_md_text: str) -> str:
+    """Return the resolved ``skill_name`` — pure, no I/O.
 
     Authority order (DEC-001, DEC-002, DEC-008):
 
@@ -101,17 +99,21 @@ def derive_skill_name(
        skill, and legacy ``.md`` files that never declare frontmatter
        are the common case.
     2. If the parsed dict has a ``name:`` key whose value passes
-       :data:`SKILL_NAME_RE`, the frontmatter value wins. A disagreement
-       with the filesystem-derived name returns a warning string so the
-       caller (``SkillSpec.from_file``) can emit it to stderr.
+       :data:`SKILL_NAME_RE`, the frontmatter value wins.
     3. If the parsed ``name:`` value fails the regex, fall back to the
-       filesystem-derived name and return a warning naming both the bad
-       value and the chosen fallback.
+       filesystem-derived name.
     4. If ``name:`` is absent (no frontmatter, or frontmatter has no
-       ``name:`` key), return the filesystem-derived name silently.
+       ``name:`` key), return the filesystem-derived name.
 
-    Warning strings are formatted per DEC-009. The helper never writes
-    to stderr; it hands the warning to the caller.
+    Per DEC-008 of ``plans/super/71-agentskills-lint.md``, this helper
+    no longer constructs or returns warning strings for the invalid-
+    name-fallback or frontmatter-vs-filesystem-mismatch cases. Those
+    warnings are now produced by
+    :func:`clauditor.conformance.check_conformance` via the
+    ``AGENTSKILLS_NAME_INVALID_CHARS`` and
+    ``AGENTSKILLS_NAME_PARENT_DIR_MISMATCH`` codes, wired into
+    :meth:`clauditor.spec.SkillSpec.from_file` by US-006. This helper
+    is strictly pure — name derivation only, no side-channel.
     """
     # Local import avoids a circular dependency at module import time —
     # ``clauditor._frontmatter`` is a leaf module with no clauditor
@@ -126,27 +128,16 @@ def derive_skill_name(
         # Malformed frontmatter → treat as absent. The caller's
         # validation layer (if any) is responsible for surfacing a
         # stricter error; identity derivation stays lenient.
-        return fs_name, None
+        return fs_name
 
     if not isinstance(parsed, dict) or "name" not in parsed:
-        return fs_name, None
+        return fs_name
 
     fm_name = parsed["name"]
     if not isinstance(fm_name, str) or re.fullmatch(SKILL_NAME_RE, fm_name) is None:
-        warning = (
-            f"clauditor.spec: frontmatter name {fm_name!r} is not a "
-            f"valid skill identifier — using {fs_name!r}"
-        )
-        return fs_name, warning
+        return fs_name
 
-    if fm_name == fs_name:
-        return fm_name, None
-
-    warning = (
-        f"clauditor.spec: frontmatter name {fm_name!r} overrides "
-        f"filesystem name {fs_name!r} — using {fm_name!r}"
-    )
-    return fm_name, warning
+    return fm_name
 
 
 def derive_project_dir(skill_path: Path) -> Path:

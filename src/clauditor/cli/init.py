@@ -51,9 +51,7 @@ def cmd_init(args: argparse.Namespace) -> int:
         print(f"ERROR: cannot read {skill_path}: {exc}", file=sys.stderr)
         return 1
 
-    skill_name, warning = derive_skill_name(skill_path, skill_md_text)
-    if warning is not None:
-        print(warning, file=sys.stderr)
+    skill_name = derive_skill_name(skill_path, skill_md_text)
 
     starter = {
         "skill_name": skill_name,
