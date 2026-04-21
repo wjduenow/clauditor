@@ -275,10 +275,11 @@ class TestEvaluateFailureClassification:
         runner = mock_runner()
         # Replace the runner's return_value with one carrying the
         # interactive-hang signal the fixture doesn't expose directly.
-        hang_warning = (
-            "interactive-hang: skill may have asked for input — "
-            "ensure all parameters are in test_args (heuristic)"
-        )
+        # Import the canonical string so a future rename propagates here
+        # instead of leaving this test silently out of sync.
+        from clauditor.runner import _INTERACTIVE_HANG_WARNING
+
+        hang_warning = _INTERACTIVE_HANG_WARNING
         runner.run.return_value = SkillResult(
             output="What color would you like?",
             exit_code=0,

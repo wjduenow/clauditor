@@ -368,7 +368,7 @@ def _run_skill_variants(
         primary_skill_result = spec.run(
             run_dir=workspace.tmp_path / "run-0",
         )
-        if not primary_skill_result.succeeded:
+        if not primary_skill_result.succeeded_cleanly:
             print(
                 f"ERROR: Skill failed: "
                 f"{_render_skill_error(primary_skill_result)}",
@@ -395,7 +395,7 @@ def _run_skill_variants(
             else workspace.tmp_path / f"run-{variance_idx + 1}"
         )
         variance_result = spec.run(run_dir=variance_run_dir)
-        if not variance_result.succeeded:
+        if not variance_result.succeeded_cleanly:
             print(
                 f"ERROR: Variance skill run failed: "
                 f"{_render_skill_error(variance_result)}",

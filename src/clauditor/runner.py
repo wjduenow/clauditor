@@ -82,7 +82,7 @@ class SkillResult:
 # ``plans/super/63-runner-error-surfacing.md`` — bound the memory
 # cost of a pathological multi-MB error payload without truncating
 # realistic 100-300 byte provider-error strings.
-_RESULT_TEXT_MAX_BYTES = 4096
+_RESULT_TEXT_MAX_CHARS = 4096
 
 
 # DEC-005 / DEC-010: interactive-hang heuristic warning tag. The prefix
@@ -190,7 +190,7 @@ def _classify_result_message(msg: dict) -> tuple[str | None, str | None]:
       ``True`` (absent key, ``False``, or any non-True value like the
       string ``"true"``).
     - ``(<text>, <category>)`` otherwise. ``<text>`` is the
-      ``msg["result"]`` field, truncated to ``_RESULT_TEXT_MAX_BYTES``
+      ``msg["result"]`` field, truncated to ``_RESULT_TEXT_MAX_CHARS``
       (with a ``" ... (truncated)"`` suffix when clipped). A missing
       or non-string ``result`` field falls back to
       ``"API error (no detail)"``.
@@ -225,8 +225,8 @@ def _classify_result_message(msg: dict) -> tuple[str | None, str | None]:
     else:
         error_text = result_text
 
-    if len(error_text) > _RESULT_TEXT_MAX_BYTES:
-        error_text = error_text[:_RESULT_TEXT_MAX_BYTES] + " ... (truncated)"
+    if len(error_text) > _RESULT_TEXT_MAX_CHARS:
+        error_text = error_text[:_RESULT_TEXT_MAX_CHARS] + " ... (truncated)"
 
     lower = error_text.lower()
     if "429" in error_text or "rate limit" in lower or "rate-limit" in lower:
@@ -533,6 +533,13 @@ class SkillRunner:
             stderr_text = "".join(stderr_chunks)
 
             if timed_out["hit"] and returncode != 0:
+                # Preserve any captured stderr as a warning for operators
+                # debugging why the subprocess ran past the deadline.
+                # Parallel to the normal-exit path's stderr-to-warnings
+                # pattern (see below), but kept here because the timeout
+                # branch returns early and would otherwise drop it.
+                if stderr_text:
+                    warnings.append(stderr_text)
                 result = SkillResult(
                     output="\n".join(text_chunks),
                     exit_code=-1,

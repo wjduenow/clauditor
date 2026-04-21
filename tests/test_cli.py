@@ -5619,9 +5619,13 @@ class TestCmdValidateErrorSurfacingRegression:
         spec = _make_spec(eval_spec=_make_eval_spec())
         # Synthesize a failing run (output="") with interactive-hang
         # signals so the ``not succeeded`` branch fires the helper.
+        # Realistic interactive-hang shape: the skill emitted a question
+        # as assistant text and exited cleanly, so `succeeded` is True
+        # (non-empty output, exit_code=0). Only `succeeded_cleanly`
+        # catches it — proving the CLI guard is strict.
         spec.run.return_value = make_skill_result(
-            output="",
-            exit_code=1,
+            output="What color do you want?",
+            exit_code=0,
             duration_seconds=0.5,
             error=None,
         )

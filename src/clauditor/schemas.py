@@ -462,6 +462,10 @@ class EvalSpec:
             "grading_criteria": self.grading_criteria,
             "grading_model": self.grading_model,
         }
+        if not self.allow_hang_heuristic:
+            # Emit only on non-default to keep diffs minimal; omission
+            # at load time means "default True" per from_dict.
+            result["allow_hang_heuristic"] = False
         if self.output_file is not None:
             result["output_file"] = self.output_file
         if self.output_files:

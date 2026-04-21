@@ -14,7 +14,7 @@ importlib.reload(_runner_mod)
 from clauditor.asserters import SkillAsserter  # noqa: E402
 from clauditor.runner import (  # noqa: E402
     _INTERACTIVE_HANG_WARNING_PREFIX,
-    _RESULT_TEXT_MAX_BYTES,
+    _RESULT_TEXT_MAX_CHARS,
     SkillResult,
     SkillRunner,
     _classify_result_message,
@@ -609,6 +609,38 @@ class TestStreamJsonRunner:
         # into the final result, even though the stream-json contained
         # a recognized rate-limit phrase.
         assert result.error_category != "rate_limit"
+
+    def test_timeout_preserves_stderr_as_warning(self):
+        """QG Pass 2 guard: stderr captured before the watchdog fires must
+        land in ``result.warnings`` (not silently dropped) so operators can
+        see why the child ran past the deadline. ``error`` / ``error_category``
+        stay ``"timeout"`` — stderr does NOT get promoted to the error slot."""
+        runner = SkillRunner(project_dir="/tmp", timeout=5, claude_bin="claude")
+        fake = make_fake_skill_stream("partial")
+        # Inject a realistic stderr chunk so the drain loop captures it.
+        fake.stderr = iter(["claude: retrying after 429...\n"])
+
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
+            result = runner.run("skill")
+        assert result.error == "timeout"
+        assert result.error_category == "timeout"
+        assert any(
+            "claude: retrying after 429" in w for w in result.warnings
+        ), f"expected stderr preserved in warnings, got {result.warnings!r}"
 
     def test_file_not_found_sets_duration(self):
         """DEC-005: duration must be set even on FileNotFoundError."""
@@ -1506,7 +1538,7 @@ class TestClassifyResultMessage:
         msg = {"type": "result", "is_error": True, "result": big}
         text, category = _classify_result_message(msg)
         assert text.endswith(" ... (truncated)")
-        assert len(text) == _RESULT_TEXT_MAX_BYTES + len(" ... (truncated)")
+        assert len(text) == _RESULT_TEXT_MAX_CHARS + len(" ... (truncated)")
         # Prefix is intact (for forensic value).
         assert text.startswith("X" * 100)
         # All X's → no classified keyword → "api" fallback.
@@ -1534,9 +1566,9 @@ class TestClassifyResultMessage:
         assert " ... (truncated)" not in text
 
     def test_exact_cap_not_truncated(self):
-        """Text exactly ``_RESULT_TEXT_MAX_BYTES`` bytes is not clipped
+        """Text exactly ``_RESULT_TEXT_MAX_CHARS`` bytes is not clipped
         (the ``>`` comparison is strict)."""
-        payload = "X" * _RESULT_TEXT_MAX_BYTES
+        payload = "X" * _RESULT_TEXT_MAX_CHARS
         msg = {"type": "result", "is_error": True, "result": payload}
         text, _ = _classify_result_message(msg)
         assert text == payload
@@ -1729,7 +1761,7 @@ class TestStreamJsonIsErrorResult:
         result = self._run_with_stream(fake)
         assert result.error is not None
         assert result.error.endswith(" ... (truncated)")
-        assert len(result.error) == _RESULT_TEXT_MAX_BYTES + len(
+        assert len(result.error) == _RESULT_TEXT_MAX_CHARS + len(
             " ... (truncated)"
         )
         # All X's with no classification keyword → "api".
