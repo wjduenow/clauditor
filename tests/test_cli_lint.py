@@ -1,7 +1,7 @@
-"""Tests for ``clauditor lint`` CLI command (US-003).
+"""Tests for ``clauditor lint`` CLI command (US-003, US-004).
 
-Plain-text output only — ``--strict`` (US-004) and ``--json`` (US-005)
-are separate beads.
+Plain-text output plus the ``--strict`` flag (US-004, DEC-004). The
+``--json`` flag (US-005) is a separate bead.
 """
 
 from __future__ import annotations
@@ -48,8 +48,13 @@ class TestCmdLint:
         assert str(skill_path.resolve()) in captured.out
         assert captured.err == ""
 
-    def test_warning_only_exits_2(self, tmp_path, capsys):
-        """Warning-only skill (body >500 lines) exits 2 with stderr lines."""
+    def test_warning_only_no_strict_exits_0(self, tmp_path, capsys):
+        """Warning-only skill (body >500 lines) without ``--strict`` exits 0 (DEC-004).
+
+        Warnings still render to stderr, but the run is considered
+        passing. A stdout success line advertises the warning count so
+        the caller is not misled into thinking nothing was emitted.
+        """
         skill_path = tmp_path / "my-skill" / "SKILL.md"
         skill_path.parent.mkdir()
         body = "# Body\n\n" + ("line content\n" * 600)
@@ -61,11 +66,13 @@ class TestCmdLint:
 
         rc = main(["lint", str(skill_path)])
 
-        assert rc == 2
+        assert rc == 0
         captured = capsys.readouterr()
         assert "clauditor.conformance: AGENTSKILLS_BODY_TOO_LONG: " in captured.err
-        assert "Conformance check failed: " in captured.out
-        assert "1 issue" in captured.out
+        # Stdout acknowledges the warning(s) on the success line so the
+        # caller does not miss the stderr output.
+        assert "Conformance check passed" in captured.out
+        assert "1 warning" in captured.out
 
     def test_error_exits_2(self, tmp_path, capsys):
         """Skill missing ``name:`` exits 2 with error on stderr."""
@@ -129,7 +136,11 @@ class TestCmdLint:
         assert "is not a regular file" in captured.err
 
     def test_stderr_prefix_format(self, tmp_path, capsys):
-        """Any issue renders as ``clauditor.conformance: <CODE>: <message>``."""
+        """Any issue renders as ``clauditor.conformance: <CODE>: <message>``.
+
+        Uses a warning-only skill to exercise the soft-exit path under
+        DEC-004 while still asserting the stderr prefix contract.
+        """
         skill_path = tmp_path / "my-skill" / "SKILL.md"
         skill_path.parent.mkdir()
         _write_skill(
@@ -140,7 +151,8 @@ class TestCmdLint:
 
         rc = main(["lint", str(skill_path)])
 
-        assert rc == 2
+        # Unknown key is a warning; without ``--strict`` that is exit 0.
+        assert rc == 0
         err_lines = capsys.readouterr().err.strip().splitlines()
         assert any(
             line.startswith("clauditor.conformance: AGENTSKILLS_")
@@ -211,22 +223,30 @@ class TestCmdLint:
 
 
 # ---------------------------------------------------------------------------
-# Argparse surface — document that --strict and --json are NOT available in
-# this bead (US-004 and US-005 will add them).
+# Argparse surface — ``--strict`` is now registered (US-004, DEC-004);
+# ``--json`` is deferred to US-005.
 # ---------------------------------------------------------------------------
 
 
 class TestArgparseSurface:
-    """Verify the US-003 argparse surface (no --strict, no --json)."""
+    """Verify the post-US-004 argparse surface (``--strict`` on, ``--json`` off)."""
 
-    def test_strict_flag_not_available(self, tmp_path, capsys):
-        """``--strict`` is not registered by this bead (US-004)."""
+    def test_strict_flag_accepted(self, tmp_path, capsys):
+        """``--strict`` is registered and parses without error (US-004)."""
         skill_path = _make_valid_skill(tmp_path)
 
+        # A minimal-valid skill has no issues, so ``--strict`` should not
+        # change the outcome — exit 0 regardless.
+        rc = main(["lint", "--strict", str(skill_path)])
+        assert rc == 0
+
+    def test_strict_flag_in_help(self, capsys):
+        """``--strict`` appears in the ``lint --help`` output."""
         with pytest.raises(SystemExit) as exc:
-            main(["lint", "--strict", str(skill_path)])
-        # argparse exits 2 on unknown flag.
-        assert exc.value.code == 2
+            main(["lint", "--help"])
+        assert exc.value.code == 0
+        captured = capsys.readouterr()
+        assert "--strict" in captured.out
 
     def test_json_flag_not_available(self, tmp_path, capsys):
         """``--json`` is not registered by this bead (US-005)."""
@@ -235,3 +255,166 @@ class TestArgparseSurface:
         with pytest.raises(SystemExit) as exc:
             main(["lint", "--json", str(skill_path)])
         assert exc.value.code == 2
+
+
+# ---------------------------------------------------------------------------
+# ``--strict`` six-cell matrix (US-004, DEC-004).
+#
+# | strict | severity     | expected_rc |
+# |--------|--------------|-------------|
+# | False  | warning-only | 0           |
+# | False  | error        | 2           |
+# | False  | mixed        | 2           |
+# | True   | warning-only | 2           |
+# | True   | error        | 2           |
+# | True   | mixed        | 2           |
+#
+# Plus: ``AGENTSKILLS_FRONTMATTER_INVALID_YAML`` keeps exit 1 under
+# ``--strict`` (parse failure precedence; preserve US-003 special case).
+# ---------------------------------------------------------------------------
+
+
+def _write_warning_only(path):
+    """Write a SKILL.md whose only conformance issue is a warning.
+
+    Uses ``AGENTSKILLS_BODY_TOO_LONG`` (>500-line body) — the skill
+    has a valid modern layout, required frontmatter keys, and a body
+    that trips the warning-only line-count check.
+    """
+    path.parent.mkdir(exist_ok=True)
+    body = "# Body\n\n" + ("line content\n" * 600)
+    _write_skill(
+        path,
+        "name: my-skill\ndescription: A long-bodied skill for warning-only tests.\n",
+        body=body,
+    )
+
+
+def _write_error_only(path):
+    """Write a SKILL.md whose only conformance issue is an error.
+
+    Uses ``AGENTSKILLS_NAME_MISSING`` — the frontmatter omits the
+    required ``name`` key. Body stays under 500 lines to avoid
+    accidentally adding a warning.
+    """
+    path.parent.mkdir(exist_ok=True)
+    _write_skill(
+        path,
+        "description: Missing the required name field.\n",
+    )
+
+
+def _write_mixed(path):
+    """Write a SKILL.md with BOTH an error and a warning.
+
+    Error: missing ``name`` (``AGENTSKILLS_NAME_MISSING``).
+    Warning: body over 500 lines (``AGENTSKILLS_BODY_TOO_LONG``).
+    """
+    path.parent.mkdir(exist_ok=True)
+    body = "# Body\n\n" + ("line content\n" * 600)
+    _write_skill(
+        path,
+        "description: Missing name and oversized body.\n",
+        body=body,
+    )
+
+
+class TestStrictFlag:
+    """Six-cell matrix for ``--strict`` behavior (DEC-004)."""
+
+    @pytest.mark.parametrize(
+        "strict,fixture,expected_rc",
+        [
+            (False, _write_warning_only, 0),
+            (False, _write_error_only, 2),
+            (False, _write_mixed, 2),
+            (True, _write_warning_only, 2),
+            (True, _write_error_only, 2),
+            (True, _write_mixed, 2),
+        ],
+        ids=[
+            "nostrict-warnings-0",
+            "nostrict-errors-2",
+            "nostrict-mixed-2",
+            "strict-warnings-2",
+            "strict-errors-2",
+            "strict-mixed-2",
+        ],
+    )
+    def test_exit_code_matrix(
+        self, tmp_path, capsys, strict, fixture, expected_rc
+    ):
+        """Each (strict, severity) cell routes to the documented exit code."""
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        fixture(skill_path)
+
+        argv = ["lint"]
+        if strict:
+            argv.append("--strict")
+        argv.append(str(skill_path))
+
+        rc = main(argv)
+        assert rc == expected_rc, (
+            f"strict={strict} fixture={fixture.__name__} "
+            f"expected rc={expected_rc}, got {rc}"
+        )
+
+    def test_strict_warning_only_renders_stderr(self, tmp_path, capsys):
+        """``--strict`` on warning-only still renders the stderr issue line."""
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        _write_warning_only(skill_path)
+
+        rc = main(["lint", "--strict", str(skill_path)])
+
+        assert rc == 2
+        captured = capsys.readouterr()
+        # Stderr rendering is identical to the non-strict warning path
+        # (the flag only changes exit code, not output format).
+        assert (
+            "clauditor.conformance: AGENTSKILLS_BODY_TOO_LONG: "
+            in captured.err
+        )
+        # Stdout shows the failure summary (not the success line).
+        assert "Conformance check failed: " in captured.out
+        assert "1 issue" in captured.out
+
+    def test_nostrict_warning_only_renders_stderr(self, tmp_path, capsys):
+        """Without ``--strict``, warning-only renders stderr identically (just rc=0)."""
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        _write_warning_only(skill_path)
+
+        rc = main(["lint", str(skill_path)])
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        # Same stderr line regardless of strict — DEC-004 is exit-code
+        # only, not rendering.
+        assert (
+            "clauditor.conformance: AGENTSKILLS_BODY_TOO_LONG: "
+            in captured.err
+        )
+
+    def test_invalid_yaml_with_strict_exits_1(self, tmp_path, capsys):
+        """``--strict`` does NOT override the INVALID_YAML → exit 1 special case.
+
+        Malformed frontmatter is a parse failure, not a conformance
+        issue. Preserve the US-003 special case verbatim.
+        """
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        skill_path.parent.mkdir()
+        skill_path.write_text(
+            "---\nname: my-skill\ndescription: Missing closing fence.\n"
+            "# Body without closing ---\n",
+            encoding="utf-8",
+        )
+
+        rc = main(["lint", "--strict", str(skill_path)])
+
+        # Exit 1, same as without ``--strict`` (parse-failure taxonomy).
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert (
+            "clauditor.conformance: AGENTSKILLS_FRONTMATTER_INVALID_YAML: "
+            in captured.err
+        )
+        assert "Cannot lint: SKILL.md frontmatter is not valid YAML" in captured.out
