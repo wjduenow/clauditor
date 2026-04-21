@@ -4,8 +4,9 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/71
 - **Branch:** `feature/71-agentskills-lint`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/71-agentskills-lint`
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **PR:** https://github.com/wjduenow/clauditor/pull/74
+- **Epic:** `clauditor-zsf`
 - **Sessions:** 1
 - **Last session:** 2026-04-21
 
@@ -853,6 +854,32 @@ feature-relevant insight if any.
 
 ---
 
+---
+
+## Beads Manifest
+
+- **Epic:** `clauditor-zsf` — #71: Agentskills.io spec conformance check for SKILL.md
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/71-agentskills-lint`
+- **Branch:** `feature/71-agentskills-lint`
+- **PR:** https://github.com/wjduenow/clauditor/pull/74
+
+| Bead | Story | Depends on | Priority |
+|---|---|---|---|
+| `clauditor-zsf.1` | US-001 — Pure `conformance.py` module | — | P2 |
+| `clauditor-zsf.2` | US-002 — Retire `derive_skill_name` warnings | `.1` | P2 |
+| `clauditor-zsf.3` | US-003 — CLI `lint` (plain text) | `.1` | P2 |
+| `clauditor-zsf.4` | US-004 — `--strict` flag | `.3` | P2 |
+| `clauditor-zsf.5` | US-005 — `--json` output | `.3` | P2 |
+| `clauditor-zsf.6` | US-006 — Soft-warn hook in `SkillSpec.from_file` | `.1`, `.2` | P2 |
+| `clauditor-zsf.7` | US-007 — Bundled-skill conformance + regression test | `.1`, `.6` | P2 |
+| `clauditor-zsf.8` | US-008 — Docs + CHANGELOG + cross-ref | `.7` | P2 |
+| `clauditor-zsf.9` | Quality Gate | `.4`, `.5`, `.8` | P2 |
+| `clauditor-zsf.10` | Patterns & Memory | `.9` | P4 |
+
+Ready now: `clauditor-zsf.1`. Everything else blocked on the DAG above.
+
+---
+
 ## Session Notes
 
 **2026-04-21 — Discovery complete.** Three parallel subagents
@@ -876,6 +903,13 @@ agentskills.io spec — they would trigger
 `AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY` on every load. Three
 smaller concerns on path handling style, success-message
 shape, and `--json` scope. Moving to refinement to resolve.
+
+**2026-04-21 — Devolved to beads.** Epic `clauditor-zsf` + 10
+tasks `clauditor-zsf.1` through `clauditor-zsf.10`.
+Dependency graph matches the Story summary DAG:
+US-001 is the sole ready task; everything else gates on it or
+its downstream. Ralph can begin on US-001 via
+`bd update clauditor-zsf.1 --claim && bd show clauditor-zsf.1`.
 
 **2026-04-21 — Refinement complete.** User resolved Q6=A
 (retire `derive_skill_name` warnings; consolidate into
