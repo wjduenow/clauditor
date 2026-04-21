@@ -58,11 +58,11 @@ A complete eval spec with all three layers:
   "input_files": ["fixtures/sample-venues.csv"],
 
   "assertions": [
-    {"id": "contains_venues", "type": "contains", "value": "Venues"},
-    {"id": "has_entries_3", "type": "has_entries", "value": "3"},
-    {"id": "has_urls_3", "type": "has_urls", "value": "3"},
-    {"id": "min_length_500", "type": "min_length", "value": "500"},
-    {"id": "no_error", "type": "not_contains", "value": "Error"}
+    {"id": "contains_venues", "type": "contains", "needle": "Venues"},
+    {"id": "has_entries_3", "type": "has_entries", "count": 3},
+    {"id": "has_urls_3", "type": "has_urls", "count": 3},
+    {"id": "min_length_500", "type": "min_length", "length": 500},
+    {"id": "no_error", "type": "not_contains", "needle": "Error"}
   ],
 
   "sections": [
@@ -116,6 +116,46 @@ A complete eval spec with all three layers:
 
 See [`examples/`](../examples/.claude/commands/example-skill.eval.json) for a complete working eval spec.
 
+## Assertion types and per-type keys
+
+Each Layer 1 assertion carries a `type` plus the per-type semantic keys
+listed below (in addition to `id`, `type`, and optional `name`). Integer
+fields are native JSON ints, not strings — `{"length": 500}`, not
+`{"length": "500"}`. Unknown keys raise `ValueError` at load time with a
+"did you mean?" migration hint.
+
+| Type | Required keys | Optional keys | Description |
+|---|---|---|---|
+| `contains` | `needle` (str) | — | Output contains the needle substring |
+| `not_contains` | `needle` (str) | — | Output does NOT contain the needle |
+| `regex` | `pattern` (str) | — | Output matches the regex pattern (search, not fullmatch) |
+| `min_count` | `pattern` (str), `count` (int) | — | Regex pattern appears at least `count` times |
+| `min_length` | `length` (int) | — | Output length is at least `length` chars |
+| `max_length` | `length` (int) | — | Output length is at most `length` chars |
+| `has_urls` | — | `count` (int, default 1) | Output contains at least `count` URLs |
+| `has_entries` | — | `count` (int, default 1) | Output contains at least `count` numbered entries |
+| `urls_reachable` | — | `count` (int, default 1) | At least `count` URLs in output return 2xx on HEAD |
+| `has_format` | `format` (str) | `count` (int, default 1) | Output contains at least `count` strings matching the format (see [format registry](#field-validation-with-format)) |
+
+Example — one of each shape:
+
+```json
+{
+  "assertions": [
+    {"id": "has_title",      "type": "contains",       "needle": "Results"},
+    {"id": "no_error",       "type": "not_contains",   "needle": "Error"},
+    {"id": "numbered",       "type": "regex",          "pattern": "\\*\\*\\d+\\."},
+    {"id": "three_bullets",  "type": "min_count",      "pattern": "^- ", "count": 3},
+    {"id": "long_enough",    "type": "min_length",     "length": 500},
+    {"id": "not_too_long",   "type": "max_length",     "length": 5000},
+    {"id": "has_3_urls",     "type": "has_urls",       "count": 3},
+    {"id": "has_3_entries",  "type": "has_entries",    "count": 3},
+    {"id": "urls_work",      "type": "urls_reachable", "count": 2},
+    {"id": "two_phones",     "type": "has_format",     "format": "phone_us", "count": 2}
+  ]
+}
+```
+
 ## Field validation with `format`
 
 Each `FieldRequirement` accepts a single `format` key that validates the
@@ -163,3 +203,17 @@ bare hostnames too.
 `count_max` assertion if extraction returns more entries than the cap.
 Field-level checks still run over all extracted entries so you see both
 the count failure and any per-entry failures.
+
+## Schema history
+
+**Issue #67 — per-type assertion keys.** Assertion dicts previously
+carried a single overloaded `value` key whose meaning depended on
+`type` — a string needle for `contains`, a regex pattern for `regex`, a
+stringly-typed count for `has_urls`, and so on. Issue #67 replaced
+`value` with per-type semantic keys (`needle`, `pattern`, `length`,
+`count`, `format`) and switched integer fields from stringly-typed
+(`"value": "500"`) to native JSON ints (`"length": 500`). The loader
+rejects the old shape at load time with a "did you mean?" hint pointing
+at the correct per-type key. No back-compat window: hand-edit old specs
+to the new shape, or run the spec through `clauditor propose-eval
+--force` to regenerate it.

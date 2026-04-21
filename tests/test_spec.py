@@ -22,7 +22,7 @@ MINIMAL_EVAL = {
     "skill_name": "test-skill",
     "description": "test eval",
     "test_args": "--depth quick",
-    "assertions": [{"id": "a_hello", "type": "contains", "value": "hello"}],
+    "assertions": [{"id": "a_hello", "type": "contains", "needle": "hello"}],
 }
 
 
@@ -208,7 +208,7 @@ class TestEvaluate:
     def test_happy_path_with_explicit_output(self, tmp_skill_file, mock_runner):
         eval_data = {
             "skill_name": "eval-skill",
-            "assertions": [{"id": "a_hello", "type": "contains", "value": "hello"}],
+            "assertions": [{"id": "a_hello", "type": "contains", "needle": "hello"}],
         }
         skill_path, _ = tmp_skill_file("eval-skill", eval_data=eval_data)
         runner = mock_runner()
@@ -221,7 +221,7 @@ class TestEvaluate:
     def test_evaluate_runs_skill_when_no_output(self, tmp_skill_file, mock_runner):
         eval_data = {
             "skill_name": "auto-skill",
-            "assertions": [{"id": "a_mock", "type": "contains", "value": "mock"}],
+            "assertions": [{"id": "a_mock", "type": "contains", "needle": "mock"}],
         }
         skill_path, _ = tmp_skill_file("auto-skill", eval_data=eval_data)
         runner = mock_runner(output="mock output")
@@ -233,7 +233,7 @@ class TestEvaluate:
     def test_evaluate_returns_error_on_failed_run(self, tmp_skill_file, mock_runner):
         eval_data = {
             "skill_name": "fail-skill",
-            "assertions": [{"id": "a_any", "type": "contains", "value": "anything"}],
+            "assertions": [{"id": "a_any", "type": "contains", "needle": "anything"}],
         }
         skill_path, _ = tmp_skill_file("fail-skill", eval_data=eval_data)
         runner = mock_runner(output="", exit_code=1, error="boom")
@@ -257,7 +257,7 @@ class TestEvaluateFailureClassification:
     EVAL_DATA = {
         "skill_name": "classify-skill",
         "assertions": [
-            {"id": "a_hello", "type": "contains", "value": "hello"},
+            {"id": "a_hello", "type": "contains", "needle": "hello"},
         ],
     }
 
@@ -680,4 +680,51 @@ class TestAllowHangHeuristicThreading:
         spec.run()
         assert (
             runner.run.call_args.kwargs.get("allow_hang_heuristic") is True
+        )
+
+
+# Path to the checked-in example eval spec used by
+# ``TestExampleEvalSpec`` below. Defined once at module scope so both
+# the class and any future regression tests can reference it.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+EXAMPLE_EVAL_JSON = (
+    _REPO_ROOT / "examples" / ".claude" / "commands" / "example-skill.eval.json"
+)
+
+
+class TestExampleEvalSpec:
+    """Regression: the checked-in example spec loads via ``EvalSpec.from_file``.
+
+    Traces to DEC-001 / DEC-002 of
+    ``plans/super/67-per-type-assertion-keys.md``: every assertion
+    entry uses the per-type semantic key (``needle`` / ``pattern`` /
+    ``length`` / ``count``) and counts/lengths are native JSON ints.
+    A future migration that misses this file will surface here as a
+    load-time ``ValueError`` from ``_require_assertion_keys``.
+    """
+
+    def test_example_eval_spec_loads(self):
+        # Import via the normal schemas path; ``EvalSpec.from_file``
+        # delegates to ``from_dict`` which runs the per-type
+        # required-key + type-check validator from US-001.
+        from clauditor.schemas import EvalSpec
+
+        # Must not raise.
+        spec = EvalSpec.from_file(EXAMPLE_EVAL_JSON)
+        assert spec.skill_name == "find-kid-activities"
+        # The load-bearing invariant is "loads without error" — avoid
+        # hard-coding the exact count, which would flip red on any
+        # legitimate addition/removal to the example spec for the
+        # wrong reason.
+        assert len(spec.assertions) >= 1
+
+    def test_example_eval_spec_has_no_legacy_value_keys(self):
+        # Substring guard: the migrated file must not contain any
+        # ``"value":`` keys in assertion dicts. Checking the raw JSON
+        # text is cheap and catches regressions that re-introduce the
+        # legacy shape via copy-paste.
+        raw = EXAMPLE_EVAL_JSON.read_text(encoding="utf-8")
+        assert '"value":' not in raw, (
+            "example eval spec must not contain legacy 'value' keys; "
+            "use per-type semantic keys (needle/pattern/length/count)"
         )

@@ -22,7 +22,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    """Generate a starter eval.json for a skill."""
+    """Generate a starter eval.json for a skill.
+
+    The starter ``assertions`` list uses the per-type semantic keys
+    introduced in #67 (DEC-001 of ``plans/super/67-per-type-assertion-keys.md``):
+    ``needle`` for ``contains``/``not_contains``, ``length`` for
+    ``min_length``/``max_length``, and ``count`` for the optional
+    threshold on ``has_urls``/``has_entries``. Counts and lengths are
+    written as native JSON ints (DEC-002), not strings.
+    """
     skill_path = Path(args.skill)
     eval_path = skill_path.with_suffix(".eval.json")
 
@@ -52,10 +60,10 @@ def cmd_init(args: argparse.Namespace) -> int:
         "description": f"Eval spec for /{skill_name}",
         "test_args": "",
         "assertions": [
-            {"id": "min_length_500", "type": "min_length", "value": "500"},
-            {"id": "has_urls_3", "type": "has_urls", "value": "3"},
-            {"id": "has_entries_3", "type": "has_entries", "value": "3"},
-            {"id": "no_error", "type": "not_contains", "value": "Error"},
+            {"id": "min_length_500", "type": "min_length", "length": 500},
+            {"id": "has_urls_3", "type": "has_urls", "count": 3},
+            {"id": "has_entries_3", "type": "has_entries", "count": 3},
+            {"id": "no_error", "type": "not_contains", "needle": "Error"},
         ],
         "sections": [
             {

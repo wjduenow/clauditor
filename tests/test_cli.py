@@ -829,8 +829,8 @@ class TestCmdGradeSaveDiff:
 
         eval_spec = _make_eval_spec(
             assertions=[
-                {"id": "has-hello", "type": "contains", "value": "hello"},
-                {"id": "min-len", "type": "min_length", "value": "5"},
+                {"id": "has-hello", "type": "contains", "needle": "hello"},
+                {"id": "min-len", "type": "min_length", "length": 5},
             ]
         )
         spec = _make_spec(eval_spec=eval_spec)
@@ -875,8 +875,8 @@ class TestCmdGradeSaveDiff:
         monkeypatch.chdir(tmp_path)
         eval_spec = _make_eval_spec(
             assertions=[
-                {"id": "has-primary", "type": "contains", "value": "primary"},
-                {"id": "min-len", "type": "min_length", "value": "3"},
+                {"id": "has-primary", "type": "contains", "needle": "primary"},
+                {"id": "min-len", "type": "min_length", "length": 3},
             ]
         )
         spec = _make_spec(eval_spec=eval_spec)
@@ -916,8 +916,8 @@ class TestCmdGradeSaveDiff:
         monkeypatch.chdir(tmp_path)
         eval_spec = _make_eval_spec(
             assertions=[
-                {"id": "has-primary", "type": "contains", "value": "primary"},
-                {"id": "min-len", "type": "min_length", "value": "3"},
+                {"id": "has-primary", "type": "contains", "needle": "primary"},
+                {"id": "min-len", "type": "min_length", "length": 3},
             ]
         )
         spec = _make_spec(eval_spec=eval_spec)
@@ -963,7 +963,7 @@ class TestCmdGradeSaveDiff:
 
         eval_spec = _make_eval_spec(
             assertions=[
-                {"id": "has-text", "type": "contains", "value": "text"},
+                {"id": "has-text", "type": "contains", "needle": "text"},
             ]
         )
         spec = _make_spec(eval_spec=eval_spec)
@@ -1492,7 +1492,7 @@ class TestBaselineFlag:
             assertions=[
                 {
                     "type": "contains",
-                    "value": "hello",
+                    "needle": "hello",
                     "id": "a.hello.v1",
                 }
             ],
@@ -2181,7 +2181,7 @@ class TestCmdCompare:
         after_txt.write_text("hello world")
 
         eval_spec = _make_eval_spec(
-            assertions=[{"type": "contains", "value": "hello"}]
+            assertions=[{"type": "contains", "needle": "hello"}]
         )
         spec = _make_spec(eval_spec=eval_spec)
 
@@ -2873,6 +2873,51 @@ class TestCmdInit:
         data = json.loads(eval_path.read_text())
         assert data["skill_name"] == "bar"
         assert data["description"] == "Eval spec for /bar"
+
+    def test_init_generated_spec_uses_per_type_keys(self, tmp_path):
+        """Regression (DEC-001/DEC-002 of #67): generated eval.json loads
+        via ``EvalSpec.from_file`` (no legacy ``value`` keys) and uses
+        native JSON ints for counts/lengths — the starter scaffold must
+        stay in lockstep with the per-type validator.
+        """
+        from clauditor.schemas import EvalSpec
+
+        skill_path = tmp_path / "my-skill.md"
+        skill_path.write_text("# My Skill")
+
+        rc = main(["init", str(skill_path)])
+        assert rc == 0
+
+        eval_path = tmp_path / "my-skill.eval.json"
+        # Substring check: the generated file must not contain any
+        # legacy ``"value":`` assertion key. Cheap guard against a
+        # future regression that reverts the scaffold.
+        raw = eval_path.read_text(encoding="utf-8")
+        assert '"value":' not in raw, (
+            "generated eval.json must not contain legacy 'value' keys"
+        )
+
+        # Must load cleanly via EvalSpec.from_file — the per-type
+        # required-key + type-check validator from US-001 rejects the
+        # legacy shape at load time.
+        spec = EvalSpec.from_file(eval_path)
+        assert spec.skill_name == "my-skill"
+        # Starter scaffold ships 4 assertions per DEC-001 mapping.
+        assert len(spec.assertions) == 4
+
+        # Each assertion uses the per-type semantic key (DEC-001)
+        # with native JSON ints for counts/lengths (DEC-002). A
+        # future scaffold edit that swaps a key name (``length`` →
+        # ``len``) or reverts to stringly-typed ints (``500`` →
+        # ``"500"``) must fail this test, not silently pass.
+        by_id = {a["id"]: a for a in spec.assertions}
+        assert by_id["min_length_500"]["length"] == 500
+        assert isinstance(by_id["min_length_500"]["length"], int)
+        assert by_id["has_urls_3"]["count"] == 3
+        assert isinstance(by_id["has_urls_3"]["count"], int)
+        assert by_id["has_entries_3"]["count"] == 3
+        assert isinstance(by_id["has_entries_3"]["count"], int)
+        assert by_id["no_error"]["needle"] == "Error"
 
 
 @pytest.fixture
