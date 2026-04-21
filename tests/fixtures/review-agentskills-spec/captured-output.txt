@@ -1,0 +1,23 @@
+## agentskills.io spec drift report
+
+Fetched: https://agentskills.io/specification (2026-04-20T12:00:00Z)
+
+### Deltas
+
+- **name parent-dir match** (status: drifted)
+  - Spec: `name` MUST equal the parent directory name.
+  - Clauditor: warns on mismatch but loads anyway.
+  - Proposed change: src/clauditor/conformance.py — promote warning to
+    a hard error in strict mode.
+  - Rule anchor: .claude/rules/skill-identity-from-frontmatter.md.
+
+- **description max length** (status: missing)
+  - Spec: `description` must be 1-1024 characters.
+  - Clauditor: does not check the upper bound.
+  - Proposed change: src/clauditor/conformance.py — add the length
+    check alongside the existing non-empty guard.
+  - Rule anchor: .claude/rules/pre-llm-contract-hard-validate.md.
+
+### No-change rows
+
+4 rules match clauditor's current behavior.

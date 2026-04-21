@@ -1,29 +1,38 @@
 """Tests for the bundled ``/review-agentskills-spec`` skill.
 
-Two things under test:
+Three layers under test:
 
 1. **Skill contract** — frontmatter shape + ``SkillSpec.from_file`` +
    ``EvalSpec.from_file`` loaders, mirroring ``test_bundled_skill.py``.
-   Guards against silent drift in the agentskills.io-core frontmatter
-   fields the skill must satisfy.
 
-2. **Real-world clauditor example** — runs the L1 assertions declared
-   in ``assets/review-agentskills-spec.eval.json`` against a canned
-   representative drift-report output via ``run_assertions``. This
-   exercises clauditor's L1 pipeline end-to-end on a realistic payload
-   without requiring a live subprocess or an Anthropic API call, so
-   the bundled skill doubles as a deterministic usage example in CI.
+2. **Replay (always-on, deterministic)** —
+   ``TestRealWorldClauditorExample`` runs the declared L1 assertions
+   against a captured representative output at
+   ``tests/fixtures/review-agentskills-spec/captured-output.txt``.
+   Deterministic, free, no API call. The fixture README documents how
+   to refresh it via ``clauditor capture``.
+
+3. **Live run (gated, opt-in canary)** — ``TestLiveSkillRun`` invokes
+   ``SkillRunner`` against the real skill and runs the same L1
+   assertions on the actual Claude Code output. Skipped unless
+   ``CLAUDITOR_RUN_LIVE=1`` is set AND the ``claude`` CLI is
+   available AND ``ANTHROPIC_API_KEY`` is set. Marked ``live`` so it
+   can also be selected via ``-m live`` / deselected via ``-m 'not
+   live'``. Never runs in default CI.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 from pathlib import Path
 
 import pytest
 
 from clauditor.assertions import run_assertions
+from clauditor.runner import SkillRunner
 from clauditor.schemas import EvalSpec, criterion_text
 from clauditor.spec import SkillSpec
 
@@ -36,6 +45,12 @@ SKILL_DIR = (
 )
 SKILL_MD = SKILL_DIR / "SKILL.md"
 EVAL_JSON = SKILL_DIR / "assets" / "review-agentskills-spec.eval.json"
+CAPTURED_OUTPUT = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "review-agentskills-spec"
+    / "captured-output.txt"
+)
 
 NAME_REGEX = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 NAME_MAX_LEN = 64
@@ -104,36 +119,13 @@ def frontmatter_and_body(skill_md_text: str) -> tuple[dict, str]:
     return _parse_frontmatter(fm_text), body
 
 
-# Canned drift-report output used by ``TestRealWorldClauditorExample``.
-# Represents what the skill would produce on a run where two spec rules
-# have drifted. Must satisfy every L1 assertion declared in
-# ``review-agentskills-spec.eval.json`` — if you add an assertion, update
-# this canned output to keep the example test green.
-CANNED_DRIFT_REPORT = """\
-## agentskills.io spec drift report
+def _load_captured_output() -> str:
+    """Load the captured representative skill output from the fixture dir.
 
-Fetched: https://agentskills.io/specification (2026-04-20T12:00:00Z)
-
-### Deltas
-
-- **name parent-dir match** (status: drifted)
-  - Spec: `name` MUST equal the parent directory name.
-  - Clauditor: warns on mismatch but loads anyway.
-  - Proposed change: src/clauditor/conformance.py — promote warning to
-    a hard error in strict mode.
-  - Rule anchor: .claude/rules/skill-identity-from-frontmatter.md.
-
-- **description max length** (status: missing)
-  - Spec: `description` must be 1-1024 characters.
-  - Clauditor: does not check the upper bound.
-  - Proposed change: src/clauditor/conformance.py — add the length
-    check alongside the existing non-empty guard.
-  - Rule anchor: .claude/rules/pre-llm-contract-hard-validate.md.
-
-### No-change rows
-
-4 rules match clauditor's current behavior.
-"""
+    Fixture provenance and refresh protocol are documented in
+    ``tests/fixtures/review-agentskills-spec/README.md``.
+    """
+    return CAPTURED_OUTPUT.read_text(encoding="utf-8")
 
 
 class TestSkillMdFrontmatter:
@@ -243,24 +235,31 @@ class TestBundledEvalSpec:
 
 
 class TestRealWorldClauditorExample:
-    """Exercises clauditor's L1 pipeline against a canned skill output.
+    """Replay: L1 assertions against a captured representative output.
 
-    This is the dogfood test for issue #72 — it treats the bundled skill
-    as a live example of clauditor usage, running the spec's own
-    assertions against a representative drift report. No subprocess, no
-    API call, fully deterministic in CI.
+    Always-on CI guard. Reads
+    ``tests/fixtures/review-agentskills-spec/captured-output.txt`` and
+    runs every declared L1 assertion against it. Deterministic, free,
+    no subprocess, no API call. See the fixture README for refresh
+    protocol.
     """
 
-    def test_canned_report_passes_all_l1_assertions(self) -> None:
+    def test_fixture_exists(self) -> None:
+        assert CAPTURED_OUTPUT.is_file(), (
+            f"captured-output fixture missing at {CAPTURED_OUTPUT}"
+        )
+
+    def test_replay_passes_all_l1_assertions(self) -> None:
         spec = EvalSpec.from_file(EVAL_JSON)
-        # ``spec.assertions`` is a list of dicts carrying the per-type
-        # semantic keys expected by ``run_assertions``.
-        assertion_set = run_assertions(CANNED_DRIFT_REPORT, spec.assertions)
+        output = _load_captured_output()
+        assertion_set = run_assertions(output, spec.assertions)
         failing = [r for r in assertion_set.results if not r.passed]
         assert not failing, (
-            "canned drift report should pass every declared L1 "
-            f"assertion; failures: "
-            f"{[(r.id, r.message) for r in failing]}"
+            "captured fixture should pass every declared L1 assertion; "
+            f"failures: {[(r.id, r.message) for r in failing]}. "
+            "If the skill's expected output shape has genuinely changed, "
+            "refresh the fixture per tests/fixtures/review-agentskills-spec/"
+            "README.md."
         )
         # Belt-and-suspenders: every declared assertion ran.
         assert len(assertion_set.results) == len(spec.assertions)
@@ -273,3 +272,61 @@ class TestRealWorldClauditorExample:
         assertion_set = run_assertions("", spec.assertions)
         failures = [r for r in assertion_set.results if not r.passed]
         assert failures, "empty output should fail at least one assertion"
+
+
+def _live_run_skip_reason() -> str | None:
+    """Return a skip reason, or ``None`` if the live run may proceed.
+
+    Three gates, all required:
+    - ``CLAUDITOR_RUN_LIVE=1`` (explicit opt-in, never implicit).
+    - ``claude`` CLI on ``PATH``.
+    - ``ANTHROPIC_API_KEY`` set in the environment.
+    """
+    if os.environ.get("CLAUDITOR_RUN_LIVE") != "1":
+        return (
+            "live skill run is opt-in; set CLAUDITOR_RUN_LIVE=1 to enable"
+        )
+    if shutil.which("claude") is None:
+        return "live run requires the 'claude' CLI on PATH"
+    if not os.environ.get("ANTHROPIC_API_KEY"):
+        return "live run requires ANTHROPIC_API_KEY"
+    return None
+
+
+@pytest.mark.live
+class TestLiveSkillRun:
+    """Canary: invoke the real skill and run L1 assertions on its output.
+
+    Gated triple-lock: ``CLAUDITOR_RUN_LIVE=1`` + ``claude`` CLI present
+    + ``ANTHROPIC_API_KEY`` set. Skipped cleanly otherwise so this class
+    never runs in default CI and never spends tokens implicitly.
+
+    Spends Haiku/Sonnet tokens when it does run (the skill uses
+    ``WebFetch`` against https://agentskills.io/specification and is
+    subject to network availability and Claude behavior drift). Intended
+    for a weekly canary workflow, not for per-PR CI.
+    """
+
+    def test_live_run_passes_l1_assertions(self) -> None:
+        skip = _live_run_skip_reason()
+        if skip:
+            pytest.skip(skip)
+
+        spec = SkillSpec.from_file(SKILL_MD, eval_path=EVAL_JSON)
+        runner = SkillRunner(project_dir=Path.cwd())
+        # Run the skill with no args — the workflow fetches the spec
+        # URL directly, no skill-path argument needed. SkillRunner.run
+        # prepends the '/' and handles the prompt shape itself.
+        result = runner.run(spec.skill_name)
+        assert result.succeeded, (
+            f"live run failed: exit_code={result.exit_code} "
+            f"error={result.error!r}"
+        )
+        assertion_set = run_assertions(
+            result.output, spec.eval_spec.assertions
+        )
+        failing = [r for r in assertion_set.results if not r.passed]
+        assert not failing, (
+            f"live run output failed L1 assertions: "
+            f"{[(r.id, r.message) for r in failing]}"
+        )
