@@ -103,6 +103,27 @@ Captured skill output is scrubbed through `clauditor.transcripts.redact` before 
 - `clauditor propose-eval` fills in an `eval.json` for a skill whose **SKILL.md already exists**. It does not write a skill stub and does not regenerate SKILL.md.
 - `clauditor capture <skill> -- "args"` produces the captured run that `propose-eval` reads as grounding context. Capturing before `propose-eval` typically lifts the quality of the generated spec (the proposer sees what real output looks like).
 
+## Shared runner flags (`validate`, `grade`, `capture`, `run`)
+
+Four skill-invoking commands share two flags that control the `claude -p` subprocess the runner spawns. Both default to "not set" so today's behavior is unchanged when neither flag is passed.
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--no-api-key` | Strip both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the subprocess environment before invoking `claude -p`. The child then falls back to whatever auth is cached in `~/.claude/` — typically a Pro/Max subscription, which carries a much higher throughput ceiling than the API-key tier. Useful for research-heavy skills (multi-agent, deep-research) that exhaust the free API tier in a single run. Non-auth Anthropic env vars such as `ANTHROPIC_BASE_URL` are preserved. |
+| `--timeout SECONDS` | Override the runner's 180-second watchdog for a single invocation. Must be a positive integer; `--timeout 0`, `--timeout -5`, and `--timeout foo` exit `2` at argparse time. Precedence: the CLI flag wins when passed explicitly; otherwise the `EvalSpec.timeout` field wins when set; otherwise the built-in 180s default applies. See [`docs/eval-spec-reference.md#optional-top-level-fields`](eval-spec-reference.md#optional-top-level-fields) for the spec-field side of the contract. |
+
+When `claude -p` emits an `apiKeySource` value on its stream-json `init` event, the runner captures it on `SkillResult.api_key_source` and prints one stderr info line of the form `clauditor.runner: apiKeySource=<value>`. Values are labels (`"ANTHROPIC_API_KEY"`, `"claude.ai"`, `"none"`), not secrets. Older `claude` builds that omit the field leave `api_key_source` at `None` and suppress the stderr line — absence is the signal. See [`docs/stream-json-schema.md`](stream-json-schema.md#type-system) for the parser contract.
+
+```bash
+# Force subscription auth, raise the watchdog to five minutes.
+clauditor grade .claude/commands/deep-research.md --no-api-key --timeout 300
+
+# Pro/Max operator running a fast-failing CI check — CLI wins over spec.
+clauditor validate .claude/commands/my-skill.md --no-api-key --timeout 30
+```
+
+Pytest integration: `--clauditor-no-api-key` is the plugin-option counterpart to `--no-api-key` on the CLI. It threads the same env scrub through the `clauditor_spec` fixture's `env_override`. The existing `--clauditor-timeout` pytest option continues to control the per-runner default (constructor `timeout=...`); per-invocation overrides flow through the fixture factory just like the CLI path. See [`docs/pytest-plugin.md`](pytest-plugin.md).
+
 ## Persistent metric history
 
 Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.clauditor/history.jsonl`. Each record carries a `command` discriminator, a nested `metrics` dict, and (for `grade`) the `iteration` slot and on-disk `workspace_path`.

@@ -56,6 +56,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Runner auth-source control + configurable timeout (#64).** Four
+  skill-invoking CLI commands (`validate`, `grade`, `capture`, `run`)
+  and the pytest plugin gained two knobs that together unblock Pro/Max
+  subscribers iterating on research-heavy skills:
+  - `--no-api-key` / `--clauditor-no-api-key` (pytest) strip both
+    `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the `claude -p`
+    subprocess environment so the child falls back to whatever auth is
+    cached in `~/.claude/` (typically a Pro/Max subscription with a
+    much higher throughput ceiling than the API-key tier). Non-auth
+    Anthropic env vars such as `ANTHROPIC_BASE_URL` are preserved.
+  - `--timeout SECONDS` overrides the runner's 180-second watchdog on
+    a per-invocation basis. Must be a positive integer; argparse
+    rejects `<= 0` / non-int with exit 2. Precedence is
+    **CLI > spec > default**: the flag wins when passed explicitly,
+    otherwise a new `EvalSpec.timeout` field wins when set, otherwise
+    the built-in 180s default applies. `EvalSpec.timeout` is
+    load-time validated (positive int only; `bool` is explicitly
+    rejected because it is an `int` subclass in Python).
+  - `SkillResult.api_key_source` carries the `apiKeySource` value
+    parsed from the stream-json `system/init` event (when present);
+    the runner prints one stderr info line of the form
+    `clauditor.runner: apiKeySource=<value>` per run. Values are
+    labels (`"ANTHROPIC_API_KEY"`, `"claude.ai"`, `"none"`), not
+    secrets. Older `claude` builds that omit the field leave
+    `api_key_source` at `None` and suppress the stderr line. See
+    [`docs/cli-reference.md#shared-runner-flags-validate-grade-capture-run`](docs/cli-reference.md#shared-runner-flags-validate-grade-capture-run),
+    [`docs/eval-spec-reference.md#optional-top-level-fields`](docs/eval-spec-reference.md#optional-top-level-fields),
+    and [`docs/stream-json-schema.md`](docs/stream-json-schema.md).
+    Precedence shape codified in
+    [`.claude/rules/spec-cli-precedence.md`](.claude/rules/spec-cli-precedence.md).
 - **Runner error surfacing (#63).** `SkillResult` gained an
   `error_category` field —
   `"rate_limit" | "auth" | "api" | "interactive" | "subprocess" |
