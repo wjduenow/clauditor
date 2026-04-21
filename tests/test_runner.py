@@ -2365,6 +2365,159 @@ class TestInteractiveHangDetection:
         )
 
 
+class TestApiKeySourceParsing:
+    """Parse ``apiKeySource`` from the stream-json ``system/init`` message.
+
+    Covers DEC-005 (stderr line + field), DEC-012 (suppress line when
+    None), DEC-015 (first init wins), and DEC-017 (match on compound
+    ``type=="system" AND subtype=="init"``). Traces to US-004 of
+    ``plans/super/64-runner-auth-timeout.md``.
+    """
+
+    def _run_with_stream(self, fake: _FakePopen) -> SkillResult:
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            return runner.run("skill")
+
+    def test_init_apikeysource_none(self):
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "session_id": "abc",
+                "apiKeySource": "none",
+            },
+        )
+        result = self._run_with_stream(fake)
+        assert result.api_key_source == "none"
+
+    def test_init_apikeysource_env_var(self):
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "session_id": "abc",
+                "apiKeySource": "ANTHROPIC_API_KEY",
+            },
+        )
+        result = self._run_with_stream(fake)
+        assert result.api_key_source == "ANTHROPIC_API_KEY"
+
+    def test_init_apikeysource_missing(self):
+        # init present but no apiKeySource field → api_key_source is None,
+        # no crash.
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "session_id": "abc",
+            },
+        )
+        result = self._run_with_stream(fake)
+        assert result.api_key_source is None
+
+    def test_no_init_message(self):
+        # Stream has no system/init message at all. Field stays None and
+        # no crash occurs.
+        fake = make_fake_skill_stream("hello")
+        result = self._run_with_stream(fake)
+        assert result.api_key_source is None
+
+    def test_first_init_wins(self):
+        # Two init messages; the first value is kept, the second ignored
+        # (DEC-015).
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "apiKeySource": "first-value",
+            },
+            extra_messages=[
+                {
+                    "type": "system",
+                    "subtype": "init",
+                    "apiKeySource": "second-value",
+                }
+            ],
+        )
+        result = self._run_with_stream(fake)
+        assert result.api_key_source == "first-value"
+
+    def test_stderr_emits_info_line_when_present(self, capsys):
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "apiKeySource": "ANTHROPIC_API_KEY",
+            },
+        )
+        self._run_with_stream(fake)
+        captured = capsys.readouterr()
+        # Exactly one matching line per run.
+        matching = [
+            line
+            for line in captured.err.splitlines()
+            if "apiKeySource=" in line
+        ]
+        assert len(matching) == 1, captured.err
+        assert "clauditor.runner:" in matching[0]
+        assert "apiKeySource=ANTHROPIC_API_KEY" in matching[0]
+
+    def test_stderr_line_suppressed_when_none(self, capsys):
+        # No init message → no apiKeySource= line on stderr (DEC-012).
+        fake = make_fake_skill_stream("hello")
+        self._run_with_stream(fake)
+        captured = capsys.readouterr()
+        assert "apiKeySource=" not in captured.err
+
+    def test_stderr_line_suppressed_when_init_missing_field(self, capsys):
+        # init present but apiKeySource absent → no stderr line (DEC-012).
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "session_id": "abc",
+            },
+        )
+        self._run_with_stream(fake)
+        captured = capsys.readouterr()
+        assert "apiKeySource=" not in captured.err
+
+    def test_init_apikeysource_non_string_ignored(self):
+        # Defensive: a non-string apiKeySource (e.g. a dict or int from a
+        # buggy CLI build) is ignored rather than crashing.
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "apiKeySource": 42,
+            },
+        )
+        result = self._run_with_stream(fake)
+        assert result.api_key_source is None
+
+    def test_system_event_without_init_subtype_ignored(self):
+        # type=="system" but subtype!="init" must not populate the field
+        # (DEC-017).
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "hook",
+                "apiKeySource": "should-be-ignored",
+            },
+        )
+        result = self._run_with_stream(fake)
+        assert result.api_key_source is None
+
+
 class TestEnvWithoutApiKey:
     """Pure-unit tests for :func:`clauditor.runner._env_without_api_key`.
 
