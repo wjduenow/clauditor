@@ -1830,6 +1830,63 @@ class TestEvalSpecFromDict:
 
         assert str(ei_file.value) == str(ei_dict.value)
 
+    def test_timeout_int_300(self, tmp_path):
+        """Positive int loads and round-trips as spec.timeout."""
+        data = {"skill_name": "s", "timeout": 300}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.timeout == 300
+
+    def test_timeout_zero_raises(self, tmp_path):
+        """``timeout=0`` is rejected with the ``> 0`` error."""
+        data = {"skill_name": "s", "timeout": 0}
+        with pytest.raises(
+            ValueError, match=r"'timeout' must be > 0, got 0"
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_timeout_negative_raises(self, tmp_path):
+        """Negative timeouts are rejected with the ``> 0`` error."""
+        data = {"skill_name": "s", "timeout": -5}
+        with pytest.raises(
+            ValueError, match=r"'timeout' must be > 0, got -5"
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_timeout_string_raises(self, tmp_path):
+        """Non-int (string) rejected at load time (no coercion)."""
+        data = {"skill_name": "s", "timeout": "300"}
+        with pytest.raises(
+            ValueError,
+            match=r"'timeout' must be an int, got str '300'",
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_timeout_bool_raises(self, tmp_path):
+        """Bool guard: ``isinstance(True, int)`` is True in Python.
+
+        Per ``.claude/rules/constant-with-type-info.md`` the validator
+        must explicitly reject ``bool`` so ``{"timeout": True}`` does
+        not silently load as ``1``.
+        """
+        data = {"skill_name": "s", "timeout": True}
+        with pytest.raises(
+            ValueError,
+            match=r"'timeout' must be an int, got bool True",
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_timeout_null_is_none(self, tmp_path):
+        """Explicit null maps to ``None`` ("unset")."""
+        data = {"skill_name": "s", "timeout": None}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.timeout is None
+
+    def test_timeout_missing_is_none(self, tmp_path):
+        """Missing key maps to ``None`` (default unset)."""
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.timeout is None
+
 
 class TestAllowHangHeuristic:
     """DEC-005 / US-003: ``allow_hang_heuristic`` parsing in ``from_dict``.
