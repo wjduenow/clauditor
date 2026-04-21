@@ -7,17 +7,17 @@
     {
       "id": "mentions-assertions",
       "type": "contains",
-      "value": "assertion"
+      "needle": "assertion"
     },
     {
       "id": "no-error-trace",
       "type": "not_contains",
-      "value": "Traceback"
+      "needle": "Traceback"
     },
     {
       "id": "produces-output",
       "type": "min_length",
-      "value": "50"
+      "length": 50
     }
   ],
   "grading_criteria": [

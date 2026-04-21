@@ -829,8 +829,8 @@ class TestCmdGradeSaveDiff:
 
         eval_spec = _make_eval_spec(
             assertions=[
-                {"id": "has-hello", "type": "contains", "value": "hello"},
-                {"id": "min-len", "type": "min_length", "value": "5"},
+                {"id": "has-hello", "type": "contains", "needle": "hello"},
+                {"id": "min-len", "type": "min_length", "length": 5},
             ]
         )
         spec = _make_spec(eval_spec=eval_spec)
@@ -875,8 +875,8 @@ class TestCmdGradeSaveDiff:
         monkeypatch.chdir(tmp_path)
         eval_spec = _make_eval_spec(
             assertions=[
-                {"id": "has-primary", "type": "contains", "value": "primary"},
-                {"id": "min-len", "type": "min_length", "value": "3"},
+                {"id": "has-primary", "type": "contains", "needle": "primary"},
+                {"id": "min-len", "type": "min_length", "length": 3},
             ]
         )
         spec = _make_spec(eval_spec=eval_spec)
@@ -916,8 +916,8 @@ class TestCmdGradeSaveDiff:
         monkeypatch.chdir(tmp_path)
         eval_spec = _make_eval_spec(
             assertions=[
-                {"id": "has-primary", "type": "contains", "value": "primary"},
-                {"id": "min-len", "type": "min_length", "value": "3"},
+                {"id": "has-primary", "type": "contains", "needle": "primary"},
+                {"id": "min-len", "type": "min_length", "length": 3},
             ]
         )
         spec = _make_spec(eval_spec=eval_spec)
@@ -963,7 +963,7 @@ class TestCmdGradeSaveDiff:
 
         eval_spec = _make_eval_spec(
             assertions=[
-                {"id": "has-text", "type": "contains", "value": "text"},
+                {"id": "has-text", "type": "contains", "needle": "text"},
             ]
         )
         spec = _make_spec(eval_spec=eval_spec)
@@ -1492,7 +1492,7 @@ class TestBaselineFlag:
             assertions=[
                 {
                     "type": "contains",
-                    "value": "hello",
+                    "needle": "hello",
                     "id": "a.hello.v1",
                 }
             ],
@@ -2181,7 +2181,7 @@ class TestCmdCompare:
         after_txt.write_text("hello world")
 
         eval_spec = _make_eval_spec(
-            assertions=[{"type": "contains", "value": "hello"}]
+            assertions=[{"type": "contains", "needle": "hello"}]
         )
         spec = _make_spec(eval_spec=eval_spec)
 

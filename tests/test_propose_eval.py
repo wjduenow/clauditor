@@ -65,7 +65,7 @@ def _good_spec_dict(
                 "id": "greets-user",
                 "type": "contains",
                 "name": "greets the user",
-                "value": "hello",
+                "needle": "hello",
             }
         ]
     if with_criterion:
@@ -442,52 +442,59 @@ class TestBuildProposeEvalPrompt:
         _ = build_propose_eval_prompt(pi)
 
     def test_prompt_contains_per_type_table(self) -> None:
-        """DEC-003 / DEC-008 of #61 — the prompt must enumerate each
-        assertion type's required AND optional keys (rendered from
-        ``ASSERTION_TYPE_REQUIRED_KEYS``) so the model has a literal
-        reference table for key names. Rows without optional keys
-        omit the ``· optional: …`` suffix; rows with no required
-        keys render ``required: (none)``.
+        """DEC-003 / DEC-008 of #61 and DEC-001 of #67 — the prompt
+        enumerates each assertion type's required AND optional keys
+        (rendered from ``ASSERTION_TYPE_REQUIRED_KEYS``) so the model
+        has a literal reference table for key names. Rows without
+        optional keys omit the ``· optional: …`` suffix; rows with
+        no required keys render ``required: (none)``.
         """
         pi = _make_propose_input()
         prompt = build_propose_eval_prompt(pi)
-        # 1-required-key shape, no optional.
-        assert "contains → required: value" in prompt
-        assert "not_contains → required: value" in prompt
-        assert "regex → required: value" in prompt
-        assert "min_length → required: value" in prompt
-        assert "max_length → required: value" in prompt
+        # 1-required-key shape, no optional (post-#67 rename).
+        assert "contains → required: needle" in prompt
+        assert "not_contains → required: needle" in prompt
+        assert "regex → required: pattern" in prompt
+        assert "min_length → required: length" in prompt
+        assert "max_length → required: length" in prompt
         # required + optional shape. Keys sorted alphabetically
         # within each side.
         assert (
-            "min_count → required: value · optional: minimum"
+            "min_count → required: count, pattern"
         ) in prompt
         assert (
-            "has_format → required: format · optional: value"
+            "has_format → required: format · optional: count"
         ) in prompt
         # All-optional shape (no required keys) — ``(none)`` marker.
         assert (
-            "has_urls → required: (none) · optional: value"
+            "has_urls → required: (none) · optional: count"
         ) in prompt
         assert (
-            "has_entries → required: (none) · optional: value"
+            "has_entries → required: (none) · optional: count"
         ) in prompt
         assert (
-            "urls_reachable → required: (none) · optional: value"
+            "urls_reachable → required: (none) · optional: count"
         ) in prompt
 
     def test_prompt_has_no_alias_keys(self) -> None:
-        """The drift-source ellipsis ("pattern", "min", "max" alias
-        key names) must not appear in the new prompt — per DEC-003
-        of #61, these keys are *not* accepted by the validator.
+        """The legacy alias key names (``value``, ``minimum``) must
+        not appear in quoted-key form in the new prompt — per DEC-001
+        of #67, these keys are not accepted by the validator. Note:
+        ``pattern`` is now a VALID key for ``regex`` and ``min_count``
+        so a bare ``pattern`` substring legitimately appears in the
+        rendered per-type table; we only assert the obsolete aliases
+        are gone.
         """
         pi = _make_propose_input()
         prompt = build_propose_eval_prompt(pi)
-        # Alias JSON key-name literals must not appear.
-        assert '"pattern"' not in prompt
-        assert '"min"' not in prompt
-        assert '"max"' not in prompt
-        # The old drift-source line must also be gone verbatim.
+        # Legacy alias JSON key-name literals must not appear in
+        # quoted form (the model would interpret e.g. `"value"` as
+        # a valid key to emit).
+        assert "'value'" not in prompt
+        assert "'minimum'" not in prompt
+        # The old drift-source example line must also be gone
+        # verbatim (it used `"value", "pattern"` to introduce the
+        # old-alias migration nudge).
         assert 'e.g. "value", "pattern"' not in prompt
 
     def test_prompt_table_is_rendered_from_constant(
@@ -610,7 +617,7 @@ class TestValidateProposedSpec:
             "test_args": "",
             "assertions": [
                 # missing id
-                {"type": "contains", "name": "n", "value": "v"}
+                {"type": "contains", "name": "n", "needle": "v"}
             ],
             "grading_criteria": [
                 {"id": "crit-1", "criterion": "ok"}
@@ -628,7 +635,7 @@ class TestValidateProposedSpec:
                     "id": "same-id",
                     "type": "contains",
                     "name": "n",
-                    "value": "v",
+                    "needle": "v",
                 }
             ],
             "grading_criteria": [
@@ -701,7 +708,7 @@ class TestValidateProposedSpec:
                     "id": "a1",
                     "type": "contains",
                     "name": "n",
-                    "value": "v",
+                    "needle": "v",
                 }
             ],
             "grading_criteria": [],
@@ -905,7 +912,7 @@ class TestProposeEval:
             "test_args": "",
             "assertions": [
                 # missing id
-                {"type": "contains", "name": "x", "value": "y"}
+                {"type": "contains", "name": "x", "needle": "y"}
             ],
         }
         result = _mock_anthropic_result(text=json.dumps(bad_spec))
@@ -1202,7 +1209,7 @@ def _bad_response_text_missing_id() -> str:
             "test_args": "",
             "assertions": [
                 # Missing `id` — from_dict rejects via _require_id.
-                {"type": "contains", "name": "n", "value": "v"}
+                {"type": "contains", "name": "n", "needle": "v"}
             ],
         }
     )
@@ -1269,7 +1276,7 @@ class TestProposeEvalRepairRetry:
             "test_args": "",
             "assertions": [
                 # Missing `id` — from_dict rejects.
-                {"type": "contains", "name": "n", "value": "v"}
+                {"type": "contains", "name": "n", "needle": "v"}
             ],
         }
         # Second attempt fails on a DIFFERENT error so we can verify
@@ -1281,7 +1288,7 @@ class TestProposeEvalRepairRetry:
                     "id": "same-id",
                     "type": "contains",
                     "name": "n",
-                    "value": "v",
+                    "needle": "v",
                 }
             ],
             "grading_criteria": [
@@ -1540,7 +1547,7 @@ class TestValidateProposedSpecNonListFields:
                 {
                     "id": "a1",
                     "type": "contains",
-                    "value": "hi",
+                    "needle": "hi",
                 }
             ],
             "grading_criteria": {"not": "a list"},

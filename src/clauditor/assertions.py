@@ -427,32 +427,31 @@ def assert_has_format(
 # that takes (output, assertion_dict) and returns an AssertionResult, so
 # the dispatcher body stays a single lookup + call. Adding a new
 # assertion type means adding one entry here — no edits to run_assertions.
+#
+# Per-type keys (DEC-001 of #67): every handler reads the semantic key
+# for its type (``needle`` for contains, ``pattern`` for regex, etc.).
+# Integer payloads are native JSON ints now — DEC-002/DEC-012 of #67
+# move the isinstance-check for native-int-only to the loader, so the
+# handlers can trust ``a.get("length", 0)`` without an ``int(...)``
+# coercion wrapper.
 _ASSERTION_HANDLERS: dict[str, Callable[[str, dict], AssertionResult]] = {
-    "contains": lambda out, a: assert_contains(out, a.get("value", "")),
-    "not_contains": lambda out, a: assert_not_contains(out, a.get("value", "")),
-    "regex": lambda out, a: assert_regex(out, a.get("value", "")),
+    "contains": lambda out, a: assert_contains(out, a.get("needle", "")),
+    "not_contains": lambda out, a: assert_not_contains(
+        out, a.get("needle", "")
+    ),
+    "regex": lambda out, a: assert_regex(out, a.get("pattern", "")),
     "min_count": lambda out, a: assert_min_count(
-        out, a.get("value", ""), a.get("minimum", 1)
+        out, a.get("pattern", ""), a.get("count", 1)
     ),
-    "min_length": lambda out, a: assert_min_length(
-        out, int(a.get("value", "")) if a.get("value", "") else 0
-    ),
-    "max_length": lambda out, a: assert_max_length(
-        out, int(a.get("value", "")) if a.get("value", "") else 0
-    ),
-    "has_urls": lambda out, a: assert_has_urls(
-        out, int(a.get("value", "")) if a.get("value", "") else 1
-    ),
-    "has_entries": lambda out, a: assert_has_entries(
-        out, int(a.get("value", "")) if a.get("value", "") else 1
-    ),
+    "min_length": lambda out, a: assert_min_length(out, a.get("length", 0)),
+    "max_length": lambda out, a: assert_max_length(out, a.get("length", 0)),
+    "has_urls": lambda out, a: assert_has_urls(out, a.get("count", 1)),
+    "has_entries": lambda out, a: assert_has_entries(out, a.get("count", 1)),
     "urls_reachable": lambda out, a: assert_urls_reachable(
-        out, int(a.get("value", "")) if a.get("value", "") else 1
+        out, a.get("count", 1)
     ),
     "has_format": lambda out, a: assert_has_format(
-        out,
-        a.get("format", ""),
-        int(a.get("value", "")) if a.get("value", "") else 1,
+        out, a.get("format", ""), a.get("count", 1),
     ),
 }
 
@@ -460,7 +459,11 @@ _ASSERTION_HANDLERS: dict[str, Callable[[str, dict], AssertionResult]] = {
 def run_assertions(output: str, assertions: list[dict]) -> AssertionSet:
     """Run a list of assertion dicts against output.
 
-    Each dict has: {"type": "contains", "value": "Venues"} etc.
+    Each dict carries ``type`` plus the per-type semantic key(s)
+    (DEC-001 of #67). Examples:
+    ``{"type": "contains", "needle": "Venues"}``;
+    ``{"type": "min_length", "length": 500}``;
+    ``{"type": "has_format", "format": "phone_us", "count": 2}``.
     Supported types: see ``_ASSERTION_HANDLERS`` keys (contains,
     not_contains, regex, min_count, min_length, max_length, has_urls,
     has_entries, urls_reachable, has_format).

@@ -38,7 +38,7 @@ def _make_report(
                     "id": "greets-user",
                     "type": "contains",
                     "name": "greets the user",
-                    "value": "hello",
+                    "needle": "hello",
                 }
             ],
             "grading_criteria": [
