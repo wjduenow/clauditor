@@ -2,26 +2,40 @@
 
 ## Pre-release dogfood
 
-Before tagging a new release, clauditor must pass two gates against its
-own bundled slash-command skill. These are not run in CI (see rationale
-below); they are maintainer-run immediately before any release tag.
+Before tagging a new release, clauditor must pass three gates against
+its own bundled slash-command skill. These are not run in CI (see
+rationale below); they are maintainer-run immediately before any
+release tag.
 
-### The two gates
+### The three gates
 
-1. **L1 — deterministic assertions (free, seconds):**
+1. **Static conformance — agentskills.io spec (free, instant):**
+
+   ```bash
+   uv run clauditor lint src/clauditor/skills/clauditor/SKILL.md
+   ```
+
+   Must exit 0 with the success line. The bundled skill is the
+   canonical reference for what a conforming SKILL.md looks like; a
+   lint failure here means either (a) the bundled skill drifted, or
+   (b) the `KNOWN_CLAUDE_CODE_EXTENSION_KEYS` allowlist in
+   `src/clauditor/conformance.py` needs a new entry against Claude
+   Code's published frontmatter docs.
+
+2. **L1 — deterministic assertions (free, seconds):**
 
    ```bash
    uv run clauditor validate src/clauditor/skills/clauditor/SKILL.md
    ```
 
-2. **L3 — LLM-graded quality (costs Sonnet tokens, ~1 minute):**
+3. **L3 — LLM-graded quality (costs Sonnet tokens, ~1 minute):**
 
    ```bash
    uv run clauditor grade src/clauditor/skills/clauditor/SKILL.md \
      --eval src/clauditor/skills/clauditor/assets/clauditor.eval.json
    ```
 
-Both commands must exit 0. If either gate fails, do NOT tag the
+All three commands must exit 0. If any gate fails, do NOT tag the
 release — a failing bundled skill is the user-visible failure mode
 that this checklist exists to catch.
 

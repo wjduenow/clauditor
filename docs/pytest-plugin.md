@@ -45,3 +45,7 @@ pytest --clauditor-model claude-sonnet-4-6  # Override grading model
 `--clauditor-no-api-key` is the plugin-option counterpart to `--no-api-key` on the CLI: strips both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the `claude -p` subprocess environment so the child falls back to whatever auth is cached in `~/.claude/` (typically a Pro/Max subscription). Scoped to the `clauditor_spec` fixture's `env_override` wiring; the bare `clauditor_runner` fixture is unaffected (its `SkillRunner` is constructed without the env scrub). For per-test overrides, `spec.run(env_override=..., timeout_override=...)` accepts both kwargs directly — the fixture wrapper forwards caller-provided values over the fixture-level default.
 
 Mark tests that need Layer 3 with `@pytest.mark.clauditor_grade`; they are skipped by default and only run under `--clauditor-grade`.
+
+### Related commands (not covered by fixtures)
+
+`clauditor lint` is a standalone CLI command for static agentskills.io spec conformance; it is not exposed as a pytest fixture. Invoke it directly (e.g. from a `subprocess.run` call or a release-gate script) rather than expecting a `clauditor_lint` fixture. See [`docs/cli-reference.md#lint`](cli-reference.md#lint).

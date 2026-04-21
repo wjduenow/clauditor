@@ -106,6 +106,7 @@ Stable exit-code contract (0 = pass, 1 = skill failed, 2 = input error, 3 = Anth
 ```bash
 clauditor init <skill.md>             # Starter eval.json
 clauditor propose-eval <skill.md>     # LLM-assisted EvalSpec bootstrap
+clauditor lint <skill.md>             # Static agentskills.io spec conformance
 clauditor validate <skill.md>         # Layer 1 assertions
 clauditor grade <skill.md>            # Layer 3 quality grading
 clauditor compare --skill <s> --from 1 --to 2  # Diff iterations
@@ -153,7 +154,7 @@ clauditor implements (and extends) the workflow at [agentskills.io/skill-creatio
 | Regression + longitudinal history | `clauditor compare`, `.clauditor/history.jsonl`, `clauditor trend --metric <dotted.path>` |
 | Per-iteration workspace | `.clauditor/iteration-N/<skill>/` with sidecars + `run-*/` transcripts |
 
-**Beyond the spec**: trigger precision testing, tiered extraction, pytest plugin, `input_files` staging, blind A/B judge, baseline pair runs, transcript capture, LLM-driven skill improvement proposer (`clauditor suggest`), LLM-assisted EvalSpec bootstrap (`clauditor propose-eval`), Pro/Max subscription-auth option (`--no-api-key`) for research-heavy skills that exceed the API-tier rate limit. **Out of scope**: human-in-the-loop feedback capture.
+**Beyond the spec**: trigger precision testing, tiered extraction, pytest plugin, `input_files` staging, blind A/B judge, baseline pair runs, transcript capture, LLM-driven skill improvement proposer (`clauditor suggest`), LLM-assisted EvalSpec bootstrap (`clauditor propose-eval`), Pro/Max subscription-auth option (`--no-api-key`) for research-heavy skills that exceed the API-tier rate limit, static spec-conformance check (`clauditor lint`). **Out of scope**: human-in-the-loop feedback capture.
 
 </details>
 

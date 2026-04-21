@@ -21,8 +21,12 @@ confirms — open a GitHub issue.
 - **Read-only** on the clauditor codebase. No file edits.
 - **Preview-only** for proposed changes. Nothing lands until the user
   approves a GitHub issue.
-- **Targets spec drift**, not general spec compliance of a user's skill
-  (that's what `clauditor lint` — see issue #71 — is for).
+- **Targets spec drift**, not general spec compliance of a user's skill.
+  Division of labor: **`clauditor lint <SKILL.md>`** checks a user
+  skill against the current spec (user-facing conformance); this skill
+  audits the upstream spec itself plus Claude Code's frontmatter
+  documentation against clauditor's enforcement (maintainer-facing
+  drift detection).
 
 ## Workflow
 

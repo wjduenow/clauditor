@@ -56,6 +56,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`clauditor lint` — agentskills.io spec conformance check (#71).** A
+  non-LLM static check that validates a `SKILL.md` file against the
+  [agentskills.io specification](https://agentskills.io/specification).
+  Safe to run on every commit and in CI — no tokens spent, no network
+  calls.
+  - Positional path argument; resolves absolute paths, follows
+    symlinks, rejects directories with exit 1.
+  - `--strict` promotes warnings to exit 2 (pre-publish gate).
+    Load-layer parse failures (`AGENTSKILLS_FRONTMATTER_INVALID_YAML`,
+    unreadable path) always exit 1 regardless of `--strict`.
+  - `--json` emits a single JSON envelope to stdout
+    (`{"schema_version": 1, "skill_path": ..., "passed": bool,
+    "issues": [...]}`) with identical exit codes to the human-text
+    output path.
+  - Pure compute lives in `src/clauditor/conformance.py` per
+    `.claude/rules/pure-compute-vs-io-split.md` — `check_conformance`
+    returns a `list[ConformanceIssue]` with stable `code` / `severity`
+    / `message` fields, testable without `tmp_path` or `capsys`.
+  - **Soft-warn hook on `SkillSpec.from_file`**: every skill load now
+    runs `check_conformance` and emits warning-severity issues to
+    stderr with the `clauditor.conformance: <CODE>: <message>` prefix.
+    Errors are silent at this seam — they surface through
+    `clauditor lint`. The hook never blocks spec loading.
+  - **`KNOWN_CLAUDE_CODE_EXTENSION_KEYS` allowlist** for frontmatter
+    keys that Claude Code uses but the agentskills.io spec does not
+    define. Initial contents: `argument-hint`,
+    `disable-model-invocation`. Keys in the allowlist do NOT trigger
+    `AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY`. The bundled
+    `/review-agentskills-spec` skill maintains the allowlist against
+    Claude Code's published frontmatter documentation (DEC-013).
+  - **`paths.derive_skill_name` warning emission retired**: the
+    previous warnings for invalid frontmatter-name fallback and
+    frontmatter-vs-filesystem mismatch are now produced by
+    `check_conformance` via the soft-warn hook — single source of
+    truth for frontmatter-name warnings. The helper's return type
+    simplified from `tuple[str, str | None]` to plain `str`. See
+    [`docs/cli-reference.md#lint`](docs/cli-reference.md#lint) and
+    `.claude/rules/skill-identity-from-frontmatter.md`.
 - **Runner auth-source control + configurable timeout (#64).** Four
   skill-invoking CLI commands (`validate`, `grade`, `capture`, `run`)
   and the pytest plugin gained two knobs that together unblock Pro/Max

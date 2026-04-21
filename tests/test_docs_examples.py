@@ -112,6 +112,48 @@ class TestAssertionExamplesUsePerTypeKeys:
         )
 
 
+class TestLintCommandMentionedInDocs:
+    """Prose-presence regression for ``clauditor lint`` (#71, DEC-002).
+
+    Per ``.claude/rules/bundled-skill-docs-sync.md``, load-bearing
+    command names added to the CLI must appear in the human-facing
+    doc triangle so a future prose cleanup cannot silently drop the
+    reference. The assertions below are simple substring checks — NOT
+    structural (header placement, table position, line count) — so
+    they stay stable across ordinary prose rewrites while still
+    catching an accidental drop of the command from either surface.
+
+    Two surfaces are pinned:
+
+    * ``docs/cli-reference.md`` — the canonical reference page must
+      list the command (both in the quick-reference block and in a
+      dedicated ``## lint`` section).
+    * ``README.md`` — the one-line CLI Reference list must include
+      ``clauditor lint <skill.md>``.
+    """
+
+    def test_cli_reference_mentions_lint(self) -> None:
+        """``docs/cli-reference.md`` mentions ``clauditor lint``."""
+        text = (REPO_ROOT / "docs" / "cli-reference.md").read_text(
+            encoding="utf-8"
+        )
+        assert "clauditor lint" in text, (
+            "docs/cli-reference.md must mention 'clauditor lint' — "
+            "the command's canonical reference page dropped the "
+            "string. Restore the ## lint section and the "
+            "quick-reference row."
+        )
+
+    def test_readme_mentions_lint(self) -> None:
+        """``README.md`` mentions ``clauditor lint``."""
+        text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        assert "clauditor lint" in text, (
+            "README.md must mention 'clauditor lint' in the CLI "
+            "Reference subcommand list. Restore the bullet/row under "
+            "the '## CLI Reference' section."
+        )
+
+
 class TestAssertionExamplesUseNativeIntPayloads:
     """Integer payload fields (length / count) must be JSON ints.
 
