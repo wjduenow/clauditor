@@ -289,6 +289,8 @@ class SkillRunner:
         args: str = "",
         *,
         cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
         allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         """Run a skill and capture its output.
@@ -298,6 +300,14 @@ class SkillRunner:
             args: Pre-filled arguments to skip interactive prompts
             cwd: Optional override for the subprocess working directory.
                 When ``None``, falls back to ``self.project_dir``.
+            env: Optional env dict forwarded to ``subprocess.Popen``.
+                When ``None`` (default), ``Popen`` inherits ``os.environ``
+                — today's behavior. When a dict, it replaces the child's
+                environment entirely (DEC-013; mirrors ``cwd`` shape per
+                ``.claude/rules/subprocess-cwd.md``).
+            timeout: Optional per-invocation watchdog timeout in seconds.
+                When ``None`` (default), falls back to ``self.timeout``
+                (DEC-010).
             allow_hang_heuristic: When False, skip the interactive-hang
                 heuristic (DEC-005). Threaded here from
                 ``EvalSpec.allow_hang_heuristic`` so authors can opt out
@@ -314,6 +324,8 @@ class SkillRunner:
             skill_name=skill_name,
             args=args,
             cwd=cwd,
+            env=env,
+            timeout=timeout,
             allow_hang_heuristic=allow_hang_heuristic,
         )
 
@@ -356,13 +368,21 @@ class SkillRunner:
         skill_name: str,
         args: str,
         cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
         allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         """Run ``claude`` with stream-json output and parse the NDJSON stream.
 
         Uses ``try/finally`` so ``duration_seconds`` is populated on every
         exit path (success, timeout, CalledProcessError, FileNotFoundError).
+
+        ``env`` is forwarded to ``subprocess.Popen`` verbatim: ``None``
+        means "inherit ``os.environ``" (Popen's default); a dict replaces
+        the child's environment entirely. ``timeout`` overrides
+        ``self.timeout`` for the watchdog when not ``None`` (DEC-010).
         """
+        effective_timeout = timeout if timeout is not None else self.timeout
         start = time.monotonic()
         raw_messages: list[dict] = []
         stream_events: list[dict] = []
@@ -401,6 +421,7 @@ class SkillRunner:
                     stderr=subprocess.PIPE,
                     text=True,
                     cwd=str(cwd) if cwd is not None else str(self.project_dir),
+                    env=env,
                 )
             except FileNotFoundError:
                 result = SkillResult(
@@ -467,7 +488,7 @@ class SkillRunner:
                             f"{type(exc).__name__}: {exc}"
                         )
 
-            watchdog = threading.Timer(self.timeout, _on_timeout)
+            watchdog = threading.Timer(effective_timeout, _on_timeout)
             watchdog.daemon = True
             watchdog.start()
 
