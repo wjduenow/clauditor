@@ -111,7 +111,16 @@ class TestFromFile:
     def test_from_file_legacy_layout_matching_frontmatter(
         self, tmp_skill_file, mock_runner, capsys
     ):
-        """Legacy layout, frontmatter ``name:`` matches stem → silent."""
+        """Legacy layout, frontmatter ``name:`` matches stem → name-related
+        warnings stay silent.
+
+        Per DEC-005 + DEC-003 of ``plans/super/71-agentskills-lint.md``,
+        legacy single-file layouts unconditionally fire
+        ``AGENTSKILLS_LAYOUT_LEGACY`` (warning severity) via the US-006
+        soft-warn hook, so stderr is no longer empty — but the
+        frontmatter name matches the stem, so no
+        ``AGENTSKILLS_NAME_*`` warnings appear.
+        """
         skill_path = tmp_skill_file(
             "foo",
             content="---\nname: foo\n---\n# Foo\n",
@@ -120,14 +129,22 @@ class TestFromFile:
         spec = SkillSpec.from_file(skill_path, runner=mock_runner())
         assert spec.skill_name == "foo"
         captured = capsys.readouterr()
-        assert captured.err == ""
+        assert "AGENTSKILLS_LAYOUT_LEGACY" in captured.err
+        assert "AGENTSKILLS_NAME_" not in captured.err
 
     def test_from_file_legacy_layout_missing_name_silent(
         self, tmp_skill_file, mock_runner, capsys
     ):
-        """Legacy layout with no frontmatter → falls back to stem
-        silently (DEC-001). This mirrors today's default legacy skill
-        shape (no frontmatter)."""
+        """Legacy layout with no frontmatter → falls back to stem; name
+        path stays silent.
+
+        Per DEC-005 + DEC-003 of ``plans/super/71-agentskills-lint.md``,
+        ``AGENTSKILLS_LAYOUT_LEGACY`` (warning) fires unconditionally,
+        but ``AGENTSKILLS_NAME_MISSING`` is error-severity and the hook
+        filters errors out — so no ``AGENTSKILLS_NAME_*`` warning
+        appears here. This mirrors today's default legacy skill shape
+        (no frontmatter).
+        """
         skill_path = tmp_skill_file(
             "my-skill",
             content="# My Skill\n\nNo frontmatter here.\n",
@@ -136,7 +153,8 @@ class TestFromFile:
         spec = SkillSpec.from_file(skill_path, runner=mock_runner())
         assert spec.skill_name == "my-skill"
         captured = capsys.readouterr()
-        assert captured.err == ""
+        assert "AGENTSKILLS_LAYOUT_LEGACY" in captured.err
+        assert "AGENTSKILLS_NAME_" not in captured.err
 
     def test_init_with_nonexistent_path_uses_layout_fallback(self):
         """Direct ``SkillSpec(...)`` construction with a non-existent path
@@ -153,6 +171,131 @@ class TestFromFile:
         # Legacy fallback: path is <stem>.md.
         spec_legacy = SkillSpec(skill_path=Path("/nonexistent/bar.md"))
         assert spec_legacy.skill_name == "bar"
+
+    # ── Conformance soft-warn hook (US-006; DEC-003, DEC-014) ──────────
+
+    def test_from_file_emits_warning_conformance_to_stderr(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Modern layout + a long body → the hook emits
+        ``AGENTSKILLS_BODY_TOO_LONG`` (warning) with the
+        ``"clauditor.conformance: "`` prefix per DEC-014.
+        """
+        # Body with 501 lines (>500 threshold).
+        long_body = "\n".join(f"line {i}" for i in range(501))
+        content = (
+            "---\n"
+            "name: foo\n"
+            "description: A skill with an overly long body.\n"
+            "---\n"
+            f"{long_body}\n"
+        )
+        skill_path = tmp_skill_file(
+            "foo", content=content, layout="modern"
+        )
+        SkillSpec.from_file(skill_path, runner=mock_runner())
+        captured = capsys.readouterr()
+        assert "clauditor.conformance: AGENTSKILLS_BODY_TOO_LONG" in (
+            captured.err
+        )
+
+    def test_from_file_silent_on_error_conformance(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Modern layout with only error-severity conformance issues (and
+        no warnings) → hook emits nothing. Errors surface via
+        ``clauditor lint``, not via ``SkillSpec.from_file`` (DEC-003).
+        """
+        # Empty `name:` → AGENTSKILLS_NAME_EMPTY (error). No body
+        # issues, no other warnings.
+        content = (
+            "---\n"
+            'name: ""\n'
+            "description: test\n"
+            "---\n"
+            "# Body\n"
+        )
+        skill_path = tmp_skill_file(
+            "foo", content=content, layout="modern"
+        )
+        SkillSpec.from_file(skill_path, runner=mock_runner())
+        captured = capsys.readouterr()
+        assert "clauditor.conformance:" not in captured.err
+
+    def test_from_file_emits_only_warnings_when_mixed(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Modern layout that produces BOTH an error AND a warning → the
+        hook emits only the warning line. DEC-003: errors are silent at
+        this layer.
+        """
+        # Empty `name:` (error) + `allowed-tools` field present
+        # (AGENTSKILLS_ALLOWED_TOOLS_EXPERIMENTAL warning).
+        content = (
+            "---\n"
+            'name: ""\n'
+            "description: test\n"
+            "allowed-tools: Bash(ls)\n"
+            "---\n"
+            "# Body\n"
+        )
+        skill_path = tmp_skill_file(
+            "foo", content=content, layout="modern"
+        )
+        SkillSpec.from_file(skill_path, runner=mock_runner())
+        captured = capsys.readouterr()
+        assert (
+            "clauditor.conformance: AGENTSKILLS_ALLOWED_TOOLS_EXPERIMENTAL"
+            in captured.err
+        )
+        assert "AGENTSKILLS_NAME_EMPTY" not in captured.err
+
+    def test_from_file_does_not_raise_on_malformed_yaml(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Malformed frontmatter → ``SkillSpec.from_file`` returns without
+        raising. The conformance issue ``AGENTSKILLS_FRONTMATTER_INVALID_YAML``
+        is error-severity, so the hook filters it out and stderr does
+        NOT gain a ``"clauditor.conformance:"`` line from the hook.
+        """
+        # Frontmatter block with an opening ``---`` but no closing
+        # delimiter — parse_frontmatter raises ValueError here.
+        content = (
+            "---\n"
+            "name: foo\n"
+            "description: broken\n"
+            "# body (note: missing closing ---)\n"
+        )
+        skill_path = tmp_skill_file(
+            "foo", content=content, layout="modern"
+        )
+        # Must not raise.
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec is not None
+        captured = capsys.readouterr()
+        assert "clauditor.conformance:" not in captured.err
+
+    def test_from_file_hook_preserves_skill_name(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """A fully-passing modern skill → ``spec.skill_name`` comes from
+        frontmatter ``name:`` and stderr stays empty (no warnings, no
+        errors).
+        """
+        content = (
+            "---\n"
+            "name: foo\n"
+            "description: A well-formed skill.\n"
+            "---\n"
+            "# Foo\n"
+        )
+        skill_path = tmp_skill_file(
+            "foo", content=content, layout="modern"
+        )
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec.skill_name == "foo"
+        captured = capsys.readouterr()
+        assert captured.err == ""
 
 
 class TestRun:
