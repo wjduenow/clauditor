@@ -4,7 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/64
 - **Branch:** `feature/64-runner-auth-timeout`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/64-runner-auth-timeout`
-- **Phase:** `detailing`
+- **Phase:** `published`
+- **PR:** https://github.com/wjduenow/clauditor/pull/70
 - **Sessions:** 1
 - **Last session:** 2026-04-20
 
@@ -950,3 +951,8 @@ Memory (US-009). Ordering: foundational layers first
 (EvalSpec field, pure env helper, runner kwargs, stream-json
 parser) → runtime plumbing (SkillSpec precedence) →
 user-facing surfaces (CLI flags, pytest plugin option).
+
+**2026-04-20 (6)** — Plan approved. Published as draft PR #70
+(https://github.com/wjduenow/clauditor/pull/70). Awaiting
+GitHub review; next command: "devolve" / "ready for Ralph" to
+create beads.
