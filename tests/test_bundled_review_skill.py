@@ -1,4 +1,4 @@
-"""Tests for the bundled ``/review-agentskills-spec`` skill.
+"""Tests for the maintainer-only ``/review-agentskills-spec`` skill.
 
 Three layers under test:
 
