@@ -21,7 +21,7 @@ MINIMAL_EVAL = {
     "skill_name": "test-skill",
     "description": "test eval",
     "test_args": "--depth quick",
-    "assertions": [{"id": "a_hello", "type": "contains", "value": "hello"}],
+    "assertions": [{"id": "a_hello", "type": "contains", "needle": "hello"}],
 }
 
 
@@ -192,7 +192,7 @@ class TestEvaluate:
     def test_happy_path_with_explicit_output(self, tmp_skill_file, mock_runner):
         eval_data = {
             "skill_name": "eval-skill",
-            "assertions": [{"id": "a_hello", "type": "contains", "value": "hello"}],
+            "assertions": [{"id": "a_hello", "type": "contains", "needle": "hello"}],
         }
         skill_path, _ = tmp_skill_file("eval-skill", eval_data=eval_data)
         runner = mock_runner()
@@ -205,7 +205,7 @@ class TestEvaluate:
     def test_evaluate_runs_skill_when_no_output(self, tmp_skill_file, mock_runner):
         eval_data = {
             "skill_name": "auto-skill",
-            "assertions": [{"id": "a_mock", "type": "contains", "value": "mock"}],
+            "assertions": [{"id": "a_mock", "type": "contains", "needle": "mock"}],
         }
         skill_path, _ = tmp_skill_file("auto-skill", eval_data=eval_data)
         runner = mock_runner(output="mock output")
@@ -217,7 +217,7 @@ class TestEvaluate:
     def test_evaluate_returns_error_on_failed_run(self, tmp_skill_file, mock_runner):
         eval_data = {
             "skill_name": "fail-skill",
-            "assertions": [{"id": "a_any", "type": "contains", "value": "anything"}],
+            "assertions": [{"id": "a_any", "type": "contains", "needle": "anything"}],
         }
         skill_path, _ = tmp_skill_file("fail-skill", eval_data=eval_data)
         runner = mock_runner(output="", exit_code=1, error="boom")

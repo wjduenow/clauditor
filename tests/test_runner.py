@@ -187,7 +187,7 @@ class TestSkillAsserter:
     def test_run_assertions_delegates(self):
         asserter = self._make("hello world")
         assertion_set = asserter.run_assertions(
-            [{"type": "contains", "value": "hello"}]
+            [{"type": "contains", "needle": "hello"}]
         )
         assert assertion_set.passed
 

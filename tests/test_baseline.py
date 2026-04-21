@@ -71,7 +71,7 @@ def _make_eval_spec() -> EvalSpec:
         skill_name="test-skill",
         test_args="test args",
         assertions=[
-            {"id": "a1", "type": "contains", "value": "baseline"},
+            {"id": "a1", "type": "contains", "needle": "baseline"},
         ],
         grading_criteria=[
             {"id": "c0", "criterion": "c0"},
