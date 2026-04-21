@@ -307,20 +307,34 @@ class TestLiveSkillRun:
     for a weekly canary workflow, not for per-PR CI.
     """
 
-    def test_live_run_passes_l1_assertions(self) -> None:
+    def test_live_run_passes_l1_assertions(self, tmp_path: Path) -> None:
         skip = _live_run_skip_reason()
         if skip:
             pytest.skip(skip)
 
+        # The skill is deliberately excluded from `clauditor setup` (it is
+        # internal-only), so `.claude/skills/review-agentskills-spec/`
+        # does not exist in the real repo and the claude CLI would
+        # resolve `/review-agentskills-spec` to "Unknown command". Build
+        # a throwaway project dir with a one-off symlink so this test
+        # doesn't force the skill to become user-facing.
+        project_dir = tmp_path / "project"
+        (project_dir / ".claude" / "skills").mkdir(parents=True)
+        (project_dir / ".git").mkdir()  # satisfy project-root detection
+        skill_root = SKILL_MD.parent
+        (project_dir / ".claude" / "skills" / "review-agentskills-spec").symlink_to(
+            skill_root
+        )
+
         spec = SkillSpec.from_file(SKILL_MD, eval_path=EVAL_JSON)
-        runner = SkillRunner(project_dir=Path.cwd())
-        # Run the skill with no args — the workflow fetches the spec
-        # URL directly, no skill-path argument needed. SkillRunner.run
-        # prepends the '/' and handles the prompt shape itself.
+        # Longer timeout: the skill issues WebFetch + a codebase inventory,
+        # which easily exceeds the 180s default on Sonnet.
+        runner = SkillRunner(project_dir=project_dir, timeout=360)
         result = runner.run(spec.skill_name)
         assert result.succeeded, (
             f"live run failed: exit_code={result.exit_code} "
-            f"error={result.error!r}"
+            f"error={result.error!r} "
+            f"output_head={result.output[:500]!r}"
         )
         assertion_set = run_assertions(
             result.output, spec.eval_spec.assertions
@@ -328,5 +342,6 @@ class TestLiveSkillRun:
         failing = [r for r in assertion_set.results if not r.passed]
         assert not failing, (
             f"live run output failed L1 assertions: "
-            f"{[(r.id, r.message) for r in failing]}"
+            f"{[(r.id, r.message) for r in failing]}\n"
+            f"output head: {result.output[:500]!r}"
         )
