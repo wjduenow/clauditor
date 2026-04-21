@@ -83,7 +83,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     keys that Claude Code uses but the agentskills.io spec does not
     define. Initial contents: `argument-hint`,
     `disable-model-invocation`. Keys in the allowlist do NOT trigger
-    `AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY`. The bundled
+    `AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY`. The maintainer-only
     `/review-agentskills-spec` skill maintains the allowlist against
     Claude Code's published frontmatter documentation (DEC-013).
   - **`paths.derive_skill_name` warning emission retired**: the

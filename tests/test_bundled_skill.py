@@ -329,7 +329,7 @@ class TestBundledSkillConformance:
         )
         errors = [i for i in issues if i.severity == "error"]
         assert errors == [], (
-            f"Bundled /review-agentskills-spec has conformance errors: "
+            f"/review-agentskills-spec has conformance errors: "
             f"{errors}"
         )
 
@@ -347,6 +347,6 @@ class TestBundledSkillConformance:
             w for w in warnings if w.code not in self._ACCEPTABLE_WARNING_CODES
         ]
         assert unexpected == [], (
-            f"Bundled /review-agentskills-spec has unexpected warnings: "
+            f"/review-agentskills-spec has unexpected warnings: "
             f"{unexpected}"
         )
