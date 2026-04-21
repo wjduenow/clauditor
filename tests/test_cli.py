@@ -1942,6 +1942,71 @@ class TestBaselineFlag:
             skill_dir / "baseline-run" / "inputs" / "fixture.txt"
         ).is_file()
 
+    def test_run_baseline_phase_threads_env_and_timeout_overrides(
+        self, tmp_path, monkeypatch
+    ):
+        """#64 QG: _run_baseline_phase must forward env_override and
+        timeout_override to run_raw so --no-api-key and --timeout
+        apply to both arms of a --baseline run."""
+        from clauditor.cli import _run_baseline_phase
+
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec(sections=[])
+        spec = self._prepare_spec(eval_spec)
+        grading_report = self._make_grading_report()
+        skill_dir = tmp_path / "skill-dir"
+        skill_dir.mkdir()
+
+        sentinel_env = {"PATH": "/fake"}
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new_callable=AsyncMock,
+            return_value=grading_report,
+        ):
+            _run_baseline_phase(
+                spec=spec,
+                skill_dir=skill_dir,
+                iteration=1,
+                model="claude-sonnet-4-6",
+                env_override=sentinel_env,
+                timeout_override=77,
+            )
+
+        kwargs = spec.runner.run_raw.call_args.kwargs
+        assert kwargs["env"] is sentinel_env
+        assert kwargs["timeout"] == 77
+
+    def test_run_baseline_phase_defaults_env_and_timeout_to_none(
+        self, tmp_path, monkeypatch
+    ):
+        """Back-compat: _run_baseline_phase without overrides passes
+        env=None and timeout=None (today's Popen-inherit-os.environ
+        behavior)."""
+        from clauditor.cli import _run_baseline_phase
+
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec(sections=[])
+        spec = self._prepare_spec(eval_spec)
+        grading_report = self._make_grading_report()
+        skill_dir = tmp_path / "skill-dir"
+        skill_dir.mkdir()
+
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new_callable=AsyncMock,
+            return_value=grading_report,
+        ):
+            _run_baseline_phase(
+                spec=spec,
+                skill_dir=skill_dir,
+                iteration=1,
+                model="claude-sonnet-4-6",
+            )
+
+        kwargs = spec.runner.run_raw.call_args.kwargs
+        assert kwargs["env"] is None
+        assert kwargs["timeout"] is None
+
     # ---- #28 US-004: --min-baseline-delta gate ----
 
     def _make_report_with_pass_rate(

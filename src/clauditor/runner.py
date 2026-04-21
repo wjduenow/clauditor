@@ -341,6 +341,8 @@ class SkillRunner:
         prompt: str,
         *,
         cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
         allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         """Run a raw prompt without skill prefix for baseline comparison.
@@ -350,6 +352,13 @@ class SkillRunner:
             cwd: Optional override for the subprocess working directory.
                 When ``None``, falls back to ``self.project_dir`` — see
                 ``.claude/rules/subprocess-cwd.md`` for the rationale.
+            env: Optional subprocess env dict. When ``None``, Popen
+                inherits ``os.environ``; when a dict, replaces verbatim.
+                Mirrors the ``env`` kwarg on :meth:`run`; callers that
+                want to strip credentials use
+                :func:`_env_without_api_key`.
+            timeout: Optional per-invocation timeout (seconds). When
+                ``None``, falls back to ``self.timeout``.
             allow_hang_heuristic: When False, skip the interactive-hang
                 heuristic (DEC-005).
 
@@ -361,6 +370,8 @@ class SkillRunner:
             skill_name="__baseline__",
             args=prompt,
             cwd=cwd,
+            env=env,
+            timeout=timeout,
             allow_hang_heuristic=allow_hang_heuristic,
         )
 

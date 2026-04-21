@@ -820,3 +820,58 @@ class TestClauditorNoApiKeyOption:
             result = factory("some/skill.md")
 
         assert result.run is original_run
+
+    def test_wrapper_accepts_timeout_override_kwarg(self, tmp_path):
+        """#64 QG: the fixture wrapper must accept ``timeout_override``.
+
+        Before the fix, ``_run_with_overrides`` only accepted
+        ``args`` + ``run_dir``, so a caller doing
+        ``spec.run(timeout_override=60)`` hit ``TypeError``. The
+        wrapper must now forward timeout_override to original_run.
+        """
+        from clauditor.spec import SkillSpec
+
+        request = self._request(no_api_key=True)
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = mock_spec.run
+        original_run.return_value = "RESULT"
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+
+        ret = result.run(timeout_override=60)
+        assert ret == "RESULT"
+        assert original_run.call_args.kwargs["timeout_override"] == 60
+
+    def test_caller_env_override_wins_over_fixture(self, tmp_path):
+        """#64 QG: when the caller passes env_override, it should win
+        over the fixture-level default (principle of least surprise)."""
+        from clauditor.spec import SkillSpec
+
+        request = self._request(no_api_key=True)
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = mock_spec.run
+        original_run.return_value = "RESULT"
+
+        caller_env = {"CUSTOM": "value"}
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+        result.run(env_override=caller_env)
+
+        assert original_run.call_args.kwargs["env_override"] is caller_env

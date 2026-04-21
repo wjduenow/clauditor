@@ -551,6 +551,13 @@ def _write_workspace_sidecars(
         _write_extraction_sidecar(skill_dir, primary_text, spec)
 
     if getattr(args, "baseline", False):
+        # Mirror the primary arm's env/timeout wiring so --no-api-key
+        # and --timeout apply to both halves of the baseline delta.
+        from clauditor.runner import _env_without_api_key
+
+        no_api_key = bool(getattr(args, "no_api_key", False))
+        env_override = _env_without_api_key() if no_api_key else None
+        timeout_override = getattr(args, "timeout", None)
         return _write_baseline_and_benchmark(
             spec=spec,
             skill_dir=skill_dir,
@@ -558,6 +565,8 @@ def _write_workspace_sidecars(
             skill_results=skill_results,
             reports=reports,
             model=model,
+            env_override=env_override,
+            timeout_override=timeout_override,
         )
 
     return None
@@ -687,18 +696,27 @@ def _write_baseline_and_benchmark(
     skill_results: list[SkillResult | None],
     reports: list[GradingReport],
     model: str,
+    env_override: dict[str, str] | None = None,
+    timeout_override: int | None = None,
 ) -> Benchmark | None:
     """Run the baseline phase and compute+persist the benchmark delta.
 
     Returns the computed :class:`Benchmark` when every primary run has
     a real :class:`SkillResult` (i.e. not ``--output`` mode); otherwise
     returns ``None`` (the baseline sidecars still land on disk).
+
+    ``env_override`` and ``timeout_override`` thread the CLI's
+    ``--no-api-key`` / ``--timeout`` flags through to the baseline
+    subprocess so both arms of a ``--baseline`` run share the same
+    auth/deadline — otherwise the baseline bypasses those flags.
     """
     baseline_grading, baseline_skill_result = _run_baseline_phase(
         spec=spec,
         skill_dir=skill_dir,
         iteration=workspace.iteration,
         model=model,
+        env_override=env_override,
+        timeout_override=timeout_override,
     )
 
     # #28 US-002: compute the pair-run benchmark delta and persist
@@ -753,12 +771,19 @@ def _run_baseline_phase(
     skill_dir: Path,
     iteration: int,
     model: str,
+    env_override: dict[str, str] | None = None,
+    timeout_override: int | None = None,
 ) -> tuple[GradingReport, SkillResult]:
     """Run the baseline (no skill prefix) and persist sidecars.
 
     Thin I/O wrapper around :func:`clauditor.baseline.compute_baseline`:
     handles subprocess invocation, input-file staging, stderr progress,
     and sidecar writes into ``skill_dir`` (the staging iteration dir).
+
+    ``env_override`` and ``timeout_override`` mirror the primary arm's
+    wiring so ``--no-api-key`` / ``--timeout`` apply to both arms of a
+    ``--baseline`` run (otherwise the baseline subprocess would bypass
+    the flags, defeating their intent).
 
     Returns ``(GradingReport, SkillResult)`` so the caller can feed
     them to :func:`clauditor.benchmark.compute_benchmark`.
@@ -776,7 +801,12 @@ def _run_baseline_phase(
         stage_inputs(baseline_run_dir, sources)
         effective_cwd = baseline_run_dir / "inputs"
     print(f"Running baseline (no skill prefix) {test_args}...")
-    baseline_result = spec.runner.run_raw(test_args, cwd=effective_cwd)
+    baseline_result = spec.runner.run_raw(
+        test_args,
+        cwd=effective_cwd,
+        env=env_override,
+        timeout=timeout_override,
+    )
 
     reports = compute_baseline(
         skill_result=baseline_result,
