@@ -6,9 +6,11 @@ Combines the skill file, eval spec, and runner into a single interface.
 from __future__ import annotations
 
 import glob
+import sys
 from pathlib import Path
 
 from clauditor.assertions import AssertionSet, run_assertions
+from clauditor.conformance import check_conformance
 from clauditor.paths import derive_project_dir, derive_skill_name
 from clauditor.runner import SkillResult, SkillRunner
 from clauditor.schemas import EvalSpec
@@ -89,6 +91,19 @@ class SkillSpec:
 
         text = skill_path.read_text(encoding="utf-8")
         skill_name = derive_skill_name(skill_path, text)
+
+        # US-006 soft-warn hook (DEC-003 / DEC-014 of
+        # ``plans/super/71-agentskills-lint.md``): surface
+        # agentskills.io conformance warnings to stderr. Only
+        # ``severity="warning"`` issues fire here — errors are silent
+        # at this layer and must be discovered via ``clauditor lint``.
+        # ``check_conformance`` never raises, so no try/except needed.
+        for issue in check_conformance(text, skill_path):
+            if issue.severity == "warning":
+                print(
+                    f"clauditor.conformance: {issue.code}: {issue.message}",
+                    file=sys.stderr,
+                )
 
         # Auto-discover eval spec
         eval_spec = None
