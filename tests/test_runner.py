@@ -314,6 +314,108 @@ class TestSkillRunnerCwd:
             assert mock_popen.call_args.kwargs["cwd"] == str(tmp_path)
 
 
+class TestSkillRunnerEnvAndTimeout:
+    """US-003: keyword-only ``env=`` and ``timeout=`` kwargs on ``run``.
+
+    Traces to DEC-010 (move ``timeout`` from ``__init__`` to a per-call
+    ``run()`` kwarg, with ``self.timeout`` as fallback) and DEC-013
+    (``env=`` kwarg shape mirrors ``cwd``; ``None`` passes through to
+    ``subprocess.Popen(env=None)`` which inherits ``os.environ``).
+    """
+
+    def test_run_env_none_popen_receives_none(self):
+        """Default ``env=None`` reaches Popen unchanged."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("out")
+            runner.run("my-skill", "args")
+            assert mock_popen.call_args.kwargs["env"] is None
+
+    def test_run_env_dict_popen_receives_dict(self):
+        """``env={"KEY": "VAL"}`` is forwarded to Popen verbatim."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        env = {"KEY": "VAL", "PATH": "/usr/bin"}
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("out")
+            runner.run("my-skill", "args", env=env)
+            assert mock_popen.call_args.kwargs["env"] == env
+
+    def test_run_timeout_override_used_in_watchdog(self):
+        """Per-call ``timeout=`` overrides ``self.timeout`` for the watchdog."""
+        runner = SkillRunner(project_dir="/tmp", timeout=180, claude_bin="claude")
+        captured: dict[str, float] = {}
+
+        class _CapturingTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                captured["interval"] = interval
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                pass
+
+        with (
+            patch(
+                "clauditor.runner.subprocess.Popen",
+                return_value=make_fake_skill_stream("out"),
+            ),
+            patch("clauditor.runner.threading.Timer", _CapturingTimer),
+        ):
+            runner.run("my-skill", "args", timeout=60)
+
+        assert captured["interval"] == 60
+
+    def test_run_timeout_none_falls_back_to_self_timeout(self):
+        """``timeout=None`` (default) uses ``self.timeout``."""
+        runner = SkillRunner(project_dir="/tmp", timeout=42, claude_bin="claude")
+        captured: dict[str, float] = {}
+
+        class _CapturingTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                captured["interval"] = interval
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                pass
+
+        with (
+            patch(
+                "clauditor.runner.subprocess.Popen",
+                return_value=make_fake_skill_stream("out"),
+            ),
+            patch("clauditor.runner.threading.Timer", _CapturingTimer),
+        ):
+            runner.run("my-skill", "args")
+
+        assert captured["interval"] == 42
+
+    def test_init_timeout_default_180_unchanged(self):
+        """``SkillRunner()`` with no kwargs keeps ``self.timeout == 180``."""
+        runner = SkillRunner()
+        assert runner.timeout == 180
+
+    def test_existing_call_site_unaffected(self):
+        """A ``runner.run("skill", args="")`` call with no new kwargs still
+        works and produces a normal ``SkillResult`` — back-compat check."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("hello")
+            result = runner.run("my-skill", args="")
+            # env kwarg is passed (as None), not omitted — Popen's default
+            # inheritance path requires explicit ``env=None``.
+            assert "env" in mock_popen.call_args.kwargs
+            assert mock_popen.call_args.kwargs["env"] is None
+            assert result.output == "hello"
+            assert result.exit_code == 0
+
+
 # ---------------------------------------------------------------------------
 # SkillResult.outputs dict
 # ---------------------------------------------------------------------------
