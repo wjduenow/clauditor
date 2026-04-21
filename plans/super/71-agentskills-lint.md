@@ -4,7 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/71
 - **Branch:** `feature/71-agentskills-lint`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/71-agentskills-lint`
-- **Phase:** `detailing`
+- **Phase:** `published`
+- **PR:** https://github.com/wjduenow/clauditor/pull/74
 - **Sessions:** 1
 - **Last session:** 2026-04-21
 
