@@ -173,7 +173,7 @@ class TestGradeVerboseInvocation:
             description="T",
             test_args="--depth quick",
             # Assertion deliberately fails against the mocked output.
-            assertions=[{"type": "contains", "value": "WILL_NOT_MATCH"}],
+            assertions=[{"type": "contains", "needle": "WILL_NOT_MATCH"}],
             sections=[],
             grading_criteria=["Is it relevant?"],
             grading_model="claude-sonnet-4-6",
@@ -293,7 +293,7 @@ class TestGradeVerboseInvocation:
             skill_name="test-skill",
             description="T",
             test_args="--depth quick",
-            assertions=[{"type": "contains", "value": "hello"}],
+            assertions=[{"type": "contains", "needle": "hello"}],
             sections=[],
             grading_criteria=["Is it relevant?"],
             grading_model="claude-sonnet-4-6",
@@ -334,7 +334,7 @@ class TestValidateVerboseInvocation:
         skill_path.write_text("# demo\nhello\n")
         eval_path = tmp_path / "demo.eval.json"
         eval_path.write_text(
-            '{"assertions": [{"id": "a1", "type": "contains", "value": "__nope__"}]}'
+            '{"assertions": [{"id": "a1", "type": "contains", "needle": "__nope__"}]}'
         )
 
         fake_skill_result = MagicMock()

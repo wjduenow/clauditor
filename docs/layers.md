@@ -44,10 +44,10 @@ Or define in `eval.json`:
 ```json
 {
   "assertions": [
-    {"id": "contains_venues", "type": "contains", "value": "Venues"},
-    {"id": "regex_numbered", "type": "regex", "value": "\\*\\*\\d+\\."},
-    {"id": "has_urls_3", "type": "has_urls", "value": "3"},
-    {"id": "no_error", "type": "not_contains", "value": "Error"}
+    {"id": "contains_venues", "type": "contains", "needle": "Venues"},
+    {"id": "regex_numbered", "type": "regex", "pattern": "\\*\\*\\d+\\."},
+    {"id": "has_urls_3", "type": "has_urls", "count": 3},
+    {"id": "no_error", "type": "not_contains", "needle": "Error"}
   ]
 }
 ```

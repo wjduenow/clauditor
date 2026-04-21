@@ -13,7 +13,7 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class AssertionKeySpec:
-    """Per-assertion-type key invariant (DEC-008 of #61).
+    """Per-assertion-type key invariant (DEC-008 of #61, DEC-012 of #67).
 
     Single source of truth for which assertion-dict keys each
     ``type`` value in :data:`ASSERTION_TYPE_REQUIRED_KEYS` accepts.
@@ -21,55 +21,109 @@ class AssertionKeySpec:
     allowed but the handler falls back to a safe default when
     they are omitted. Any key outside the union of ``required``,
     ``optional``, and the metadata set ``{"id", "type", "name"}``
-    is rejected by ``_require_assertion_keys``. Consumed by the
-    loader-side validator (US-002) and the ``propose-eval``
-    prompt builder (US-003); kept in lockstep with the
-    ``_ASSERTION_HANDLERS`` dispatch table in
+    is rejected by ``_require_assertion_keys``. ``field_types``
+    declares the expected native JSON type for each payload key
+    (``str`` or ``int``); the loader validator enforces
+    ``isinstance(val, expected)`` per-key at load time (DEC-012
+    of #67) so string-typed ints like ``{"length": "500"}`` are
+    rejected loudly. Consumed by the loader-side validator and
+    the ``propose-eval`` prompt builder; kept in lockstep with
+    the ``_ASSERTION_HANDLERS`` dispatch table in
     :mod:`clauditor.assertions` via a test-side drift guard.
     """
 
     required: frozenset[str]
     optional: frozenset[str] = frozenset()
+    field_types: dict[str, type] = field(default_factory=dict)
 
 
-# Single source of truth (DEC-008 of #61): every assertion ``type``
-# string accepted by :func:`clauditor.assertions.run_assertions` maps
-# to the set of keys its handler reads from the assertion dict. The
-# split between ``required`` and ``optional`` mirrors handler runtime
-# behavior — if the handler reads ``.get(key, <default>)`` and the
-# default is a sensible value (e.g. ``1`` for a minimum count), the
-# key is optional; if the default is a sentinel that makes the
-# assertion vacuous (e.g. ``""`` for a regex pattern, ``0`` for a
-# length threshold), the key is required. Must stay in lockstep with
-# ``_ASSERTION_HANDLERS`` in :mod:`clauditor.assertions`; the drift
-# guard lives in ``tests/test_schemas.py::TestAssertionKeySpec``
+# Single source of truth (DEC-008 of #61, DEC-001/DEC-012 of #67):
+# every assertion ``type`` string accepted by
+# :func:`clauditor.assertions.run_assertions` maps to the set of keys
+# its handler reads from the assertion dict. The split between
+# ``required`` and ``optional`` mirrors handler runtime behavior — if
+# the handler reads ``.get(key, <default>)`` and the default is a
+# sensible value (e.g. ``1`` for a minimum count), the key is
+# optional; if the default is a sentinel that makes the assertion
+# vacuous (e.g. ``""`` for a regex pattern, ``0`` for a length
+# threshold), the key is required. ``field_types`` declares each
+# payload key's expected native JSON type (``str`` or ``int``).
+# Must stay in lockstep with ``_ASSERTION_HANDLERS`` in
+# :mod:`clauditor.assertions`; the drift guard lives in
+# ``tests/test_schemas.py::TestAssertionKeySpec``
 # (``test_handler_signature_agrees_with_constant``).
 ASSERTION_TYPE_REQUIRED_KEYS: dict[str, AssertionKeySpec] = {
-    "contains": AssertionKeySpec(required=frozenset({"value"})),
-    "not_contains": AssertionKeySpec(required=frozenset({"value"})),
-    "regex": AssertionKeySpec(required=frozenset({"value"})),
-    "min_count": AssertionKeySpec(
-        required=frozenset({"value"}),
-        optional=frozenset({"minimum"}),
+    "contains": AssertionKeySpec(
+        required=frozenset({"needle"}),
+        field_types={"needle": str},
     ),
-    "min_length": AssertionKeySpec(required=frozenset({"value"})),
-    "max_length": AssertionKeySpec(required=frozenset({"value"})),
+    "not_contains": AssertionKeySpec(
+        required=frozenset({"needle"}),
+        field_types={"needle": str},
+    ),
+    "regex": AssertionKeySpec(
+        required=frozenset({"pattern"}),
+        field_types={"pattern": str},
+    ),
+    "min_count": AssertionKeySpec(
+        required=frozenset({"pattern", "count"}),
+        field_types={"pattern": str, "count": int},
+    ),
+    "min_length": AssertionKeySpec(
+        required=frozenset({"length"}),
+        field_types={"length": int},
+    ),
+    "max_length": AssertionKeySpec(
+        required=frozenset({"length"}),
+        field_types={"length": int},
+    ),
     "has_urls": AssertionKeySpec(
         required=frozenset(),
-        optional=frozenset({"value"}),
+        optional=frozenset({"count"}),
+        field_types={"count": int},
     ),
     "has_entries": AssertionKeySpec(
         required=frozenset(),
-        optional=frozenset({"value"}),
+        optional=frozenset({"count"}),
+        field_types={"count": int},
     ),
     "urls_reachable": AssertionKeySpec(
         required=frozenset(),
-        optional=frozenset({"value"}),
+        optional=frozenset({"count"}),
+        field_types={"count": int},
     ),
     "has_format": AssertionKeySpec(
         required=frozenset({"format"}),
-        optional=frozenset({"value"}),
+        optional=frozenset({"count"}),
+        field_types={"format": str, "count": int},
     ),
+}
+
+
+# Per-type drift-hint table (DEC-009 of #67). Sibling to
+# :data:`ASSERTION_TYPE_REQUIRED_KEYS`. For each assertion ``type``,
+# a map of ``common-wrong-key → correct-key-for-this-type``.
+# Consulted by ``_require_assertion_keys`` when flagging an unknown
+# key: emits `" — did you mean {suggestion!r}?"` if the wrong key
+# is hinted for that specific type, else no suffix. Keyed per-type
+# because ``pattern`` is a VALID key for ``regex``/``min_count``
+# but should suggest ``needle`` on ``contains``/``not_contains``.
+_ASSERTION_DRIFT_HINTS: dict[str, dict[str, str]] = {
+    "contains":       {"value": "needle", "pattern": "needle"},
+    "not_contains":   {"value": "needle", "pattern": "needle"},
+    "regex":          {"value": "pattern"},
+    "min_count":      {"value": "pattern", "minimum": "count",
+                       "min_count": "count", "threshold": "count"},
+    "min_length":     {"value": "length", "min": "length"},
+    "max_length":     {"value": "length", "max": "length"},
+    "has_urls":       {"value": "count", "minimum": "count",
+                       "min_count": "count", "threshold": "count"},
+    "has_entries":    {"value": "count", "minimum": "count",
+                       "min_count": "count", "threshold": "count"},
+    "urls_reachable": {"value": "count", "minimum": "count",
+                       "min_count": "count", "threshold": "count"},
+    "has_format":     {"value": "count", "minimum": "count",
+                       "min_count": "count"},
 }
 
 
@@ -345,16 +399,36 @@ class EvalSpec:
         def _require_assertion_keys(entry: dict, ctx: str) -> None:
             """Hard-validate per-assertion required and allowed keys.
 
-            DEC-001 / DEC-002 / DEC-008 of #61: every assertion dict
-            must carry a known ``type`` value and exactly the keys
-            named by :data:`ASSERTION_TYPE_REQUIRED_KEYS` for that
-            type (plus the always-allowed ``id``, ``type``, ``name``
-            metadata keys). Missing required keys and unknown keys
-            both raise ``ValueError`` — strict rejection per
-            ``.claude/rules/pre-llm-contract-hard-validate.md``, with
-            a "did you mean X?" hint for the three known drift
-            aliases so hand-authors get a quick migration nudge.
+            DEC-001 / DEC-002 / DEC-008 of #61 and DEC-001 / DEC-009 /
+            DEC-012 of #67: every assertion dict must carry a known
+            ``type`` value and exactly the keys named by
+            :data:`ASSERTION_TYPE_REQUIRED_KEYS` for that type (plus
+            the always-allowed ``id``, ``type``, ``name`` metadata
+            keys). Each payload key is additionally type-checked
+            against ``spec.field_types`` so string-typed ints
+            (``{"length": "500"}``) reject at load time. Unknown
+            keys, missing required keys, and wrong-typed keys all
+            raise ``ValueError`` — strict rejection per
+            ``.claude/rules/pre-llm-contract-hard-validate.md``.
+            Unknown-key errors consult
+            :data:`_ASSERTION_DRIFT_HINTS` for a per-type
+            ``"did you mean X?"`` hint so hand-authors get a quick
+            migration nudge when renaming legacy aliases
+            (``value``, ``min``, ``max``, ``threshold``,
+            ``minimum``; ``pattern`` is a drift alias on
+            ``contains`` / ``not_contains`` only — it is a VALID
+            key for ``regex`` and ``min_count``).
+
+            Error-path order: (a) unknown/missing type →
+            (b) unknown key → (c) missing required → (d) wrong
+            type. Unknown-key fires before missing-required so a
+            user who wrote an old alias (``value`` on ``contains``)
+            gets the actionable ``"did you mean 'needle'?"`` hint
+            instead of the opaque ``"missing required key 'needle'"``
+            that would hide the rename from them. Each branch
+            raises at the first violation; no cascading noise.
             """
+            # (a) Unknown or missing ``type``.
             type_val = entry.get("type")
             if (
                 not isinstance(type_val, str)
@@ -365,12 +439,9 @@ class EvalSpec:
                     f"unknown or missing 'type' (got {type_val!r})"
                 )
             spec = ASSERTION_TYPE_REQUIRED_KEYS[type_val]
-            for key in sorted(spec.required):
-                if key not in entry or entry[key] is None:
-                    raise ValueError(
-                        f"EvalSpec(skill_name={skill_name!r}): {ctx} "
-                        f"(type={type_val!r}): missing required key {key!r}"
-                    )
+            # (b) Unknown keys — fires before missing-required so
+            # legacy-alias migrations surface the drift hint that
+            # names the correct replacement key.
             allowed = (
                 {"id", "type", "name"}
                 | set(spec.required)
@@ -379,16 +450,58 @@ class EvalSpec:
             for key in entry:
                 if key in allowed:
                     continue
-                if key in {"pattern", "min", "max"}:
-                    hint = " — did you mean 'value'?"
-                elif key == "threshold":
-                    hint = " — did you mean 'minimum'?"
-                else:
-                    hint = ""
+                suggestion = _ASSERTION_DRIFT_HINTS.get(type_val, {}).get(key)
+                hint = (
+                    f" — did you mean {suggestion!r}?"
+                    if suggestion is not None
+                    else ""
+                )
                 raise ValueError(
                     f"EvalSpec(skill_name={skill_name!r}): {ctx} "
                     f"(type={type_val!r}): unknown key {key!r}{hint}"
                 )
+            # (c) Missing required keys.
+            for key in sorted(spec.required):
+                if key not in entry or entry[key] is None:
+                    raise ValueError(
+                        f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                        f"(type={type_val!r}): missing required key {key!r}"
+                    )
+            # (d) Wrong-typed payload keys. Check every declared
+            # ``field_types`` entry present in the user's dict.
+            # Two subtleties:
+            #   1. A present-but-``None`` optional key is rejected
+            #      — ``a.get("count", 1)`` does NOT substitute for
+            #      ``None`` at runtime, so accepting it at load
+            #      time would crash the handler downstream. The
+            #      ``None`` branch produces a friendlier error
+            #      ("must be int, not null …") than the generic
+            #      ``isinstance`` miss would.
+            #   2. ``bool`` is a subclass of ``int`` in Python, so
+            #      a raw ``isinstance`` check would silently
+            #      accept ``{"count": True}``. The int branch
+            #      guards with ``not isinstance(val, bool)``.
+            for key, expected in spec.field_types.items():
+                if key not in entry:
+                    continue
+                val = entry[key]
+                if val is None:
+                    raise ValueError(
+                        f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                        f"(type={type_val!r}): key {key!r} must be "
+                        f"{expected.__name__}, not null (omit the "
+                        f"key to use the default)"
+                    )
+                ok = isinstance(val, expected) and not (
+                    expected is int and isinstance(val, bool)
+                )
+                if not ok:
+                    raise ValueError(
+                        f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                        f"(type={type_val!r}): key {key!r} must be "
+                        f"{expected.__name__}, got "
+                        f"{type(val).__name__} {val!r}"
+                    )
 
         raw_assertions = data.get("assertions", [])
         if not isinstance(raw_assertions, list):

@@ -135,11 +135,11 @@ def sample_eval_data() -> dict:
         "description": "Eval for /find-kid-activities",
         "test_args": '"Cupertino, CA" --dates today --cost Free --depth quick',
         "assertions": [
-            {"type": "contains", "value": "Venues"},
-            {"type": "has_entries", "value": "3"},
-            {"type": "has_urls", "value": "2"},
-            {"type": "not_contains", "value": "ERROR"},
-            {"type": "min_length", "value": "500"},
+            {"type": "contains", "needle": "Venues"},
+            {"type": "has_entries", "count": 3},
+            {"type": "has_urls", "count": 2},
+            {"type": "not_contains", "needle": "ERROR"},
+            {"type": "min_length", "length": 500},
         ],
         "sections": [
             {
@@ -199,7 +199,7 @@ def make_eval_spec():
             "skill_name": "test-skill",
             "description": "A test eval spec",
             "test_args": "--depth quick",
-            "assertions": [{"type": "contains", "value": "test"}],
+            "assertions": [{"type": "contains", "needle": "test"}],
             "sections": [
                 SectionRequirement(
                     name="Results",
@@ -361,7 +361,7 @@ def build_eval_spec(**overrides) -> EvalSpec:
         skill_name="test-skill",
         description="A test skill",
         test_args="--depth quick",
-        assertions=[{"type": "contains", "value": "hello"}],
+        assertions=[{"type": "contains", "needle": "hello"}],
         sections=[],
         grading_criteria=["Is the output relevant?"],
         grading_model="claude-sonnet-4-6",

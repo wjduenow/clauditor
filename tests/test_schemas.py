@@ -11,6 +11,7 @@ import clauditor.schemas as _schemas_mod
 importlib.reload(_schemas_mod)
 
 from clauditor.schemas import (  # noqa: E402
+    _ASSERTION_DRIFT_HINTS,
     ASSERTION_TYPE_REQUIRED_KEYS,
     AssertionKeySpec,
     EvalSpec,
@@ -27,8 +28,8 @@ SAMPLE_EVAL = {
     "description": "Eval for /find-kid-activities",
     "test_args": '"Cupertino, CA" --dates today --cost Free --depth quick',
     "assertions": [
-        {"id": "a_venues", "type": "contains", "value": "Venues"},
-        {"id": "a_entries", "type": "has_entries", "value": "3"},
+        {"id": "a_venues", "type": "contains", "needle": "Venues"},
+        {"id": "a_entries", "type": "has_entries", "count": 3},
     ],
     "sections": [
         {
@@ -367,8 +368,8 @@ FULL_EVAL_DATA = {
     "description": "A fully populated eval spec",
     "test_args": "--location NYC --depth full",
     "assertions": [
-        {"id": "a_contains", "type": "contains", "value": "Results"},
-        {"id": "a_minlen", "type": "min_length", "value": "200"},
+        {"id": "a_contains", "type": "contains", "needle": "Results"},
+        {"id": "a_minlen", "type": "min_length", "length": 200},
     ],
     "sections": [
         {
@@ -501,8 +502,8 @@ class TestFromFile:
         data = {
             "skill_name": "s",
             "assertions": [
-                {"id": "ok", "type": "contains", "value": "a"},
-                {"type": "contains", "value": "b"},  # missing id
+                {"id": "ok", "type": "contains", "needle": "a"},
+                {"type": "contains", "needle": "b"},  # missing id
             ],
         }
         path = _write_json(tmp_path, data)
@@ -514,8 +515,8 @@ class TestFromFile:
         data = {
             "skill_name": "s",
             "assertions": [
-                {"id": "dup", "type": "contains", "value": "a"},
-                {"id": "dup", "type": "contains", "value": "b"},
+                {"id": "dup", "type": "contains", "needle": "a"},
+                {"id": "dup", "type": "contains", "needle": "b"},
             ],
         }
         path = _write_json(tmp_path, data)
@@ -615,7 +616,7 @@ class TestFromFile:
         data = {
             "skill_name": "s",
             "assertions": [
-                {"id": "", "type": "contains", "value": "x"},
+                {"id": "", "type": "contains", "needle": "x"},
             ],
         }
         path = _write_json(tmp_path, data)
@@ -661,8 +662,8 @@ class TestFromFile:
         data = {
             "skill_name": "s",
             "assertions": [
-                {"id": "a1", "type": "contains", "value": "x"},
-                {"id": "a2", "type": "min_length", "value": "10"},
+                {"id": "a1", "type": "contains", "needle": "x"},
+                {"id": "a2", "type": "min_length", "length": 10},
             ],
             "sections": [
                 {
@@ -696,7 +697,7 @@ class TestFromFile:
         uniqueness scope is the whole skill, not per-layer."""
         data = {
             "skill_name": "s",
-            "assertions": [{"id": "shared", "type": "contains", "value": "x"}],
+            "assertions": [{"id": "shared", "type": "contains", "needle": "x"}],
             "sections": [
                 {
                     "name": "S",
@@ -888,7 +889,7 @@ class TestEvalSpecOutputFields:
         old_data = {
             "skill_name": "legacy",
             "description": "An old spec",
-            "assertions": [{"id": "a_hello", "type": "contains", "value": "hello"}],
+            "assertions": [{"id": "a_hello", "type": "contains", "needle": "hello"}],
         }
         path = _write_json(tmp_path, old_data)
         spec = EvalSpec.from_file(path)
@@ -1549,8 +1550,8 @@ class TestEvalSpecFromDict:
         data = {
             "skill_name": "s",
             "assertions": [
-                {"id": "dup", "type": "contains", "value": "a"},
-                {"id": "dup", "type": "contains", "value": "b"},
+                {"id": "dup", "type": "contains", "needle": "a"},
+                {"id": "dup", "type": "contains", "needle": "b"},
             ],
         }
         with pytest.raises(
@@ -1563,7 +1564,7 @@ class TestEvalSpecFromDict:
         data = {
             "skill_name": "s",
             "assertions": [
-                {"id": "shared", "type": "contains", "value": "x"},
+                {"id": "shared", "type": "contains", "needle": "x"},
             ],
             "grading_criteria": [
                 {"id": "shared", "criterion": "Is it good?"},
@@ -1576,8 +1577,8 @@ class TestEvalSpecFromDict:
         data = {
             "skill_name": "s",
             "assertions": [
-                {"id": "ok", "type": "contains", "value": "a"},
-                {"type": "contains", "value": "b"},
+                {"id": "ok", "type": "contains", "needle": "a"},
+                {"type": "contains", "needle": "b"},
             ],
         }
         with pytest.raises(
@@ -1746,7 +1747,7 @@ class TestEvalSpecFromDict:
             "description": "d",
             "user_prompt": "Do the thing",
             "test_args": "--flag",
-            "assertions": [{"id": "a1", "type": "contains", "value": "ok"}],
+            "assertions": [{"id": "a1", "type": "contains", "needle": "ok"}],
             "sections": [
                 {
                     "name": "Items",
@@ -1795,7 +1796,7 @@ class TestEvalSpecFromDict:
             "skill_name": "s",
             "assertions": [
                 # Missing 'id' field triggers _require_id failure.
-                {"type": "contains", "value": "ok"}
+                {"type": "contains", "needle": "ok"}
             ],
         }
         spec_path = tmp_path / "bad.eval.json"
@@ -1811,26 +1812,34 @@ class TestEvalSpecFromDict:
 
 class TestAssertionKeySpec:
     """Tests for ``AssertionKeySpec`` + ``ASSERTION_TYPE_REQUIRED_KEYS``
-    (DEC-008 of #61). The constant is the single source of truth that
-    the loader validator (US-002) and the ``propose-eval`` prompt
-    builder (US-003) both consume.
+    (DEC-008 of #61, DEC-001/DEC-012 of #67). The constant is the
+    single source of truth that the loader validator and the
+    ``propose-eval`` prompt builder both consume.
     """
 
-    # Maps type → (required, optional) sets. Mirrors the split in the
-    # production ``ASSERTION_TYPE_REQUIRED_KEYS`` constant; any drift
-    # between this table and that constant is surfaced by the tests
-    # below.
-    EXPECTED_KEYS: dict[str, tuple[set[str], set[str]]] = {
-        "contains": ({"value"}, set()),
-        "not_contains": ({"value"}, set()),
-        "regex": ({"value"}, set()),
-        "min_count": ({"value"}, {"minimum"}),
-        "min_length": ({"value"}, set()),
-        "max_length": ({"value"}, set()),
-        "has_urls": (set(), {"value"}),
-        "has_entries": (set(), {"value"}),
-        "urls_reachable": (set(), {"value"}),
-        "has_format": ({"format"}, {"value"}),
+    # Maps type → (required, optional, field_types) tuples. Mirrors
+    # the production ``ASSERTION_TYPE_REQUIRED_KEYS`` constant;
+    # drift between this table and that constant is surfaced by the
+    # tests below.
+    EXPECTED_KEYS: dict[
+        str, tuple[set[str], set[str], dict[str, type]]
+    ] = {
+        "contains": ({"needle"}, set(), {"needle": str}),
+        "not_contains": ({"needle"}, set(), {"needle": str}),
+        "regex": ({"pattern"}, set(), {"pattern": str}),
+        "min_count": (
+            {"pattern", "count"}, set(),
+            {"pattern": str, "count": int},
+        ),
+        "min_length": ({"length"}, set(), {"length": int}),
+        "max_length": ({"length"}, set(), {"length": int}),
+        "has_urls": (set(), {"count"}, {"count": int}),
+        "has_entries": (set(), {"count"}, {"count": int}),
+        "urls_reachable": (set(), {"count"}, {"count": int}),
+        "has_format": (
+            {"format"}, {"count"},
+            {"format": str, "count": int},
+        ),
     }
 
     def test_constant_contains_all_ten_assertion_types(self):
@@ -1841,30 +1850,67 @@ class TestAssertionKeySpec:
         assert len(ASSERTION_TYPE_REQUIRED_KEYS) == 10
 
     @pytest.mark.parametrize(
-        "atype,expected_required,expected_optional",
+        "atype,expected_required,expected_optional,expected_field_types",
         sorted(
-            (atype, req, opt)
-            for atype, (req, opt) in EXPECTED_KEYS.items()
+            (atype, req, opt, ft)
+            for atype, (req, opt, ft) in EXPECTED_KEYS.items()
         ),
     )
     def test_contains_expected_keys(
-        self, atype, expected_required, expected_optional
+        self,
+        atype,
+        expected_required,
+        expected_optional,
+        expected_field_types,
     ):
-        """Each type's ``required`` and ``optional`` sets match the
-        canonical spec. The split mirrors handler runtime behavior:
+        """Each type's ``required``, ``optional``, and
+        ``field_types`` declarations match the canonical spec. The
+        required/optional split mirrors handler runtime behavior:
         keys whose ``.get(key, <default>)`` returns a safe default
         (e.g. ``1`` for a minimum count) are optional; keys whose
         default is a vacuous sentinel (``""``, ``0``) are required.
+        ``field_types`` declares the expected native JSON type for
+        each payload key so the loader rejects string-typed ints at
+        load time (DEC-012 of #67).
         """
         spec = ASSERTION_TYPE_REQUIRED_KEYS[atype]
         assert isinstance(spec, AssertionKeySpec)
         assert spec.required == frozenset(expected_required)
         assert spec.optional == frozenset(expected_optional)
+        assert spec.field_types == expected_field_types
         # Both sets are frozensets — load-bearing hashable contract
         # for downstream callers that use them as dict keys or
         # set members.
         assert isinstance(spec.required, frozenset)
         assert isinstance(spec.optional, frozenset)
+        assert isinstance(spec.field_types, dict)
+
+    def test_field_types_match(self):
+        """Every ``required`` ∪ ``optional`` key must have an entry
+        in ``field_types``, and every ``field_types`` key must be in
+        ``required`` ∪ ``optional``. Guards against a future type
+        rename that forgets to extend ``field_types`` — or vice
+        versa, a stale ``field_types`` entry for a removed key.
+        """
+        for atype, spec in ASSERTION_TYPE_REQUIRED_KEYS.items():
+            payload_keys = set(spec.required) | set(spec.optional)
+            field_keys = set(spec.field_types.keys())
+            assert payload_keys == field_keys, (
+                f"type={atype!r}: payload keys "
+                f"(required∪optional)={payload_keys!r} vs "
+                f"field_types keys={field_keys!r} — sets must match"
+            )
+            # Every declared type must be one of the primitive
+            # types the loader's isinstance check supports. The
+            # only legal values today are ``str`` and ``int``; any
+            # future addition (``bool``, ``float``) is an explicit
+            # loader-side change.
+            for key, expected_type in spec.field_types.items():
+                assert expected_type in (str, int), (
+                    f"type={atype!r} key={key!r}: unexpected "
+                    f"field_type {expected_type!r} — loader only "
+                    f"supports str/int"
+                )
 
     def test_required_and_optional_are_disjoint(self):
         """A key is either required or optional for a given type, not
@@ -1877,6 +1923,21 @@ class TestAssertionKeySpec:
                 f"type={atype!r} has {overlap!r} in both required and "
                 "optional — each key must be in exactly one set"
             )
+
+    def test_drift_hints_cover_every_type(self):
+        """Every type in ``ASSERTION_TYPE_REQUIRED_KEYS`` must have a
+        matching entry in ``_ASSERTION_DRIFT_HINTS`` (may be empty).
+        Guards against a future type addition that forgets the
+        hints table — the validator would still work (emit no
+        hint) but DEC-009's per-type coverage invariant would
+        silently drift.
+        """
+        assert set(ASSERTION_TYPE_REQUIRED_KEYS) == set(
+            _ASSERTION_DRIFT_HINTS
+        ), (
+            "ASSERTION_TYPE_REQUIRED_KEYS and _ASSERTION_DRIFT_HINTS "
+            "must cover the same set of types"
+        )
 
     def test_handler_signature_agrees_with_constant(self):
         """Drift guard: every required AND optional key appears in
@@ -1921,15 +1982,16 @@ def _minimal_assertion_entry(atype: str, aid: str = "a1") -> dict:
     """Build a minimal valid assertion dict for ``atype``.
 
     Drives off :data:`ASSERTION_TYPE_REQUIRED_KEYS` so the shape
-    stays in lockstep with the production constant. Every required
-    key gets a non-None string sentinel — ``_require_assertion_keys``
-    only checks presence/non-None-ness, so the string sentinel is
-    valid regardless of whether the downstream handler expects a
-    string or numeric value.
+    stays in lockstep with the production constant. Per DEC-012 of
+    #67 the loader also type-checks each required key against
+    ``spec.field_types``, so this helper emits a value of the
+    declared native type (``"1"`` for ``str``, ``1`` for ``int``).
     """
+    spec = ASSERTION_TYPE_REQUIRED_KEYS[atype]
     entry: dict = {"id": aid, "type": atype}
-    for key in ASSERTION_TYPE_REQUIRED_KEYS[atype].required:
-        entry[key] = "1"
+    for key in spec.required:
+        expected = spec.field_types.get(key, str)
+        entry[key] = 1 if expected is int else "1"
     return entry
 
 
@@ -2012,19 +2074,31 @@ class TestRequireAssertionKeys:
             EvalSpec.from_dict(data, spec_dir=tmp_path)
 
     @pytest.mark.parametrize(
-        "bad_key,hint_fragment",
-        [
-            ("pattern", "did you mean 'value'?"),
-            ("min", "did you mean 'value'?"),
-            ("max", "did you mean 'value'?"),
-            ("threshold", "did you mean 'minimum'?"),
-            ("foo_bar", None),  # generic case — no hint suffix.
+        "atype,bad_key,hint_fragment",
+        sorted(
+            (atype, bad_key, f"did you mean {correct!r}?")
+            for atype, hints in _ASSERTION_DRIFT_HINTS.items()
+            for bad_key, correct in hints.items()
+        )
+        + [
+            # Generic case — no hint suffix when the key is not in
+            # any type's drift-hint table.
+            ("contains", "foo_bar", None),
         ],
     )
-    def test_unknown_key_rejected(self, tmp_path, bad_key, hint_fragment):
-        """Unknown keys raise ``ValueError`` with the right hint (or
-        no hint for keys outside the known drift alias set)."""
-        entry = _minimal_assertion_entry("contains")
+    def test_unknown_key_rejected(
+        self, tmp_path, atype, bad_key, hint_fragment
+    ):
+        """Unknown keys raise ``ValueError`` with the right per-type
+        hint (or no hint for keys outside the drift alias table).
+
+        Drives the parametrize table off
+        :data:`_ASSERTION_DRIFT_HINTS` so every (type, wrong-key)
+        pair in the production table is exercised exactly once.
+        """
+        entry = _minimal_assertion_entry(atype)
+        # Pick a value whose native type is a string; we just need
+        # something non-None so the unknown-key branch sees the key.
         entry[bad_key] = "whatever"
         data = {
             "skill_name": "s",
@@ -2035,7 +2109,7 @@ class TestRequireAssertionKeys:
         msg = str(ei.value)
         assert f"unknown key {bad_key!r}" in msg
         assert "assertions[0]" in msg
-        assert "(type='contains')" in msg
+        assert f"(type={atype!r})" in msg
         if hint_fragment is None:
             # Generic unknown key — must NOT carry a "did you mean"
             # hint so we don't teach the user a wrong alias.
@@ -2102,19 +2176,23 @@ class TestRequireAssertionKeys:
     def test_optional_key_is_allowed_when_present(
         self, tmp_path, atype, opt_key
     ):
-        """Specifying an optional key (e.g. ``minimum`` on ``min_count``
-        or ``value`` on ``has_urls``) is accepted; the validator does
-        not reject it as unknown.
+        """Specifying an optional key (e.g. ``count`` on ``has_urls``
+        or ``has_format``) is accepted; the validator does not reject
+        it as unknown. The value respects ``spec.field_types[opt_key]``
+        so ``count`` lands as a native int per DEC-012 of #67.
         """
+        spec_entry = ASSERTION_TYPE_REQUIRED_KEYS[atype]
         entry = _minimal_assertion_entry(atype)
-        entry[opt_key] = "1"
+        expected = spec_entry.field_types.get(opt_key, str)
+        value: object = 1 if expected is int else "1"
+        entry[opt_key] = value
         data = {
             "skill_name": "s",
             "test_args": "y",
             "assertions": [entry],
         }
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
-        assert spec.assertions[0][opt_key] == "1"
+        assert spec.assertions[0][opt_key] == value
 
     @pytest.mark.parametrize(
         "atype",
@@ -2138,35 +2216,92 @@ class TestRequireAssertionKeys:
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         assert spec.assertions == [entry]
 
-    def test_min_count_without_minimum_is_allowed(self, tmp_path):
-        """``min_count`` requires ``value`` (pattern) but ``minimum``
-        is optional — the handler defaults the count to 1 when
-        omitted. This mirrors the pre-#61 runtime behavior that
-        hand-authored specs relied on.
+    def test_optional_key_with_none_rejected(self, tmp_path):
+        """An optional key with a ``None`` value is REJECTED — if
+        accepted at load time, the downstream handler
+        (``a.get("count", 1)``) would read ``None`` (not the
+        default) and crash with ``TypeError`` on the comparison.
+        The loader treats a present-but-None optional the same
+        as a wrong-type value and raises at load time.
         """
-        entry = {"id": "a1", "type": "min_count", "value": r"\d+"}
+        entry = {"id": "a1", "type": "has_urls", "count": None}
         data = {
             "skill_name": "s",
             "test_args": "y",
             "assertions": [entry],
         }
-        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
-        assert spec.assertions == [entry]
+        with pytest.raises(
+            ValueError, match=r"must be int, not null \(omit the key"
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
 
-    def test_optional_key_allows_none(self, tmp_path):
-        """An optional key with a ``None`` value is accepted — we
-        allow it but don't special-case None the way we do for
-        required keys. This documents the boundary: None is only
-        rejected when the key is REQUIRED.
+    @pytest.mark.parametrize(
+        "atype,key,bad_value,expected_fragment",
+        [
+            (
+                "min_length",
+                "length",
+                "500",
+                "key 'length' must be int, got str '500'",
+            ),
+            (
+                "contains",
+                "needle",
+                123,
+                "key 'needle' must be str, got int 123",
+            ),
+            (
+                "min_count",
+                "count",
+                "3",
+                "key 'count' must be int, got str '3'",
+            ),
+            (
+                "has_format",
+                "format",
+                42,
+                "key 'format' must be str, got int 42",
+            ),
+        ],
+    )
+    def test_wrong_type_rejected(
+        self, tmp_path, atype, key, bad_value, expected_fragment
+    ):
+        """DEC-012 of #67 — every payload key's value must match
+        the native type declared in ``spec.field_types``. String-
+        typed ints (``{"length": "500"}``) and int-typed strings
+        (``{"needle": 123}``) reject at load time with a message
+        naming the key, expected type, actual type, and the
+        offending value.
         """
-        entry = {"id": "a1", "type": "has_urls", "value": None}
+        entry = _minimal_assertion_entry(atype)
+        entry[key] = bad_value
         data = {
             "skill_name": "s",
             "test_args": "y",
             "assertions": [entry],
         }
-        # Optional + None currently passes validation (the
-        # downstream handler does its own None-tolerant coercion
-        # via `.get("value", "") if a.get("value", "") else 1`).
-        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
-        assert spec.assertions == [entry]
+        with pytest.raises(ValueError) as ei:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(ei.value)
+        assert expected_fragment in msg
+        assert "assertions[0]" in msg
+        assert f"(type={atype!r})" in msg
+
+    def test_wrong_type_rejects_bool_where_int_expected(self, tmp_path):
+        """``bool`` is a subclass of ``int`` in Python, so a naive
+        ``isinstance`` check would silently accept
+        ``{"count": True}``. DEC-012 of #67 guards against this by
+        excluding ``bool`` from the int branch; the loader must
+        raise.
+        """
+        entry = {"id": "a1", "type": "has_urls", "count": True}
+        data = {
+            "skill_name": "s",
+            "assertions": [entry],
+        }
+        with pytest.raises(ValueError) as ei:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(ei.value)
+        assert "key 'count' must be int" in msg
+        assert "bool" in msg
