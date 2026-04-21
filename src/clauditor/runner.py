@@ -72,7 +72,7 @@ class SkillResult:
         if self.error_category is not None:
             return False
         for w in self.warnings:
-            if w.startswith("interactive-hang:"):
+            if w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX):
                 return False
         return True
 
@@ -237,7 +237,7 @@ def _classify_result_message(msg: dict) -> tuple[str | None, str | None]:
         or "unauthorized" in lower
         or "authentication" in lower
         or "auth error" in lower
-        or "ANTHROPIC_API_KEY" in error_text
+        or "anthropic_api_key" in lower
     ):
         category = "auth"
     else:
@@ -597,8 +597,14 @@ class SkillRunner:
                     warnings.append(stderr_text)
             elif stream_json_error_category == "interactive":
                 # Hang heuristic set the category without an error text.
+                # Stderr may still carry subprocess diagnostics (e.g. a
+                # retry notice); preserve it in warnings so it's
+                # observable to callers, parallel to the stream-json
+                # error branch above.
                 final_error = None
                 final_category = "interactive"
+                if stderr_text:
+                    warnings.append(stderr_text)
             else:
                 final_error = (
                     stderr_text if returncode != 0 and stderr_text else None

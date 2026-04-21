@@ -1497,6 +1497,17 @@ class TestClassifyResultMessage:
         assert category == "auth"
         assert text == "Please check your ANTHROPIC_API_KEY"
 
+    def test_anthropic_api_key_lowercase_classifies_as_auth(self):
+        """Case-insensitive match — the classifier lowercases before probing,
+        so ``anthropic_api_key`` in any casing is routed to ``auth``."""
+        msg = {
+            "type": "result",
+            "is_error": True,
+            "result": "check your anthropic_api_key env var",
+        }
+        _, category = _classify_result_message(msg)
+        assert category == "auth"
+
     def test_authentication_phrase_classifies_as_auth(self):
         msg = {"type": "result", "is_error": True, "result": "Authentication failed"}
         assert _classify_result_message(msg) == ("Authentication failed", "auth")

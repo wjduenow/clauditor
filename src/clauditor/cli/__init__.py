@@ -325,7 +325,7 @@ def _render_skill_error(
                 first_nonempty = line.strip()
                 break
         if first_nonempty is not None:
-            parts.append(f"(stderr: {first_nonempty})")
+            parts.append(f"(warning: {first_nonempty})")
 
     return "\n".join(parts)
 

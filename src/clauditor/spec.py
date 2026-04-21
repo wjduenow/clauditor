@@ -200,7 +200,7 @@ class SkillSpec:
                 # setting ``error``). Else keep the generic fallback for
                 # defensive "should not happen" cases. Per DEC-006 /
                 # DEC-010 of ``plans/super/63-runner-error-surfacing.md``.
-                if result.error is not None:
+                if result.error:
                     msg = result.error
                 elif result.error_category == "interactive":
                     msg = next(

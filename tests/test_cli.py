@@ -5338,8 +5338,10 @@ class TestRenderSkillError:
     """Direct tests for ``cli._render_skill_error`` (US-005 / #63).
 
     Pure helper: no I/O, reads only from the passed ``SkillResult`` and
-    module-level constants. Traces to DEC-002 (warnings as ``(stderr:
-    ...)`` trailer), DEC-003 (1000-char truncation), DEC-004 (category
+    module-level constants. Traces to DEC-002 (warnings as ``(warning:
+    ...)`` trailer — neutral label since ``warnings`` may contain
+    non-stderr entries like interactive-hang tags or malformed-line
+    notices), DEC-003 (1000-char truncation), DEC-004 (category
     hint as a second line), DEC-011 (signature + ``_CATEGORY_HINTS``
     lookup) of ``plans/super/63-runner-error-surfacing.md``.
     """
@@ -5461,8 +5463,8 @@ class TestRenderSkillError:
         assert "(truncated" not in out
         assert out == "X" * 100
 
-    def test_warnings_append_stderr_trailer(self):
-        """Non-empty warnings[0] → `(stderr: <first-non-empty-line>)` trailer."""
+    def test_warnings_append_trailer(self):
+        """Non-empty warnings[0] → `(warning: <first-non-empty-line>)` trailer."""
         from clauditor.cli import _render_skill_error
 
         result = self._mk(
@@ -5470,7 +5472,7 @@ class TestRenderSkillError:
             error_category=None,
             warnings=["line1", "line3"],  # first-warning only is rendered
         )
-        assert _render_skill_error(result) == "boom\n(stderr: line1)"
+        assert _render_skill_error(result) == "boom\n(warning: line1)"
 
     def test_multiline_warning_uses_first_nonempty_line(self):
         """Leading empty/whitespace lines are skipped; first non-empty wins."""
@@ -5485,7 +5487,7 @@ class TestRenderSkillError:
         # cleanliness on the one-line trailer.
         assert (
             _render_skill_error(result)
-            == "boom\n(stderr: real first line)"
+            == "boom\n(warning: real first line)"
         )
 
     def test_warnings_all_empty_no_trailer(self):
@@ -5510,7 +5512,7 @@ class TestRenderSkillError:
         assert _render_skill_error(result) == (
             "API Error: 429\n"
             "Hint: retry in ~60s (rate limit)\n"
-            "(stderr: stderr blather)"
+            "(warning: stderr blather)"
         )
 
     def test_empty_string_error_treated_as_none(self):
