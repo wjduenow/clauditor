@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from clauditor.asserters import SkillAsserter
-from clauditor.runner import SkillResult, SkillRunner
+from clauditor.runner import SkillResult, SkillRunner, _env_without_api_key
 from clauditor.spec import SkillSpec
 
 
@@ -39,6 +39,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         type=int,
         default=180,
         help="Timeout for skill execution in seconds (default: 180)",
+    )
+    group.addoption(
+        "--clauditor-no-api-key",
+        action="store_true",
+        default=False,
+        help=(
+            "Strip ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN from the "
+            "subprocess environment so `claude -p` uses cached "
+            "subscription auth (~/.claude/) instead of env-based API auth"
+        ),
     )
     group.addoption(
         "--clauditor-claude-bin",
@@ -132,24 +142,45 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
         timeout=request.config.getoption("--clauditor-timeout"),
         claude_bin=request.config.getoption("--clauditor-claude-bin"),
     )
+    # DEC-006 (US-007): when ``--clauditor-no-api-key`` is set, compute
+    # the env dict once per fixture call and thread it as
+    # ``env_override`` through ``SkillSpec.run``. ``None`` otherwise —
+    # the spec's ``env_override`` kwarg default preserves today's
+    # behavior.
+    no_api_key = request.config.getoption("--clauditor-no-api-key")
+    env_override = _env_without_api_key() if no_api_key else None
 
     def _factory(skill_path: str | Path, eval_path: str | Path | None = None):
         spec = SkillSpec.from_file(skill_path, eval_path=eval_path, runner=runner)
-        if spec.eval_spec is not None and spec.eval_spec.input_files:
+        has_input_files = (
+            spec.eval_spec is not None and bool(spec.eval_spec.input_files)
+        )
+        if has_input_files or env_override is not None:
             original_run = spec.run
             default_run_dir = tmp_path / f"clauditor_run_{id(spec)}"
 
-            def _run_with_default_run_dir(
+            def _run_with_overrides(
                 args: str | None = None,
                 *,
                 run_dir: Path | None = None,
             ):
-                if run_dir is None:
+                effective_run_dir = run_dir
+                if has_input_files and effective_run_dir is None:
                     default_run_dir.mkdir(parents=True, exist_ok=True)
-                    run_dir = default_run_dir
-                return original_run(args, run_dir=run_dir)
+                    effective_run_dir = default_run_dir
+                # Only pass ``env_override`` through when the option is
+                # set; otherwise call ``original_run`` with exactly the
+                # pre-US-007 kwargs so existing callers (and tests that
+                # assert on the call shape) remain unaffected.
+                if env_override is not None:
+                    return original_run(
+                        args,
+                        run_dir=effective_run_dir,
+                        env_override=env_override,
+                    )
+                return original_run(args, run_dir=effective_run_dir)
 
-            spec.run = _run_with_default_run_dir  # type: ignore[method-assign]
+            spec.run = _run_with_overrides  # type: ignore[method-assign]
         return spec
 
     return _factory
