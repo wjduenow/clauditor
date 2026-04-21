@@ -358,6 +358,7 @@ from clauditor.cli import doctor as doctor_mod  # noqa: E402
 from clauditor.cli import extract as extract_mod  # noqa: E402
 from clauditor.cli import grade as grade_mod  # noqa: E402
 from clauditor.cli import init as init_mod  # noqa: E402
+from clauditor.cli import lint as lint_mod  # noqa: E402
 from clauditor.cli import propose_eval as propose_eval_mod  # noqa: E402
 from clauditor.cli import run as run_mod  # noqa: E402
 from clauditor.cli import setup as setup_mod  # noqa: E402
@@ -375,6 +376,7 @@ from clauditor.cli.grade import (  # noqa: E402,F401
     cmd_grade,
 )
 from clauditor.cli.init import cmd_init  # noqa: E402,F401
+from clauditor.cli.lint import cmd_lint  # noqa: E402,F401
 from clauditor.cli.propose_eval import cmd_propose_eval  # noqa: E402,F401
 from clauditor.cli.run import cmd_run  # noqa: E402,F401
 from clauditor.cli.setup import cmd_setup  # noqa: E402,F401
@@ -433,6 +435,9 @@ def main(argv: list[str] | None = None) -> int:
     # doctor
     doctor_mod.add_parser(subparsers)
 
+    # lint
+    lint_mod.add_parser(subparsers)
+
     # Split argv on a literal `--` *only* when the capture subcommand is in
     # play, so other subcommands (validate/grade/...) keep argparse's native
     # `--` handling instead of having their trailing args silently stripped.
@@ -477,6 +482,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_suggest(parsed)
     elif parsed.command == "propose-eval":
         return cmd_propose_eval(parsed)
+    elif parsed.command == "lint":
+        return cmd_lint(parsed)
 
     return 1
 
