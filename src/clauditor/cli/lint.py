@@ -10,9 +10,11 @@ Exit-code taxonomy (non-LLM 0/1/2 per
   ``check_conformance``, or (b) issues are all warnings AND
   ``--strict`` is NOT set (warnings-are-soft default).
 - **1** — load/parse failure: path does not resolve to a regular file,
-  file is unreadable (OSError / UnicodeDecodeError), OR the only issue
-  is ``AGENTSKILLS_FRONTMATTER_INVALID_YAML`` (malformed frontmatter
-  is a parse problem, not spec drift). Preserved verbatim under
+  file is unreadable (OSError / UnicodeDecodeError), OR
+  ``AGENTSKILLS_FRONTMATTER_INVALID_YAML`` is present among the issues
+  (malformed frontmatter is a parse problem, not spec drift; this case
+  dominates sibling pre-parse warnings like
+  ``AGENTSKILLS_LAYOUT_LEGACY``). Preserved verbatim under
   ``--strict`` — parse failures are never escalated by that flag.
 - **2** — any error-severity issue, OR any warning when ``--strict``
   is set.
@@ -174,11 +176,14 @@ def cmd_lint(args: argparse.Namespace) -> int:
         if args.json:
             # Synthetic PATH_NOT_A_FILE entry in the issues list so JSON
             # consumers have one uniform surface to read path errors
-            # alongside conformance issues. ``args.skill_md`` (the
-            # caller's original argv) is more informative than the
-            # ``resolve()``-ed path on a missing target.
+            # alongside conformance issues. The envelope's ``skill_path``
+            # field is the RESOLVED path — consistent with the success /
+            # unreadable / conformance branches so consumers can rely on
+            # a normalized-path schema. The raw argv lives in the issue
+            # ``message`` (where it is more informative for a human
+            # reading the error than the resolved target would be).
             _emit_json_envelope(
-                args.skill_md,
+                str(skill_path),
                 [
                     ConformanceIssue(
                         code=_PATH_NOT_A_FILE_CODE,

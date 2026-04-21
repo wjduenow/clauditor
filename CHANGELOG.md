@@ -90,8 +90,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     previous warnings for invalid frontmatter-name fallback and
     frontmatter-vs-filesystem mismatch are now produced by
     `check_conformance` via the soft-warn hook — single source of
-    truth for frontmatter-name warnings. The helper now always returns
-    `(name, None)`. See
+    truth for frontmatter-name warnings. The helper's return type
+    simplified from `tuple[str, str | None]` to plain `str`. See
     [`docs/cli-reference.md#lint`](docs/cli-reference.md#lint) and
     `.claude/rules/skill-identity-from-frontmatter.md`.
 - **Runner auth-source control + configurable timeout (#64).** Four

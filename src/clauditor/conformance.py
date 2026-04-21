@@ -189,6 +189,11 @@ def check_conformance(
     # malformed; do NOT re-order this append without updating that logic.
     is_modern_layout = skill_path.name == "SKILL.md"
     if not is_modern_layout:
+        # Prose migration instruction rather than a copy-pasteable shell
+        # command: filenames can legally contain spaces, quotes, or
+        # shell metacharacters, and an unquoted ``mkdir ... && mv ...``
+        # template would misbehave for those inputs. A prose description
+        # is unambiguous regardless of shell dialect and author's locale.
         issues.append(
             ConformanceIssue(
                 code="AGENTSKILLS_LAYOUT_LEGACY",
@@ -197,8 +202,9 @@ def check_conformance(
                     f"Legacy single-file skill layout `{skill_path.name}` is "
                     f"not in the agentskills.io specification, which "
                     f"requires a `<skill-name>/SKILL.md` directory layout. "
-                    f"To migrate: `mkdir {skill_path.stem}/ && mv "
-                    f"{skill_path.name} {skill_path.stem}/SKILL.md`. See "
+                    f"To migrate: create a directory named "
+                    f"`{skill_path.stem}` and move `{skill_path.name}` "
+                    f"into it, renaming the file to `SKILL.md`. See "
                     f"https://agentskills.io/specification#directory-structure."
                 ),
             )

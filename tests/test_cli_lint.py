@@ -618,6 +618,28 @@ class TestJsonOutput:
         assert issue["code"] == "PATH_NOT_A_FILE"
         assert issue["severity"] == "error"
 
+    def test_json_envelope_skill_path_is_always_resolved(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """``skill_path`` in the JSON envelope is the resolved path on every branch.
+
+        Regression for Copilot comment #2: the PATH_NOT_A_FILE branch
+        used to emit ``args.skill_md`` (raw argv) while every other
+        branch emitted ``str(skill_path)`` (resolved). Consumers parsing
+        the envelope expect a single normalized shape.
+        """
+        # Use a relative path via chdir so args.skill_md != str(resolved).
+        monkeypatch.chdir(tmp_path)
+        some_dir = tmp_path / "not-a-file"
+        some_dir.mkdir()
+
+        rc = main(["lint", "--json", "not-a-file"])
+        assert rc == 1
+        payload = json.loads(capsys.readouterr().out)
+        # Resolved path is absolute; raw argv was "not-a-file".
+        assert payload["skill_path"] == str(some_dir.resolve())
+        assert payload["skill_path"] != "not-a-file"
+
     def test_json_silences_stderr(self, tmp_path, capsys):
         """``--json`` on a failing case emits NO stderr output."""
         skill_path = tmp_path / "my-skill" / "SKILL.md"

@@ -43,28 +43,39 @@ def derive_skill_name(skill_path: Path, skill_md_text: str) -> str:
     fm_name = parsed["name"]
     if not isinstance(fm_name, str) or re.fullmatch(SKILL_NAME_RE, fm_name) is None:
         return fs_name  # invalid frontmatter name → silent fallback;
-                        # conformance.check_conformance surfaces the
-                        # AGENTSKILLS_NAME_INVALID_CHARS warning.
+                        # conformance.check_conformance emits the
+                        # AGENTSKILLS_NAME_INVALID_CHARS error, which
+                        # surfaces via ``clauditor lint`` (not through
+                        # the soft-warn hook — hook filters out errors).
 
     # Disagreement (fm_name != fs_name) returns the frontmatter value
     # unchanged. The conformance checker emits the
-    # AGENTSKILLS_NAME_PARENT_DIR_MISMATCH warning separately; this
-    # helper stays silent.
+    # AGENTSKILLS_NAME_PARENT_DIR_MISMATCH error separately; this
+    # helper stays silent. That error surfaces via ``clauditor lint``
+    # only, per DEC-003's warnings-only soft-warn-hook contract.
     return fm_name
 ```
 
 At the call site, the I/O layer owns `read_text` and — via the
-conformance soft-warn hook — stderr:
+conformance soft-warn hook — stderr for the **warning** severity
+only. Name-related issues (`AGENTSKILLS_NAME_INVALID_CHARS`,
+`AGENTSKILLS_NAME_PARENT_DIR_MISMATCH`) are emitted by
+`check_conformance` with `severity="error"`, so the hook filters
+them out — they surface via `clauditor lint` (exit 2) instead, not
+during routine skill loads. Non-name warnings (body length,
+experimental `allowed-tools`, legacy layout) DO surface here:
 
 ```python
 # src/clauditor/spec.py::SkillSpec.from_file
 text = skill_path.read_text(encoding="utf-8")
 skill_name = derive_skill_name(skill_path, text)
 
-# Soft-warn hook: emit conformance warnings (including
-# AGENTSKILLS_NAME_INVALID_CHARS / AGENTSKILLS_NAME_PARENT_DIR_MISMATCH)
-# through a single seam, formatted by ``conformance.format_issue_line``.
-# ``check_conformance`` never raises.
+# Soft-warn hook: emit conformance WARNINGS (severity="warning") —
+# e.g. AGENTSKILLS_BODY_TOO_LONG, AGENTSKILLS_LAYOUT_LEGACY.
+# Errors like AGENTSKILLS_NAME_INVALID_CHARS /
+# AGENTSKILLS_NAME_PARENT_DIR_MISMATCH are filtered out here and
+# surface only via ``clauditor lint``. Single seam formatted by
+# ``conformance.format_issue_line``. ``check_conformance`` never raises.
 for issue in check_conformance(text, skill_path):
     if issue.severity == "warning":
         print(format_issue_line(issue), file=sys.stderr)
@@ -102,10 +113,14 @@ return cls(..., skill_name_override=skill_name)
 - **Lenient on regex failure, not strict**: a malformed frontmatter
   value shouldn't make the skill uncallable — the filesystem fallback
   is the already-validated path segment (the parent dir / stem went
-  through the OS). Fall back, keep going. The soft-warn hook then
-  surfaces the corresponding `AGENTSKILLS_NAME_INVALID_CHARS` (or
-  `AGENTSKILLS_NAME_PARENT_DIR_MISMATCH`) warning so the author
-  notices without being blocked.
+  through the OS). Fall back, keep going. The corresponding
+  `AGENTSKILLS_NAME_INVALID_CHARS` (or
+  `AGENTSKILLS_NAME_PARENT_DIR_MISMATCH`) is emitted by
+  `check_conformance` as an **error**; it surfaces via
+  `clauditor lint` (exit 2) rather than the soft-warn hook (which
+  filters to warnings only per DEC-003), so the author notices when
+  they actively lint their skill without being blocked during routine
+  loads.
 - **Malformed frontmatter treated as absent**: `parse_frontmatter`
   raises `ValueError` on structural errors (missing closing `---`,
   empty key, etc.). A hard failure would be hostile to authors
@@ -126,11 +141,15 @@ return cls(..., skill_name_override=skill_name)
 - **Disagreement returns the frontmatter name; conformance surfaces
   the mismatch**: when `fm_name != fs_name`, frontmatter wins
   (identity resolution) and `check_conformance` emits
-  `AGENTSKILLS_NAME_PARENT_DIR_MISMATCH` at the `SkillSpec.from_file`
-  hook (warning). This future-proofs against accidental renames
-  (someone moves `<dir>/SKILL.md` to `<other-dir>/SKILL.md` but
-  forgets to update the frontmatter): the skill still loads under its
-  frontmatter-declared identity, and the warning alerts the author.
+  `AGENTSKILLS_NAME_PARENT_DIR_MISMATCH` as an **error** (not a
+  warning). Because the soft-warn hook filters to warnings per
+  DEC-003, this error surfaces via `clauditor lint` (exit 2), not
+  during routine `SkillSpec.from_file` loads. This future-proofs
+  against accidental renames (someone moves `<dir>/SKILL.md` to
+  `<other-dir>/SKILL.md` but forgets to update the frontmatter): the
+  skill still loads under its frontmatter-declared identity, and the
+  error alerts the author the next time they run `clauditor lint` on
+  the skill before publishing.
 - **`SKILL_NAME_RE` is a shared constant, not inlined**: two callers
   currently validate against it (`paths.py::derive_skill_name` and
   `propose_eval.py::_derive_skill_name_from_path_or_frontmatter`). A
@@ -233,20 +252,22 @@ and `SkillSpec.from_file` / `cmd_init` printed the warning string
 (prefix `"clauditor.spec: ..."`) to stderr. #71 introduced
 `clauditor.conformance` (a pure module checking SKILL.md against
 the agentskills.io spec) and retired the identity helper's warning
-channel (DEC-008). The two warnings the helper used to produce —
+channel (DEC-008). The two diagnostics the helper used to produce —
 "frontmatter name is not a valid skill identifier" and
 "frontmatter name overrides filesystem name" — are now produced by
 `check_conformance` as `AGENTSKILLS_NAME_INVALID_CHARS` and
-`AGENTSKILLS_NAME_PARENT_DIR_MISMATCH`, routed through the
-`SkillSpec.from_file` soft-warn hook, and formatted with the
+`AGENTSKILLS_NAME_PARENT_DIR_MISMATCH`. Both are emitted at
+`severity="error"`. The `SkillSpec.from_file` soft-warn hook filters
+to warnings only per DEC-003, so these **errors do not fire at the
+hook** — they surface via `clauditor lint` (exit 2), which emits
+warnings *and* errors with the
 `"clauditor.conformance: <CODE>: <message>"` prefix (DEC-014).
 Net effect on this rule: the identity helper is now strictly pure
-(`str` return, no side-channel), and all frontmatter-name
-diagnostics flow through one seam. Every "Why each piece matters"
-bullet that used to say "the helper warns" has been rewritten to
-say "the conformance hook warns"; the "Canonical implementation"
-block now cites `conformance.check_conformance` +
-`format_issue_line` as the diagnostics source.
+(`str` return, no side-channel), and frontmatter-name diagnostics
+move to an explicit-lint surface rather than a routine-load stderr
+line. Routine loads stay silent on name issues (matching the
+pre-#71 "lenient on failure" behavior); the author sees them when
+they actively run `clauditor lint` before publishing.
 
 ## When this rule applies
 
