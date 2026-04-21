@@ -166,6 +166,8 @@ class TestRun:
             "--custom flag",
             cwd=None,
             allow_hang_heuristic=True,
+            timeout=None,
+            env=None,
         )
         assert result.output == "explicit output"
 
@@ -179,6 +181,8 @@ class TestRun:
             "--depth quick",
             cwd=None,
             allow_hang_heuristic=True,
+            timeout=None,
+            env=None,
         )
 
     def test_run_uses_empty_string_when_no_eval_no_args(
@@ -193,6 +197,8 @@ class TestRun:
             "",
             cwd=None,
             allow_hang_heuristic=True,
+            timeout=None,
+            env=None,
         )
 
 
@@ -510,7 +516,15 @@ class TestOutputFilesResolutionWithStagedInputs:
         # Side-effect: the "skill" writes cleaned.csv into its staging CWD.
         base_result = runner.run.return_value
 
-        def side_effect(skill_name, args, *, cwd=None, allow_hang_heuristic=True):
+        def side_effect(
+            skill_name,
+            args,
+            *,
+            cwd=None,
+            allow_hang_heuristic=True,
+            timeout=None,
+            env=None,
+        ):
             assert cwd == run_dir / "inputs"
             (cwd / "cleaned.csv").write_text(cleaned_text)
             return base_result
@@ -681,6 +695,81 @@ class TestAllowHangHeuristicThreading:
         assert (
             runner.run.call_args.kwargs.get("allow_hang_heuristic") is True
         )
+
+
+class TestTimeoutPrecedence:
+    """DEC-002 / US-005: ``SkillSpec.run`` resolves the effective timeout
+    as CLI > spec > default, and threads ``env_override`` through to
+    ``SkillRunner.run(env=...)`` unchanged (no precedence merge per DEC-013).
+    """
+
+    def test_cli_override_wins(self, tmp_skill_file, mock_runner):
+        eval_data = {
+            "skill_name": "cli-wins",
+            "test_args": "",
+            "assertions": [],
+            "timeout": 300,
+        }
+        skill_path, _ = tmp_skill_file("cli-wins", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run(timeout_override=60)
+        assert runner.run.call_args.kwargs.get("timeout") == 60
+
+    def test_spec_wins_when_no_cli_override(
+        self, tmp_skill_file, mock_runner
+    ):
+        eval_data = {
+            "skill_name": "spec-wins",
+            "test_args": "",
+            "assertions": [],
+            "timeout": 300,
+        }
+        skill_path, _ = tmp_skill_file("spec-wins", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run(timeout_override=None)
+        assert runner.run.call_args.kwargs.get("timeout") == 300
+
+    def test_default_when_neither_set(self, tmp_skill_file, mock_runner):
+        eval_data = {
+            "skill_name": "both-none",
+            "test_args": "",
+            "assertions": [],
+        }
+        skill_path, _ = tmp_skill_file("both-none", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run()
+        assert runner.run.call_args.kwargs.get("timeout") is None
+
+    def test_env_override_threaded_through(
+        self, tmp_skill_file, mock_runner
+    ):
+        skill_path = tmp_skill_file("env-dict")
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run(env_override={"FOO": "bar"})
+        assert runner.run.call_args.kwargs.get("env") == {"FOO": "bar"}
+
+    def test_env_override_none_threaded_through(
+        self, tmp_skill_file, mock_runner
+    ):
+        skill_path = tmp_skill_file("env-none")
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run(env_override=None)
+        assert runner.run.call_args.kwargs.get("env") is None
+
+    def test_eval_spec_none_path(self, tmp_skill_file, mock_runner):
+        # Direct-constructor path: ``eval_spec`` is None. Timeout
+        # resolution must still work and default to None (runner falls
+        # back to its own ``self.timeout``).
+        skill_path = tmp_skill_file("no-spec")
+        runner = mock_runner(output="ok")
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+        spec.run()
+        assert runner.run.call_args.kwargs.get("timeout") is None
 
 
 # Path to the checked-in example eval spec used by
