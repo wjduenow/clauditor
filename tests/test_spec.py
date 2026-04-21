@@ -13,6 +13,7 @@ import clauditor.spec as _spec_mod
 
 importlib.reload(_spec_mod)
 
+from clauditor.runner import SkillResult  # noqa: E402
 from clauditor.spec import SkillSpec, _failed_run_result  # noqa: E402
 
 # ── Minimal eval data for fixture ──────────────────────────────────────────
@@ -242,6 +243,161 @@ class TestEvaluate:
         assert len(result.results) == 1
         assert "failed to run" in result.results[0].message
         assert "boom" in result.results[0].message
+
+
+class TestEvaluateFailureClassification:
+    """US-007: ``evaluate()`` uses ``succeeded_cleanly`` (strict) so an
+    apparently-successful run that actually hit an error signal still
+    short-circuits to an assertion-failure, and the failure message
+    reflects the right source (``error`` text vs interactive-hang
+    warning vs generic fallback). Per DEC-006 / DEC-010 of
+    ``plans/super/63-runner-error-surfacing.md``.
+    """
+
+    EVAL_DATA = {
+        "skill_name": "classify-skill",
+        "assertions": [
+            {"id": "a_hello", "type": "contains", "value": "hello"},
+        ],
+    }
+
+    def test_interactive_hang_produces_assertion_failure(
+        self, tmp_skill_file, mock_runner
+    ):
+        """A run with output + exit_code=0 + ``error_category='interactive'``
+        + an ``"interactive-hang:"`` warning is ``succeeded=True`` (lenient)
+        but ``succeeded_cleanly=False`` (strict). Assertion evaluation
+        short-circuits and the failure message reflects the warning.
+        """
+        skill_path, _ = tmp_skill_file(
+            "classify-skill", eval_data=self.EVAL_DATA
+        )
+        runner = mock_runner()
+        # Replace the runner's return_value with one carrying the
+        # interactive-hang signal the fixture doesn't expose directly.
+        hang_warning = (
+            "interactive-hang: skill may have asked for input — "
+            "ensure all parameters are in test_args (heuristic)"
+        )
+        runner.run.return_value = SkillResult(
+            output="What color would you like?",
+            exit_code=0,
+            skill_name="classify-skill",
+            args="",
+            error=None,
+            error_category="interactive",
+            warnings=[hang_warning],
+        )
+
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        # Sanity-check the predicates agree with the plan.
+        assert runner.run.return_value.succeeded is True
+        assert runner.run.return_value.succeeded_cleanly is False
+
+        result = spec.evaluate()
+        assert not result.passed
+        assert len(result.results) == 1
+        msg = result.results[0].message
+        assert "failed to run" in msg
+        assert "interactive-hang:" in msg
+
+    def test_429_still_fails_as_before(self, tmp_skill_file, mock_runner):
+        """A ``rate_limit``-categorized run with a non-None ``error`` text
+        continues to land in the assertion-failure branch with the error
+        text surfaced — behavior unchanged from the pre-migration path.
+        """
+        skill_path, _ = tmp_skill_file(
+            "classify-skill", eval_data=self.EVAL_DATA
+        )
+        runner = mock_runner()
+        runner.run.return_value = SkillResult(
+            output="",
+            exit_code=1,
+            skill_name="classify-skill",
+            args="",
+            error="API Error: 429 Too Many Requests",
+            error_category="rate_limit",
+        )
+
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        result = spec.evaluate()
+        assert not result.passed
+        assert len(result.results) == 1
+        msg = result.results[0].message
+        assert "failed to run" in msg
+        assert "429" in msg
+
+    def test_clean_success_still_passes(self, tmp_skill_file, mock_runner):
+        """A ``succeeded_cleanly=True`` run (no error, no category, no
+        interactive-hang warning) proceeds to normal assertion evaluation.
+        Regression guard for the lenient-vs-strict split.
+        """
+        skill_path, _ = tmp_skill_file(
+            "classify-skill", eval_data=self.EVAL_DATA
+        )
+        runner = mock_runner(output="hello, world")
+        # Default fixture construction already yields a cleanly-succeeding
+        # result; verify the predicates to anchor the regression.
+        assert runner.run.return_value.succeeded_cleanly is True
+
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        result = spec.evaluate()
+        assert result.passed
+
+    def test_interactive_category_without_warning_uses_fallback(
+        self, tmp_skill_file, mock_runner
+    ):
+        """Defensive branch: ``error_category='interactive'`` but no
+        matching warning in ``warnings`` falls back to the
+        ``'interactive hang detected'`` literal.
+        """
+        skill_path, _ = tmp_skill_file(
+            "classify-skill", eval_data=self.EVAL_DATA
+        )
+        runner = mock_runner()
+        runner.run.return_value = SkillResult(
+            output="some output?",
+            exit_code=0,
+            skill_name="classify-skill",
+            args="",
+            error=None,
+            error_category="interactive",
+            warnings=[],  # no interactive-hang: prefix entry
+        )
+
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        result = spec.evaluate()
+        assert not result.passed
+        msg = result.results[0].message
+        assert "interactive hang detected" in msg
+
+    def test_generic_unknown_error_fallback(
+        self, tmp_skill_file, mock_runner
+    ):
+        """Defensive branch: no error text, no interactive category, but
+        ``succeeded_cleanly=False`` (e.g. ``succeeded=False`` due to
+        empty output / nonzero exit). Falls back to ``'Unknown error'``.
+        """
+        skill_path, _ = tmp_skill_file(
+            "classify-skill", eval_data=self.EVAL_DATA
+        )
+        runner = mock_runner()
+        runner.run.return_value = SkillResult(
+            output="",
+            exit_code=1,
+            skill_name="classify-skill",
+            args="",
+            error=None,
+            error_category=None,
+            warnings=[],
+        )
+
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        assert runner.run.return_value.succeeded_cleanly is False
+        result = spec.evaluate()
+        assert not result.passed
+        msg = result.results[0].message
+        assert "Unknown error" in msg
 
 
 class TestFileBasedOutput:
