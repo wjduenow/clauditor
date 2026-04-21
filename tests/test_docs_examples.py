@@ -62,15 +62,20 @@ def _json_fenced_blocks(text: str) -> list[str]:
     """Extract every ```json ... ``` fenced code block from ``text``.
 
     Returns the block bodies (fence markers stripped) in file order.
-    A fenced block is matched by a line beginning with ```json``` and
-    a subsequent line beginning with ``` on its own (allowing trailing
+    A fenced block is matched by a line beginning with ```json`` and
+    a subsequent line whose entire content is ``` (allowing trailing
     whitespace). Non-JSON fences (```python```, ```text```, …) are
     skipped so rubric / pytest examples do not trigger false positives.
     """
-    # Multiline-dotall: ``.`` matches newline so we can capture block
-    # bodies across lines. Non-greedy ``.*?`` stops at the first
-    # closing fence.
-    pattern = re.compile(r"```json\s*\n(.*?)```", re.DOTALL)
+    # ``^...$`` anchors (MULTILINE) keep the match scoped to
+    # line-start / line-end so inline backtick sequences inside prose
+    # cannot accidentally open or close a fence. ``.`` with DOTALL
+    # lets the body span lines; non-greedy ``.*?`` stops at the first
+    # bare closing fence.
+    pattern = re.compile(
+        r"^```json\s*\n(.*?)^```\s*$",
+        re.DOTALL | re.MULTILINE,
+    )
     return pattern.findall(text)
 
 
