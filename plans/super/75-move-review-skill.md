@@ -3,7 +3,7 @@
 ## Meta
 
 - **Ticket:** [#75](https://github.com/wjduenow/clauditor/issues/75)
-- **Phase:** detailing
+- **Phase:** devolved
 - **Sessions:** 1
 - **Last session:** 2026-04-21
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/75-move-review-skill`
@@ -553,4 +553,19 @@ Meta phase advances past `devolved`.
 
 ## Beads manifest
 
-*(Filled in Phase 7 on devolve.)*
+- **Epic:** `clauditor-7qn` — `#75: Move review-agentskills-spec to
+  .claude/skills/ (epic)`
+- **Tasks:**
+  - `clauditor-7qn.1` — US-001 — Move skill + update all references
+    (ready; no blockers)
+  - `clauditor-7qn.2` — US-002 — Refresh
+    internal-skill-live-test-tmp-symlink rule (blocked on
+    `clauditor-7qn.1`)
+  - `clauditor-7qn.3` — US-003 — Quality Gate (code review x4 +
+    CodeRabbit + wheel verification + live smoke; blocked on
+    `clauditor-7qn.1` and `clauditor-7qn.2`)
+  - `clauditor-7qn.4` — US-004 — Patterns & Memory (blocked on
+    `clauditor-7qn.3`)
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/75-move-review-skill`
+- **Branch:** `feature/75-move-review-skill`
+- **Plan PR:** https://github.com/wjduenow/clauditor/pull/76
