@@ -1,10 +1,12 @@
-"""Tests for ``clauditor lint`` CLI command (US-003, US-004).
+"""Tests for ``clauditor lint`` CLI command (US-003, US-004, US-005).
 
-Plain-text output plus the ``--strict`` flag (US-004, DEC-004). The
-``--json`` flag (US-005) is a separate bead.
+Plain-text output, the ``--strict`` flag (US-004, DEC-004), and the
+``--json`` flag (US-005, DEC-012).
 """
 
 from __future__ import annotations
+
+import json
 
 import pytest
 
@@ -223,13 +225,13 @@ class TestCmdLint:
 
 
 # ---------------------------------------------------------------------------
-# Argparse surface — ``--strict`` is now registered (US-004, DEC-004);
-# ``--json`` is deferred to US-005.
+# Argparse surface — ``--strict`` (US-004, DEC-004) and ``--json``
+# (US-005, DEC-012) are both registered.
 # ---------------------------------------------------------------------------
 
 
 class TestArgparseSurface:
-    """Verify the post-US-004 argparse surface (``--strict`` on, ``--json`` off)."""
+    """Verify the post-US-005 argparse surface (``--strict`` + ``--json``)."""
 
     def test_strict_flag_accepted(self, tmp_path, capsys):
         """``--strict`` is registered and parses without error (US-004)."""
@@ -248,13 +250,22 @@ class TestArgparseSurface:
         captured = capsys.readouterr()
         assert "--strict" in captured.out
 
-    def test_json_flag_not_available(self, tmp_path, capsys):
-        """``--json`` is not registered by this bead (US-005)."""
+    def test_json_flag_accepted(self, tmp_path, capsys):
+        """``--json`` is registered and parses without error (US-005)."""
         skill_path = _make_valid_skill(tmp_path)
 
+        # A minimal-valid skill has no issues, so ``--json`` should not
+        # change the exit code — exit 0 regardless.
+        rc = main(["lint", "--json", str(skill_path)])
+        assert rc == 0
+
+    def test_json_flag_in_help(self, capsys):
+        """``--json`` appears in the ``lint --help`` output."""
         with pytest.raises(SystemExit) as exc:
-            main(["lint", "--json", str(skill_path)])
-        assert exc.value.code == 2
+            main(["lint", "--help"])
+        assert exc.value.code == 0
+        captured = capsys.readouterr()
+        assert "--json" in captured.out
 
 
 # ---------------------------------------------------------------------------
@@ -418,3 +429,209 @@ class TestStrictFlag:
             in captured.err
         )
         assert "Cannot lint: SKILL.md frontmatter is not valid YAML" in captured.out
+
+
+# ---------------------------------------------------------------------------
+# ``--json`` output envelope (US-005, DEC-012).
+#
+# Envelope shape:
+#
+#   {
+#     "schema_version": 1,
+#     "skill_path": "<resolved-path>",
+#     "passed": bool,
+#     "issues": [
+#       {"code": "...", "severity": "error"|"warning", "message": "..."}
+#     ]
+#   }
+#
+# ``schema_version: 1`` is the FIRST key in the payload per
+# ``.claude/rules/json-schema-version.md``. When ``--json`` is set,
+# stderr is empty and exit codes are identical to the non-JSON path
+# (including ``--strict`` interaction and the INVALID_YAML → exit 1
+# special case).
+# ---------------------------------------------------------------------------
+
+
+class TestJsonOutput:
+    """Tests for ``clauditor lint --json`` (US-005, DEC-012)."""
+
+    def test_json_pass_envelope(self, tmp_path, capsys):
+        """Minimal-valid skill with ``--json`` emits a pass envelope, exit 0."""
+        skill_path = _make_valid_skill(tmp_path)
+
+        rc = main(["lint", "--json", str(skill_path)])
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert payload["schema_version"] == 1
+        assert payload["passed"] is True
+        assert payload["issues"] == []
+        assert payload["skill_path"] == str(skill_path.resolve())
+
+    def test_json_schema_version_first_key(self, tmp_path, capsys):
+        """``schema_version`` is the FIRST key in the payload (structural).
+
+        Verified by reading the raw JSON string — not just that the key
+        is present, but that it is the first one in insertion order.
+        """
+        skill_path = _make_valid_skill(tmp_path)
+
+        rc = main(["lint", "--json", str(skill_path)])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        # Locate the first quoted key in the raw JSON string. The first
+        # opening double-quote inside the object belongs to the first key.
+        brace_idx = out.index("{")
+        first_key_start = out.index('"', brace_idx)
+        first_key_end = out.index('"', first_key_start + 1)
+        first_key = out[first_key_start + 1 : first_key_end]
+        assert first_key == "schema_version"
+
+    def test_json_warning_envelope_no_strict(self, tmp_path, capsys):
+        """Warning-only + ``--json`` (no strict) → passed=True, exit 0."""
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        _write_warning_only(skill_path)
+
+        rc = main(["lint", "--json", str(skill_path)])
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert payload["passed"] is True
+        assert len(payload["issues"]) >= 1
+        assert all(i["severity"] == "warning" for i in payload["issues"])
+        codes = [i["code"] for i in payload["issues"]]
+        assert "AGENTSKILLS_BODY_TOO_LONG" in codes
+
+    def test_json_warning_envelope_with_strict(self, tmp_path, capsys):
+        """Warning-only + ``--strict --json`` → passed=False, exit 2.
+
+        ``--strict`` promotes warnings to failures; the JSON envelope's
+        ``passed`` must mirror the effective exit-code outcome.
+        """
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        _write_warning_only(skill_path)
+
+        rc = main(["lint", "--strict", "--json", str(skill_path)])
+
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert payload["passed"] is False
+        codes = [i["code"] for i in payload["issues"]]
+        assert "AGENTSKILLS_BODY_TOO_LONG" in codes
+
+    def test_json_error_envelope(self, tmp_path, capsys):
+        """Error-severity skill + ``--json`` → passed=False, exit 2."""
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        _write_error_only(skill_path)
+
+        rc = main(["lint", "--json", str(skill_path)])
+
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert payload["passed"] is False
+        codes = [i["code"] for i in payload["issues"]]
+        assert "AGENTSKILLS_NAME_MISSING" in codes
+        assert any(i["severity"] == "error" for i in payload["issues"])
+
+    def test_json_invalid_yaml_envelope(self, tmp_path, capsys):
+        """Malformed frontmatter + ``--json`` → passed=False, exit 1.
+
+        Preserves the INVALID_YAML → exit 1 special case from US-003.
+        """
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        skill_path.parent.mkdir()
+        skill_path.write_text(
+            "---\nname: my-skill\ndescription: Missing closing fence.\n"
+            "# Body without closing ---\n",
+            encoding="utf-8",
+        )
+
+        rc = main(["lint", "--json", str(skill_path)])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert payload["passed"] is False
+        assert len(payload["issues"]) == 1
+        assert payload["issues"][0]["code"] == "AGENTSKILLS_FRONTMATTER_INVALID_YAML"
+
+    def test_json_path_not_a_file_envelope(self, tmp_path, capsys):
+        """Directory + ``--json`` → passed=False, exit 1, synthetic PATH_* issue."""
+        some_dir = tmp_path / "not-a-file"
+        some_dir.mkdir()
+
+        rc = main(["lint", "--json", str(some_dir)])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert payload["passed"] is False
+        assert len(payload["issues"]) == 1
+        issue = payload["issues"][0]
+        assert issue["code"] == "PATH_NOT_A_FILE"
+        assert issue["severity"] == "error"
+
+    def test_json_silences_stderr(self, tmp_path, capsys):
+        """``--json`` on a failing case emits NO stderr output."""
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        _write_error_only(skill_path)
+
+        rc = main(["lint", "--json", str(skill_path)])
+
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        # And no conformance-prefix lines leaked into stdout either.
+        assert "clauditor.conformance:" not in captured.out
+
+    def test_json_issue_fields(self, tmp_path, capsys):
+        """Each JSON issue has exactly 3 keys: code, severity, message."""
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        _write_mixed(skill_path)
+
+        rc = main(["lint", "--json", str(skill_path)])
+
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert len(payload["issues"]) >= 1
+        for issue in payload["issues"]:
+            assert set(issue.keys()) == {"code", "severity", "message"}
+            assert isinstance(issue["code"], str)
+            assert issue["severity"] in ("error", "warning")
+            assert isinstance(issue["message"], str)
+
+    def test_json_unreadable_file_envelope(self, tmp_path, capsys, monkeypatch):
+        """``OSError`` on read + ``--json`` → exit 1, PATH_UNREADABLE issue."""
+        skill_path = _make_valid_skill(tmp_path)
+
+        def _boom(self, *_args, **_kwargs):
+            raise OSError("simulated read failure")
+
+        from pathlib import Path
+
+        monkeypatch.setattr(Path, "read_text", _boom)
+
+        rc = main(["lint", "--json", str(skill_path)])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert payload["passed"] is False
+        assert len(payload["issues"]) == 1
+        assert payload["issues"][0]["code"] == "PATH_UNREADABLE"
+        assert payload["issues"][0]["severity"] == "error"
