@@ -4,8 +4,9 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/64
 - **Branch:** `feature/64-runner-auth-timeout`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/64-runner-auth-timeout`
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **PR:** https://github.com/wjduenow/clauditor/pull/70
+- **Epic:** `clauditor-r53`
 - **Sessions:** 1
 - **Last session:** 2026-04-20
 
@@ -916,7 +917,33 @@ document `EvalSpec.timeout`.
 
 ## Beads Manifest
 
-_(pending)_
+- **Epic:** `clauditor-r53` — #64: Runner auth-source control +
+  configurable timeout.
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/64-runner-auth-timeout`
+- **Branch:** `feature/64-runner-auth-timeout`
+- **PR:** https://github.com/wjduenow/clauditor/pull/70 (plan only)
+
+### Tasks
+
+| Bead ID | Story | Depends on |
+|---------|-------|------------|
+| clauditor-r53.1 | US-001 — EvalSpec.timeout field + load validation | — |
+| clauditor-r53.2 | US-002 — `_env_without_api_key()` pure helper | — |
+| clauditor-r53.3 | US-003 — `SkillRunner.run(env=, timeout=)` kwargs | r53.2 |
+| clauditor-r53.4 | US-004 — `apiKeySource` parser + `SkillResult.api_key_source` + stderr + docs | — |
+| clauditor-r53.5 | US-005 — `SkillSpec.run` precedence (CLI > spec > default) | r53.1, r53.3 |
+| clauditor-r53.6 | US-006 — CLI flags on validate/grade/capture/run | r53.2, r53.5 |
+| clauditor-r53.7 | US-007 — `--clauditor-no-api-key` pytest option | r53.2, r53.5 |
+| clauditor-r53.8 | US-008 — Quality Gate (code-reviewer ×4 + CodeRabbit) | r53.1…r53.7 |
+| clauditor-r53.9 | US-009 — Patterns & Memory (rules + docs) | r53.8 |
+
+### Ready work (no blockers)
+
+- `clauditor-r53.1` (US-001)
+- `clauditor-r53.2` (US-002)
+- `clauditor-r53.4` (US-004)
+
+Confirmed via `bd ready` from the worktree.
 
 ---
 
@@ -956,3 +983,8 @@ user-facing surfaces (CLI flags, pytest plugin option).
 (https://github.com/wjduenow/clauditor/pull/70). Awaiting
 GitHub review; next command: "devolve" / "ready for Ralph" to
 create beads.
+
+**2026-04-20 (7)** — Devolved to beads. Epic `clauditor-r53`
+with 9 tasks (r53.1…r53.9) and 15 dependencies wired. `bd
+ready` confirms US-001, US-002, US-004 have no blockers. Ready
+for `/ralph-run`.
