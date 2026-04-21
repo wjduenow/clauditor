@@ -321,8 +321,70 @@ Confirmed in Q4. No edits to:
   Both are hands-off per plan convention — back-editing historical
   plan docs would falsify the record; editing this plan's own paths
   mid-flight would muddy the audit trail. All *active* references
-  (code, tests, user-facing docs) are updated. Mention this in
-  US-004's Patterns & Memory if it generalizes to a durable pattern.
+  (code, tests, user-facing docs) are updated.
+
+### Ralph closeout (2026-04-21)
+
+- **6 commits landed on `feature/75-move-review-skill`:**
+  - `2a7dfb8` — US-001 move + reference updates (+ gap-fix for
+    `tests/test_bundled_skill.py:32`)
+  - `657f16b` — plan session note for US-001 discovery gap
+  - `9ba175d` — US-002 rule-doc refresh
+  - `810eddf` — Quality Gate pass 1 terminology fix
+    (`docs/cli-reference.md`, `src/clauditor/conformance.py`)
+  - `20ece79` — Quality Gate pass 3 terminology fix
+    (`CHANGELOG.md`, `tests/test_bundled_skill.py` assertion messages)
+  - `df71be8` — Quality Gate pass 4 terminology fix
+    (`.eval.json` description, test module docstring)
+- **DEC-005 wheel verification — empirical PASS.** `uv build` +
+  `unzip -l dist/clauditor-0.1.0-py3-none-any.whl`:
+  - `grep -i review-agentskills-spec` → exit 1 (zero hits) — the
+    skill is no longer shipped to end users.
+  - `grep -F clauditor/SKILL.md` → exit 0 (one hit) — the
+    `/clauditor` bundled skill still ships.
+  The plan's #1 motivation is now concretely verified.
+- **Quality Gate deferrals** (flagged at bead-close):
+  - Live-smoke test (`CLAUDITOR_RUN_LIVE=1` + `ANTHROPIC_API_KEY` +
+    `claude` on PATH) — requires user env, can't run autonomously.
+    **User action needed** before declaring full Quality Gate
+    closed.
+  - CodeRabbit review — not available as a local skill; will
+    surface via the draft PR (#76) once re-pushed if the repo is
+    integrated.
+- **Terminology-sweep lesson (codified in US-004).** The 4-pass
+  code-review discipline is specifically valuable for
+  **terminology-sweep** refactors. Each pass caught new "bundled"
+  references the prior passes missed: pass 1 fixed
+  `docs/cli-reference.md` + `conformance.py`; pass 3 fixed
+  `CHANGELOG.md` + test assertion messages; pass 4 fixed
+  `.eval.json` description + test module docstring. A single pass
+  would have left 4 stale references. A 2-pass gate would have
+  caught 2 of 4. The 4-pass gate achieved completeness.
+- **"Refresh vs delete" rule codified (US-004).** DEC-002 and
+  DEC-006 captured a judgment call that applies broadly to any
+  refactor that touches a file named in a
+  `.claude/rules/*.md` canonical-implementation section. The new
+  `.claude/rules/rule-refresh-vs-delete.md` codifies the
+  two-question decision path (pattern still load-bearing? → refresh;
+  pattern obsolete? → delete). First canonical anchor: the
+  `internal-skill-live-test-tmp-symlink.md` refresh in US-002.
+- **Orchestration deviation note.** US-004 ran inline (not as a
+  worker subagent) per an orchestrator judgment call: the content
+  (rule codification + memory tightening) depended on dense session
+  context that would have cost more to prompt-dump than to execute
+  inline. Quality Gate also runs inline per `/ralph-run` Step 3b;
+  this is a similar "the isolation benefits don't pay off" case.
+  A future ralph-spec revision could make this explicit: tasks
+  whose content is session-history-dependent run inline; tasks
+  whose content is file-dependent run as workers.
+- **Deferred items for the user on pickup:**
+  1. Run the live-smoke test: `CLAUDITOR_RUN_LIVE=1 uv run pytest
+     -m live tests/test_bundled_review_skill.py -v` from
+     `/home/wesd/dev/worktrees/clauditor/feature/75-move-review-skill`.
+  2. Re-push the branch (new commits since the plan-doc draft PR
+     #76) so CodeRabbit picks up the code changes.
+  3. `bd dolt push` + `git push` at session close per CLAUDE.md
+     session-close protocol.
 
 ## Detailed breakdown
 
