@@ -204,6 +204,42 @@ bare hostnames too.
 Field-level checks still run over all extracted entries so you see both
 the count failure and any per-entry failures.
 
+## Optional top-level fields
+
+A few `EvalSpec` fields tune specific code paths and are safe to omit:
+
+- **`user_prompt`** (string, default `null`) — a natural-language query
+  fed to the blind A/B judge (`blind_compare_from_spec` and the
+  `clauditor_blind_compare` pytest fixture). Distinct from `test_args`:
+  `test_args` is the CLI argument string passed to the skill subprocess,
+  while `user_prompt` is the conversational framing the judge sees when
+  comparing two skill outputs. Required only on the blind-compare code
+  path; other commands (`validate`, `grade`, `extract`, `triggers`)
+  ignore it.
+- **`allow_hang_heuristic`** (bool, default `true`) — controls the
+  interactive-hang detector in `SkillRunner`. The heuristic flags a
+  run as a likely-interactive-hang when the skill stops after one turn
+  with a trailing `?` or an `AskUserQuestion` tool call. Set to
+  `false` to opt a specific skill out when the heuristic consistently
+  mis-classifies its output (e.g. a skill whose correct answer ends
+  in a rhetorical question). When disabled, a suppressed-heuristic
+  run still lands in `SkillResult` but without the `error_category=
+  "interactive"` signal.
+- **`grading_model`** (string, default `"claude-sonnet-4-6"`) — the
+  Anthropic model used for Layer 3 grading. Override per-spec when you
+  want to trade cost for fidelity.
+- **`grade_thresholds`** (object, default `null`) — an object with
+  `min_pass_rate` and/or `min_mean_score` (both floats in `[0.0, 1.0]`)
+  that gate `clauditor grade`'s exit code. When set, a run whose
+  metrics fall below either threshold exits `1` (signal failed) rather
+  than `0`.
+- **`variance`** (object, default `null`) — `{"n_runs": int,
+  "min_stability": float}` for `clauditor grade --variance`. Runs the
+  skill `n_runs` times, grades each, and asserts cross-run agreement.
+- **`trigger_tests`** (object, default `null`) — `{"should_trigger":
+  [str, ...], "should_not_trigger": [str, ...]}` for `clauditor
+  triggers`. Required by that command; other commands ignore it.
+
 ## Schema history
 
 **Issue #67 — per-type assertion keys.** Assertion dicts previously

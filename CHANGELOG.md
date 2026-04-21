@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- **Assertion dicts use per-type semantic keys (#67).** The single
+  overloaded `value` key on each `assertions[]` entry has been
+  replaced with per-type keys: `needle` (on `contains` /
+  `not_contains`), `pattern` (on `regex` / `min_count`), `length`
+  (on `min_length` / `max_length`), `count` (on `min_count` /
+  `has_urls` / `has_entries` / `urls_reachable` / `has_format`),
+  and `format` (on `has_format`). Integer fields are native JSON
+  ints, not strings — `{"length": 500}`, not `{"length": "500"}`.
+  The loader rejects the old shape at load time with a per-type
+  "did you mean?" hint pointing at the correct key. No back-compat
+  window ships — hand-edit old specs to the new shape, or regenerate
+  them with `clauditor propose-eval --force`. See
+  [`docs/eval-spec-reference.md#assertion-types-and-per-type-keys`](docs/eval-spec-reference.md#assertion-types-and-per-type-keys)
+  for the full per-type key table.
+
 - **`SkillResult.assert_*` methods moved to `SkillAsserter`.** The
   `assert_contains` / `assert_not_contains` / `assert_matches` /
   `assert_has_urls` / `assert_has_entries` / `assert_min_count` /
@@ -40,6 +55,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fixture list and assertion-method reference.
 
 ### Added
+
+- **Runner error surfacing (#63).** `SkillResult` gained an
+  `error_category` field —
+  `"rate_limit" | "auth" | "api" | "interactive" | "subprocess" |
+  "timeout" | None` — that classifies any non-clean signal alongside
+  the existing `error` string. CLI error rendering now surfaces
+  stream-json `is_error: true` result messages with the correct
+  category hint, and an interactive-hang heuristic flags runs that
+  stop after one turn with a trailing `?` or `AskUserQuestion`
+  tool call. The heuristic can be disabled per-spec via
+  `allow_hang_heuristic: false`. A new `succeeded_cleanly`
+  predicate distinguishes "actually completed cleanly" from the
+  lenient `succeeded` flag. See
+  [`docs/pytest-plugin.md`](docs/pytest-plugin.md) and
+  [`docs/stream-json-schema.md`](docs/stream-json-schema.md).
+- **Modern `<name>/SKILL.md` skill layout (#66).** Skill discovery
+  now supports both the legacy `.claude/commands/<name>.md` layout
+  and the modern `.claude/skills/<name>/SKILL.md` directory layout
+  used by Anthropic's plugin / agentskills.io ecosystem. Skill
+  identity is derived from YAML frontmatter `name:` first, falling
+  back to a layout-aware filesystem derivation (directory name for
+  modern layout, file stem for legacy). Invalid or mismatched
+  names emit a stderr warning and fall through rather than
+  hard-failing. See `.claude/rules/skill-identity-from-frontmatter.md`.
+- **Blind A/B judge framing via `user_prompt`.** `EvalSpec` gained
+  an optional top-level `user_prompt: str | None` field that feeds
+  the conversational framing into `blind_compare_from_spec` and the
+  `clauditor_blind_compare` pytest fixture. Distinct from
+  `test_args` (which is the CLI arg string for the skill
+  subprocess). See
+  [`docs/eval-spec-reference.md#optional-top-level-fields`](docs/eval-spec-reference.md#optional-top-level-fields).
+
+### Added (prior unreleased)
 
 - `clauditor propose-eval <SKILL.md>` — LLM-assisted EvalSpec
   bootstrap. Reads SKILL.md and an optional captured run, asks
