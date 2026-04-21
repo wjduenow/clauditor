@@ -23,7 +23,7 @@ Auditor for AgentSkills.io skills and Claude Integrations. Catches when your ski
 
 ```bash
 pip install clauditor           # CLI only (Layer 1)
-pip install clauditor[grader]   # + LLM grading (Layers 2 & 3)
+pip install clauditor[grader]   # + LLM grading (Layers 2 & 3) and `propose-eval`
 ```
 
 Source install: `git clone https://github.com/wjduenow/clauditor.git && cd clauditor && uv sync --dev`.
@@ -36,9 +36,19 @@ Source install: `git clone https://github.com/wjduenow/clauditor.git && cd claud
 
 ## One-minute example
 
+**Greenfield (no SKILL.md yet):**
+
 ```bash
 clauditor init .claude/commands/my-skill.md       # generate starter eval spec
 clauditor validate .claude/commands/my-skill.md   # → "4/4 assertions passed (100%)"
+```
+
+**Brownfield (SKILL.md already exists):**
+
+```bash
+clauditor propose-eval .claude/skills/my-skill/SKILL.md --dry-run  # preview (no tokens)
+clauditor propose-eval .claude/skills/my-skill/SKILL.md            # LLM writes the spec
+clauditor validate    .claude/skills/my-skill/SKILL.md             # run it
 ```
 
 Swap `validate` for `grade` once you've added `grading_criteria` to the spec.
@@ -69,7 +79,7 @@ Full reference: [docs/skill-usage.md](docs/skill-usage.md).
 
 ## Quick Start
 
-A new skill goes from "untested" to "covered" in three steps: `clauditor init` generates an eval spec, `clauditor validate` tightens L1 assertions against a real capture, then the same spec wires into pytest for regression coverage.
+A new skill goes from "untested" to "covered" in three steps: `clauditor init` generates an eval spec, `clauditor validate` tightens L1 assertions against a real capture, then the same spec wires into pytest for regression coverage. If the SKILL.md already exists, substitute `clauditor propose-eval` for `init` to have Sonnet bootstrap a full three-layer spec from the skill (plus any captured run).
 
 ```bash
 clauditor init .claude/commands/my-skill.md

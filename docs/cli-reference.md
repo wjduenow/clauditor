@@ -25,8 +25,10 @@ clauditor trend <skill> --list-metrics           # List available metric paths
 clauditor trend <skill> --metric grader.input_tokens --command extract  # Filter by subcommand
 clauditor triggers <skill.md>          # Trigger precision testing
 clauditor capture <skill> -- "args"    # Run skill, save stdout to tests/eval/captured/
+clauditor audit <skill>                # Aggregate per-assertion pass rates across iterations
 clauditor suggest <skill.md>           # Propose SKILL.md edits from prior failing iterations
 clauditor propose-eval <skill.md>      # LLM-assisted EvalSpec bootstrap (SKILL.md + optional capture)
+clauditor setup                        # Install the bundled /clauditor slash command symlink
 clauditor doctor                       # Report environment diagnostics
 ```
 
@@ -139,6 +141,6 @@ clauditor uses structured exit codes so scripts and CI pipelines can distinguish
 | `0`  | Success. The command completed and, where applicable, the skill passed its gate (all assertions satisfied, all criteria above threshold, no regression detected, no trigger miss). |
 | `1`  | Signal failed. The tool ran fine, but the skill did not meet its bar: an L1 assertion failed, an L3 criterion scored below threshold, `clauditor compare` detected a regression relative to baseline, or a trigger classification was wrong. The on-disk artifacts are complete and valid; the skill needs fixing, not the tool. |
 | `2`  | Input error. A user-supplied argument was missing, malformed, or incompatible with another flag (e.g. `--iteration` without an integer value, a skill `.md` file that does not exist, an eval spec that fails schema validation). The command exited before doing work; re-run with corrected arguments. |
-| `3`  | Anthropic API error. `clauditor suggest` only. The Anthropic SDK returned a non-retriable failure (auth, malformed request, exhausted retries). No sidecar is written; re-run once the upstream issue is resolved. |
+| `3`  | Anthropic API error. `clauditor suggest` and `clauditor propose-eval`. The Anthropic SDK returned a non-retriable failure (auth, malformed request, exhausted retries). No sidecar is written; re-run once the upstream issue is resolved. |
 
 Commands that only invoke the Anthropic API transiently (`extract`, `grade`, `triggers`) funnel API failures through the same retry policy as `suggest` but surface them as exit 1 with an `ERROR:` line on stderr rather than a distinct code.
