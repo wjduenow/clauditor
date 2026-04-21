@@ -75,7 +75,7 @@ Non-LLM 0/1/2 taxonomy per `.claude/rules/llm-cli-exit-code-taxonomy.md`:
 
 ### Claude Code extension allowlist
 
-The agentskills.io spec defines the frontmatter keys `name`, `description`, `license`, `compatibility`, `metadata`, and `allowed-tools`. Unknown keys normally trigger `AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY` (warning). Two Claude Code extension keys are allowlisted and do NOT trigger the warning: `argument-hint` and `disable-model-invocation`. The allowlist is maintained by the bundled `/review-agentskills-spec` skill, which periodically diffs Claude Code's published frontmatter documentation against the `KNOWN_CLAUDE_CODE_EXTENSION_KEYS` constant in `src/clauditor/conformance.py` (per DEC-009 and DEC-013 of `plans/super/71-agentskills-lint.md`).
+The agentskills.io spec defines the frontmatter keys `name`, `description`, `license`, `compatibility`, `metadata`, and `allowed-tools`. Unknown keys normally trigger `AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY` (warning). Two Claude Code extension keys are allowlisted and do NOT trigger the warning: `argument-hint` and `disable-model-invocation`. The allowlist is maintained by the maintainer-only `/review-agentskills-spec` skill, which periodically diffs Claude Code's published frontmatter documentation against the `KNOWN_CLAUDE_CODE_EXTENSION_KEYS` constant in `src/clauditor/conformance.py` (per DEC-009 and DEC-013 of `plans/super/71-agentskills-lint.md`).
 
 ### Soft-warn hook on every skill load
 
@@ -83,7 +83,7 @@ Beyond the standalone `lint` command, `SkillSpec.from_file` calls `check_conform
 
 ### See also
 
-- **`/review-agentskills-spec`** — the maintainer-facing sibling bundled skill (internal-only; excluded from `clauditor setup`). **`clauditor lint`** checks a user's skill against the spec; **`/review-agentskills-spec`** audits the upstream spec itself (and Claude Code's frontmatter documentation) for drift against clauditor's enforcement. Two sides of the same check: one catches user skills that drift from the spec, the other catches clauditor's enforcement drifting from the spec.
+- **`/review-agentskills-spec`** — the maintainer-only sibling skill (lives at repo-root `.claude/skills/`, not shipped in the wheel, not installed by `clauditor setup`). **`clauditor lint`** checks a user's skill against the spec; **`/review-agentskills-spec`** audits the upstream spec itself (and Claude Code's frontmatter documentation) for drift against clauditor's enforcement. Two sides of the same check: one catches user skills that drift from the spec, the other catches clauditor's enforcement drifting from the spec.
 
 ## propose-eval
 
