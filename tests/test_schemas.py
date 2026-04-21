@@ -1805,3 +1805,55 @@ class TestEvalSpecFromDict:
             EvalSpec.from_dict(bad_payload, spec_dir=tmp_path.resolve())
 
         assert str(ei_file.value) == str(ei_dict.value)
+
+
+class TestAllowHangHeuristic:
+    """DEC-005 / US-003: ``allow_hang_heuristic`` parsing in ``from_dict``.
+
+    Default ``True`` preserves back-compat; explicit True/False round-trips;
+    non-bool values raise the documented ``ValueError``.
+    """
+
+    def _dump(self, tmp_path, payload) -> str:
+        path = tmp_path / "spec.eval.json"
+        path.write_text(json.dumps(payload))
+        return str(path)
+
+    def test_default_is_true_when_absent(self, tmp_path):
+        path = self._dump(tmp_path, {"skill_name": "s"})
+        spec = EvalSpec.from_file(path)
+        assert spec.allow_hang_heuristic is True
+
+    def test_explicit_true_round_trips(self, tmp_path):
+        path = self._dump(
+            tmp_path, {"skill_name": "s", "allow_hang_heuristic": True}
+        )
+        spec = EvalSpec.from_file(path)
+        assert spec.allow_hang_heuristic is True
+
+    def test_explicit_false_round_trips(self, tmp_path):
+        path = self._dump(
+            tmp_path, {"skill_name": "s", "allow_hang_heuristic": False}
+        )
+        spec = EvalSpec.from_file(path)
+        assert spec.allow_hang_heuristic is False
+
+    @pytest.mark.parametrize("bad_value", ["false", "true", 0, 1, None])
+    def test_non_bool_raises(self, tmp_path, bad_value):
+        path = self._dump(
+            tmp_path,
+            {"skill_name": "s", "allow_hang_heuristic": bad_value},
+        )
+        with pytest.raises(
+            ValueError,
+            match="allow_hang_heuristic must be a bool",
+        ):
+            EvalSpec.from_file(path)
+
+    def test_sample_eval_still_loads_without_flag(self, tmp_path):
+        """Regression guard: the canonical SAMPLE_EVAL fixture (which has
+        no ``allow_hang_heuristic`` field) still loads and defaults True.
+        """
+        path = self._dump(tmp_path, SAMPLE_EVAL)
+        spec = EvalSpec.from_file(path)
+        assert spec.allow_hang_heuristic is True

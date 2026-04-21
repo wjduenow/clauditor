@@ -13,10 +13,12 @@ importlib.reload(_runner_mod)
 
 from clauditor.asserters import SkillAsserter  # noqa: E402
 from clauditor.runner import (  # noqa: E402
+    _INTERACTIVE_HANG_WARNING_PREFIX,
     _RESULT_TEXT_MAX_BYTES,
     SkillResult,
     SkillRunner,
     _classify_result_message,
+    _detect_interactive_hang,
 )
 from tests.conftest import (  # noqa: E402
     _FakePopen,
@@ -1796,4 +1798,357 @@ class TestFixtureHelpers:
         assert text_block["text"] == "Which city?"
         assert (
             tool_use["input"]["questions"][0]["question"] == "Which city?"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Interactive-hang detection (US-003, DEC-005, DEC-010, DEC-013)
+# ---------------------------------------------------------------------------
+
+
+def _assistant_event(
+    *,
+    text: str | None = None,
+    stop_reason: str | None = "end_turn",
+    tool_use_name: str | None = None,
+) -> dict:
+    """Build an assistant stream event for ``_detect_interactive_hang`` tests."""
+    content: list[dict] = []
+    if text is not None:
+        content.append({"type": "text", "text": text})
+    if tool_use_name is not None:
+        content.append(
+            {
+                "type": "tool_use",
+                "id": "toolu_fake",
+                "name": tool_use_name,
+                "input": {},
+            }
+        )
+    message: dict = {"role": "assistant", "content": content}
+    if stop_reason is not None:
+        message["stop_reason"] = stop_reason
+    return {"type": "assistant", "message": message}
+
+
+def _result_event(num_turns: int | None = 1) -> dict:
+    event: dict = {"type": "result", "subtype": "success", "is_error": False}
+    if num_turns is not None:
+        event["num_turns"] = num_turns
+    return event
+
+
+class TestDetectInteractiveHang:
+    """Pure-unit tests for ``_detect_interactive_hang``. No subprocess, no fixtures."""
+
+    def test_empty_stream_events_returns_false(self):
+        assert _detect_interactive_hang([], "hello?") is False
+
+    def test_single_turn_trailing_question_triggers(self):
+        events = [
+            _assistant_event(text="What would you like?"),
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "What would you like?") is True
+
+    def test_single_turn_ask_user_question_tool_use_triggers(self):
+        events = [
+            _assistant_event(
+                text="Please clarify.",
+                tool_use_name="AskUserQuestion",
+            ),
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "Please clarify.") is True
+
+    def test_single_turn_no_question_no_tool_use_returns_false(self):
+        events = [
+            _assistant_event(text="All done."),
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "All done.") is False
+
+    def test_multi_turn_with_trailing_question_returns_false(self):
+        events = [
+            _assistant_event(text="Working..."),
+            _assistant_event(text="Need more info?"),
+            _result_event(num_turns=2),
+        ]
+        assert _detect_interactive_hang(events, "Need more info?") is False
+
+    def test_missing_stop_reason_returns_false(self):
+        events = [
+            _assistant_event(text="Ends with?", stop_reason=None),
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "Ends with?") is False
+
+    def test_missing_num_turns_returns_false(self):
+        """Conservative: no num_turns means we cannot confirm single-turn."""
+        events = [
+            _assistant_event(text="Ends with?"),
+            _result_event(num_turns=None),
+        ]
+        assert _detect_interactive_hang(events, "Ends with?") is False
+
+    def test_different_tool_use_name_returns_false(self):
+        events = [
+            _assistant_event(
+                text="All done.", tool_use_name="SomeOtherTool"
+            ),
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "All done.") is False
+
+    def test_malformed_events_degrade_to_false(self):
+        """Events with missing/non-dict ``message`` or non-list ``content``
+        must degrade cleanly without raising.
+        """
+        events = [
+            {"type": "assistant"},  # no message key
+            {"type": "assistant", "message": "not-a-dict"},  # non-dict message
+            {
+                "type": "assistant",
+                "message": {"role": "assistant", "content": "not-a-list"},
+            },
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "hello") is False
+
+    def test_non_dict_event_skipped(self):
+        """Top-level events that are not dicts must not raise."""
+        events: list = ["not-a-dict", 42, _result_event(num_turns=1)]
+        assert _detect_interactive_hang(events, "hello?") is False
+
+    def test_non_string_stop_reason_treated_as_missing(self):
+        events = [
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "stop_reason": 42,
+                    "content": [{"type": "text", "text": "Ends with?"}],
+                },
+            },
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "Ends with?") is False
+
+    def test_tool_use_loop_tolerates_noise(self):
+        """Exercises defensive continues in the signal-(b) loop:
+        non-dict events, non-assistant events, non-dict messages,
+        non-list content, non-dict content blocks — all must be skipped
+        without interfering with a real AskUserQuestion tool_use block
+        reached later in the stream.
+        """
+        events: list = [
+            "not-a-dict",  # top-level non-dict, skipped
+            {"type": "system"},  # wrong type, skipped
+            {"type": "assistant"},  # missing message, skipped
+            {"type": "assistant", "message": "not-a-dict"},  # non-dict message
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "stop_reason": "end_turn",
+                    "content": "not-a-list",
+                },
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "stop_reason": "end_turn",
+                    "content": [
+                        "not-a-dict-block",
+                        {"type": "text", "text": "Please."},
+                        {
+                            "type": "tool_use",
+                            "name": "AskUserQuestion",
+                            "input": {},
+                        },
+                    ],
+                },
+            },
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "Please.") is True
+
+
+class TestInteractiveHangDetection:
+    """End-to-end: feed an interactive-hang stream through ``SkillRunner``
+    and assert the warning prefix + ``error_category`` wiring.
+    Traces to US-003 of ``plans/super/63-runner-error-surfacing.md``.
+    """
+
+    def _run_with_stream(
+        self,
+        fake: _FakePopen,
+        *,
+        allow_hang_heuristic: bool = True,
+    ) -> SkillResult:
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            return runner.run("skill", allow_hang_heuristic=allow_hang_heuristic)
+
+    def test_trailing_question_mark_triggers(self):
+        fake = make_fake_interactive_hang_stream()
+        result = self._run_with_stream(fake)
+        assert result.error_category == "interactive"
+        assert result.error is None
+        assert any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+        assert result.succeeded_cleanly is False
+
+    def test_ask_user_question_tool_use_triggers(self):
+        fake = make_fake_interactive_hang_stream(
+            text="Please provide the target.",
+            use_tool_use=True,
+        )
+        result = self._run_with_stream(fake)
+        assert result.error_category == "interactive"
+        assert any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+        assert result.succeeded_cleanly is False
+
+    def test_both_signals_triggers_once(self):
+        """Trailing ``?`` AND tool_use present → one warning, not duplicated."""
+        fake = make_fake_interactive_hang_stream(
+            text="Which option?", use_tool_use=True
+        )
+        result = self._run_with_stream(fake)
+        assert result.error_category == "interactive"
+        hang_warnings = [
+            w
+            for w in result.warnings
+            if w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+        ]
+        assert len(hang_warnings) == 1
+
+    def test_neither_signal_no_trigger(self):
+        """Normal successful stream (no `?`, no tool_use) → no trigger."""
+        fake = make_fake_skill_stream("All done.")
+        result = self._run_with_stream(fake)
+        assert result.error_category is None
+        assert not any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
+        )
+
+    def test_multi_turn_no_trigger(self):
+        """``num_turns: 3`` + trailing ``?`` → does not trigger."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "stop_reason": "end_turn",
+                        "content": [
+                            {"type": "text", "text": "anything more?"}
+                        ],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": False,
+                    "num_turns": 3,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error_category is None
+        assert not any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
+        )
+
+    def test_missing_num_turns_no_trigger(self):
+        """Result message with no ``num_turns`` at all → conservative False."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "stop_reason": "end_turn",
+                        "content": [
+                            {"type": "text", "text": "What next?"}
+                        ],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": False,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error_category is None
+        assert not any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
+        )
+
+    def test_allow_hang_heuristic_false_suppresses(self):
+        """Escape hatch off → no detection, no warning, no category."""
+        fake = make_fake_interactive_hang_stream()
+        result = self._run_with_stream(fake, allow_hang_heuristic=False)
+        assert result.error_category is None
+        assert not any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
+        )
+
+    def test_api_error_wins_over_hang(self):
+        """Stream with BOTH ``is_error: true`` AND trailing ``?`` →
+        error_category reflects the API error, not the heuristic. The
+        hang warning is NOT appended (detection is skipped when an API
+        error has already been classified).
+        """
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "stop_reason": "end_turn",
+                        "content": [
+                            {"type": "text", "text": "What should I do?"}
+                        ],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "error",
+                    "is_error": True,
+                    "result": "429 rate limit",
+                    "num_turns": 1,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error_category == "rate_limit"
+        assert result.error == "429 rate limit"
+        assert not any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
         )

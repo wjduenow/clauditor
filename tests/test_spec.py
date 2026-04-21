@@ -160,7 +160,12 @@ class TestRun:
         runner = mock_runner(output="explicit output")
         spec = SkillSpec.from_file(skill_path, runner=runner)
         result = spec.run(args="--custom flag")
-        runner.run.assert_called_once_with("run-skill", "--custom flag", cwd=None)
+        runner.run.assert_called_once_with(
+            "run-skill",
+            "--custom flag",
+            cwd=None,
+            allow_hang_heuristic=True,
+        )
         assert result.output == "explicit output"
 
     def test_run_uses_eval_test_args_when_no_args(self, tmp_skill_file, mock_runner):
@@ -168,7 +173,12 @@ class TestRun:
         runner = mock_runner(output="eval args output")
         spec = SkillSpec.from_file(skill_path, runner=runner)
         spec.run()
-        runner.run.assert_called_once_with("run-skill", "--depth quick", cwd=None)
+        runner.run.assert_called_once_with(
+            "run-skill",
+            "--depth quick",
+            cwd=None,
+            allow_hang_heuristic=True,
+        )
 
     def test_run_uses_empty_string_when_no_eval_no_args(
         self, tmp_skill_file, mock_runner
@@ -177,7 +187,12 @@ class TestRun:
         runner = mock_runner(output="empty args output")
         spec = SkillSpec.from_file(skill_path, runner=runner)
         spec.run()
-        runner.run.assert_called_once_with("run-skill", "", cwd=None)
+        runner.run.assert_called_once_with(
+            "run-skill",
+            "",
+            cwd=None,
+            allow_hang_heuristic=True,
+        )
 
 
 class TestEvaluate:
@@ -338,7 +353,7 @@ class TestOutputFilesResolutionWithStagedInputs:
         # Side-effect: the "skill" writes cleaned.csv into its staging CWD.
         base_result = runner.run.return_value
 
-        def side_effect(skill_name, args, *, cwd=None):
+        def side_effect(skill_name, args, *, cwd=None, allow_hang_heuristic=True):
             assert cwd == run_dir / "inputs"
             (cwd / "cleaned.csv").write_text(cleaned_text)
             return base_result
@@ -461,3 +476,51 @@ class TestFailedRunResult:
         assert "my-skill" in r.message
         assert "timeout" in r.message
         assert r.name == "skill_execution"
+
+
+class TestAllowHangHeuristicThreading:
+    """DEC-005 / US-003: the ``allow_hang_heuristic`` flag threads from the
+    EvalSpec through ``SkillSpec.run`` into ``SkillRunner.run(...)``.
+    """
+
+    def test_eval_spec_false_threads_to_runner(
+        self, tmp_skill_file, mock_runner
+    ):
+        eval_data = {
+            "skill_name": "off-skill",
+            "test_args": "",
+            "assertions": [],
+            "allow_hang_heuristic": False,
+        }
+        skill_path, _ = tmp_skill_file("off-skill", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run()
+        assert (
+            runner.run.call_args.kwargs.get("allow_hang_heuristic") is False
+        )
+
+    def test_eval_spec_default_threads_true(
+        self, tmp_skill_file, mock_runner
+    ):
+        eval_data = {
+            "skill_name": "on-skill",
+            "test_args": "",
+            "assertions": [],
+        }
+        skill_path, _ = tmp_skill_file("on-skill", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run()
+        assert (
+            runner.run.call_args.kwargs.get("allow_hang_heuristic") is True
+        )
+
+    def test_no_eval_spec_threads_true(self, tmp_skill_file, mock_runner):
+        skill_path = tmp_skill_file("bare-skill")
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run()
+        assert (
+            runner.run.call_args.kwargs.get("allow_hang_heuristic") is True
+        )
