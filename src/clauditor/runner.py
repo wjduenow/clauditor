@@ -13,6 +13,7 @@ rule: pattern, rationale, canonical implementation pointer).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -20,6 +21,29 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
+
+# Env vars stripped by :func:`env_without_api_key`. Both are
+# documented Anthropic SDK env-auth paths (DEC-007 of
+# ``plans/super/64-runner-auth-timeout.md``). Non-auth Anthropic env
+# vars such as ``ANTHROPIC_BASE_URL`` are intentionally preserved
+# (DEC-016).
+_API_KEY_ENV_VARS = frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"})
+
+
+def env_without_api_key(
+    base_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a new env dict with both auth env vars removed.
+
+    Pure, non-mutating helper per
+    ``.claude/rules/non-mutating-scrub.md``. When ``base_env`` is
+    ``None``, reads from ``os.environ``. Always returns a new dict
+    (never mutates the input). Strips ``ANTHROPIC_API_KEY`` and
+    ``ANTHROPIC_AUTH_TOKEN``; preserves every other key (including
+    ``ANTHROPIC_BASE_URL``).
+    """
+    source = base_env if base_env is not None else os.environ
+    return {k: v for k, v in source.items() if k not in _API_KEY_ENV_VARS}
 
 
 @dataclass
@@ -51,6 +75,13 @@ class SkillResult:
     raw_messages: list[dict] = field(default_factory=list)
     stream_events: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # US-004 / DEC-005: populated from the first stream-json
+    # ``type=="system" AND subtype=="init"`` message when the CLI
+    # emits an ``apiKeySource`` field. ``None`` when absent (older CLI
+    # builds or a malformed stream — per DEC-012 / DEC-015). The value
+    # is a label (``"ANTHROPIC_API_KEY"``, ``"claude.ai"``, ``"none"``),
+    # not a secret. See ``docs/stream-json-schema.md``.
+    api_key_source: str | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -265,6 +296,8 @@ class SkillRunner:
         args: str = "",
         *,
         cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
         allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         """Run a skill and capture its output.
@@ -274,6 +307,14 @@ class SkillRunner:
             args: Pre-filled arguments to skip interactive prompts
             cwd: Optional override for the subprocess working directory.
                 When ``None``, falls back to ``self.project_dir``.
+            env: Optional env dict forwarded to ``subprocess.Popen``.
+                When ``None`` (default), ``Popen`` inherits ``os.environ``
+                — today's behavior. When a dict, it replaces the child's
+                environment entirely (DEC-013; mirrors ``cwd`` shape per
+                ``.claude/rules/subprocess-cwd.md``).
+            timeout: Optional per-invocation watchdog timeout in seconds.
+                When ``None`` (default), falls back to ``self.timeout``
+                (DEC-010).
             allow_hang_heuristic: When False, skip the interactive-hang
                 heuristic (DEC-005). Threaded here from
                 ``EvalSpec.allow_hang_heuristic`` so authors can opt out
@@ -290,6 +331,8 @@ class SkillRunner:
             skill_name=skill_name,
             args=args,
             cwd=cwd,
+            env=env,
+            timeout=timeout,
             allow_hang_heuristic=allow_hang_heuristic,
         )
 
@@ -298,6 +341,8 @@ class SkillRunner:
         prompt: str,
         *,
         cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
         allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         """Run a raw prompt without skill prefix for baseline comparison.
@@ -307,6 +352,13 @@ class SkillRunner:
             cwd: Optional override for the subprocess working directory.
                 When ``None``, falls back to ``self.project_dir`` — see
                 ``.claude/rules/subprocess-cwd.md`` for the rationale.
+            env: Optional subprocess env dict. When ``None``, Popen
+                inherits ``os.environ``; when a dict, replaces verbatim.
+                Mirrors the ``env`` kwarg on :meth:`run`; callers that
+                want to strip credentials use
+                :func:`env_without_api_key`.
+            timeout: Optional per-invocation timeout (seconds). When
+                ``None``, falls back to ``self.timeout``.
             allow_hang_heuristic: When False, skip the interactive-hang
                 heuristic (DEC-005).
 
@@ -318,6 +370,8 @@ class SkillRunner:
             skill_name="__baseline__",
             args=prompt,
             cwd=cwd,
+            env=env,
+            timeout=timeout,
             allow_hang_heuristic=allow_hang_heuristic,
         )
 
@@ -332,13 +386,21 @@ class SkillRunner:
         skill_name: str,
         args: str,
         cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
         allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         """Run ``claude`` with stream-json output and parse the NDJSON stream.
 
         Uses ``try/finally`` so ``duration_seconds`` is populated on every
         exit path (success, timeout, CalledProcessError, FileNotFoundError).
+
+        ``env`` is forwarded to ``subprocess.Popen`` verbatim: ``None``
+        means "inherit ``os.environ``" (Popen's default); a dict replaces
+        the child's environment entirely. ``timeout`` overrides
+        ``self.timeout`` for the watchdog when not ``None`` (DEC-010).
         """
+        effective_timeout = timeout if timeout is not None else self.timeout
         start = time.monotonic()
         raw_messages: list[dict] = []
         stream_events: list[dict] = []
@@ -352,6 +414,13 @@ class SkillRunner:
         # over stderr per DEC-001.
         stream_json_error_text: str | None = None
         stream_json_error_category: str | None = None
+        # US-004 / DEC-005 / DEC-015 / DEC-017: capture the first
+        # ``type=="system" AND subtype=="init"`` message's
+        # ``apiKeySource`` value. First init wins; subsequent inits
+        # ignored. ``None`` when absent (older CLI builds / malformed
+        # stream) — per DEC-012, suppresses the stderr info line.
+        api_key_source: str | None = None
+        init_captured = False
         result: SkillResult | None = None
         proc: subprocess.Popen | None = None
         stderr_thread: threading.Thread | None = None
@@ -377,6 +446,7 @@ class SkillRunner:
                     stderr=subprocess.PIPE,
                     text=True,
                     cwd=str(cwd) if cwd is not None else str(self.project_dir),
+                    env=env,
                 )
             except FileNotFoundError:
                 result = SkillResult(
@@ -443,7 +513,7 @@ class SkillRunner:
                             f"{type(exc).__name__}: {exc}"
                         )
 
-            watchdog = threading.Timer(self.timeout, _on_timeout)
+            watchdog = threading.Timer(effective_timeout, _on_timeout)
             watchdog.daemon = True
             watchdog.start()
 
@@ -479,6 +549,20 @@ class SkillRunner:
                         if "type" in msg:
                             stream_events.append(msg)
                         mtype = msg.get("type")
+                        # US-004 / DEC-017: capture ``apiKeySource`` from
+                        # the FIRST ``system/init`` message. DEC-015: later
+                        # init messages are ignored. DEC-012: absence
+                        # stays ``None`` (no stderr line here — emitted
+                        # once after the loop).
+                        if (
+                            not init_captured
+                            and mtype == "system"
+                            and msg.get("subtype") == "init"
+                        ):
+                            init_captured = True
+                            val = msg.get("apiKeySource")
+                            if isinstance(val, str):
+                                api_key_source = val
                         if mtype == "assistant":
                             message = msg.get("message") or {}
                             content = message.get("content") or []
@@ -552,6 +636,7 @@ class SkillRunner:
                     raw_messages=raw_messages,
                     stream_events=stream_events,
                     warnings=list(warnings),
+                    api_key_source=api_key_source,
                 )
                 # Early return is load-bearing: a post-timeout stream-json
                 # is_error:true must not clobber the "timeout" error. Keep
@@ -568,6 +653,18 @@ class SkillRunner:
                 warnings.append(
                     "stream-json ended without a 'result' message; "
                     "token usage unavailable"
+                )
+
+            # US-004 / DEC-005: emit one stderr info line per run when
+            # ``apiKeySource`` was captured. DEC-012: suppress entirely
+            # when the field is absent (no "apiKeySource=unavailable"
+            # line) — absence is the signal. Values are labels
+            # (``ANTHROPIC_API_KEY``, ``claude.ai``, ``none``), not
+            # secrets, so printing them is safe.
+            if api_key_source is not None:
+                print(
+                    f"clauditor.runner: apiKeySource={api_key_source}",
+                    file=sys.stderr,
                 )
 
             # DEC-005 / DEC-010: interactive-hang heuristic. Only run the
@@ -623,6 +720,7 @@ class SkillRunner:
                 raw_messages=raw_messages,
                 stream_events=stream_events,
                 warnings=list(warnings),
+                api_key_source=api_key_source,
             )
             return result
         finally:

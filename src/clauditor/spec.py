@@ -111,6 +111,8 @@ class SkillSpec:
         args: str | None = None,
         *,
         run_dir: Path | None = None,
+        timeout_override: int | None = None,
+        env_override: dict[str, str] | None = None,
     ) -> SkillResult:
         """Run the skill and return captured output.
 
@@ -142,11 +144,26 @@ class SkillSpec:
         allow_hang_heuristic = (
             self.eval_spec.allow_hang_heuristic if self.eval_spec else True
         )
+        # DEC-002: timeout precedence is CLI > spec > default. ``None``
+        # falls through to ``SkillRunner.run``, which then uses its own
+        # ``self.timeout`` default (180s). DEC-013: ``env_override`` has
+        # no merge — passed through to ``runner.run(env=...)`` unchanged.
+        effective_timeout = (
+            timeout_override
+            if timeout_override is not None
+            else (
+                self.eval_spec.timeout
+                if self.eval_spec is not None
+                else None
+            )
+        )
         result = self.runner.run(
             self.skill_name,
             run_args,
             cwd=effective_cwd,
             allow_hang_heuristic=allow_hang_heuristic,
+            timeout=effective_timeout,
+            env=env_override,
         )
 
         # Read output from files if eval spec specifies file-based output

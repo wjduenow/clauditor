@@ -239,6 +239,14 @@ A few `EvalSpec` fields tune specific code paths and are safe to omit:
 - **`trigger_tests`** (object, default `null`) — `{"should_trigger":
   [str, ...], "should_not_trigger": [str, ...]}` for `clauditor
   triggers`. Required by that command; other commands ignore it.
+- **`timeout`** (int, default `null`) — per-skill runner timeout in
+  seconds. Overrides the built-in 180-second watchdog for skills that
+  legitimately need longer (e.g. multi-agent research skills).
+  Precedence: `--timeout <seconds>` on the CLI wins when passed
+  explicitly; otherwise `EvalSpec.timeout` wins when set; otherwise
+  the runner falls back to its 180-second default. Load-time
+  validation rejects non-int values (including `true`/`false`) and
+  values `<= 0`.
 
 ## Schema history
 

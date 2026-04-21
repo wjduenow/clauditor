@@ -286,7 +286,7 @@ def _render_skill_error(
        ignored.
     3. **Warnings trailer** (DEC-002) — when ``result.warnings`` is
        non-empty, the first non-empty line of the first warning is
-       appended as ``"\\n(stderr: <first-line>)"``. Only the first
+       appended as ``"\\n(warning: <first-line>)"``. Only the first
        warning is rendered; the full list stays in
        ``result.warnings`` for forensics. Warnings whose lines are
        all whitespace-only are skipped entirely.

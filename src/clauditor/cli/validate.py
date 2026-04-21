@@ -9,7 +9,7 @@ from pathlib import Path
 
 from clauditor.assertions import run_assertions
 from clauditor.paths import resolve_clauditor_dir
-from clauditor.runner import SkillResult
+from clauditor.runner import SkillResult, env_without_api_key
 from clauditor.workspace import (
     InvalidSkillNameError,
     IterationWorkspace,
@@ -19,6 +19,10 @@ from clauditor.workspace import (
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``validate`` subparser."""
+    # Shared argparse type helpers live in the package __init__; import
+    # lazily to avoid a circular import at module load time.
+    from clauditor.cli import _positive_int
+
     p_validate = subparsers.add_parser(
         "validate", help="Run Layer 1 assertions against a skill's output"
     )
@@ -36,6 +40,24 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--no-transcript",
         action="store_true",
         help="Skip writing per-run stream-json transcripts",
+    )
+    p_validate.add_argument(
+        "--no-api-key",
+        action="store_true",
+        help=(
+            "Strip ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN from the "
+            "subprocess environment to force subscription auth."
+        ),
+    )
+    p_validate.add_argument(
+        "--timeout",
+        type=_positive_int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Override the runner timeout (seconds); must be > 0. "
+            "Defaults to EvalSpec.timeout or 180s."
+        ),
     )
     p_validate.add_argument(
         "-v",
@@ -124,7 +146,21 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
         try:
             print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
-            skill_result = spec.run(run_dir=workspace.tmp_path / "run-0")
+            # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags
+            # through to the spec. ``--no-api-key`` strips both auth env
+            # vars via ``env_without_api_key``; ``--timeout`` wins over
+            # spec/default per DEC-002. Both default to None (today's
+            # behavior).
+            env_override = (
+                env_without_api_key()
+                if getattr(args, "no_api_key", False)
+                else None
+            )
+            skill_result = spec.run(
+                run_dir=workspace.tmp_path / "run-0",
+                timeout_override=getattr(args, "timeout", None),
+                env_override=env_override,
+            )
             if not skill_result.succeeded_cleanly:
                 print(
                     f"ERROR: Skill failed to run: "

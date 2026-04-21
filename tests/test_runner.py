@@ -19,6 +19,7 @@ from clauditor.runner import (  # noqa: E402
     SkillRunner,
     _classify_result_message,
     _detect_interactive_hang,
+    env_without_api_key,
 )
 from tests.conftest import (  # noqa: E402
     _FakePopen,
@@ -311,6 +312,108 @@ class TestSkillRunnerCwd:
             mock_popen.return_value = make_fake_skill_stream("out")
             runner.run("my-skill", "args", cwd=tmp_path)
             assert mock_popen.call_args.kwargs["cwd"] == str(tmp_path)
+
+
+class TestSkillRunnerEnvAndTimeout:
+    """US-003: keyword-only ``env=`` and ``timeout=`` kwargs on ``run``.
+
+    Traces to DEC-010 (move ``timeout`` from ``__init__`` to a per-call
+    ``run()`` kwarg, with ``self.timeout`` as fallback) and DEC-013
+    (``env=`` kwarg shape mirrors ``cwd``; ``None`` passes through to
+    ``subprocess.Popen(env=None)`` which inherits ``os.environ``).
+    """
+
+    def test_run_env_none_popen_receives_none(self):
+        """Default ``env=None`` reaches Popen unchanged."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("out")
+            runner.run("my-skill", "args")
+            assert mock_popen.call_args.kwargs["env"] is None
+
+    def test_run_env_dict_popen_receives_dict(self):
+        """``env={"KEY": "VAL"}`` is forwarded to Popen verbatim."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        env = {"KEY": "VAL", "PATH": "/usr/bin"}
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("out")
+            runner.run("my-skill", "args", env=env)
+            assert mock_popen.call_args.kwargs["env"] == env
+
+    def test_run_timeout_override_used_in_watchdog(self):
+        """Per-call ``timeout=`` overrides ``self.timeout`` for the watchdog."""
+        runner = SkillRunner(project_dir="/tmp", timeout=180, claude_bin="claude")
+        captured: dict[str, float] = {}
+
+        class _CapturingTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                captured["interval"] = interval
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                pass
+
+        with (
+            patch(
+                "clauditor.runner.subprocess.Popen",
+                return_value=make_fake_skill_stream("out"),
+            ),
+            patch("clauditor.runner.threading.Timer", _CapturingTimer),
+        ):
+            runner.run("my-skill", "args", timeout=60)
+
+        assert captured["interval"] == 60
+
+    def test_run_timeout_none_falls_back_to_self_timeout(self):
+        """``timeout=None`` (default) uses ``self.timeout``."""
+        runner = SkillRunner(project_dir="/tmp", timeout=42, claude_bin="claude")
+        captured: dict[str, float] = {}
+
+        class _CapturingTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                captured["interval"] = interval
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                pass
+
+            def cancel(self):
+                pass
+
+        with (
+            patch(
+                "clauditor.runner.subprocess.Popen",
+                return_value=make_fake_skill_stream("out"),
+            ),
+            patch("clauditor.runner.threading.Timer", _CapturingTimer),
+        ):
+            runner.run("my-skill", "args")
+
+        assert captured["interval"] == 42
+
+    def test_init_timeout_default_180_unchanged(self):
+        """``SkillRunner()`` with no kwargs keeps ``self.timeout == 180``."""
+        runner = SkillRunner()
+        assert runner.timeout == 180
+
+    def test_existing_call_site_unaffected(self):
+        """A ``runner.run("skill", args="")`` call with no new kwargs still
+        works and produces a normal ``SkillResult`` — back-compat check."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("hello")
+            result = runner.run("my-skill", args="")
+            # env kwarg is passed (as None), not omitted — Popen's default
+            # inheritance path requires explicit ``env=None``.
+            assert "env" in mock_popen.call_args.kwargs
+            assert mock_popen.call_args.kwargs["env"] is None
+            assert result.output == "hello"
+            assert result.exit_code == 0
 
 
 # ---------------------------------------------------------------------------
@@ -2260,3 +2363,219 @@ class TestInteractiveHangDetection:
             w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
             for w in result.warnings
         )
+
+
+class TestApiKeySourceParsing:
+    """Parse ``apiKeySource`` from the stream-json ``system/init`` message.
+
+    Covers DEC-005 (stderr line + field), DEC-012 (suppress line when
+    None), DEC-015 (first init wins), and DEC-017 (match on compound
+    ``type=="system" AND subtype=="init"``). Traces to US-004 of
+    ``plans/super/64-runner-auth-timeout.md``.
+    """
+
+    def _run_with_stream(self, fake: _FakePopen) -> SkillResult:
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            return runner.run("skill")
+
+    def test_init_apikeysource_none(self):
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "session_id": "abc",
+                "apiKeySource": "none",
+            },
+        )
+        result = self._run_with_stream(fake)
+        assert result.api_key_source == "none"
+
+    def test_init_apikeysource_env_var(self):
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "session_id": "abc",
+                "apiKeySource": "ANTHROPIC_API_KEY",
+            },
+        )
+        result = self._run_with_stream(fake)
+        assert result.api_key_source == "ANTHROPIC_API_KEY"
+
+    def test_init_apikeysource_missing(self):
+        # init present but no apiKeySource field → api_key_source is None,
+        # no crash.
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "session_id": "abc",
+            },
+        )
+        result = self._run_with_stream(fake)
+        assert result.api_key_source is None
+
+    def test_no_init_message(self):
+        # Stream has no system/init message at all. Field stays None and
+        # no crash occurs.
+        fake = make_fake_skill_stream("hello")
+        result = self._run_with_stream(fake)
+        assert result.api_key_source is None
+
+    def test_first_init_wins(self):
+        # Two init messages; the first value is kept, the second ignored
+        # (DEC-015).
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "apiKeySource": "first-value",
+            },
+            extra_messages=[
+                {
+                    "type": "system",
+                    "subtype": "init",
+                    "apiKeySource": "second-value",
+                }
+            ],
+        )
+        result = self._run_with_stream(fake)
+        assert result.api_key_source == "first-value"
+
+    def test_stderr_emits_info_line_when_present(self, capsys):
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "apiKeySource": "ANTHROPIC_API_KEY",
+            },
+        )
+        self._run_with_stream(fake)
+        captured = capsys.readouterr()
+        # Exactly one matching line per run.
+        matching = [
+            line
+            for line in captured.err.splitlines()
+            if "apiKeySource=" in line
+        ]
+        assert len(matching) == 1, captured.err
+        assert "clauditor.runner:" in matching[0]
+        assert "apiKeySource=ANTHROPIC_API_KEY" in matching[0]
+
+    def test_stderr_line_suppressed_when_none(self, capsys):
+        # No init message → no apiKeySource= line on stderr (DEC-012).
+        fake = make_fake_skill_stream("hello")
+        self._run_with_stream(fake)
+        captured = capsys.readouterr()
+        assert "apiKeySource=" not in captured.err
+
+    def test_stderr_line_suppressed_when_init_missing_field(self, capsys):
+        # init present but apiKeySource absent → no stderr line (DEC-012).
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "session_id": "abc",
+            },
+        )
+        self._run_with_stream(fake)
+        captured = capsys.readouterr()
+        assert "apiKeySource=" not in captured.err
+
+    def test_init_apikeysource_non_string_ignored(self):
+        # Defensive: a non-string apiKeySource (e.g. a dict or int from a
+        # buggy CLI build) is ignored rather than crashing.
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "apiKeySource": 42,
+            },
+        )
+        result = self._run_with_stream(fake)
+        assert result.api_key_source is None
+
+    def test_system_event_without_init_subtype_ignored(self):
+        # type=="system" but subtype!="init" must not populate the field
+        # (DEC-017).
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "hook",
+                "apiKeySource": "should-be-ignored",
+            },
+        )
+        result = self._run_with_stream(fake)
+        assert result.api_key_source is None
+
+
+class TestEnvWithoutApiKey:
+    """Pure-unit tests for :func:`clauditor.runner.env_without_api_key`.
+
+    Covers DEC-007 (strip both auth vars), DEC-011 (non-mutating pure
+    helper), and DEC-016 (preserve non-auth Anthropic env vars). No
+    subprocess mocks — the helper is pure.
+    """
+
+    def test_strips_both_auth_vars(self):
+        base = {
+            "ANTHROPIC_API_KEY": "sk-key",
+            "ANTHROPIC_AUTH_TOKEN": "tok-abc",
+            "PATH": "/usr/bin",
+        }
+        result = env_without_api_key(base)
+        assert "ANTHROPIC_API_KEY" not in result
+        assert "ANTHROPIC_AUTH_TOKEN" not in result
+        assert result["PATH"] == "/usr/bin"
+
+    def test_preserves_other_vars(self):
+        base = {
+            "ANTHROPIC_API_KEY": "sk-key",
+            "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            "PATH": "/usr/bin",
+            "UNRELATED": "value",
+        }
+        result = env_without_api_key(base)
+        assert result == {
+            "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            "PATH": "/usr/bin",
+            "UNRELATED": "value",
+        }
+
+    def test_default_reads_os_environ(self):
+        fake_env = {
+            "ANTHROPIC_API_KEY": "sk-key",
+            "PATH": "/usr/bin",
+            "MARKER": "present",
+        }
+        with patch.dict("os.environ", fake_env, clear=True):
+            result = env_without_api_key()
+        assert "ANTHROPIC_API_KEY" not in result
+        assert result["PATH"] == "/usr/bin"
+        assert result["MARKER"] == "present"
+
+    def test_is_non_mutating(self):
+        base = {
+            "ANTHROPIC_API_KEY": "sk-key",
+            "ANTHROPIC_AUTH_TOKEN": "tok-abc",
+            "PATH": "/usr/bin",
+        }
+        original = dict(base)
+        result = env_without_api_key(base)
+        assert base == original
+        assert result is not base
+
+    def test_no_auth_vars_present(self):
+        base = {"PATH": "/usr/bin", "HOME": "/home/user"}
+        result = env_without_api_key(base)
+        assert result == base
+        assert result is not base
