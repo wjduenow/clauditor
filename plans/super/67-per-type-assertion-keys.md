@@ -45,9 +45,10 @@ regression risk between now and landing.
 **Done when:**
 1. Every assertion type's parameter is read from a semantic
    per-type key, not `value`.
-2. `EvalSpec` carries an explicit `schema_version` field; the
-   loader rejects version mismatches per
-   `.claude/rules/json-schema-version.md`.
+2. The per-type `_require_assertion_keys` validator rejects legacy
+   `value`-shape specs at load time with an actionable "did you
+   mean …?" hint (DEC-003 deferred `schema_version` on EvalSpec;
+   the hard-validator is the safety net).
 3. All in-repo `*.eval.json` files migrated to the new shape and
    loadable without warnings.
 4. All in-repo test fixtures use the new keys.
@@ -656,16 +657,16 @@ test-mechanical and belongs with the constant change).
     in DEC-009 above).
   - `_require_assertion_keys` rewritten:
     1. Unknown-key branch consults `_ASSERTION_DRIFT_HINTS[type].get(key)` for the hint; emit `" — did you mean {suggestion!r}?"` if present, else empty. Remove the current global `{"pattern","min","max"} → "value"` and `"threshold" → "minimum"` branches.
-    2. New type-check pass: for each present key (required OR optional) in `spec.field_types`, verify `isinstance(val, expected)` — if mismatch, raise `ValueError(f"{ctx} (type={type!r}): key {key!r} must be {expected.__name__}, got {type(val).__name__} {val!r}")`.
+    2. New type-check pass: for each present key (required OR optional) in `spec.field_types`, verify `isinstance(val, expected)` — if mismatch, raise `ValueError(f"{ctx} (type={type!r}): key {key!r} must be {expected.__name__}, got {type(val).__name__} {val!r}")`. **`bool` is a subclass of `int` in Python**, so when `expected is int`, the check must also reject `bool` values (e.g., `{"length": True}`) — implemented as `isinstance(val, expected) and not (expected is int and isinstance(val, bool))`.
   - Error-message path order: unknown type → missing required → wrong type → unknown key. (Each is a distinct branch; no cascading noise.)
 - `src/clauditor/assertions.py`:
-  - `_ASSERTION_HANDLERS` updated to read new keys, with native int access (no `int(a.get(...))` coercion):
-    - `contains`, `not_contains` → `a.get("needle", "")`
-    - `regex` → `a.get("pattern", "")`
-    - `min_count` → `a.get("pattern", "")` + `a.get("count", 1)` (note: native int default, not `"" → 1`)
-    - `min_length`, `max_length` → `a.get("length", 0)` (native int)
-    - `has_urls`, `has_entries`, `urls_reachable` → `a.get("count", 1)` (native int)
-    - `has_format` → `a.get("format", "")` + `a.get("count", 1)` (native int)
+  - `_ASSERTION_HANDLERS` updated to read new keys, with native int access (no `int(a.get(...))` coercion). **Required keys use direct `a[key]` access** so loader-bypass (test-only path) fails loudly with `KeyError` instead of silently returning a bogus default (e.g. `max_length` with default 0 would fail every output — CodeRabbit finding). Optional keys keep `.get(key, default)` for the legitimate "omitted → use default" case:
+    - `contains`, `not_contains` → `a["needle"]`
+    - `regex` → `a["pattern"]`
+    - `min_count` → `a["pattern"]` + `a["count"]` (both required per DEC-001)
+    - `min_length`, `max_length` → `a["length"]`
+    - `has_urls`, `has_entries`, `urls_reachable` → `a.get("count", 1)` (optional, default 1)
+    - `has_format` → `a["format"]` + `a.get("count", 1)` (format required, count optional)
   - The docstring at `assertions.py:463` (if it references `value` / schema shape) updated to mention the new keys.
 - `tests/test_schemas.py`:
   - `TestAssertionKeySpec::test_contains_required_keys` parametrize table updated to the new per-type keys.

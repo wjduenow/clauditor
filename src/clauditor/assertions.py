@@ -431,27 +431,31 @@ def assert_has_format(
 # Per-type keys (DEC-001 of #67): every handler reads the semantic key
 # for its type (``needle`` for contains, ``pattern`` for regex, etc.).
 # Integer payloads are native JSON ints now — DEC-002/DEC-012 of #67
-# move the isinstance-check for native-int-only to the loader, so the
-# handlers can trust ``a.get("length", 0)`` without an ``int(...)``
-# coercion wrapper.
+# move the isinstance-check for native-int-only to the loader.
+#
+# Required vs optional access style: required keys use direct ``a[key]``
+# access so loader-bypass (e.g., a test constructing an assertion dict
+# and calling ``run_assertions`` directly) fails loudly with a
+# ``KeyError`` instead of silently returning a bogus default — e.g.,
+# ``max_length`` with ``length=0`` would fail every output
+# (CodeRabbit finding). Optional keys keep ``.get(key, default)`` for
+# the legitimate "omitted → use default" case preserved by DEC-005.
 _ASSERTION_HANDLERS: dict[str, Callable[[str, dict], AssertionResult]] = {
-    "contains": lambda out, a: assert_contains(out, a.get("needle", "")),
-    "not_contains": lambda out, a: assert_not_contains(
-        out, a.get("needle", "")
-    ),
-    "regex": lambda out, a: assert_regex(out, a.get("pattern", "")),
+    "contains": lambda out, a: assert_contains(out, a["needle"]),
+    "not_contains": lambda out, a: assert_not_contains(out, a["needle"]),
+    "regex": lambda out, a: assert_regex(out, a["pattern"]),
     "min_count": lambda out, a: assert_min_count(
-        out, a.get("pattern", ""), a.get("count", 1)
+        out, a["pattern"], a["count"]
     ),
-    "min_length": lambda out, a: assert_min_length(out, a.get("length", 0)),
-    "max_length": lambda out, a: assert_max_length(out, a.get("length", 0)),
+    "min_length": lambda out, a: assert_min_length(out, a["length"]),
+    "max_length": lambda out, a: assert_max_length(out, a["length"]),
     "has_urls": lambda out, a: assert_has_urls(out, a.get("count", 1)),
     "has_entries": lambda out, a: assert_has_entries(out, a.get("count", 1)),
     "urls_reachable": lambda out, a: assert_urls_reachable(
         out, a.get("count", 1)
     ),
     "has_format": lambda out, a: assert_has_format(
-        out, a.get("format", ""), a.get("count", 1),
+        out, a["format"], a.get("count", 1),
     ),
 }
 
