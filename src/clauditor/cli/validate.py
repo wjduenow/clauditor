@@ -9,7 +9,7 @@ from pathlib import Path
 
 from clauditor.assertions import run_assertions
 from clauditor.paths import resolve_clauditor_dir
-from clauditor.runner import SkillResult
+from clauditor.runner import SkillResult, _env_without_api_key
 from clauditor.workspace import (
     InvalidSkillNameError,
     IterationWorkspace,
@@ -151,8 +151,6 @@ def cmd_validate(args: argparse.Namespace) -> int:
             # vars via ``_env_without_api_key``; ``--timeout`` wins over
             # spec/default per DEC-002. Both default to None (today's
             # behavior).
-            from clauditor.runner import _env_without_api_key
-
             env_override = (
                 _env_without_api_key()
                 if getattr(args, "no_api_key", False)

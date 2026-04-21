@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from clauditor.runner import SkillRunner
+from clauditor.runner import SkillRunner, _env_without_api_key
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -48,7 +48,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     # lazily to avoid a circular import at module load: ``clauditor.cli``
     # imports this module to register the subparser.
     from clauditor.cli import _render_skill_error
-    from clauditor.runner import _env_without_api_key
 
     runner = SkillRunner(
         project_dir=Path(args.project_dir) if args.project_dir else Path.cwd(),

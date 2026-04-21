@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from clauditor.runner import SkillRunner
+from clauditor.runner import SkillRunner, _env_without_api_key
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -75,7 +75,6 @@ def cmd_capture(args: argparse.Namespace) -> int:
     # Shared helper lives in ``clauditor.cli`` (package __init__). Import
     # lazily to avoid a circular import at module load.
     from clauditor.cli import _render_skill_error
-    from clauditor.runner import _env_without_api_key
 
     skill_name = args.skill.lstrip("/")
     skill_args = " ".join(args.skill_args) if args.skill_args else ""
