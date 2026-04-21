@@ -545,6 +545,71 @@ class TestStreamJsonRunner:
         assert result.error != "timeout"
         assert result.output == "done"
 
+    def test_timeout_sets_timeout_category(self):
+        """US-004 / DEC-009 / DEC-010: a watchdog-fired timeout must set
+        ``error_category="timeout"`` alongside ``error="timeout"``."""
+        runner = SkillRunner(project_dir="/tmp", timeout=5, claude_bin="claude")
+        fake = make_fake_skill_stream("partial")
+
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
+            result = runner.run("skill")
+        assert result.error == "timeout"
+        assert result.error_category == "timeout"
+
+    def test_timeout_category_beats_stream_json_error(self):
+        """US-004 / DEC-009 invariant guard: if the stream emits an
+        ``is_error: true, result: "429 rate limit"`` payload AND the
+        watchdog fires, the final ``error`` / ``error_category`` must
+        reflect the timeout — NOT ``"rate_limit"``. The early return
+        in the timeout branch is load-bearing: without it, the later
+        normal-exit path would clobber the timeout classification with
+        the stream-json's ``stream_json_error_text`` accumulator.
+        """
+        runner = SkillRunner(project_dir="/tmp", timeout=5, claude_bin="claude")
+        # Stream-json carries is_error:true with a rate-limit phrase.
+        # Under _ImmediateTimer, the watchdog fires before the stdout
+        # loop runs, kills the fake (returncode=-9), then the loop
+        # drains the buffered is_error result message. The timeout
+        # branch must still win, because it returns early.
+        fake = make_fake_skill_stream("partial", error_text="429 rate limit")
+
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
+            result = runner.run("skill")
+        assert result.error == "timeout"
+        assert result.error_category == "timeout"
+        # Regression guard: the rate-limit classification must NOT leak
+        # into the final result, even though the stream-json contained
+        # a recognized rate-limit phrase.
+        assert result.error_category != "rate_limit"
+
     def test_file_not_found_sets_duration(self):
         """DEC-005: duration must be set even on FileNotFoundError."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="missing")

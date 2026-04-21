@@ -539,12 +539,17 @@ class SkillRunner:
                     skill_name=skill_name,
                     args=args,
                     error="timeout",
+                    error_category="timeout",
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     raw_messages=raw_messages,
                     stream_events=stream_events,
                     warnings=list(warnings),
                 )
+                # Early return is load-bearing: a post-timeout stream-json
+                # is_error:true must not clobber the "timeout" error. Keep
+                # this as an early return; do not fall through to the
+                # normal-exit path below.
                 return result
 
             if not saw_result:
