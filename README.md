@@ -153,7 +153,7 @@ clauditor implements (and extends) the workflow at [agentskills.io/skill-creatio
 | Regression + longitudinal history | `clauditor compare`, `.clauditor/history.jsonl`, `clauditor trend --metric <dotted.path>` |
 | Per-iteration workspace | `.clauditor/iteration-N/<skill>/` with sidecars + `run-*/` transcripts |
 
-**Beyond the spec**: trigger precision testing, tiered extraction, pytest plugin, `input_files` staging, blind A/B judge, baseline pair runs, transcript capture, LLM-driven skill improvement proposer (`clauditor suggest`), LLM-assisted EvalSpec bootstrap (`clauditor propose-eval`). **Out of scope**: human-in-the-loop feedback capture.
+**Beyond the spec**: trigger precision testing, tiered extraction, pytest plugin, `input_files` staging, blind A/B judge, baseline pair runs, transcript capture, LLM-driven skill improvement proposer (`clauditor suggest`), LLM-assisted EvalSpec bootstrap (`clauditor propose-eval`), Pro/Max subscription-auth option (`--no-api-key`) for research-heavy skills that exceed the API-tier rate limit. **Out of scope**: human-in-the-loop feedback capture.
 
 </details>
 
