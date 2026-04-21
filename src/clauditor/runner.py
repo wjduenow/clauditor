@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-# Env vars stripped by :func:`_env_without_api_key`. Both are
+# Env vars stripped by :func:`env_without_api_key`. Both are
 # documented Anthropic SDK env-auth paths (DEC-007 of
 # ``plans/super/64-runner-auth-timeout.md``). Non-auth Anthropic env
 # vars such as ``ANTHROPIC_BASE_URL`` are intentionally preserved
@@ -30,7 +30,7 @@ from typing import Literal
 _API_KEY_ENV_VARS = frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"})
 
 
-def _env_without_api_key(
+def env_without_api_key(
     base_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
     """Return a new env dict with both auth env vars removed.
@@ -356,7 +356,7 @@ class SkillRunner:
                 inherits ``os.environ``; when a dict, replaces verbatim.
                 Mirrors the ``env`` kwarg on :meth:`run`; callers that
                 want to strip credentials use
-                :func:`_env_without_api_key`.
+                :func:`env_without_api_key`.
             timeout: Optional per-invocation timeout (seconds). When
                 ``None``, falls back to ``self.timeout``.
             allow_hang_heuristic: When False, skip the interactive-hang

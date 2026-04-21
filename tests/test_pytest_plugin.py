@@ -728,7 +728,7 @@ class TestClauditorNoApiKeyOption:
     """US-007: ``--clauditor-no-api-key`` pytest option parity.
 
     DEC-006: when set, the ``clauditor_spec`` fixture threads
-    ``env_override=_env_without_api_key()`` through ``SkillSpec.run``;
+    ``env_override=env_without_api_key()`` through ``SkillSpec.run``;
     otherwise ``env_override`` stays unset and the existing call shape
     is preserved for back-compat with the ``--clauditor-timeout``
     wiring tests.

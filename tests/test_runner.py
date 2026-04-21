@@ -19,7 +19,7 @@ from clauditor.runner import (  # noqa: E402
     SkillRunner,
     _classify_result_message,
     _detect_interactive_hang,
-    _env_without_api_key,
+    env_without_api_key,
 )
 from tests.conftest import (  # noqa: E402
     _FakePopen,
@@ -2519,7 +2519,7 @@ class TestApiKeySourceParsing:
 
 
 class TestEnvWithoutApiKey:
-    """Pure-unit tests for :func:`clauditor.runner._env_without_api_key`.
+    """Pure-unit tests for :func:`clauditor.runner.env_without_api_key`.
 
     Covers DEC-007 (strip both auth vars), DEC-011 (non-mutating pure
     helper), and DEC-016 (preserve non-auth Anthropic env vars). No
@@ -2532,7 +2532,7 @@ class TestEnvWithoutApiKey:
             "ANTHROPIC_AUTH_TOKEN": "tok-abc",
             "PATH": "/usr/bin",
         }
-        result = _env_without_api_key(base)
+        result = env_without_api_key(base)
         assert "ANTHROPIC_API_KEY" not in result
         assert "ANTHROPIC_AUTH_TOKEN" not in result
         assert result["PATH"] == "/usr/bin"
@@ -2544,7 +2544,7 @@ class TestEnvWithoutApiKey:
             "PATH": "/usr/bin",
             "UNRELATED": "value",
         }
-        result = _env_without_api_key(base)
+        result = env_without_api_key(base)
         assert result == {
             "ANTHROPIC_BASE_URL": "https://proxy.example.com",
             "PATH": "/usr/bin",
@@ -2558,7 +2558,7 @@ class TestEnvWithoutApiKey:
             "MARKER": "present",
         }
         with patch.dict("os.environ", fake_env, clear=True):
-            result = _env_without_api_key()
+            result = env_without_api_key()
         assert "ANTHROPIC_API_KEY" not in result
         assert result["PATH"] == "/usr/bin"
         assert result["MARKER"] == "present"
@@ -2570,12 +2570,12 @@ class TestEnvWithoutApiKey:
             "PATH": "/usr/bin",
         }
         original = dict(base)
-        result = _env_without_api_key(base)
+        result = env_without_api_key(base)
         assert base == original
         assert result is not base
 
     def test_no_auth_vars_present(self):
         base = {"PATH": "/usr/bin", "HOME": "/home/user"}
-        result = _env_without_api_key(base)
+        result = env_without_api_key(base)
         assert result == base
         assert result is not base

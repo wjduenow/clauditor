@@ -23,7 +23,7 @@ from pathlib import Path
 import pytest
 
 from clauditor.asserters import SkillAsserter
-from clauditor.runner import SkillResult, SkillRunner, _env_without_api_key
+from clauditor.runner import SkillResult, SkillRunner, env_without_api_key
 from clauditor.spec import SkillSpec
 
 
@@ -148,7 +148,7 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
     # the spec's ``env_override`` kwarg default preserves today's
     # behavior.
     no_api_key = request.config.getoption("--clauditor-no-api-key")
-    fixture_env_override = _env_without_api_key() if no_api_key else None
+    fixture_env_override = env_without_api_key() if no_api_key else None
 
     def _factory(skill_path: str | Path, eval_path: str | Path | None = None):
         spec = SkillSpec.from_file(skill_path, eval_path=eval_path, runner=runner)

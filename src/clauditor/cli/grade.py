@@ -12,7 +12,7 @@ from clauditor import history
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.benchmark import Benchmark, compute_benchmark
 from clauditor.paths import resolve_clauditor_dir
-from clauditor.runner import SkillResult, _env_without_api_key
+from clauditor.runner import SkillResult, env_without_api_key
 from clauditor.spec import SkillSpec
 from clauditor.workspace import (
     InvalidSkillNameError,
@@ -363,7 +363,7 @@ def _run_skill_variants(
     # to every ``spec.run`` invocation (primary + variance). Defaults
     # are both None (today's behavior).
     env_override = (
-        _env_without_api_key()
+        env_without_api_key()
         if getattr(args, "no_api_key", False)
         else None
     )
@@ -553,7 +553,7 @@ def _write_workspace_sidecars(
         # Mirror the primary arm's env/timeout wiring so --no-api-key
         # and --timeout apply to both halves of the baseline delta.
         no_api_key = bool(getattr(args, "no_api_key", False))
-        env_override = _env_without_api_key() if no_api_key else None
+        env_override = env_without_api_key() if no_api_key else None
         timeout_override = getattr(args, "timeout", None)
         return _write_baseline_and_benchmark(
             spec=spec,

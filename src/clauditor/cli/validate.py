@@ -9,7 +9,7 @@ from pathlib import Path
 
 from clauditor.assertions import run_assertions
 from clauditor.paths import resolve_clauditor_dir
-from clauditor.runner import SkillResult, _env_without_api_key
+from clauditor.runner import SkillResult, env_without_api_key
 from clauditor.workspace import (
     InvalidSkillNameError,
     IterationWorkspace,
@@ -148,11 +148,11 @@ def cmd_validate(args: argparse.Namespace) -> int:
             print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
             # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags
             # through to the spec. ``--no-api-key`` strips both auth env
-            # vars via ``_env_without_api_key``; ``--timeout`` wins over
+            # vars via ``env_without_api_key``; ``--timeout`` wins over
             # spec/default per DEC-002. Both default to None (today's
             # behavior).
             env_override = (
-                _env_without_api_key()
+                env_without_api_key()
                 if getattr(args, "no_api_key", False)
                 else None
             )

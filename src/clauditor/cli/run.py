@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from clauditor.runner import SkillRunner, _env_without_api_key
+from clauditor.runner import SkillRunner, env_without_api_key
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -56,7 +56,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # to the runner. Defaults are both None (today's behavior; runner
     # falls back to its own ``self.timeout`` default of 180s).
     env_override = (
-        _env_without_api_key()
+        env_without_api_key()
         if getattr(args, "no_api_key", False)
         else None
     )
