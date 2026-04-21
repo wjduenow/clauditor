@@ -4,9 +4,9 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/63
 - **Branch:** `feature/63-runner-error-surfacing`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/63-runner-error-surfacing`
-- **Phase:** `devolved`
+- **Phase:** `shipped`
 - **PR:** https://github.com/wjduenow/clauditor/pull/68
-- **Epic:** `clauditor-cha`
+- **Epic:** `clauditor-cha` (closed)
 - **Sessions:** 1
 - **Last session:** 2026-04-20
 
