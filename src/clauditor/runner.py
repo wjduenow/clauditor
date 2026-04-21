@@ -75,6 +75,13 @@ class SkillResult:
     raw_messages: list[dict] = field(default_factory=list)
     stream_events: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # US-004 / DEC-005: populated from the first stream-json
+    # ``type=="system" AND subtype=="init"`` message when the CLI
+    # emits an ``apiKeySource`` field. ``None`` when absent (older CLI
+    # builds or a malformed stream — per DEC-012 / DEC-015). The value
+    # is a label (``"ANTHROPIC_API_KEY"``, ``"claude.ai"``, ``"none"``),
+    # not a secret. See ``docs/stream-json-schema.md``.
+    api_key_source: str | None = None
 
     @property
     def succeeded(self) -> bool:
@@ -396,6 +403,13 @@ class SkillRunner:
         # over stderr per DEC-001.
         stream_json_error_text: str | None = None
         stream_json_error_category: str | None = None
+        # US-004 / DEC-005 / DEC-015 / DEC-017: capture the first
+        # ``type=="system" AND subtype=="init"`` message's
+        # ``apiKeySource`` value. First init wins; subsequent inits
+        # ignored. ``None`` when absent (older CLI builds / malformed
+        # stream) — per DEC-012, suppresses the stderr info line.
+        api_key_source: str | None = None
+        init_captured = False
         result: SkillResult | None = None
         proc: subprocess.Popen | None = None
         stderr_thread: threading.Thread | None = None
@@ -524,6 +538,20 @@ class SkillRunner:
                         if "type" in msg:
                             stream_events.append(msg)
                         mtype = msg.get("type")
+                        # US-004 / DEC-017: capture ``apiKeySource`` from
+                        # the FIRST ``system/init`` message. DEC-015: later
+                        # init messages are ignored. DEC-012: absence
+                        # stays ``None`` (no stderr line here — emitted
+                        # once after the loop).
+                        if (
+                            not init_captured
+                            and mtype == "system"
+                            and msg.get("subtype") == "init"
+                        ):
+                            init_captured = True
+                            val = msg.get("apiKeySource")
+                            if isinstance(val, str):
+                                api_key_source = val
                         if mtype == "assistant":
                             message = msg.get("message") or {}
                             content = message.get("content") or []
@@ -597,6 +625,7 @@ class SkillRunner:
                     raw_messages=raw_messages,
                     stream_events=stream_events,
                     warnings=list(warnings),
+                    api_key_source=api_key_source,
                 )
                 # Early return is load-bearing: a post-timeout stream-json
                 # is_error:true must not clobber the "timeout" error. Keep
@@ -613,6 +642,18 @@ class SkillRunner:
                 warnings.append(
                     "stream-json ended without a 'result' message; "
                     "token usage unavailable"
+                )
+
+            # US-004 / DEC-005: emit one stderr info line per run when
+            # ``apiKeySource`` was captured. DEC-012: suppress entirely
+            # when the field is absent (no "apiKeySource=unavailable"
+            # line) — absence is the signal. Values are labels
+            # (``ANTHROPIC_API_KEY``, ``claude.ai``, ``none``), not
+            # secrets, so printing them is safe.
+            if api_key_source is not None:
+                print(
+                    f"clauditor.runner: apiKeySource={api_key_source}",
+                    file=sys.stderr,
                 )
 
             # DEC-005 / DEC-010: interactive-hang heuristic. Only run the
@@ -668,6 +709,7 @@ class SkillRunner:
                 raw_messages=raw_messages,
                 stream_events=stream_events,
                 warnings=list(warnings),
+                api_key_source=api_key_source,
             )
             return result
         finally:

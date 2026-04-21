@@ -80,13 +80,19 @@ def make_fake_skill_stream(
     output_tokens: int = 50,
     extra_messages: list[dict] | None = None,
     error_text: str | None = None,
+    init_message: dict | None = None,
 ) -> _FakePopen:
     """Build a ``_FakePopen`` emitting a realistic stream-json sequence.
 
     Produces:
-      1. one assistant message with a single ``text`` block containing ``text``
-      2. any ``extra_messages`` verbatim, in order
-      3. a final ``result`` message carrying token usage
+      1. optional ``init_message`` verbatim as the FIRST message
+         (typically a ``{"type": "system", "subtype": "init", ...}``
+         event — see US-004 of
+         ``plans/super/64-runner-auth-timeout.md``)
+      2. one assistant message with a single ``text`` block containing
+         ``text``
+      3. any ``extra_messages`` verbatim, in order
+      4. a final ``result`` message carrying token usage
 
     When ``error_text`` is not ``None``, the final ``result`` message
     carries ``is_error: True`` and ``result: <error_text>`` (per DEC-014
@@ -94,7 +100,10 @@ def make_fake_skill_stream(
     (``error_text=None``) preserves today's ``is_error: False`` output
     byte-for-byte so every pre-existing test keeps working.
     """
-    messages: list[dict] = [
+    messages: list[dict] = []
+    if init_message is not None:
+        messages.append(init_message)
+    messages.append(
         {
             "type": "assistant",
             "message": {
@@ -102,7 +111,7 @@ def make_fake_skill_stream(
                 "content": [{"type": "text", "text": text}],
             },
         }
-    ]
+    )
     if extra_messages:
         messages.extend(extra_messages)
     result_msg: dict = {

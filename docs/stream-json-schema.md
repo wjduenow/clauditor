@@ -34,12 +34,35 @@ but otherwise ignored.
 Init / hook / misc events from the CLI.
 
 ```json
-{"type":"system","subtype":"init","session_id":"abc123","cwd":"/tmp/work"}
+{"type":"system","subtype":"init","session_id":"abc123","cwd":"/tmp/work","apiKeySource":"ANTHROPIC_API_KEY"}
 ```
 
-**Read by clauditor:** nothing beyond `type` — the message is appended to
-`raw_messages` and `stream_events`, but no fields are extracted. System
-events are forwarded to transcripts but do not affect `SkillResult.output`
+**Read by clauditor:** the `type: "system"` / `subtype: "init"` message
+is parsed for its `apiKeySource` field (when present).
+
+- `subtype` (string) — tolerated-if-missing. Only `"init"` messages
+  trigger `apiKeySource` extraction; other subtypes (e.g. `"hook"`)
+  are appended to `raw_messages` / `stream_events` but otherwise
+  ignored.
+- `apiKeySource` (string) — tolerated-if-missing / non-string
+  (`SkillResult.api_key_source` stays `None` in that case). When a
+  string is present on the FIRST `system/init` message, clauditor
+  stores the value on `SkillResult.api_key_source` and emits one
+  stderr info line of the form
+  `clauditor.runner: apiKeySource=<value>`. Example values the
+  Claude CLI emits today: `"ANTHROPIC_API_KEY"`, `"claude.ai"`,
+  `"none"`. **The value is a label (identifying which auth path
+  was used), not a secret** — it does not contain the API key
+  itself, so printing it to stderr and persisting it on
+  `SkillResult` is safe. Older CLI builds may omit this field; in
+  that case `api_key_source` stays `None` and no stderr line is
+  emitted (absence is the signal, per DEC-012 of
+  `plans/super/64-runner-auth-timeout.md`). Subsequent `system/init`
+  messages are ignored — first init wins, per DEC-015.
+
+All `system/*` messages (every subtype) are appended to
+`raw_messages` and `stream_events` for downstream tooling
+(transcripts, debug dumps) but do not affect `SkillResult.output`
 or token counts.
 
 ### `type: "assistant"`
@@ -141,6 +164,8 @@ surfaces this through `SkillResult.error` + `SkillResult.error_category
 | `result` message with `is_error` absent | Treat as success (back-compat with older CLI versions) |
 | `result` message with non-bool `is_error` (e.g. `"true"`, `1`) | Treat as absent — strict `is True` check only |
 | `result` message with `is_error: true` and no `result` string | `SkillResult.error = "API error (no detail)"`, `error_category = "api"` |
+| `system/init` message with non-string `apiKeySource` | Field ignored; `SkillResult.api_key_source` stays `None`; no stderr line emitted |
+| Multiple `system/init` messages with `apiKeySource` | First wins; later init messages are ignored (DEC-015) |
 | `result` message with `is_error: true` and `result` > 4 KB | Truncate at 4 KB with `" ... (truncated)"` suffix on `SkillResult.error`; classify from the prefix; full string retained in `stream_events` |
 | No `result` message before EOF | Warn to stderr, return `SkillResult` with zero tokens |
 | Subprocess times out | Kill child, return `SkillResult(exit_code=-1, error="timeout")` with whatever text was captured so far |
