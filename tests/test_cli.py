@@ -5545,3 +5545,315 @@ class TestRenderSkillError:
             warnings=[],
         )
         assert _render_skill_error(result) == "Unknown error"
+
+
+# ---------------------------------------------------------------------------
+# US-006 / DEC-011 / DEC-012 regression: the five CLI commands that surface
+# skill-run errors now route through ``_render_skill_error``. Cover the two
+# ticket repros (429 + interactive-hang) and at least one per-command hit so
+# we catch any regression that reverts ``{result.error}`` inline substitution.
+# ---------------------------------------------------------------------------
+
+
+class TestCmdValidateErrorSurfacingRegression:
+    """Regression guard for #63 ticket repros at the ``validate`` call site.
+
+    Before US-005/US-006, ``cmd_validate`` printed
+    ``f"ERROR: Skill failed to run: {skill_result.error}"`` which rendered
+    ``"... : None"`` when ``error`` was ``None`` (the 429 / interactive-
+    hang repros). After adopting ``_render_skill_error``, the provider
+    error text is surfaced verbatim AND a ``Hint: ...`` line is appended.
+    Traces to DEC-011 (helper returns tail only), DEC-012 (all five
+    commands) of ``plans/super/63-runner-error-surfacing.md``.
+    """
+
+    def test_validate_429_error_surfaces_actual_text(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A 429 ``rate_limit`` failure prints the full error + hint line.
+
+        Ticket repro: before the helper, stderr read
+        ``"ERROR: Skill failed to run: None"``. After, stderr carries the
+        actual ``API Error: ...`` payload and the ``rate_limit`` hint.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="",
+            exit_code=1,
+            duration_seconds=0.5,
+            error=(
+                "API Error: Request rejected (429). "
+                "Rate limit exceeded for your organization."
+            ),
+        )
+        spec.run.return_value.error_category = "rate_limit"
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "API Error: Request rejected (429)" in err
+        assert "Rate limit exceeded for your organization." in err
+        assert "Hint: retry in ~60s (rate limit)" in err
+        assert ": None" not in err
+        assert "Unknown error" not in err
+
+    def test_validate_interactive_hang_surfaces_warning(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Interactive-hang heuristic prints its warning + hint line.
+
+        Ticket repro: before the helper, an interactive-hang reach at
+        a failing run path rendered ``"... : None"`` because
+        ``error_category="interactive"`` leaves ``result.error`` ``None``.
+        After, the first warning line is rendered as the base text and
+        the interactive hint is appended.
+        """
+        from clauditor.runner import _INTERACTIVE_HANG_WARNING
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        # Synthesize a failing run (output="") with interactive-hang
+        # signals so the ``not succeeded`` branch fires the helper.
+        spec.run.return_value = make_skill_result(
+            output="",
+            exit_code=1,
+            duration_seconds=0.5,
+            error=None,
+        )
+        spec.run.return_value.error_category = "interactive"
+        spec.run.return_value.warnings = [_INTERACTIVE_HANG_WARNING]
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "interactive-hang:" in err
+        # Interactive hint from _CATEGORY_HINTS (the tail after the
+        # first-warning-as-base).
+        assert "/clauditor cannot drive interactive skills" in err
+        assert "failed to run: None" not in err
+        assert "Unknown error" not in err
+
+
+class TestCmdRunErrorSurfacingRegression:
+    """Regression guard for ``cmd_run`` adopting ``_render_skill_error``."""
+
+    def test_run_429_error_surfaces_actual_text(self, capsys):
+        """A 429 ``rate_limit`` failure renders full error + hint line."""
+        mock_runner = MagicMock()
+        result = make_skill_result(
+            output="",
+            exit_code=1,
+            skill_name="my-skill",
+            duration_seconds=0.5,
+            error=(
+                "API Error: Request rejected (429). "
+                "Rate limit exceeded for your organization."
+            ),
+        )
+        result.error_category = "rate_limit"
+        mock_runner.run.return_value = result
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "API Error: Request rejected (429)" in err
+        assert "Hint: retry in ~60s (rate limit)" in err
+        assert ": None" not in err
+        assert "Unknown error" not in err
+
+    def test_run_interactive_hang_surfaces_warning(self, capsys):
+        """Interactive-hang under ``cmd_run`` now renders (previously the
+        ``if result.error:`` guard silently suppressed it since
+        ``result.error`` is ``None`` for the heuristic).
+        """
+        from clauditor.runner import _INTERACTIVE_HANG_WARNING
+
+        mock_runner = MagicMock()
+        result = make_skill_result(
+            output="Would you like me to continue?",
+            exit_code=0,
+            skill_name="my-skill",
+            duration_seconds=0.5,
+            error=None,
+        )
+        result.error_category = "interactive"
+        result.warnings = [_INTERACTIVE_HANG_WARNING]
+        mock_runner.run.return_value = result
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill"])
+
+        err = capsys.readouterr().err
+        # ``cmd_run`` returns ``result.exit_code`` verbatim; interactive
+        # hangs exit 0 at the subprocess level, but the render path now
+        # still fires because ``succeeded_cleanly`` is False.
+        assert rc == 0
+        assert "interactive-hang:" in err
+        assert "/clauditor cannot drive interactive skills" in err
+        assert "Unknown error" not in err
+
+    def test_run_happy_path_no_error_rendered(self, capsys):
+        """A clean run emits no ERROR line (guard now checks
+        ``succeeded_cleanly``)."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="skill output here",
+            skill_name="my-skill",
+            duration_seconds=1.0,
+        )
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill"])
+
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "skill output here" in captured.out
+        assert "ERROR" not in captured.err
+
+
+class TestCmdCaptureErrorSurfacingRegression:
+    """Regression guard for ``cmd_capture`` adopting ``_render_skill_error``."""
+
+    def test_capture_429_error_surfaces_actual_text(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A 429 ``rate_limit`` failure renders full error + hint line."""
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        result = make_skill_result(
+            output="",
+            exit_code=2,
+            skill_name="find-restaurants",
+            duration_seconds=0.1,
+            error=(
+                "API Error: Request rejected (429). "
+                "Rate limit exceeded for your organization."
+            ),
+        )
+        result.error_category = "rate_limit"
+        mock_runner.run.return_value = result
+
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "find-restaurants"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "API Error: Request rejected (429)" in err
+        assert "Hint: retry in ~60s (rate limit)" in err
+        assert ": None" not in err
+        assert "Unknown error" not in err
+
+
+class TestCmdGradeErrorSurfacingRegression:
+    """Regression guard for ``cmd_grade`` adopting ``_render_skill_error``.
+
+    Covers both call sites: primary-run failure (~line 369) and
+    variance-run failure (~line 395).
+    """
+
+    def test_grade_primary_429_error_surfaces_actual_text(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Primary-run 429 surfaces the full error + hint line."""
+        monkeypatch.chdir(tmp_path)
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        result = make_skill_result(
+            output="",
+            exit_code=1,
+            duration_seconds=0.5,
+            error=(
+                "API Error: Request rejected (429). "
+                "Rate limit exceeded for your organization."
+            ),
+        )
+        result.error_category = "rate_limit"
+        spec.run = MagicMock(return_value=result)
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["grade", "skill.md"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "API Error: Request rejected (429)" in err
+        assert "Hint: retry in ~60s (rate limit)" in err
+        assert ": None" not in err
+        assert "Unknown error" not in err
+
+    def test_grade_variance_429_error_surfaces_actual_text(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Variance-run 429 surfaces the full error + hint line.
+
+        Per ``.claude/rules/mock-side-effect-for-distinct-calls.md``:
+        distinct side_effect values per call since primary succeeds and
+        variance fails.
+        """
+        monkeypatch.chdir(tmp_path)
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        primary_ok = make_skill_result(
+            output="primary output",
+            input_tokens=10,
+            output_tokens=5,
+            duration_seconds=0.5,
+        )
+        variance_bad = make_skill_result(
+            output="",
+            exit_code=1,
+            error=(
+                "API Error: Request rejected (429). "
+                "Rate limit exceeded for your organization."
+            ),
+        )
+        variance_bad.error_category = "rate_limit"
+        spec.run = MagicMock(side_effect=[primary_ok, variance_bad])
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["grade", "skill.md", "--variance", "1"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "Variance skill run failed" in err
+        assert "API Error: Request rejected (429)" in err
+        assert "Hint: retry in ~60s (rate limit)" in err
+        assert ": None" not in err
+        assert "Unknown error" not in err
+
+
+class TestCmdExtractErrorSurfacingRegression:
+    """Regression guard for ``cmd_extract`` adopting ``_render_skill_error``."""
+
+    def test_extract_429_error_surfaces_actual_text(self, capsys):
+        """A 429 ``rate_limit`` failure renders full error + hint line."""
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+        result = make_skill_result(
+            output="",
+            exit_code=1,
+            duration_seconds=0.2,
+            error=(
+                "API Error: Request rejected (429). "
+                "Rate limit exceeded for your organization."
+            ),
+        )
+        result.error_category = "rate_limit"
+        spec.run.return_value = result
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["extract", "skill.md"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "Skill failed:" in err
+        assert "API Error: Request rejected (429)" in err
+        assert "Hint: retry in ~60s (rate limit)" in err
+        assert ": None" not in err
+        assert "Unknown error" not in err
