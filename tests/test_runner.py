@@ -19,6 +19,7 @@ from clauditor.runner import (  # noqa: E402
     SkillRunner,
     _classify_result_message,
     _detect_interactive_hang,
+    _env_without_api_key,
 )
 from tests.conftest import (  # noqa: E402
     _FakePopen,
@@ -2260,3 +2261,66 @@ class TestInteractiveHangDetection:
             w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
             for w in result.warnings
         )
+
+
+class TestEnvWithoutApiKey:
+    """Pure-unit tests for :func:`clauditor.runner._env_without_api_key`.
+
+    Covers DEC-007 (strip both auth vars), DEC-011 (non-mutating pure
+    helper), and DEC-016 (preserve non-auth Anthropic env vars). No
+    subprocess mocks — the helper is pure.
+    """
+
+    def test_strips_both_auth_vars(self):
+        base = {
+            "ANTHROPIC_API_KEY": "sk-key",
+            "ANTHROPIC_AUTH_TOKEN": "tok-abc",
+            "PATH": "/usr/bin",
+        }
+        result = _env_without_api_key(base)
+        assert "ANTHROPIC_API_KEY" not in result
+        assert "ANTHROPIC_AUTH_TOKEN" not in result
+        assert result["PATH"] == "/usr/bin"
+
+    def test_preserves_other_vars(self):
+        base = {
+            "ANTHROPIC_API_KEY": "sk-key",
+            "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            "PATH": "/usr/bin",
+            "UNRELATED": "value",
+        }
+        result = _env_without_api_key(base)
+        assert result == {
+            "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            "PATH": "/usr/bin",
+            "UNRELATED": "value",
+        }
+
+    def test_default_reads_os_environ(self):
+        fake_env = {
+            "ANTHROPIC_API_KEY": "sk-key",
+            "PATH": "/usr/bin",
+            "MARKER": "present",
+        }
+        with patch.dict("os.environ", fake_env, clear=True):
+            result = _env_without_api_key()
+        assert "ANTHROPIC_API_KEY" not in result
+        assert result["PATH"] == "/usr/bin"
+        assert result["MARKER"] == "present"
+
+    def test_is_non_mutating(self):
+        base = {
+            "ANTHROPIC_API_KEY": "sk-key",
+            "ANTHROPIC_AUTH_TOKEN": "tok-abc",
+            "PATH": "/usr/bin",
+        }
+        original = dict(base)
+        result = _env_without_api_key(base)
+        assert base == original
+        assert result is not base
+
+    def test_no_auth_vars_present(self):
+        base = {"PATH": "/usr/bin", "HOME": "/home/user"}
+        result = _env_without_api_key(base)
+        assert result == base
+        assert result is not base
