@@ -364,6 +364,7 @@ class EvalSpec:
             raw_flag = data["allow_hang_heuristic"]
             if not isinstance(raw_flag, bool):
                 raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
                     "allow_hang_heuristic must be a bool (true or false)"
                 )
             allow_hang_heuristic = raw_flag

@@ -22,8 +22,8 @@ The following fields on `SkillResult` are the supported public surface that test
 - `exit_code: int` — subprocess exit code (0 = clean exit, -1 = clauditor-internal failure like FileNotFound or timeout).
 - `error: str | None` — user-facing error message when the run failed. May come from subprocess stderr or from a stream-json `is_error: true` result message (see `docs/stream-json-schema.md`).
 - `error_category: Literal["rate_limit", "auth", "api", "interactive", "subprocess", "timeout"] | None` — classification of the failure when `error` is set. `None` on success. Enables category-aware test branching (e.g. `if result.error_category == "rate_limit": pytest.skip(...)`).
-- `succeeded: bool` — `True` when `exit_code == 0 and output.strip() != ""`. Lenient: a run that emitted output but also hit an API error may still be `succeeded`.
-- `succeeded_cleanly: bool` — stricter predicate: True only when `succeeded` AND no `error`, no `error_category`, and no interactive-hang warning. Use this when your test means "actually completed cleanly, with nothing weird in the transcript."
+- `succeeded: bool` — `True` when `exit_code == 0 and output.strip() != ""`. Lenient by design: a run that emitted output **and** hit an API error or interactive-hang heuristic may still be `succeeded`. Example: an interactive-hang run produces `exit_code=0`, `output="What color do you want?"`, `error=None`, `error_category="interactive"` → `succeeded is True`.
+- `succeeded_cleanly: bool` — stricter predicate: `True` only when `succeeded` AND `error is None` AND `error_category is None` AND no entry in `warnings` starts with the interactive-hang prefix. Use this when your test means "actually completed cleanly, with nothing weird in the transcript." On the interactive-hang example above, `succeeded_cleanly is False`.
 - `input_tokens: int` — Anthropic input token count (0 if not reported).
 - `output_tokens: int` — Anthropic output token count (0 if not reported).
 - `duration_seconds: float` — wall-clock seconds from start of subprocess to exit.

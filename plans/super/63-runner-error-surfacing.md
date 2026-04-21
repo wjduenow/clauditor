@@ -619,10 +619,11 @@ invariant).
 **TDD:**
 - `succeeded_cleanly` returns True only when: `succeeded` is
   True AND `error is None` AND `error_category is None` AND no
-  `stream_events` matches an interactive-hang warning tag.
+  `warnings[]` entry indicates an interactive-hang.
   (For US-001 scope, the interactive-hang check reduces to a
-  `warnings`-list contains-substring probe; US-003 wires in the
-  real detector.)
+  `warnings`-list contains-substring probe on the
+  `"interactive-hang:"` prefix; US-003 wires in the real detector
+  and `_render_skill_error` reads `warnings[]` at render time.)
 - Each `error_category` Literal value can be assigned and
   round-trips through the constructor with no type-coercion.
 - Default `error_category` on every existing constructor call

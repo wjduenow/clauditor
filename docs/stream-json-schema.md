@@ -94,7 +94,10 @@ defensively.
   verbatim Anthropic API error including status codes (e.g. `"API
   Error: Request rejected (429) · Rate limit exceeded for your
   organization"`). Absent on success. Clauditor classifies the text
-  by keyword: `"429"` / `"rate limit"` / `"rate-limit"` →
+  by keyword (case-insensitive — the payload is lowercased before
+  matching, so `"Rate Limit"` and `"rate limit"` classify identically
+  and the `ANTHROPIC_API_KEY` hint matches regardless of casing):
+  `"429"` / `"rate limit"` / `"rate-limit"` →
   `error_category = "rate_limit"`; `"401"` / `"403"` /
   `"unauthorized"` / `"authentication"` / `"auth error"` /
   `"ANTHROPIC_API_KEY"` → `error_category = "auth"`; otherwise
