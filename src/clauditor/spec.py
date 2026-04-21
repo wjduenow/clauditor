@@ -193,13 +193,28 @@ class SkillSpec:
 
         if output is None:
             result = self.run()
-            if not result.succeeded:
+            if not result.succeeded_cleanly:
+                # Prefer an explicit ``error`` string; fall back to the
+                # interactive-hang warning when that's the only signal
+                # (US-003 sets ``error_category="interactive"`` without
+                # setting ``error``). Else keep the generic fallback for
+                # defensive "should not happen" cases. Per DEC-006 /
+                # DEC-010 of ``plans/super/63-runner-error-surfacing.md``.
+                if result.error is not None:
+                    msg = result.error
+                elif result.error_category == "interactive":
+                    msg = next(
+                        (
+                            w
+                            for w in result.warnings
+                            if w.startswith("interactive-hang:")
+                        ),
+                        "interactive hang detected",
+                    )
+                else:
+                    msg = "Unknown error"
                 return AssertionSet(
-                    results=[
-                        _failed_run_result(
-                            self.skill_name, result.error or "Unknown error"
-                        )
-                    ]
+                    results=[_failed_run_result(self.skill_name, msg)]
                 )
             output = result.output
 
