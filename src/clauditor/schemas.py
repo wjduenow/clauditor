@@ -267,6 +267,13 @@ class EvalSpec:
     # Set to ``False`` in an eval spec to opt a specific skill out when
     # the heuristic consistently mis-classifies its output.
     allow_hang_heuristic: bool = True
+    # DEC-002 / DEC-003 / DEC-008 / DEC-014 of #64: optional per-spec
+    # runner timeout (seconds). ``None`` means "unset" — the runner
+    # falls back to the CLI override if present, else to its own
+    # ``self.timeout`` default (180s). Positive int only; bool is
+    # explicitly rejected at load time per
+    # ``.claude/rules/constant-with-type-info.md``.
+    timeout: int | None = None
 
     @classmethod
     def from_file(cls, path: str | Path) -> EvalSpec:
@@ -604,6 +611,30 @@ class EvalSpec:
                 )
             allow_hang_heuristic = raw_flag
 
+        # DEC-002 / DEC-003 / DEC-008 / DEC-014 of #64: optional
+        # per-spec runner timeout override. ``None`` / missing →
+        # "unset" (runner falls back). Must be a positive int;
+        # ``bool`` is an ``int`` subclass in Python, so the check
+        # is ``isinstance(val, int) and not isinstance(val, bool)``
+        # per ``.claude/rules/constant-with-type-info.md``.
+        timeout: int | None = None
+        if "timeout" in data and data["timeout"] is not None:
+            raw_timeout = data["timeout"]
+            if not isinstance(raw_timeout, int) or isinstance(
+                raw_timeout, bool
+            ):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"'timeout' must be an int, got "
+                    f"{type(raw_timeout).__name__} {raw_timeout!r}"
+                )
+            if raw_timeout <= 0:
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"'timeout' must be > 0, got {raw_timeout}"
+                )
+            timeout = raw_timeout
+
         trigger_tests = None
         if "trigger_tests" in data:
             tt = data["trigger_tests"]
@@ -644,6 +675,7 @@ class EvalSpec:
             variance=variance,
             grade_thresholds=grade_thresholds,
             allow_hang_heuristic=allow_hang_heuristic,
+            timeout=timeout,
         )
 
     def to_dict(self) -> dict:
