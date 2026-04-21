@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 
 from clauditor.assertions import AssertionSet, run_assertions
-from clauditor.conformance import check_conformance
+from clauditor.conformance import check_conformance, format_issue_line
 from clauditor.paths import derive_project_dir, derive_skill_name
 from clauditor.runner import SkillResult, SkillRunner
 from clauditor.schemas import EvalSpec
@@ -98,12 +98,12 @@ class SkillSpec:
         # ``severity="warning"`` issues fire here — errors are silent
         # at this layer and must be discovered via ``clauditor lint``.
         # ``check_conformance`` never raises, so no try/except needed.
+        # Uses ``format_issue_line`` (conformance module) so the prefix
+        # format stays in lockstep with the CLI renderer — a single
+        # seam per DEC-014.
         for issue in check_conformance(text, skill_path):
             if issue.severity == "warning":
-                print(
-                    f"clauditor.conformance: {issue.code}: {issue.message}",
-                    file=sys.stderr,
-                )
+                print(format_issue_line(issue), file=sys.stderr)
 
         # Auto-discover eval spec
         eval_spec = None

@@ -12,11 +12,19 @@ gets a dedicated test so a regression surfaces with a clear signal.
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 import pytest
 
-from clauditor.conformance import (
+import clauditor.conformance as _conformance_mod
+
+# Module is imported by the pytest plugin (via spec.py) before coverage
+# instrumentation starts, so reload to get accurate per-line coverage
+# (matches the ``tests/test_schemas.py`` pattern documented in CLAUDE.md).
+importlib.reload(_conformance_mod)
+
+from clauditor.conformance import (  # noqa: E402
     AGENTSKILLS_NAME_RE,
     KNOWN_CLAUDE_CODE_EXTENSION_KEYS,
     ConformanceIssue,
@@ -458,6 +466,20 @@ class TestBodyChecks:
         issues = check_conformance(text, _modern_path())
         assert "AGENTSKILLS_BODY_TOO_LONG" not in _codes(issues)
 
+    def test_body_exactly_500_lines_no_warning(self):
+        """500 lines is the inclusive ceiling — no warning."""
+        body = "\n".join(f"Line {i}" for i in range(500)) + "\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert "AGENTSKILLS_BODY_TOO_LONG" not in _codes(issues)
+
+    def test_body_501_lines_triggers_warning(self):
+        """501 lines crosses the threshold — warning fires."""
+        body = "\n".join(f"Line {i}" for i in range(501)) + "\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert "AGENTSKILLS_BODY_TOO_LONG" in _codes(issues)
+
 
 # ---------------------------------------------------------------------------
 # Layout validation
@@ -564,23 +586,43 @@ class TestYAMLTypeCoercion:
             issues
         )
 
-    def test_metadata_key_non_string_is_impossible_but_value_check_fires(
-        self,
-    ):
-        # parse_frontmatter mapping keys come from _split_key_value
-        # which always returns str, so we can't easily construct a
-        # non-string metadata key via the parser. We exercise the
-        # value-side guard by synthesizing the dict directly via a
-        # value whose parsed form is non-string. The YAML subset never
-        # produces non-string nested values either (all scalars go
-        # through _strip_quotes → str). So this test exists primarily
-        # to pin the rule's code existence at module load time via
-        # TestFrontmatterStructure; here we verify normal string-valued
-        # metadata does NOT trigger the error.
+    def test_metadata_normal_string_values_pass(self):
         text = _build_skill(metadata={"author": "alice"})
         issues = check_conformance(text, _modern_path())
         assert "AGENTSKILLS_METADATA_VALUE_NOT_STRING" not in _codes(issues)
         assert "AGENTSKILLS_METADATA_KEY_NOT_STRING" not in _codes(issues)
+
+    def test_metadata_defensive_key_guard_fires_on_synthetic_non_string_key(
+        self,
+    ):
+        """`_check_metadata` rejects non-string keys.
+
+        `parse_frontmatter` cannot produce non-string keys (the YAML
+        subset parser always returns `str` from `_split_key_value`),
+        so this defensive guard is unreachable via the public API.
+        Exercise it directly to cover the G10 contract — same shape
+        as the reviewer's pass-1 diagnostic.
+        """
+        # Non-public helper; test-only import.
+        from clauditor.conformance import _check_metadata  # noqa: PLC0415
+
+        issues: list[ConformanceIssue] = []
+        _check_metadata({"metadata": {42: "not a string key"}}, issues)
+        codes = [i.code for i in issues]
+        assert "AGENTSKILLS_METADATA_KEY_NOT_STRING" in codes
+        assert all(i.severity == "error" for i in issues)
+
+    def test_metadata_defensive_value_guard_fires_on_synthetic_non_string_value(
+        self,
+    ):
+        """`_check_metadata` rejects non-string values (e.g. YAML-coerced ints)."""
+        from clauditor.conformance import _check_metadata  # noqa: PLC0415
+
+        issues: list[ConformanceIssue] = []
+        _check_metadata({"metadata": {"version": 1.0}}, issues)
+        codes = [i.code for i in issues]
+        assert "AGENTSKILLS_METADATA_VALUE_NOT_STRING" in codes
+        assert all(i.severity == "error" for i in issues)
 
 
 # ---------------------------------------------------------------------------
@@ -616,3 +658,85 @@ class TestConformanceIssueShape:
             code="TEST_CODE", severity=severity, message="msg"
         )
         assert issue.severity in {"error", "warning"}
+
+
+# ---------------------------------------------------------------------------
+# DEC-014 stderr-prefix format (shared by CLI + SkillSpec.from_file hook).
+# ---------------------------------------------------------------------------
+
+
+class TestFormatIssueLine:
+    """Byte-identical pin on the ``clauditor.conformance:`` prefix format.
+
+    The helper is the single seam per DEC-014 + QG-pass-1 M1. Any
+    reshaping of the format (e.g. changing the separator, adding
+    brackets, emitting a trailing space) should be an intentional
+    operator-visible change and should break this test loudly — not
+    silently regress the substring-only tests in `TestCmdLint` /
+    `TestFromFile`.
+    """
+
+    def test_format_is_byte_identical_to_contract(self):
+        from clauditor.conformance import format_issue_line  # noqa: PLC0415
+
+        issue = ConformanceIssue(
+            code="AGENTSKILLS_NAME_MISSING",
+            severity="error",
+            message="Required frontmatter field `name` is missing.",
+        )
+        assert format_issue_line(issue) == (
+            "clauditor.conformance: AGENTSKILLS_NAME_MISSING: "
+            "Required frontmatter field `name` is missing."
+        )
+
+    def test_format_uses_message_verbatim(self):
+        """Any valid single-line message is echoed verbatim after the prefix."""
+        from clauditor.conformance import format_issue_line  # noqa: PLC0415
+
+        issue = ConformanceIssue(
+            code="XYZ_CODE",
+            severity="warning",
+            message="a: b: c — a message that itself contains colons",
+        )
+        assert format_issue_line(issue) == (
+            "clauditor.conformance: XYZ_CODE: "
+            "a: b: c — a message that itself contains colons"
+        )
+
+
+class TestConformanceIssueInvariants:
+    """The dataclass rejects multi-line messages at construction time."""
+
+    @pytest.mark.parametrize("bad_char", ["\n", "\r"])
+    def test_message_rejects_newline_chars(self, bad_char):
+        with pytest.raises(ValueError, match="single-line"):
+            ConformanceIssue(
+                code="TEST",
+                severity="error",
+                message=f"line1{bad_char}line2",
+            )
+
+    def test_all_check_conformance_messages_are_single_line(self):
+        """Every issue emitted by the full rule set is single-line.
+
+        Walks a fixture matrix that triggers (at minimum) one error
+        and one warning per top-level rule category. Defensive guard
+        against a future author adding a rule whose message template
+        contains a newline.
+        """
+        fixtures = [
+            _build_skill(name="", description="ok"),  # NAME_EMPTY
+            _build_skill(name="", description=""),  # NAME_EMPTY + DESCRIPTION_EMPTY
+            _build_skill(description="x" * 1025),  # DESCRIPTION_TOO_LONG
+            _build_skill(metadata={"author": "alice", "extra": "2"}),
+            _build_skill(body="\n".join("line" for _ in range(600))),  # BODY_TOO_LONG
+        ]
+        for text in fixtures:
+            issues = check_conformance(text, _modern_path())
+            for issue in issues:
+                assert "\n" not in issue.message, (
+                    f"Multi-line message from {issue.code}: {issue.message!r}"
+                )
+                assert "\r" not in issue.message, (
+                    f"CR in message from {issue.code}: {issue.message!r}"
+                )

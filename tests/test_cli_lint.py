@@ -430,6 +430,41 @@ class TestStrictFlag:
         )
         assert "Cannot lint: SKILL.md frontmatter is not valid YAML" in captured.out
 
+    def test_invalid_yaml_on_legacy_layout_exits_1(self, tmp_path, capsys):
+        """Legacy-layout file with malformed YAML still exits 1.
+
+        Regression for quality-gate pass-1 finding: the prior
+        ``len(issues) == 1 and code == INVALID_YAML`` guard broke when
+        ``AGENTSKILLS_LAYOUT_LEGACY`` (appended pre-parse in
+        ``check_conformance``) coexisted with INVALID_YAML. Exit
+        routing must handle both issues simultaneously — parse
+        failure dominates regardless of siblings or ``--strict``.
+        """
+        # Legacy layout: filename is ``<name>.md``, not ``SKILL.md``.
+        skill_path = tmp_path / "my-skill.md"
+        skill_path.write_text(
+            "---\nname: my-skill\ndescription: Missing closing fence.\n"
+            "# Body without closing ---\n",
+            encoding="utf-8",
+        )
+
+        # Without --strict
+        rc = main(["lint", str(skill_path)])
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert (
+            "clauditor.conformance: AGENTSKILLS_LAYOUT_LEGACY: " in captured.err
+        )
+        assert (
+            "clauditor.conformance: AGENTSKILLS_FRONTMATTER_INVALID_YAML: "
+            in captured.err
+        )
+        assert "Cannot lint: SKILL.md frontmatter is not valid YAML" in captured.out
+
+        # With --strict — still exit 1 (parse failure never escalated).
+        rc = main(["lint", "--strict", str(skill_path)])
+        assert rc == 1
+
 
 # ---------------------------------------------------------------------------
 # ``--json`` output envelope (US-005, DEC-012).
@@ -635,3 +670,84 @@ class TestJsonOutput:
         assert len(payload["issues"]) == 1
         assert payload["issues"][0]["code"] == "PATH_UNREADABLE"
         assert payload["issues"][0]["severity"] == "error"
+
+
+# ---------------------------------------------------------------------------
+# QG pass-3: newline-injection hardening on synthetic PATH_* issues.
+#
+# POSIX allows ``\n`` / ``\r`` in filenames, and some plugin filesystems
+# raise multi-line OSError messages on ``read_text``. Both flows feed
+# user-controlled strings into a ``ConformanceIssue(message=...)`` in
+# the ``--json`` path; since QG-pass-2 added ``__post_init__`` rejecting
+# newlines in messages (M9), these paths would crash before emitting
+# their envelope. The ``_sanitize_message_text`` helper replaces newline
+# characters with their literal escape sequences so the synthetic issue
+# constructs cleanly and grep-friendly single-line output is preserved.
+# ---------------------------------------------------------------------------
+
+
+class TestNewlineSanitization:
+    """Regression: user-provided path / OSError messages with ``\\n`` must
+    not crash the lint CLI (QG-pass-3 finding)."""
+
+    def test_json_path_with_newline_does_not_crash(self, capsys):
+        """``clauditor lint --json $'foo\\nbar'`` → clean exit 1, no crash."""
+        # Path that contains a literal newline — argparse + Path both
+        # accept this, and resolve() does not reject it.
+        rc = main(["lint", "--json", "bogus\nwith-newline.md"])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert payload["passed"] is False
+        assert len(payload["issues"]) == 1
+        issue = payload["issues"][0]
+        assert issue["code"] == "PATH_NOT_A_FILE"
+        # Newline was replaced with ``\n`` escape so the message is
+        # single-line and the construct did not violate the DEC-014
+        # ``ConformanceIssue.__post_init__`` invariant.
+        assert "\n" not in issue["message"]
+        assert "\r" not in issue["message"]
+        assert "\\n" in issue["message"]
+
+    def test_text_path_with_newline_is_single_line(self, capsys):
+        """Human-text path with a newline in argv renders as one stderr line."""
+        rc = main(["lint", "bogus\nwith-newline.md"])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        # The stderr error line contains the escape, not a raw newline,
+        # so ``grep`` consumers see exactly one matching line.
+        err_lines = [
+            line for line in captured.err.splitlines()
+            if line.startswith("ERROR:")
+        ]
+        assert len(err_lines) == 1
+        assert "\\n" in err_lines[0]
+
+    def test_json_unreadable_multiline_oserror_does_not_crash(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Multi-line OSError messages do not crash the JSON envelope."""
+        skill_path = _make_valid_skill(tmp_path)
+
+        def _boom(self, *_args, **_kwargs):
+            raise OSError("first line\nsecond line of error")
+
+        from pathlib import Path
+
+        monkeypatch.setattr(Path, "read_text", _boom)
+
+        rc = main(["lint", "--json", str(skill_path)])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert payload["passed"] is False
+        assert len(payload["issues"]) == 1
+        issue = payload["issues"][0]
+        assert issue["code"] == "PATH_UNREADABLE"
+        assert "\n" not in issue["message"]
+        assert "\\n" in issue["message"]

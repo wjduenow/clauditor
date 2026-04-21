@@ -47,6 +47,7 @@ __all__ = [
     "KNOWN_CLAUDE_CODE_EXTENSION_KEYS",
     "ConformanceIssue",
     "check_conformance",
+    "format_issue_line",
 ]
 
 
@@ -114,14 +115,43 @@ class ConformanceIssue:
     - ``severity`` — ``"error"`` or ``"warning"`` per the plan's
       Discovery section. The CLI layer maps these to exit codes
       (DEC-002, DEC-004).
-    - ``message`` — human-readable explanation. Does NOT include the
-      ``"clauditor.conformance: "`` prefix — callers (CLI, soft-warn
-      hook) add that when rendering to stderr per DEC-014.
+    - ``message`` — human-readable **single-line** explanation. Does NOT
+      include the ``"clauditor.conformance: "`` prefix — callers (CLI,
+      soft-warn hook) add that when rendering to stderr per DEC-014.
+      Newlines are rejected at construction time so line-oriented
+      consumers (`grep "clauditor.conformance:" stderr`) cannot miss
+      continuation lines that would otherwise drop the prefix.
     """
 
     code: str
     severity: Severity
     message: str
+
+    def __post_init__(self) -> None:
+        # DEC-014 contract: one issue == one stderr line. Reject
+        # multi-line messages at construction time so future rule
+        # authors cannot silently break line-oriented consumers.
+        if "\n" in self.message or "\r" in self.message:
+            raise ValueError(
+                f"ConformanceIssue.message must be single-line "
+                f"(code={self.code!r}): {self.message!r}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Render helper (DEC-014)
+# ---------------------------------------------------------------------------
+
+
+def format_issue_line(issue: ConformanceIssue) -> str:
+    """Format one issue as a ``clauditor.conformance:``-prefixed stderr line.
+
+    Single authoritative formatter per DEC-014. Both CLI (``cli/lint.py``)
+    and the ``SkillSpec.from_file`` soft-warn hook must call this helper
+    — do NOT reimplement the prefix in either caller. Changes to the
+    prefix (operator-visible) must land here.
+    """
+    return f"clauditor.conformance: {issue.code}: {issue.message}"
 
 
 # ---------------------------------------------------------------------------
@@ -151,7 +181,12 @@ def check_conformance(
     issues: list[ConformanceIssue] = []
 
     # Layout classification first — a legacy-layout warning applies
-    # regardless of frontmatter validity.
+    # regardless of frontmatter validity. Ordering is load-bearing:
+    # ``AGENTSKILLS_LAYOUT_LEGACY`` can coexist with a downstream
+    # ``AGENTSKILLS_FRONTMATTER_INVALID_YAML`` issue. The CLI's
+    # ``_compute_exit_code`` in ``cli/lint.py`` uses ``any(... == INVALID_YAML)``
+    # (not ``len == 1``) to route the whole run to exit 1 when YAML is
+    # malformed; do NOT re-order this append without updating that logic.
     is_modern_layout = skill_path.name == "SKILL.md"
     if not is_modern_layout:
         issues.append(
@@ -350,8 +385,8 @@ def _check_name(
                     code="AGENTSKILLS_NAME_PARENT_DIR_MISMATCH",
                     severity="error",
                     message=(
-                        f"Frontmatter `name: {value}` does not match "
-                        f"parent directory `{parent_name}`; the "
+                        f"Frontmatter `name: {value!r}` does not match "
+                        f"parent directory `{parent_name!r}`; the "
                         f"agentskills.io specification requires these "
                         f"to match."
                     ),

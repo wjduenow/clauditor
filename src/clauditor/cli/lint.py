@@ -43,7 +43,11 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
-from clauditor.conformance import ConformanceIssue, check_conformance
+from clauditor.conformance import (
+    ConformanceIssue,
+    check_conformance,
+    format_issue_line,
+)
 
 # Code that always routes to exit 1 regardless of ``--strict`` —
 # malformed-frontmatter is a parse failure, not a conformance concern.
@@ -56,6 +60,22 @@ _INVALID_YAML_CODE = "AGENTSKILLS_FRONTMATTER_INVALID_YAML"
 # line instead.
 _PATH_NOT_A_FILE_CODE = "PATH_NOT_A_FILE"
 _PATH_UNREADABLE_CODE = "PATH_UNREADABLE"
+
+
+def _sanitize_message_text(value: str) -> str:
+    """Replace newline characters with visible escape sequences.
+
+    User-controlled strings (``args.skill_md`` from argv, ``OSError.__str__``
+    from a failed ``read_text``) can contain ``\n`` or ``\r`` — POSIX
+    allows newlines in filenames, and plugin filesystems sometimes raise
+    multi-line OSError messages. Those characters, if interpolated verbatim
+    into a :class:`ConformanceIssue` message, violate the ``__post_init__``
+    single-line invariant (DEC-014) and crash the ``--json`` path before
+    it can emit its envelope. Replace with the literal escape sequences
+    ``\\n`` / ``\\r`` so the synthetic path-error issues render on one
+    line and stay grep-friendly for the human-text path.
+    """
+    return value.replace("\r", "\\r").replace("\n", "\\n")
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -83,11 +103,6 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
-def _render_issue(issue: ConformanceIssue) -> str:
-    """Format one issue as a stderr line (DEC-014)."""
-    return f"clauditor.conformance: {issue.code}: {issue.message}"
-
-
 def _has_error(issues: list[ConformanceIssue]) -> bool:
     """Return ``True`` if any issue has ``severity == "error"``."""
     return any(issue.severity == "error" for issue in issues)
@@ -103,7 +118,13 @@ def _compute_exit_code(
     """
     if not issues:
         return 0
-    if len(issues) == 1 and issues[0].code == _INVALID_YAML_CODE:
+    # INVALID_YAML dominates: sibling pre-parse issues (e.g.
+    # ``AGENTSKILLS_LAYOUT_LEGACY``, which is appended before the
+    # frontmatter parse in ``check_conformance``) may accompany it, but
+    # the caller cannot act on them until the YAML parses. Route the
+    # whole run to exit 1 even under ``--strict`` — parse failures are
+    # never escalated by that flag.
+    if any(issue.code == _INVALID_YAML_CODE for issue in issues):
         return 1
     if _has_error(issues) or strict:
         return 2
@@ -162,14 +183,17 @@ def cmd_lint(args: argparse.Namespace) -> int:
                     ConformanceIssue(
                         code=_PATH_NOT_A_FILE_CODE,
                         severity="error",
-                        message=f"{args.skill_md} is not a regular file",
+                        message=(
+                            f"{_sanitize_message_text(args.skill_md)} is "
+                            f"not a regular file"
+                        ),
                     )
                 ],
                 exit_code=1,
             )
             return 1
         print(
-            f"ERROR: {args.skill_md} is not a regular file",
+            f"ERROR: {_sanitize_message_text(args.skill_md)} is not a regular file",
             file=sys.stderr,
         )
         return 1
@@ -186,14 +210,20 @@ def cmd_lint(args: argparse.Namespace) -> int:
                     ConformanceIssue(
                         code=_PATH_UNREADABLE_CODE,
                         severity="error",
-                        message=f"cannot read {args.skill_md}: {exc}",
+                        message=(
+                            f"cannot read "
+                            f"{_sanitize_message_text(args.skill_md)}: "
+                            f"{_sanitize_message_text(str(exc))}"
+                        ),
                     )
                 ],
                 exit_code=1,
             )
             return 1
         print(
-            f"ERROR: cannot read {args.skill_md}: {exc}",
+            f"ERROR: cannot read "
+            f"{_sanitize_message_text(args.skill_md)}: "
+            f"{_sanitize_message_text(str(exc))}",
             file=sys.stderr,
         )
         return 1
@@ -217,12 +247,13 @@ def cmd_lint(args: argparse.Namespace) -> int:
     # Render every issue to stderr in order (DEC-014). Rendering is
     # independent of ``--strict`` — the flag only influences exit code.
     for issue in issues:
-        print(_render_issue(issue), file=sys.stderr)
+        print(format_issue_line(issue), file=sys.stderr)
 
-    # Exit-1 case: the ONLY issue is malformed frontmatter (parse failure,
-    # not conformance). Preserve verbatim under ``--strict`` — parse
-    # failures are never escalated by that flag.
-    if len(issues) == 1 and issues[0].code == _INVALID_YAML_CODE:
+    # Exit-1 case: malformed frontmatter is present (may coexist with
+    # sibling pre-parse warnings like ``AGENTSKILLS_LAYOUT_LEGACY``).
+    # Parse failures dominate — the caller cannot act on sibling issues
+    # until the YAML parses. Preserved under ``--strict`` per DEC-004.
+    if any(issue.code == _INVALID_YAML_CODE for issue in issues):
         print("Cannot lint: SKILL.md frontmatter is not valid YAML")
         return 1
 
