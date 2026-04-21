@@ -1924,6 +1924,21 @@ class TestAssertionKeySpec:
                 "optional — each key must be in exactly one set"
             )
 
+    def test_drift_hints_cover_every_type(self):
+        """Every type in ``ASSERTION_TYPE_REQUIRED_KEYS`` must have a
+        matching entry in ``_ASSERTION_DRIFT_HINTS`` (may be empty).
+        Guards against a future type addition that forgets the
+        hints table — the validator would still work (emit no
+        hint) but DEC-009's per-type coverage invariant would
+        silently drift.
+        """
+        assert set(ASSERTION_TYPE_REQUIRED_KEYS) == set(
+            _ASSERTION_DRIFT_HINTS
+        ), (
+            "ASSERTION_TYPE_REQUIRED_KEYS and _ASSERTION_DRIFT_HINTS "
+            "must cover the same set of types"
+        )
+
     def test_handler_signature_agrees_with_constant(self):
         """Drift guard: every required AND optional key appears in
         the handler's lambda source as a quoted key name.
@@ -2201,11 +2216,13 @@ class TestRequireAssertionKeys:
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         assert spec.assertions == [entry]
 
-    def test_optional_key_allows_none(self, tmp_path):
-        """An optional key with a ``None`` value is accepted — we
-        allow it but don't special-case None the way we do for
-        required keys. This documents the boundary: None is only
-        rejected when the key is REQUIRED.
+    def test_optional_key_with_none_rejected(self, tmp_path):
+        """An optional key with a ``None`` value is REJECTED — if
+        accepted at load time, the downstream handler
+        (``a.get("count", 1)``) would read ``None`` (not the
+        default) and crash with ``TypeError`` on the comparison.
+        The loader treats a present-but-None optional the same
+        as a wrong-type value and raises at load time.
         """
         entry = {"id": "a1", "type": "has_urls", "count": None}
         data = {
@@ -2213,11 +2230,10 @@ class TestRequireAssertionKeys:
             "test_args": "y",
             "assertions": [entry],
         }
-        # Optional + None passes validation; the downstream handler
-        # reads ``a.get("count", 1)`` and a None-valued key short-
-        # circuits to the default at runtime.
-        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
-        assert spec.assertions == [entry]
+        with pytest.raises(
+            ValueError, match=r"must be int, not null \(omit the key"
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
 
     @pytest.mark.parametrize(
         "atype,key,bad_value,expected_fragment",

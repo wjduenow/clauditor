@@ -2905,6 +2905,20 @@ class TestCmdInit:
         # Starter scaffold ships 4 assertions per DEC-001 mapping.
         assert len(spec.assertions) == 4
 
+        # Each assertion uses the per-type semantic key (DEC-001)
+        # with native JSON ints for counts/lengths (DEC-002). A
+        # future scaffold edit that swaps a key name (``length`` →
+        # ``len``) or reverts to stringly-typed ints (``500`` →
+        # ``"500"``) must fail this test, not silently pass.
+        by_id = {a["id"]: a for a in spec.assertions}
+        assert by_id["min_length_500"]["length"] == 500
+        assert isinstance(by_id["min_length_500"]["length"], int)
+        assert by_id["has_urls_3"]["count"] == 3
+        assert isinstance(by_id["has_urls_3"]["count"], int)
+        assert by_id["has_entries_3"]["count"] == 3
+        assert isinstance(by_id["has_entries_3"]["count"], int)
+        assert by_id["no_error"]["needle"] == "Error"
+
 
 @pytest.fixture
 def setup_env(tmp_path, monkeypatch):

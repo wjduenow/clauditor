@@ -414,8 +414,10 @@ class EvalSpec:
             :data:`_ASSERTION_DRIFT_HINTS` for a per-type
             ``"did you mean X?"`` hint so hand-authors get a quick
             migration nudge when renaming legacy aliases
-            (``value``, ``pattern``, ``min``, ``max``, ``threshold``,
-            ``minimum``).
+            (``value``, ``min``, ``max``, ``threshold``,
+            ``minimum``; ``pattern`` is a drift alias on
+            ``contains`` / ``not_contains`` only — it is a VALID
+            key for ``regex`` and ``min_count``).
 
             Error-path order: (a) unknown/missing type →
             (b) unknown key → (c) missing required → (d) wrong
@@ -466,22 +468,30 @@ class EvalSpec:
                         f"(type={type_val!r}): missing required key {key!r}"
                     )
             # (d) Wrong-typed payload keys. Check every declared
-            # ``field_types`` entry that is present in the user's
-            # dict (None-valued optionals skip the isinstance
-            # check by mirroring the pre-existing tolerance for
-            # optional=None per US-001 test
-            # ``test_optional_key_allows_none``). ``bool`` is a
-            # subclass of ``int`` in Python, so a raw
-            # ``isinstance`` check would silently accept
-            # ``{"count": True}``; we guard with the
-            # ``not isinstance(val, bool)`` clause on the int
-            # branch.
+            # ``field_types`` entry present in the user's dict.
+            # Two subtleties:
+            #   1. A present-but-``None`` optional key is rejected
+            #      — ``a.get("count", 1)`` does NOT substitute for
+            #      ``None`` at runtime, so accepting it at load
+            #      time would crash the handler downstream. The
+            #      ``None`` branch produces a friendlier error
+            #      ("must be int, not null …") than the generic
+            #      ``isinstance`` miss would.
+            #   2. ``bool`` is a subclass of ``int`` in Python, so
+            #      a raw ``isinstance`` check would silently
+            #      accept ``{"count": True}``. The int branch
+            #      guards with ``not isinstance(val, bool)``.
             for key, expected in spec.field_types.items():
                 if key not in entry:
                     continue
                 val = entry[key]
                 if val is None:
-                    continue
+                    raise ValueError(
+                        f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                        f"(type={type_val!r}): key {key!r} must be "
+                        f"{expected.__name__}, not null (omit the "
+                        f"key to use the default)"
+                    )
                 ok = isinstance(val, expected) and not (
                     expected is int and isinstance(val, bool)
                 )
