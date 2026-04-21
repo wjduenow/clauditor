@@ -159,6 +159,44 @@ class TestFrontmatterStructure:
             i.code == "AGENTSKILLS_FRONTMATTER_INVALID_YAML" for i in issues
         )
 
+    def test_malformed_yaml_with_multiline_exception_message_stays_single_line(
+        self, monkeypatch
+    ):
+        """ValueError messages from parse_frontmatter can contain newlines.
+
+        Regression for the CodeRabbit finding: `parse_frontmatter` may
+        raise a multi-line diagnostic (caret-indicator format or
+        embedded context). Interpolating that verbatim into the
+        ConformanceIssue message would trigger the __post_init__
+        single-line invariant and break `check_conformance`'s "never
+        raises" contract. Sanitize before embedding.
+        """
+        import clauditor.conformance as _conformance_mod  # noqa: PLC0415
+
+        def _raise_multiline(_text: str):
+            raise ValueError("line 1\nline 2 (offending token)\n  ^")
+
+        monkeypatch.setattr(
+            _conformance_mod, "parse_frontmatter", _raise_multiline, raising=False
+        )
+        # Monkeypatch the local import target — check_conformance imports
+        # inline, so patch _frontmatter directly.
+        import clauditor._frontmatter as _fm_mod  # noqa: PLC0415
+
+        monkeypatch.setattr(_fm_mod, "parse_frontmatter", _raise_multiline)
+
+        # Must NOT raise even when the exception string has newlines.
+        issues = check_conformance(
+            "---\nname: x\n---\n# body\n", _modern_path()
+        )
+        invalid_yaml = _by_code(issues, "AGENTSKILLS_FRONTMATTER_INVALID_YAML")
+        assert len(invalid_yaml) == 1
+        # Newlines replaced with visible escape sequences to preserve
+        # DEC-014 single-line stderr contract.
+        assert "\n" not in invalid_yaml[0].message
+        assert "\r" not in invalid_yaml[0].message
+        assert "\\n" in invalid_yaml[0].message  # escape is visible
+
     def test_unknown_key_reports_warning(self):
         text = _build_skill(extra={"bogus-field": "value"})
         issues = check_conformance(text, _modern_path())

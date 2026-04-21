@@ -207,13 +207,19 @@ def check_conformance(
     try:
         parsed, body = parse_frontmatter(skill_md_text)
     except ValueError as exc:
+        # Sanitize: YAML parser messages may include embedded newlines
+        # (caret-indicator diagnostics, multi-line context). The
+        # ``ConformanceIssue.__post_init__`` single-line invariant
+        # rejects raw ``\n`` / ``\r`` and would break
+        # ``check_conformance``'s "never raises" contract.
+        exc_str = str(exc).replace("\r", "\\r").replace("\n", "\\n")
         issues.append(
             ConformanceIssue(
                 code="AGENTSKILLS_FRONTMATTER_INVALID_YAML",
                 severity="error",
                 message=(
                     f"Frontmatter YAML is malformed and could not be "
-                    f"parsed: {exc}"
+                    f"parsed: {exc_str}"
                 ),
             )
         )
@@ -323,10 +329,12 @@ def _check_name(
         )
         return
 
-    # Hyphen-specific readable diagnostics. Each branch returns after
-    # emitting so the author sees ONE actionable error rather than a
-    # cascade of overlapping codes (LEADING_HYPHEN + INVALID_CHARS for
-    # the same character would be noise).
+    # Hyphen-specific readable diagnostics. The if/elif chain enforces
+    # mutual exclusion so the author sees ONE actionable hyphen-related
+    # diagnostic rather than a cascade (LEADING_HYPHEN + INVALID_CHARS
+    # for the same character would be noise). The parent-dir check
+    # below runs independently — a hyphen issue and a parent-dir
+    # mismatch CAN co-fire (different concerns).
     if value.startswith("-"):
         issues.append(
             ConformanceIssue(
