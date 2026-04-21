@@ -27,6 +27,7 @@ The following fields on `SkillResult` are the supported public surface that test
 - `input_tokens: int` — Anthropic input token count (0 if not reported).
 - `output_tokens: int` — Anthropic output token count (0 if not reported).
 - `duration_seconds: float` — wall-clock seconds from start of subprocess to exit.
+- `api_key_source: str | None` — auth source the child `claude -p` reported (parsed from the stream-json `system/init` message's `apiKeySource`). Example values: `"ANTHROPIC_API_KEY"`, `"claude.ai"`, `"none"`. `None` when the field was absent (older CLI builds) or malformed. Useful for asserting which tier a test ran against (e.g. `assert result.api_key_source == "claude.ai"` when running under `--clauditor-no-api-key`). See `docs/stream-json-schema.md` for the parser contract.
 
 The following fields on `SkillResult` are internal-observability-only and may change without notice; do not assert on them in tests: `raw_messages`, `stream_events`, `warnings`, `outputs`.
 
@@ -36,8 +37,11 @@ Options:
 pytest --clauditor-project-dir /path/to/project
 pytest --clauditor-timeout 300
 pytest --clauditor-claude-bin /usr/local/bin/claude
+pytest --clauditor-no-api-key         # Strip ANTHROPIC_{API_KEY,AUTH_TOKEN}
 pytest --clauditor-grade              # Enable Layer 3 tests (costs money)
 pytest --clauditor-model claude-sonnet-4-6  # Override grading model
 ```
+
+`--clauditor-no-api-key` is the plugin-option counterpart to `--no-api-key` on the CLI: strips both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the `claude -p` subprocess environment so the child falls back to whatever auth is cached in `~/.claude/` (typically a Pro/Max subscription). Scoped to the `clauditor_spec` fixture's `env_override` wiring; the bare `clauditor_runner` fixture is unaffected (its `SkillRunner` is constructed without the env scrub). For per-test overrides, `spec.run(env_override=..., timeout_override=...)` accepts both kwargs directly — the fixture wrapper forwards caller-provided values over the fixture-level default.
 
 Mark tests that need Layer 3 with `@pytest.mark.clauditor_grade`; they are skipped by default and only run under `--clauditor-grade`.
