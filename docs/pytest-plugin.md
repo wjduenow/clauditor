@@ -41,3 +41,7 @@ pytest --clauditor-model claude-sonnet-4-6  # Override grading model
 ```
 
 Mark tests that need Layer 3 with `@pytest.mark.clauditor_grade`; they are skipped by default and only run under `--clauditor-grade`.
+
+### Related commands (not covered by fixtures)
+
+`clauditor lint` is a standalone CLI command for static agentskills.io spec conformance; it is not exposed as a pytest fixture. Invoke it directly (e.g. from a `subprocess.run` call or a release-gate script) rather than expecting a `clauditor_lint` fixture. See [`docs/cli-reference.md#lint`](cli-reference.md#lint).
