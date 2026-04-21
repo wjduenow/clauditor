@@ -127,6 +127,24 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             " (case-insensitive, repeatable)"
         ),
     )
+    p_grade.add_argument(
+        "--no-api-key",
+        action="store_true",
+        help=(
+            "Strip ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN from the "
+            "subprocess environment to force subscription auth."
+        ),
+    )
+    p_grade.add_argument(
+        "--timeout",
+        type=_positive_int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Override the runner timeout (seconds); must be > 0. "
+            "Defaults to EvalSpec.timeout or 180s."
+        ),
+    )
 
 
 def _load_and_validate_grade_args(
@@ -340,6 +358,17 @@ def _run_skill_variants(
     # Shared helper lives in ``clauditor.cli`` (package __init__). Import
     # lazily to avoid a circular import at module load.
     from clauditor.cli import _render_skill_error
+    from clauditor.runner import _env_without_api_key
+
+    # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags through
+    # to every ``spec.run`` invocation (primary + variance). Defaults
+    # are both None (today's behavior).
+    env_override = (
+        _env_without_api_key()
+        if getattr(args, "no_api_key", False)
+        else None
+    )
+    timeout_override = getattr(args, "timeout", None)
 
     run_outputs: list[tuple[str, list[dict]]] = []
     # Parallel list of SkillResult objects — None entries correspond to
@@ -367,6 +396,8 @@ def _run_skill_variants(
         )
         primary_skill_result = spec.run(
             run_dir=workspace.tmp_path / "run-0",
+            timeout_override=timeout_override,
+            env_override=env_override,
         )
         if not primary_skill_result.succeeded_cleanly:
             print(
@@ -394,7 +425,11 @@ def _run_skill_variants(
             if args.output
             else workspace.tmp_path / f"run-{variance_idx + 1}"
         )
-        variance_result = spec.run(run_dir=variance_run_dir)
+        variance_result = spec.run(
+            run_dir=variance_run_dir,
+            timeout_override=timeout_override,
+            env_override=env_override,
+        )
         if not variance_result.succeeded_cleanly:
             print(
                 f"ERROR: Variance skill run failed: "
