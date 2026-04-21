@@ -69,7 +69,8 @@ Text chunks from every assistant message are joined with `\n` to form
 
 ### `type: "result"`
 
-The final line of a successful run. Carries aggregate token usage.
+The terminal line of a run. Carries aggregate token usage and, on
+failure, a user-facing error string.
 
 ```json
 {"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1423,"output_tokens":512}}
@@ -81,6 +82,30 @@ defensively.
 - `usage.input_tokens` (int) — tolerated-if-missing / `None` / non-numeric
   (falls back to 0 via a `try/except (TypeError, ValueError)` wrapper).
 - `usage.output_tokens` (int) — same defensive treatment.
+- `is_error` (bool) — tolerated-if-missing (treated as `False`). When
+  strictly `True` (Python `is True` check — the string `"true"`, int
+  `1`, and other truthy non-bool values do NOT trigger the error
+  branch), clauditor classifies the result as a failure and surfaces
+  a user-facing error string via `SkillResult.error` /
+  `SkillResult.error_category`. This strict check preserves back-
+  compat with older CLI builds that may omit the field on success.
+- `result` (string) — **present on result messages only**. When
+  `is_error: true`, this is the human-readable error text, often the
+  verbatim Anthropic API error including status codes (e.g. `"API
+  Error: Request rejected (429) · Rate limit exceeded for your
+  organization"`). Absent on success. Clauditor classifies the text
+  by keyword (case-insensitive — the payload is lowercased before
+  matching, so `"Rate Limit"` and `"rate limit"` classify identically
+  and the `ANTHROPIC_API_KEY` hint matches regardless of casing):
+  `"429"` / `"rate limit"` / `"rate-limit"` →
+  `error_category = "rate_limit"`; `"401"` / `"403"` /
+  `"unauthorized"` / `"authentication"` / `"auth error"` /
+  `"ANTHROPIC_API_KEY"` → `error_category = "auth"`; otherwise
+  `error_category = "api"`. The rate-limit match runs before the
+  auth match so a string containing both is classified as
+  `rate_limit`. Strings longer than 4 KB are truncated in
+  `SkillResult.error` with a `" ... (truncated)"` suffix; the full
+  string remains in `stream_events` for forensics.
 
 Seeing a `result` message flips an internal `saw_result` flag. If the
 stream ends without any `result` message, clauditor emits:
@@ -92,6 +117,18 @@ clauditor.runner: stream-json ended without a 'result' message; token usage unav
 to stderr and still returns a `SkillResult` with `input_tokens = 0` and
 `output_tokens = 0`. Missing token data is a warning, not a fatal error.
 
+**Failure example — 429 rate limit.** When the underlying API returns
+a 429 rate-limit, Claude CLI emits a terminal `result` message with
+`is_error: true` and the user-facing text in `result`. Clauditor
+surfaces this through `SkillResult.error` + `SkillResult.error_category
+== "rate_limit"`.
+
+```jsonl
+{"type":"system","subtype":"init","session_id":"abc123","cwd":"/tmp/work"}
+{"type":"assistant","message":{"id":"msg_01","role":"assistant","content":[],"stop_reason":null}}
+{"type":"result","subtype":"error_max_turns","is_error":true,"result":"API Error: Request rejected (429). Your organization has exceeded the rate limit.","usage":{"input_tokens":1423,"output_tokens":0}}
+```
+
 ## Error handling summary
 
 | Condition | Behavior |
@@ -101,6 +138,10 @@ to stderr and still returns a `SkillResult` with `input_tokens = 0` and
 | `assistant` message without `message.content` list | Skip text capture for that message |
 | Text block missing `text` field | Contributes empty string |
 | `result` message with missing/broken `usage` | Token counts default to 0 |
+| `result` message with `is_error` absent | Treat as success (back-compat with older CLI versions) |
+| `result` message with non-bool `is_error` (e.g. `"true"`, `1`) | Treat as absent — strict `is True` check only |
+| `result` message with `is_error: true` and no `result` string | `SkillResult.error = "API error (no detail)"`, `error_category = "api"` |
+| `result` message with `is_error: true` and `result` > 4 KB | Truncate at 4 KB with `" ... (truncated)"` suffix on `SkillResult.error`; classify from the prefix; full string retained in `stream_events` |
 | No `result` message before EOF | Warn to stderr, return `SkillResult` with zero tokens |
 | Subprocess times out | Kill child, return `SkillResult(exit_code=-1, error="timeout")` with whatever text was captured so far |
 | `claude` binary not found | Return `SkillResult(exit_code=-1, error="Claude CLI not found: …")` |

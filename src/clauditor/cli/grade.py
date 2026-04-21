@@ -337,6 +337,10 @@ def _run_skill_variants(
     non-``None`` when the caller should return that exit code (skill
     subprocess failure).
     """
+    # Shared helper lives in ``clauditor.cli`` (package __init__). Import
+    # lazily to avoid a circular import at module load.
+    from clauditor.cli import _render_skill_error
+
     run_outputs: list[tuple[str, list[dict]]] = []
     # Parallel list of SkillResult objects — None entries correspond to
     # captured-text (--output) runs where no subprocess SkillResult exists.
@@ -364,9 +368,10 @@ def _run_skill_variants(
         primary_skill_result = spec.run(
             run_dir=workspace.tmp_path / "run-0",
         )
-        if not primary_skill_result.succeeded:
+        if not primary_skill_result.succeeded_cleanly:
             print(
-                f"ERROR: Skill failed: {primary_skill_result.error}",
+                f"ERROR: Skill failed: "
+                f"{_render_skill_error(primary_skill_result)}",
                 file=sys.stderr,
             )
             return run_outputs, skill_results, 0, 0, 0.0, 1
@@ -390,9 +395,10 @@ def _run_skill_variants(
             else workspace.tmp_path / f"run-{variance_idx + 1}"
         )
         variance_result = spec.run(run_dir=variance_run_dir)
-        if not variance_result.succeeded:
+        if not variance_result.succeeded_cleanly:
             print(
-                f"ERROR: Variance skill run failed: {variance_result.error}",
+                f"ERROR: Variance skill run failed: "
+                f"{_render_skill_error(variance_result)}",
                 file=sys.stderr,
             )
             return run_outputs, skill_results, 0, 0, 0.0, 1

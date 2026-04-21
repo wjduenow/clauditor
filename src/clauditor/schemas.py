@@ -262,6 +262,11 @@ class EvalSpec:
     trigger_tests: TriggerTests | None = None
     variance: VarianceConfig | None = None
     grade_thresholds: GradeThresholds | None = None
+    # DEC-005: escape hatch for the interactive-hang heuristic. Default
+    # is ``True`` so every pre-existing eval.json keeps the detector on.
+    # Set to ``False`` in an eval spec to opt a specific skill out when
+    # the heuristic consistently mis-classifies its output.
+    allow_hang_heuristic: bool = True
 
     @classmethod
     def from_file(cls, path: str | Path) -> EvalSpec:
@@ -585,6 +590,20 @@ class EvalSpec:
                     f"got {user_prompt!r}"
                 )
 
+        # DEC-005: optional per-eval escape hatch for the
+        # interactive-hang heuristic. Absent → default True (back-compat).
+        # Present → must be a real bool (reject "false", 0, None, etc.)
+        # — this is a load-bearing behavioral switch, not a truthy flag.
+        allow_hang_heuristic: bool = True
+        if "allow_hang_heuristic" in data:
+            raw_flag = data["allow_hang_heuristic"]
+            if not isinstance(raw_flag, bool):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "allow_hang_heuristic must be a bool (true or false)"
+                )
+            allow_hang_heuristic = raw_flag
+
         trigger_tests = None
         if "trigger_tests" in data:
             tt = data["trigger_tests"]
@@ -624,6 +643,7 @@ class EvalSpec:
             trigger_tests=trigger_tests,
             variance=variance,
             grade_thresholds=grade_thresholds,
+            allow_hang_heuristic=allow_hang_heuristic,
         )
 
     def to_dict(self) -> dict:
@@ -678,6 +698,10 @@ class EvalSpec:
             "grading_criteria": self.grading_criteria,
             "grading_model": self.grading_model,
         }
+        if not self.allow_hang_heuristic:
+            # Emit only on non-default to keep diffs minimal; omission
+            # at load time means "default True" per from_dict.
+            result["allow_hang_heuristic"] = False
         if self.output_file is not None:
             result["output_file"] = self.output_file
         if self.output_files:

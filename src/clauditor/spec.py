@@ -137,7 +137,17 @@ class SkillSpec:
             effective_cwd = run_dir / "inputs"
             print(f"Staged {len(sources)} input file(s) into {effective_cwd}")
 
-        result = self.runner.run(self.skill_name, run_args, cwd=effective_cwd)
+        # DEC-005: thread the per-eval escape hatch into the runner. When
+        # no eval_spec is attached, default to True (back-compat).
+        allow_hang_heuristic = (
+            self.eval_spec.allow_hang_heuristic if self.eval_spec else True
+        )
+        result = self.runner.run(
+            self.skill_name,
+            run_args,
+            cwd=effective_cwd,
+            allow_hang_heuristic=allow_hang_heuristic,
+        )
 
         # Read output from files if eval spec specifies file-based output
         # Only read files on successful runs to avoid stale output
@@ -183,13 +193,28 @@ class SkillSpec:
 
         if output is None:
             result = self.run()
-            if not result.succeeded:
+            if not result.succeeded_cleanly:
+                # Prefer an explicit ``error`` string; fall back to the
+                # interactive-hang warning when that's the only signal
+                # (US-003 sets ``error_category="interactive"`` without
+                # setting ``error``). Else keep the generic fallback for
+                # defensive "should not happen" cases. Per DEC-006 /
+                # DEC-010 of ``plans/super/63-runner-error-surfacing.md``.
+                if result.error:
+                    msg = result.error
+                elif result.error_category == "interactive":
+                    msg = next(
+                        (
+                            w
+                            for w in result.warnings
+                            if w.startswith("interactive-hang:")
+                        ),
+                        "interactive hang detected",
+                    )
+                else:
+                    msg = "Unknown error"
                 return AssertionSet(
-                    results=[
-                        _failed_run_result(
-                            self.skill_name, result.error or "Unknown error"
-                        )
-                    ]
+                    results=[_failed_run_result(self.skill_name, msg)]
                 )
             output = result.output
 

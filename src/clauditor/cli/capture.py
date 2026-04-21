@@ -50,6 +50,10 @@ def cmd_capture(args: argparse.Namespace) -> int:
     """
     from datetime import date
 
+    # Shared helper lives in ``clauditor.cli`` (package __init__). Import
+    # lazily to avoid a circular import at module load.
+    from clauditor.cli import _render_skill_error
+
     skill_name = args.skill.lstrip("/")
     skill_args = " ".join(args.skill_args) if args.skill_args else ""
 
@@ -66,9 +70,10 @@ def cmd_capture(args: argparse.Namespace) -> int:
     print(f"Running /{skill_name} {skill_args}...", file=sys.stderr)
     result = runner.run(skill_name, skill_args)
 
-    if not result.succeeded:
+    if not result.succeeded_cleanly:
         print(
-            f"ERROR: Skill run failed (exit {result.exit_code}): {result.error}",
+            f"ERROR: Skill run failed (exit {result.exit_code}): "
+            f"{_render_skill_error(result)}",
             file=sys.stderr,
         )
         return 1

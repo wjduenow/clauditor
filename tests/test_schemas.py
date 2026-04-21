@@ -1464,6 +1464,27 @@ class TestEvalSpecUserPrompt:
         d = spec.to_dict()
         assert "user_prompt" not in d
 
+    def test_to_dict_omits_allow_hang_heuristic_when_default(self):
+        """Default (True) is omitted so to_dict diffs stay minimal."""
+        spec = EvalSpec(skill_name="s")
+        assert spec.allow_hang_heuristic is True
+        d = spec.to_dict()
+        assert "allow_hang_heuristic" not in d
+
+    def test_to_dict_emits_allow_hang_heuristic_when_false(self):
+        """Non-default (False) must round-trip so opt-outs don't silently re-enable."""
+        spec = EvalSpec(skill_name="s", allow_hang_heuristic=False)
+        d = spec.to_dict()
+        assert d["allow_hang_heuristic"] is False
+
+    def test_allow_hang_heuristic_false_round_trip(self, tmp_path):
+        """to_dict -> JSON file -> from_file preserves allow_hang_heuristic=False."""
+        original = EvalSpec(skill_name="s", allow_hang_heuristic=False)
+        path = tmp_path / "eval.json"
+        path.write_text(json.dumps(original.to_dict()))
+        loaded = EvalSpec.from_file(path)
+        assert loaded.allow_hang_heuristic is False
+
     def test_to_dict_emits_user_prompt_when_set(self):
         spec = EvalSpec(skill_name="s", user_prompt="hello there?")
         d = spec.to_dict()
@@ -1808,6 +1829,59 @@ class TestEvalSpecFromDict:
             EvalSpec.from_dict(bad_payload, spec_dir=tmp_path.resolve())
 
         assert str(ei_file.value) == str(ei_dict.value)
+
+
+class TestAllowHangHeuristic:
+    """DEC-005 / US-003: ``allow_hang_heuristic`` parsing in ``from_dict``.
+
+    Default ``True`` preserves back-compat; explicit True/False round-trips;
+    non-bool values raise the documented ``ValueError``.
+    """
+
+    def _dump(self, tmp_path, payload) -> str:
+        path = tmp_path / "spec.eval.json"
+        path.write_text(json.dumps(payload))
+        return str(path)
+
+    def test_default_is_true_when_absent(self, tmp_path):
+        path = self._dump(tmp_path, {"skill_name": "s"})
+        spec = EvalSpec.from_file(path)
+        assert spec.allow_hang_heuristic is True
+
+    def test_explicit_true_round_trips(self, tmp_path):
+        path = self._dump(
+            tmp_path, {"skill_name": "s", "allow_hang_heuristic": True}
+        )
+        spec = EvalSpec.from_file(path)
+        assert spec.allow_hang_heuristic is True
+
+    def test_explicit_false_round_trips(self, tmp_path):
+        path = self._dump(
+            tmp_path, {"skill_name": "s", "allow_hang_heuristic": False}
+        )
+        spec = EvalSpec.from_file(path)
+        assert spec.allow_hang_heuristic is False
+
+    @pytest.mark.parametrize("bad_value", ["false", "true", 0, 1, None])
+    def test_non_bool_raises(self, tmp_path, bad_value):
+        path = self._dump(
+            tmp_path,
+            {"skill_name": "s", "allow_hang_heuristic": bad_value},
+        )
+        with pytest.raises(
+            ValueError,
+            match="allow_hang_heuristic must be a bool",
+        ):
+            EvalSpec.from_file(path)
+
+    def test_sample_eval_still_loads_without_flag(self, tmp_path):
+        """Regression guard: the canonical SAMPLE_EVAL fixture (which has
+        no ``allow_hang_heuristic`` field) still loads and defaults True.
+        """
+        path = self._dump(tmp_path, SAMPLE_EVAL)
+        spec = EvalSpec.from_file(path)
+        assert spec.allow_hang_heuristic is True
+
 
 
 class TestAssertionKeySpec:

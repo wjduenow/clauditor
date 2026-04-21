@@ -65,6 +65,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         _load_spec_or_report,
         _print_failing_transcript_slice,
         _relative_to_repo,
+        _render_skill_error,
         _write_run_dir,
     )
 
@@ -124,9 +125,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
         try:
             print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
             skill_result = spec.run(run_dir=workspace.tmp_path / "run-0")
-            if not skill_result.succeeded:
+            if not skill_result.succeeded_cleanly:
                 print(
-                    f"ERROR: Skill failed to run: {skill_result.error}",
+                    f"ERROR: Skill failed to run: "
+                    f"{_render_skill_error(skill_result)}",
                     file=sys.stderr,
                 )
                 workspace.abort()

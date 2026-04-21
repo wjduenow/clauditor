@@ -234,6 +234,102 @@ def _write_run_dir(
         )
 
 
+# DEC-003 / DEC-011: soft cap applied to ``SkillResult.error`` before
+# rendering in user-facing stderr messages. Realistic provider errors
+# are 100-300 bytes; the 1000-char ceiling bounds pathological payloads
+# while leaving typical errors untouched.
+_ERROR_TEXT_MAX_CHARS: int = 1000
+
+
+# DEC-004 / DEC-011: user-facing hint strings for each
+# :attr:`SkillResult.error_category` value surfaced by the runner. The
+# hint is emitted as a second line after the error text so CI parsers
+# can grep for the category independently of the provider message.
+_CATEGORY_HINTS: dict[str, str] = {
+    "rate_limit": "Hint: retry in ~60s (rate limit)",
+    "auth": "Hint: check the ANTHROPIC_API_KEY environment variable",
+    "interactive": (
+        "Hint: ensure all parameters are in test_args; "
+        "/clauditor cannot drive interactive skills"
+    ),
+    "timeout": "Hint: skill exceeded the run timeout",
+    "subprocess": (
+        "Hint: the claude CLI itself errored — see stream_events"
+    ),
+    "api": "Hint: see the error text above",
+}
+
+
+def _render_skill_error(
+    result: SkillResult,
+    *,
+    unknown_fallback: str = "Unknown error",
+) -> str:
+    """Render a :class:`SkillResult`'s error tail for user-facing stderr.
+
+    Returns the *tail* only — callers keep their own ``ERROR: ...``
+    prefix context (e.g. ``"Skill failed to run: "``). The tail is
+    assembled in up to three parts, in order:
+
+    1. **Base error text** — ``result.error`` (truncated to
+       :data:`_ERROR_TEXT_MAX_CHARS` with a
+       ``" ... (truncated; see stream_events)"`` suffix if longer).
+       When ``result.error`` is ``None`` or empty and
+       ``result.error_category`` is a known key in
+       :data:`_CATEGORY_HINTS`, the hint itself serves as the base
+       text (no duplicate hint line is appended). Otherwise the
+       ``unknown_fallback`` kwarg is used.
+    2. **Category hint** (DEC-004) — appended as a separate line
+       (``"\\n"`` joiner) *only* when ``result.error`` is set AND
+       ``result.error_category`` is a known key in
+       :data:`_CATEGORY_HINTS`. Unknown categories are silently
+       ignored.
+    3. **Warnings trailer** (DEC-002) — when ``result.warnings`` is
+       non-empty, the first non-empty line of the first warning is
+       appended as ``"\\n(stderr: <first-line>)"``. Only the first
+       warning is rendered; the full list stays in
+       ``result.warnings`` for forensics. Warnings whose lines are
+       all whitespace-only are skipped entirely.
+
+    Pure helper — no I/O, no stderr emission, no filesystem access.
+    Reads only from the passed ``SkillResult`` and module-level
+    constants.
+    """
+    error_text = result.error if result.error else None
+    category = result.error_category
+    has_known_category = category in _CATEGORY_HINTS
+
+    if error_text is not None:
+        if len(error_text) > _ERROR_TEXT_MAX_CHARS:
+            base = (
+                error_text[:_ERROR_TEXT_MAX_CHARS]
+                + " ... (truncated; see stream_events)"
+            )
+        else:
+            base = error_text
+    elif has_known_category:
+        base = _CATEGORY_HINTS[category]
+    else:
+        base = unknown_fallback
+
+    parts: list[str] = [base]
+
+    if error_text is not None and has_known_category:
+        parts.append(_CATEGORY_HINTS[category])
+
+    if result.warnings:
+        first_warning = result.warnings[0]
+        first_nonempty: str | None = None
+        for line in first_warning.split("\n"):
+            if line.strip():
+                first_nonempty = line.strip()
+                break
+        if first_nonempty is not None:
+            parts.append(f"(warning: {first_nonempty})")
+
+    return "\n".join(parts)
+
+
 def _relative_to_repo(clauditor_dir: Path, final_skill_dir: Path) -> str:
     """Return ``final_skill_dir`` as a path relative to the repo root.
 

@@ -12,8 +12,19 @@ import clauditor.runner as _runner_mod
 importlib.reload(_runner_mod)
 
 from clauditor.asserters import SkillAsserter  # noqa: E402
-from clauditor.runner import SkillResult, SkillRunner  # noqa: E402
-from tests.conftest import _FakePopen, make_fake_skill_stream  # noqa: E402
+from clauditor.runner import (  # noqa: E402
+    _INTERACTIVE_HANG_WARNING_PREFIX,
+    _RESULT_TEXT_MAX_CHARS,
+    SkillResult,
+    SkillRunner,
+    _classify_result_message,
+    _detect_interactive_hang,
+)
+from tests.conftest import (  # noqa: E402
+    _FakePopen,
+    make_fake_interactive_hang_stream,
+    make_fake_skill_stream,
+)
 
 # ---------------------------------------------------------------------------
 # SkillRunner.run_raw
@@ -533,6 +544,103 @@ class TestStreamJsonRunner:
         # false timeout.
         assert result.error != "timeout"
         assert result.output == "done"
+
+    def test_timeout_sets_timeout_category(self):
+        """US-004 / DEC-009 / DEC-010: a watchdog-fired timeout must set
+        ``error_category="timeout"`` alongside ``error="timeout"``."""
+        runner = SkillRunner(project_dir="/tmp", timeout=5, claude_bin="claude")
+        fake = make_fake_skill_stream("partial")
+
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
+            result = runner.run("skill")
+        assert result.error == "timeout"
+        assert result.error_category == "timeout"
+
+    def test_timeout_category_beats_stream_json_error(self):
+        """US-004 / DEC-009 invariant guard: if the stream emits an
+        ``is_error: true, result: "429 rate limit"`` payload AND the
+        watchdog fires, the final ``error`` / ``error_category`` must
+        reflect the timeout — NOT ``"rate_limit"``. The early return
+        in the timeout branch is load-bearing: without it, the later
+        normal-exit path would clobber the timeout classification with
+        the stream-json's ``stream_json_error_text`` accumulator.
+        """
+        runner = SkillRunner(project_dir="/tmp", timeout=5, claude_bin="claude")
+        # Stream-json carries is_error:true with a rate-limit phrase.
+        # Under _ImmediateTimer, the watchdog fires before the stdout
+        # loop runs, kills the fake (returncode=-9), then the loop
+        # drains the buffered is_error result message. The timeout
+        # branch must still win, because it returns early.
+        fake = make_fake_skill_stream("partial", error_text="429 rate limit")
+
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
+            result = runner.run("skill")
+        assert result.error == "timeout"
+        assert result.error_category == "timeout"
+        # Regression guard: the rate-limit classification must NOT leak
+        # into the final result, even though the stream-json contained
+        # a recognized rate-limit phrase.
+        assert result.error_category != "rate_limit"
+
+    def test_timeout_preserves_stderr_as_warning(self):
+        """QG Pass 2 guard: stderr captured before the watchdog fires must
+        land in ``result.warnings`` (not silently dropped) so operators can
+        see why the child ran past the deadline. ``error`` / ``error_category``
+        stay ``"timeout"`` — stderr does NOT get promoted to the error slot."""
+        runner = SkillRunner(project_dir="/tmp", timeout=5, claude_bin="claude")
+        fake = make_fake_skill_stream("partial")
+        # Inject a realistic stderr chunk so the drain loop captures it.
+        fake.stderr = iter(["claude: retrying after 429...\n"])
+
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
+            result = runner.run("skill")
+        assert result.error == "timeout"
+        assert result.error_category == "timeout"
+        assert any(
+            "claude: retrying after 429" in w for w in result.warnings
+        ), f"expected stderr preserved in warnings, got {result.warnings!r}"
 
     def test_file_not_found_sets_duration(self):
         """DEC-005: duration must be set even on FileNotFoundError."""
@@ -1190,3 +1298,965 @@ class TestSkillResultWarnings:
             "cleanup close(stdout)" in w and "OSError" in w
             for w in result.warnings
         ), f"expected stdout close warning, got {result.warnings!r}"
+
+
+# ---------------------------------------------------------------------------
+# SkillResult.error_category + succeeded_cleanly (US-001)
+# ---------------------------------------------------------------------------
+
+
+class TestSkillResultErrorCategory:
+    """Covers the ``error_category`` field and ``succeeded_cleanly``
+    property added in US-001 of ``plans/super/63-runner-error-surfacing.md``
+    (DEC-010, DEC-015)."""
+
+    def _make(
+        self,
+        *,
+        output: str = "hello",
+        exit_code: int = 0,
+        error: str | None = None,
+        error_category=None,
+        warnings: list[str] | None = None,
+    ) -> SkillResult:
+        return SkillResult(
+            output=output,
+            exit_code=exit_code,
+            skill_name="test",
+            args="",
+            error=error,
+            error_category=error_category,
+            warnings=warnings if warnings is not None else [],
+        )
+
+    def test_error_category_default_none_minimal_kwargs(self):
+        """Constructing with only the currently-required kwargs leaves
+        ``error_category`` at ``None``. Regression guard that the field
+        addition stays additive for every existing call site."""
+        result = SkillResult(
+            output="anything",
+            exit_code=0,
+            skill_name="test",
+            args="",
+        )
+        assert result.error_category is None
+
+    def test_succeeded_cleanly_happy_path(self):
+        """All signals clean → True."""
+        result = self._make()
+        assert result.succeeded is True
+        assert result.succeeded_cleanly is True
+
+    def test_succeeded_cleanly_false_when_error_set(self):
+        """An ``error`` string disqualifies a clean success."""
+        result = self._make(error="something went wrong")
+        assert result.succeeded_cleanly is False
+
+    @pytest.mark.parametrize(
+        "category",
+        ["rate_limit", "auth", "api", "interactive", "subprocess", "timeout"],
+    )
+    def test_succeeded_cleanly_false_for_each_error_category(self, category):
+        """Every Literal value disqualifies ``succeeded_cleanly``; the
+        parametrization also documents that each value assigns cleanly
+        (Python does not enforce ``Literal`` at runtime, but a typo
+        here would raise in the parametrize data)."""
+        result = self._make(error_category=category)
+        assert result.error_category == category
+        assert result.succeeded_cleanly is False
+
+    def test_succeeded_cleanly_false_on_interactive_hang_warning(self):
+        """A ``warnings`` entry starting with the ``interactive-hang:``
+        prefix disqualifies the result even with error=None and
+        error_category=None. US-003 will wire real detection to this
+        prefix; US-001 codifies the check."""
+        result = self._make(
+            warnings=["interactive-hang: assistant ended turn with a question"]
+        )
+        assert result.error is None
+        assert result.error_category is None
+        assert result.succeeded_cleanly is False
+
+    def test_succeeded_cleanly_tolerates_other_warnings(self):
+        """Warnings that do NOT start with the interactive-hang prefix
+        do not disqualify a clean success — only the prefixed tag does."""
+        result = self._make(
+            warnings=[
+                "malformed stream-json line skipped: trailing garbage",
+                "cleanup close(stderr) failed: OSError: EBADF",
+            ]
+        )
+        assert result.succeeded_cleanly is True
+
+    def test_succeeded_cleanly_false_when_not_succeeded(self):
+        """If the underlying lenient ``succeeded`` is False (e.g. empty
+        output), ``succeeded_cleanly`` must be False too."""
+        result = self._make(output="")
+        assert result.succeeded is False
+        assert result.succeeded_cleanly is False
+
+    def test_succeeded_cleanly_false_on_nonzero_exit(self):
+        """Non-zero exit disqualifies via the underlying ``succeeded``."""
+        result = self._make(exit_code=1)
+        assert result.succeeded is False
+        assert result.succeeded_cleanly is False
+
+    def test_error_category_literal_values_assign_cleanly(self):
+        """Each Literal value round-trips through the constructor. Python
+        does not enforce ``Literal`` at runtime, so this is a self-
+        documenting regression assertion — a future rename of one of
+        the enum strings would fail here."""
+        for category in (
+            "rate_limit",
+            "auth",
+            "api",
+            "interactive",
+            "subprocess",
+            "timeout",
+        ):
+            result = SkillResult(
+                output="x",
+                exit_code=0,
+                skill_name="t",
+                args="",
+                error_category=category,
+            )
+            assert result.error_category == category
+
+
+# ---------------------------------------------------------------------------
+# _classify_result_message pure helper (US-002, DEC-010, DEC-013)
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyResultMessage:
+    """Pure-unit tests for :func:`clauditor.runner._classify_result_message`.
+
+    Covers the keyword precedence (rate_limit before auth), the
+    non-True / missing-key short-circuit, the missing/non-string
+    ``result`` fallback, and the 4 KB truncation path — all without
+    any subprocess mocking. Traces to US-002 of
+    ``plans/super/63-runner-error-surfacing.md``.
+    """
+
+    def test_is_error_absent_returns_none_none(self):
+        """A ``result`` message without an ``is_error`` key is benign."""
+        assert _classify_result_message({"type": "result"}) == (None, None)
+
+    def test_is_error_false_returns_none_none(self):
+        """``is_error: False`` is the success path."""
+        msg = {"type": "result", "is_error": False, "result": "anything"}
+        assert _classify_result_message(msg) == (None, None)
+
+    def test_is_error_string_true_not_treated_as_error(self):
+        """Strict ``is True`` check — string ``"true"`` does NOT count."""
+        msg = {"type": "result", "is_error": "true", "result": "boom"}
+        assert _classify_result_message(msg) == (None, None)
+
+    def test_is_error_int_1_not_treated_as_error(self):
+        """Strict ``is True`` check — truthy int 1 does NOT count."""
+        msg = {"type": "result", "is_error": 1, "result": "boom"}
+        assert _classify_result_message(msg) == (None, None)
+
+    def test_429_classifies_as_rate_limit(self):
+        msg = {"type": "result", "is_error": True, "result": "got 429 back"}
+        assert _classify_result_message(msg) == ("got 429 back", "rate_limit")
+
+    def test_rate_limit_phrase_classifies_as_rate_limit(self):
+        msg = {"type": "result", "is_error": True, "result": "Rate Limit exceeded"}
+        text, category = _classify_result_message(msg)
+        assert category == "rate_limit"
+        assert text == "Rate Limit exceeded"
+
+    def test_rate_hyphen_limit_phrase_classifies_as_rate_limit(self):
+        msg = {
+            "type": "result",
+            "is_error": True,
+            "result": "provider rate-limit hit",
+        }
+        assert _classify_result_message(msg) == (
+            "provider rate-limit hit",
+            "rate_limit",
+        )
+
+    def test_401_classifies_as_auth(self):
+        msg = {"type": "result", "is_error": True, "result": "401 Unauthorized"}
+        assert _classify_result_message(msg) == ("401 Unauthorized", "auth")
+
+    def test_403_classifies_as_auth(self):
+        msg = {"type": "result", "is_error": True, "result": "403 forbidden"}
+        assert _classify_result_message(msg) == ("403 forbidden", "auth")
+
+    def test_anthropic_api_key_classifies_as_auth(self):
+        msg = {
+            "type": "result",
+            "is_error": True,
+            "result": "Please check your ANTHROPIC_API_KEY",
+        }
+        text, category = _classify_result_message(msg)
+        assert category == "auth"
+        assert text == "Please check your ANTHROPIC_API_KEY"
+
+    def test_anthropic_api_key_lowercase_classifies_as_auth(self):
+        """Case-insensitive match — the classifier lowercases before probing,
+        so ``anthropic_api_key`` in any casing is routed to ``auth``."""
+        msg = {
+            "type": "result",
+            "is_error": True,
+            "result": "check your anthropic_api_key env var",
+        }
+        _, category = _classify_result_message(msg)
+        assert category == "auth"
+
+    def test_authentication_phrase_classifies_as_auth(self):
+        msg = {"type": "result", "is_error": True, "result": "Authentication failed"}
+        assert _classify_result_message(msg) == ("Authentication failed", "auth")
+
+    def test_generic_error_classifies_as_api(self):
+        msg = {"type": "result", "is_error": True, "result": "Internal server error"}
+        assert _classify_result_message(msg) == ("Internal server error", "api")
+
+    def test_rate_limit_wins_over_auth_when_both_keywords_present(self):
+        """Ordering: ``rate_limit`` is checked before ``auth`` so a message
+        containing both 429 and an auth keyword is rate-limit."""
+        msg = {
+            "type": "result",
+            "is_error": True,
+            "result": "429 auth error mixed signal",
+        }
+        text, category = _classify_result_message(msg)
+        assert category == "rate_limit"
+        assert text == "429 auth error mixed signal"
+
+    def test_missing_result_field_falls_back_to_api_error_no_detail(self):
+        """``is_error: True`` without a ``result`` field → sentinel text."""
+        msg = {"type": "result", "is_error": True}
+        assert _classify_result_message(msg) == ("API error (no detail)", "api")
+
+    def test_non_string_result_field_falls_back_to_api_error_no_detail(self):
+        """``result: 123`` (number) triggers the isinstance guard."""
+        msg = {"type": "result", "is_error": True, "result": 123}
+        assert _classify_result_message(msg) == ("API error (no detail)", "api")
+
+    def test_none_result_field_falls_back_to_api_error_no_detail(self):
+        """``result: None`` explicitly (not missing) → sentinel text."""
+        msg = {"type": "result", "is_error": True, "result": None}
+        assert _classify_result_message(msg) == ("API error (no detail)", "api")
+
+    def test_4kb_truncation_appends_suffix(self):
+        """A huge payload is clipped at the soft cap plus the suffix."""
+        big = "X" * 5000
+        msg = {"type": "result", "is_error": True, "result": big}
+        text, category = _classify_result_message(msg)
+        assert text.endswith(" ... (truncated)")
+        assert len(text) == _RESULT_TEXT_MAX_CHARS + len(" ... (truncated)")
+        # Prefix is intact (for forensic value).
+        assert text.startswith("X" * 100)
+        # All X's → no classified keyword → "api" fallback.
+        assert category == "api"
+
+    def test_truncation_preserves_category_from_prefix(self):
+        """Classification runs against the truncated text, so a keyword
+        present in the surviving prefix is still detected."""
+        # Keyword at position 0 survives truncation; trailing X's fill to
+        # the 4 KB limit.
+        msg = {
+            "type": "result",
+            "is_error": True,
+            "result": "429 rate limit exceeded " + "X" * 5000,
+        }
+        text, category = _classify_result_message(msg)
+        assert category == "rate_limit"
+        assert text.endswith(" ... (truncated)")
+
+    def test_short_text_not_truncated(self):
+        """Text under the cap flows through verbatim."""
+        msg = {"type": "result", "is_error": True, "result": "X" * 100}
+        text, _ = _classify_result_message(msg)
+        assert text == "X" * 100
+        assert " ... (truncated)" not in text
+
+    def test_exact_cap_not_truncated(self):
+        """Text exactly ``_RESULT_TEXT_MAX_CHARS`` bytes is not clipped
+        (the ``>`` comparison is strict)."""
+        payload = "X" * _RESULT_TEXT_MAX_CHARS
+        msg = {"type": "result", "is_error": True, "result": payload}
+        text, _ = _classify_result_message(msg)
+        assert text == payload
+        assert " ... (truncated)" not in text
+
+
+# ---------------------------------------------------------------------------
+# Stream-json ``is_error: true`` integration (US-002, DEC-001, DEC-010)
+# ---------------------------------------------------------------------------
+
+
+class TestStreamJsonIsErrorResult:
+    """End-to-end tests that feed an ``is_error: true`` stream through
+    ``SkillRunner`` and assert the classification lands on
+    ``SkillResult.error`` / ``error_category`` with DEC-001 stderr
+    precedence honored. Traces to US-002 of
+    ``plans/super/63-runner-error-surfacing.md``.
+    """
+
+    def _run_with_stream(self, fake: _FakePopen) -> SkillResult:
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            return runner.run("skill")
+
+    def test_429_classified_as_rate_limit(self):
+        fake = make_fake_skill_stream(
+            "hello",
+            error_text="API Error: Request rejected (429). Rate limit exceeded.",
+        )
+        result = self._run_with_stream(fake)
+        assert result.error == (
+            "API Error: Request rejected (429). Rate limit exceeded."
+        )
+        assert result.error_category == "rate_limit"
+
+    def test_rate_limit_phrase_classified(self):
+        fake = make_fake_skill_stream("hello", error_text="Rate limit exceeded")
+        result = self._run_with_stream(fake)
+        assert result.error == "Rate limit exceeded"
+        assert result.error_category == "rate_limit"
+
+    def test_401_classified_as_auth(self):
+        fake = make_fake_skill_stream("hello", error_text="401 Unauthorized")
+        result = self._run_with_stream(fake)
+        assert result.error == "401 Unauthorized"
+        assert result.error_category == "auth"
+
+    def test_403_classified_as_auth(self):
+        fake = make_fake_skill_stream("hello", error_text="403 Permission denied")
+        result = self._run_with_stream(fake)
+        assert result.error == "403 Permission denied"
+        assert result.error_category == "auth"
+
+    def test_anthropic_api_key_classified_as_auth(self):
+        fake = make_fake_skill_stream(
+            "hello", error_text="Check your ANTHROPIC_API_KEY"
+        )
+        result = self._run_with_stream(fake)
+        assert result.error == "Check your ANTHROPIC_API_KEY"
+        assert result.error_category == "auth"
+
+    def test_generic_api_error_classified_as_api(self):
+        fake = make_fake_skill_stream(
+            "hello", error_text="Internal server error"
+        )
+        result = self._run_with_stream(fake)
+        assert result.error == "Internal server error"
+        assert result.error_category == "api"
+
+    def test_is_error_false_no_classification(self):
+        """Default stream (``is_error: False``) → no error, no category.
+        Regression guard: the wiring must not misclassify clean streams."""
+        fake = make_fake_skill_stream("hello")
+        result = self._run_with_stream(fake)
+        assert result.error is None
+        assert result.error_category is None
+
+    def test_is_error_absent_back_compat(self):
+        """A stream where the ``result`` message has no ``is_error`` key
+        at all (legacy shape) is treated as benign."""
+        extra_messages = [
+            {
+                "type": "result",
+                "subtype": "success",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+        ]
+        # Build the stream manually: a single assistant text + a result
+        # message that LACKS is_error entirely.
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "hello"}],
+                    },
+                }
+            ),
+            json.dumps(extra_messages[0]),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error is None
+        assert result.error_category is None
+
+    def test_is_error_string_true_not_treated_as_error(self):
+        """Result message with ``is_error: "true"`` (string) must not
+        activate the classifier (strict ``is True`` check)."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "hello"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "is_error": "true",
+                    "result": "boom",
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error is None
+        assert result.error_category is None
+
+    def test_missing_result_field_falls_back(self):
+        """Result message with ``is_error: True`` but no ``result`` key
+        → sentinel error text + ``api`` category."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "hello"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "is_error": True,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error == "API error (no detail)"
+        assert result.error_category == "api"
+
+    def test_non_string_result_field_falls_back(self):
+        """``is_error: True, result: 123`` → sentinel text + ``api``."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "hello"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "is_error": True,
+                    "result": 123,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error == "API error (no detail)"
+        assert result.error_category == "api"
+
+    def test_4kb_truncation(self):
+        """A ~5 KB error payload is truncated to the soft cap + suffix,
+        and the classifier still matches on the surviving prefix."""
+        fake = make_fake_skill_stream("hello", error_text="X" * 5000)
+        result = self._run_with_stream(fake)
+        assert result.error is not None
+        assert result.error.endswith(" ... (truncated)")
+        assert len(result.error) == _RESULT_TEXT_MAX_CHARS + len(
+            " ... (truncated)"
+        )
+        # All X's with no classification keyword → "api".
+        assert result.error_category == "api"
+
+    def test_short_text_not_truncated(self):
+        """A 100-byte payload flows through verbatim."""
+        fake = make_fake_skill_stream("hello", error_text="X" * 100)
+        result = self._run_with_stream(fake)
+        assert result.error == "X" * 100
+        assert result.error is not None
+        assert " ... (truncated)" not in result.error
+
+    def test_stream_json_wins_over_stderr(self):
+        """DEC-001: when stream-json reports an error, it takes
+        precedence over stderr even on a clean exit code. Stderr is
+        preserved by moving it into ``warnings``."""
+        fake = make_fake_skill_stream("hello", error_text="429 rate limit")
+        fake.stderr = iter(["some stderr diagnostic\n"])
+        # Clean exit — the classifier still wins.
+        fake.returncode = 0
+        result = self._run_with_stream(fake)
+        assert result.error == "429 rate limit"
+        assert result.error_category == "rate_limit"
+        # Stderr text is captured on warnings, not silently dropped.
+        assert any(
+            "some stderr diagnostic" in w for w in result.warnings
+        ), f"expected stderr moved to warnings, got {result.warnings!r}"
+
+    def test_stderr_precedence_preserved_when_no_stream_json_error(self):
+        """When there is NO ``is_error: true`` payload, the pre-US-002
+        precedence is preserved exactly: non-zero returncode + stderr
+        becomes ``error`` with no category."""
+        fake = make_fake_skill_stream("hello")
+        fake.stderr = iter(["boom\n"])
+        fake.returncode = 1
+        result = self._run_with_stream(fake)
+        assert result.error is not None
+        assert "boom" in result.error
+        assert result.error_category is None
+
+
+# ---------------------------------------------------------------------------
+# Fixture helpers (US-001, DEC-014)
+# ---------------------------------------------------------------------------
+
+
+class TestFixtureHelpers:
+    """Covers the fixture-hybrid additions in ``tests/conftest.py``:
+
+    - ``make_fake_skill_stream`` gains an ``error_text`` kwarg.
+    - ``make_fake_interactive_hang_stream`` is a new sibling helper.
+
+    The NDJSON is parsed line-by-line with ``json.loads`` so the
+    assertions key on the actual fields, not the string layout.
+    """
+
+    @staticmethod
+    def _parse_ndjson(fake: _FakePopen) -> list[dict]:
+        """Drain the fake Popen's stdout and return the parsed messages."""
+        body = fake.stdout.getvalue()
+        return [json.loads(line) for line in body.splitlines() if line.strip()]
+
+    def test_make_fake_skill_stream_default_is_error_false(self):
+        """Back-compat: no ``error_text`` kwarg → ``is_error: False``."""
+        fake = make_fake_skill_stream("hello")
+        msgs = self._parse_ndjson(fake)
+        result_msgs = [m for m in msgs if m.get("type") == "result"]
+        assert len(result_msgs) == 1
+        assert result_msgs[0]["is_error"] is False
+        assert "result" not in result_msgs[0]
+
+    def test_make_fake_skill_stream_error_text_sets_is_error_and_result(self):
+        """``error_text="boom"`` → ``is_error: True`` and ``result: "boom"``."""
+        fake = make_fake_skill_stream("hello", error_text="boom")
+        msgs = self._parse_ndjson(fake)
+        result_msgs = [m for m in msgs if m.get("type") == "result"]
+        assert len(result_msgs) == 1
+        assert result_msgs[0]["is_error"] is True
+        assert result_msgs[0]["result"] == "boom"
+
+    def test_interactive_hang_stream_default_shape(self):
+        """Default hang stream: trailing ``?``, ``end_turn``, ``num_turns: 1``."""
+        fake = make_fake_interactive_hang_stream()
+        msgs = self._parse_ndjson(fake)
+
+        assistants = [m for m in msgs if m.get("type") == "assistant"]
+        assert len(assistants) == 1
+        assistant = assistants[0]
+        assert assistant["message"]["stop_reason"] == "end_turn"
+        content = assistant["message"]["content"]
+        # Default: no tool_use block, just a text block.
+        assert len(content) == 1
+        assert content[0]["type"] == "text"
+        assert content[0]["text"].endswith("?")
+
+        results = [m for m in msgs if m.get("type") == "result"]
+        assert len(results) == 1
+        assert results[0]["num_turns"] == 1
+        assert results[0]["is_error"] is False
+        assert results[0]["subtype"] == "success"
+
+    def test_interactive_hang_stream_with_tool_use_block(self):
+        """``use_tool_use=True`` injects an ``AskUserQuestion`` tool_use block."""
+        fake = make_fake_interactive_hang_stream(use_tool_use=True)
+        msgs = self._parse_ndjson(fake)
+
+        assistants = [m for m in msgs if m.get("type") == "assistant"]
+        assert len(assistants) == 1
+        content = assistants[0]["message"]["content"]
+
+        text_blocks = [b for b in content if b.get("type") == "text"]
+        tool_use_blocks = [b for b in content if b.get("type") == "tool_use"]
+        assert len(text_blocks) == 1
+        assert len(tool_use_blocks) == 1
+        assert tool_use_blocks[0]["name"] == "AskUserQuestion"
+        # The question should be carried in the standard input.questions shape.
+        assert "questions" in tool_use_blocks[0]["input"]
+
+    def test_interactive_hang_stream_custom_text(self):
+        """The ``text`` kwarg flows to both the text block and the tool input."""
+        fake = make_fake_interactive_hang_stream(
+            text="Which city?", use_tool_use=True
+        )
+        msgs = self._parse_ndjson(fake)
+        content = next(m for m in msgs if m.get("type") == "assistant")[
+            "message"
+        ]["content"]
+        text_block = next(b for b in content if b.get("type") == "text")
+        tool_use = next(b for b in content if b.get("type") == "tool_use")
+        assert text_block["text"] == "Which city?"
+        assert (
+            tool_use["input"]["questions"][0]["question"] == "Which city?"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Interactive-hang detection (US-003, DEC-005, DEC-010, DEC-013)
+# ---------------------------------------------------------------------------
+
+
+def _assistant_event(
+    *,
+    text: str | None = None,
+    stop_reason: str | None = "end_turn",
+    tool_use_name: str | None = None,
+) -> dict:
+    """Build an assistant stream event for ``_detect_interactive_hang`` tests."""
+    content: list[dict] = []
+    if text is not None:
+        content.append({"type": "text", "text": text})
+    if tool_use_name is not None:
+        content.append(
+            {
+                "type": "tool_use",
+                "id": "toolu_fake",
+                "name": tool_use_name,
+                "input": {},
+            }
+        )
+    message: dict = {"role": "assistant", "content": content}
+    if stop_reason is not None:
+        message["stop_reason"] = stop_reason
+    return {"type": "assistant", "message": message}
+
+
+def _result_event(num_turns: int | None = 1) -> dict:
+    event: dict = {"type": "result", "subtype": "success", "is_error": False}
+    if num_turns is not None:
+        event["num_turns"] = num_turns
+    return event
+
+
+class TestDetectInteractiveHang:
+    """Pure-unit tests for ``_detect_interactive_hang``. No subprocess, no fixtures."""
+
+    def test_empty_stream_events_returns_false(self):
+        assert _detect_interactive_hang([], "hello?") is False
+
+    def test_single_turn_trailing_question_triggers(self):
+        events = [
+            _assistant_event(text="What would you like?"),
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "What would you like?") is True
+
+    def test_single_turn_ask_user_question_tool_use_triggers(self):
+        events = [
+            _assistant_event(
+                text="Please clarify.",
+                tool_use_name="AskUserQuestion",
+            ),
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "Please clarify.") is True
+
+    def test_single_turn_no_question_no_tool_use_returns_false(self):
+        events = [
+            _assistant_event(text="All done."),
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "All done.") is False
+
+    def test_multi_turn_with_trailing_question_returns_false(self):
+        events = [
+            _assistant_event(text="Working..."),
+            _assistant_event(text="Need more info?"),
+            _result_event(num_turns=2),
+        ]
+        assert _detect_interactive_hang(events, "Need more info?") is False
+
+    def test_missing_stop_reason_returns_false(self):
+        events = [
+            _assistant_event(text="Ends with?", stop_reason=None),
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "Ends with?") is False
+
+    def test_missing_num_turns_returns_false(self):
+        """Conservative: no num_turns means we cannot confirm single-turn."""
+        events = [
+            _assistant_event(text="Ends with?"),
+            _result_event(num_turns=None),
+        ]
+        assert _detect_interactive_hang(events, "Ends with?") is False
+
+    def test_different_tool_use_name_returns_false(self):
+        events = [
+            _assistant_event(
+                text="All done.", tool_use_name="SomeOtherTool"
+            ),
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "All done.") is False
+
+    def test_malformed_events_degrade_to_false(self):
+        """Events with missing/non-dict ``message`` or non-list ``content``
+        must degrade cleanly without raising.
+        """
+        events = [
+            {"type": "assistant"},  # no message key
+            {"type": "assistant", "message": "not-a-dict"},  # non-dict message
+            {
+                "type": "assistant",
+                "message": {"role": "assistant", "content": "not-a-list"},
+            },
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "hello") is False
+
+    def test_non_dict_event_skipped(self):
+        """Top-level events that are not dicts must not raise."""
+        events: list = ["not-a-dict", 42, _result_event(num_turns=1)]
+        assert _detect_interactive_hang(events, "hello?") is False
+
+    def test_non_string_stop_reason_treated_as_missing(self):
+        events = [
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "stop_reason": 42,
+                    "content": [{"type": "text", "text": "Ends with?"}],
+                },
+            },
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "Ends with?") is False
+
+    def test_tool_use_loop_tolerates_noise(self):
+        """Exercises defensive continues in the signal-(b) loop:
+        non-dict events, non-assistant events, non-dict messages,
+        non-list content, non-dict content blocks — all must be skipped
+        without interfering with a real AskUserQuestion tool_use block
+        reached later in the stream.
+        """
+        events: list = [
+            "not-a-dict",  # top-level non-dict, skipped
+            {"type": "system"},  # wrong type, skipped
+            {"type": "assistant"},  # missing message, skipped
+            {"type": "assistant", "message": "not-a-dict"},  # non-dict message
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "stop_reason": "end_turn",
+                    "content": "not-a-list",
+                },
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "stop_reason": "end_turn",
+                    "content": [
+                        "not-a-dict-block",
+                        {"type": "text", "text": "Please."},
+                        {
+                            "type": "tool_use",
+                            "name": "AskUserQuestion",
+                            "input": {},
+                        },
+                    ],
+                },
+            },
+            _result_event(num_turns=1),
+        ]
+        assert _detect_interactive_hang(events, "Please.") is True
+
+
+class TestInteractiveHangDetection:
+    """End-to-end: feed an interactive-hang stream through ``SkillRunner``
+    and assert the warning prefix + ``error_category`` wiring.
+    Traces to US-003 of ``plans/super/63-runner-error-surfacing.md``.
+    """
+
+    def _run_with_stream(
+        self,
+        fake: _FakePopen,
+        *,
+        allow_hang_heuristic: bool = True,
+    ) -> SkillResult:
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            return runner.run("skill", allow_hang_heuristic=allow_hang_heuristic)
+
+    def test_trailing_question_mark_triggers(self):
+        fake = make_fake_interactive_hang_stream()
+        result = self._run_with_stream(fake)
+        assert result.error_category == "interactive"
+        assert result.error is None
+        assert any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+        assert result.succeeded_cleanly is False
+
+    def test_ask_user_question_tool_use_triggers(self):
+        fake = make_fake_interactive_hang_stream(
+            text="Please provide the target.",
+            use_tool_use=True,
+        )
+        result = self._run_with_stream(fake)
+        assert result.error_category == "interactive"
+        assert any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+        assert result.succeeded_cleanly is False
+
+    def test_both_signals_triggers_once(self):
+        """Trailing ``?`` AND tool_use present → one warning, not duplicated."""
+        fake = make_fake_interactive_hang_stream(
+            text="Which option?", use_tool_use=True
+        )
+        result = self._run_with_stream(fake)
+        assert result.error_category == "interactive"
+        hang_warnings = [
+            w
+            for w in result.warnings
+            if w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+        ]
+        assert len(hang_warnings) == 1
+
+    def test_neither_signal_no_trigger(self):
+        """Normal successful stream (no `?`, no tool_use) → no trigger."""
+        fake = make_fake_skill_stream("All done.")
+        result = self._run_with_stream(fake)
+        assert result.error_category is None
+        assert not any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
+        )
+
+    def test_multi_turn_no_trigger(self):
+        """``num_turns: 3`` + trailing ``?`` → does not trigger."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "stop_reason": "end_turn",
+                        "content": [
+                            {"type": "text", "text": "anything more?"}
+                        ],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": False,
+                    "num_turns": 3,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error_category is None
+        assert not any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
+        )
+
+    def test_missing_num_turns_no_trigger(self):
+        """Result message with no ``num_turns`` at all → conservative False."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "stop_reason": "end_turn",
+                        "content": [
+                            {"type": "text", "text": "What next?"}
+                        ],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "success",
+                    "is_error": False,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error_category is None
+        assert not any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
+        )
+
+    def test_allow_hang_heuristic_false_suppresses(self):
+        """Escape hatch off → no detection, no warning, no category."""
+        fake = make_fake_interactive_hang_stream()
+        result = self._run_with_stream(fake, allow_hang_heuristic=False)
+        assert result.error_category is None
+        assert not any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
+        )
+
+    def test_api_error_wins_over_hang(self):
+        """Stream with BOTH ``is_error: true`` AND trailing ``?`` →
+        error_category reflects the API error, not the heuristic. The
+        hang warning is NOT appended (detection is skipped when an API
+        error has already been classified).
+        """
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "stop_reason": "end_turn",
+                        "content": [
+                            {"type": "text", "text": "What should I do?"}
+                        ],
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "type": "result",
+                    "subtype": "error",
+                    "is_error": True,
+                    "result": "429 rate limit",
+                    "num_turns": 1,
+                    "usage": {"input_tokens": 1, "output_tokens": 1},
+                }
+            ),
+        ]
+        fake = _FakePopen(lines)
+        result = self._run_with_stream(fake)
+        assert result.error_category == "rate_limit"
+        assert result.error == "429 rate limit"
+        assert not any(
+            w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX)
+            for w in result.warnings
+        )

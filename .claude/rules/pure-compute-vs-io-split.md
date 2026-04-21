@@ -258,6 +258,70 @@ Traces to bead `clauditor-24h.5` (US-005) of
 `.claude/rules/centralized-sdk-call.md` codifies the shared
 `call_anthropic` seam the thin wrappers all target.
 
+### Sixth anchor (runner classification + CLI render seams)
+
+The #63 runner-error-surfacing work introduced three new pure
+helpers that each sit at a natural "plain types at the boundary"
+seam, testable in isolation without subprocess or SDK mocks:
+
+- `src/clauditor/runner.py::_classify_result_message(msg: dict)
+  -> tuple[str | None, str | None]` — consumes a stream-json
+  `result` message dict, returns `(error_text, error_category)`.
+  Strict `is True` check on `is_error`; 4 KB soft cap on the
+  `result` string; keyword-priority classification (`rate_limit`
+  before `auth` before `api`). `_invoke` calls it once per run.
+- `src/clauditor/runner.py::_detect_interactive_hang(stream_events:
+  list[dict], final_text: str) -> bool` — gated on
+  `num_turns==1 + stop_reason=="end_turn"` AND either a trailing
+  `?` in the final text OR an `AskUserQuestion` `tool_use` block
+  in assistant content. Every malformed/missing-field branch
+  degrades to `False` without raising.
+- `src/clauditor/cli/__init__.py::_render_skill_error(result:
+  SkillResult, *, unknown_fallback: str = "Unknown error") -> str`
+  — returns the error *tail* (callers keep their own
+  `"ERROR: <prefix>: "` framing). Contains the `CATEGORY_HINTS`
+  lookup table, 1000-char truncation logic, and the
+  `(stderr: ...)` warnings trailer. Five CLI commands
+  (`validate`, `run`, `capture`, `grade`, `extract`) call it.
+
+All three tested directly via dedicated test classes
+(`TestClassifyResultMessage`, `TestDetectInteractiveHang`,
+`TestRenderSkillError`) that pass plain dicts / dataclasses /
+strings — no `patch("subprocess.Popen")`, no `AsyncMock`, no
+SDK stubs. The "Test quality" payoff this rule promises shows
+up cleanly: every keyword-priority edge case, every defensive
+fallback branch, every truncation-boundary check is a one-line
+construction away.
+
+Why the split mattered specifically here:
+
+- **Two parsers + one renderer, one seam each**: the parser-side
+  pure helpers (`_classify_result_message`,
+  `_detect_interactive_hang`) are called from deep inside
+  `_invoke`'s streaming loop; embedding their logic inline would
+  have required subprocess-level mocking to reach the error
+  branches. With the extraction, the branches are reachable
+  from in-memory tests and the `_invoke` wiring is narrow
+  enough to review at a glance.
+- **Render-precedence has exactly one audit site**: the
+  stream-json-wins-over-stderr ordering from DEC-001, the
+  1000-char truncation from DEC-003, the category hint line
+  from DEC-004, and the `(stderr: ...)` trailer from DEC-002
+  all land in `_render_skill_error`. Five CLI commands share
+  the one authoritative implementation; a future precedence
+  change edits one file, not six.
+- **Defensive guards stay reviewable**: `_classify_result_message`
+  has eight distinct `isinstance` / `is True` / `.get(... , default)`
+  guards against malformed stream-json dicts. Having them live
+  in a pure helper means a reader can scan them in ~30 lines
+  without chasing through the surrounding streaming loop.
+
+Traces to bead `clauditor-cha.11` (US-011) of
+`plans/super/63-runner-error-surfacing.md`. Companion rule:
+`.claude/rules/stream-json-schema.md` codifies the defensive
+stream-json-parsing contract the two parser-side helpers
+honor.
+
 ## When this rule applies
 
 Any new code that combines spec/config resolution with a
