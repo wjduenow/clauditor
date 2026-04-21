@@ -569,6 +569,45 @@ migration-tool scope (DEC-003=C, DEC-004=D). Architecture
 review surfaced the per-type drift-hint design as the one
 genuine design task; captured as DEC-009.
 
+**Session 2 (2026-04-20) — US-006 Patterns & Memory closeout.**
+Evaluated four candidates from the US-006 description:
+
+- **Codified: `.claude/rules/per-type-drift-hints.md`** — the
+  `dict[type, dict[wrong-key, right-key]]` shape generalizes to
+  any future polymorphic-dict validator (grading_criteria scale
+  types, section-field format types, trigger-test sub-types).
+  The global-hint failure mode that motivated DEC-009's per-type
+  keying is a genuine foot-gun — after a rename, some "wrong"
+  keys become valid for a subset of types, and a global table
+  silently mis-suggests in both directions.
+- **Codified: `.claude/rules/constant-with-type-info.md`** — the
+  `field_types: dict[str, type]` extension on `AssertionKeySpec`
+  (DEC-012) generalizes to any mixed-primitive-type payload
+  constant. Captured two concrete foot-guns specific enough to
+  prevent drift: (a) `isinstance(True, int)` silently accepts
+  bool-for-int without an explicit `bool is not int` guard, and
+  (b) handler-side runtime coercion (`int(a.get(...))`) shifts
+  error surfacing from load-time to opaque mid-run tracebacks.
+- **Rejected update: `.claude/rules/eval-spec-stable-ids.md`** —
+  verified the rule discusses only the `id` field, not payload
+  keys. Zero mentions of `value`/`needle`/`pattern`/etc. No edit
+  needed; the rule remains correctly scoped to id uniqueness.
+- **Verified: per-type-key section in
+  `docs/eval-spec-reference.md`** — US-004 already added
+  "## Assertion types and per-type keys" (lines 119-157) with a
+  complete per-type table and an example of each shape. The
+  "Schema history" section (lines 207-219) documents the #67
+  rename. Accurate and comprehensive; no edit needed.
+
+The two new rule files reference each other as companion rules
+(both live on the same validator seam in `schemas.py`) and each
+names `plans/super/67-per-type-assertion-keys.md` as the
+canonical implementation anchor. The rules are written
+specifically enough to prevent future drift (named constants,
+DEC-### pointers, test class names) and generically enough to
+apply beyond #67 (framed around "polymorphic-dict loaders" and
+"mixed-primitive-type payload constants").
+
 ---
 
 ## Detailed Breakdown (Stories)
