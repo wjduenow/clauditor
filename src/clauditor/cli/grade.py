@@ -12,7 +12,7 @@ from clauditor import history
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.benchmark import Benchmark, compute_benchmark
 from clauditor.paths import resolve_clauditor_dir
-from clauditor.runner import SkillResult
+from clauditor.runner import SkillResult, _env_without_api_key
 from clauditor.spec import SkillSpec
 from clauditor.workspace import (
     InvalidSkillNameError,
@@ -358,7 +358,6 @@ def _run_skill_variants(
     # Shared helper lives in ``clauditor.cli`` (package __init__). Import
     # lazily to avoid a circular import at module load.
     from clauditor.cli import _render_skill_error
-    from clauditor.runner import _env_without_api_key
 
     # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags through
     # to every ``spec.run`` invocation (primary + variance). Defaults
@@ -553,8 +552,6 @@ def _write_workspace_sidecars(
     if getattr(args, "baseline", False):
         # Mirror the primary arm's env/timeout wiring so --no-api-key
         # and --timeout apply to both halves of the baseline delta.
-        from clauditor.runner import _env_without_api_key
-
         no_api_key = bool(getattr(args, "no_api_key", False))
         env_override = _env_without_api_key() if no_api_key else None
         timeout_override = getattr(args, "timeout", None)

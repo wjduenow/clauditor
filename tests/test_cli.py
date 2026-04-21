@@ -3805,6 +3805,54 @@ class TestNoApiKeyFlag:
         assert rc == 0
         assert spec.run.call_args.kwargs.get("env_override") is None
 
+    def test_grade_baseline_threads_env_and_timeout_to_run_raw(
+        self, tmp_path, monkeypatch
+    ):
+        """#64 QG: grade --baseline --no-api-key --timeout X threads env
+        AND timeout to the baseline's run_raw call, not just the primary
+        arm's spec.run. End-to-end guard for the pass-2 baseline-plumbing
+        fix (argparse → _write_workspace_sidecars →
+        _write_baseline_and_benchmark → _run_baseline_phase → run_raw)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token")
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.return_value = make_skill_result(
+            output="primary output",
+            duration_seconds=0.5,
+            input_tokens=10,
+            output_tokens=5,
+        )
+        spec.runner = MagicMock()
+        spec.runner.run_raw.return_value = make_skill_result(
+            output="baseline output",
+            duration_seconds=0.3,
+            input_tokens=8,
+            output_tokens=4,
+            skill_name="__baseline__",
+        )
+        report = make_grading_report(passed=True)
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade", "skill.md",
+                    "--baseline", "--no-api-key", "--timeout", "60",
+                ]
+            )
+        assert rc == 0
+        spec.runner.run_raw.assert_called_once()
+        kwargs = spec.runner.run_raw.call_args.kwargs
+        self._assert_env_stripped(kwargs.get("env"))
+        assert kwargs.get("timeout") == 60
+
 
 class TestTimeoutFlag:
     """US-006: --timeout SECONDS threads to the runner, rejects <= 0 at parse time.
