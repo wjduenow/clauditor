@@ -130,10 +130,13 @@ class TestSkillNameRe:
 class TestDeriveSkillName:
     """Unit tests for the pure ``derive_skill_name`` helper.
 
-    The helper takes the skill path and the SKILL.md text as input and
-    returns a ``(name, warning_or_None)`` tuple without touching disk or
-    stderr. Every branch of the DEC-001/DEC-002/DEC-008 decision tree
-    has a dedicated test here per US-002.
+    Per DEC-008 of ``plans/super/71-agentskills-lint.md``, the helper
+    returns just ``str`` (no warning side-channel). Name-validity
+    warnings are now emitted by
+    :func:`clauditor.conformance.check_conformance` via the
+    ``AGENTSKILLS_NAME_INVALID_CHARS`` and
+    ``AGENTSKILLS_NAME_PARENT_DIR_MISMATCH`` codes (US-006 wires the
+    hook into :meth:`clauditor.spec.SkillSpec.from_file`).
     """
 
     def test_frontmatter_name_matches_filesystem(self, tmp_path):
@@ -141,46 +144,36 @@ class TestDeriveSkillName:
         parent.mkdir()
         skill_path = parent / "SKILL.md"
         text = "---\nname: foo\n---\n\n# Body\n"
-        assert derive_skill_name(skill_path, text) == ("foo", None)
+        assert derive_skill_name(skill_path, text) == "foo"
 
-    def test_frontmatter_name_overrides_filesystem_with_warning(self, tmp_path):
+    def test_frontmatter_name_overrides_filesystem(self, tmp_path):
         parent = tmp_path / "foo"
         parent.mkdir()
         skill_path = parent / "SKILL.md"
         text = "---\nname: bar\n---\n\n# Body\n"
-        name, warning = derive_skill_name(skill_path, text)
-        assert name == "bar"
-        assert warning is not None
-        assert (
-            "frontmatter name 'bar' overrides filesystem name 'foo' "
-            "— using 'bar'"
-        ) in warning
-        assert warning.startswith("clauditor.spec:")
+        # Frontmatter wins; no warning is emitted by this helper anymore.
+        assert derive_skill_name(skill_path, text) == "bar"
 
     def test_missing_frontmatter_falls_back_modern(self, tmp_path):
         parent = tmp_path / "foo"
         parent.mkdir()
         skill_path = parent / "SKILL.md"
         text = "# Body without any frontmatter\n"
-        assert derive_skill_name(skill_path, text) == ("foo", None)
+        assert derive_skill_name(skill_path, text) == "foo"
 
     def test_missing_name_field_falls_back_legacy(self, tmp_path):
         skill_path = tmp_path / "my-skill.md"
         text = "---\ndescription: a skill\n---\n\n# Body\n"
-        assert derive_skill_name(skill_path, text) == ("my-skill", None)
+        assert derive_skill_name(skill_path, text) == "my-skill"
 
-    def test_invalid_regex_falls_back_with_warning(self, tmp_path):
+    def test_invalid_regex_falls_back(self, tmp_path):
         parent = tmp_path / "foo"
         parent.mkdir()
         skill_path = parent / "SKILL.md"
         text = "---\nname: bad;value\n---\n"
-        name, warning = derive_skill_name(skill_path, text)
-        assert name == "foo"
-        assert warning is not None
-        assert "not a valid skill identifier" in warning
-        assert warning.startswith("clauditor.spec:")
-        assert "'bad;value'" in warning
-        assert "'foo'" in warning
+        # Invalid frontmatter name → filesystem fallback, no warning
+        # returned. Warning emission is now conformance.py's job.
+        assert derive_skill_name(skill_path, text) == "foo"
 
     def test_malformed_frontmatter_treated_as_absent(self, tmp_path):
         parent = tmp_path / "foo"
@@ -189,12 +182,12 @@ class TestDeriveSkillName:
         # Opening '---' with no closing delimiter → parse_frontmatter
         # raises ValueError; derive_skill_name treats as absent.
         text = "---\nname: foo\n\n(no closing delimiter)\n"
-        assert derive_skill_name(skill_path, text) == ("foo", None)
+        assert derive_skill_name(skill_path, text) == "foo"
 
     def test_legacy_without_frontmatter(self, tmp_path):
         skill_path = tmp_path / "my-skill.md"
         text = "# Plain legacy skill file with no frontmatter block\n"
-        assert derive_skill_name(skill_path, text) == ("my-skill", None)
+        assert derive_skill_name(skill_path, text) == "my-skill"
 
 
 class TestDeriveProjectDir:

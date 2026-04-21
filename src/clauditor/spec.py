@@ -6,7 +6,6 @@ Combines the skill file, eval spec, and runner into a single interface.
 from __future__ import annotations
 
 import glob
-import sys
 from pathlib import Path
 
 from clauditor.assertions import AssertionSet, run_assertions
@@ -77,18 +76,19 @@ class SkillSpec:
         The skill's identity (``skill_name``) is derived from the file's
         frontmatter ``name:`` field when present and valid; otherwise
         from the filesystem (parent dir for modern, stem for legacy).
-        When frontmatter disagrees with the filesystem name, the
-        frontmatter wins and a warning is emitted to stderr. See DEC-001,
-        DEC-002, DEC-009.
+        See DEC-001, DEC-002 of ``plans/super/62-skill-md-layout.md``.
+        Per DEC-008 of ``plans/super/71-agentskills-lint.md``, any
+        warning surfacing for invalid-name or name/filesystem
+        disagreement is now emitted by
+        :func:`clauditor.conformance.check_conformance` via the
+        soft-warn hook (US-006), not by this loader.
         """
         skill_path = Path(skill_path)
         if not skill_path.exists():
             raise FileNotFoundError(f"Skill file not found: {skill_path}")
 
         text = skill_path.read_text(encoding="utf-8")
-        skill_name, warning = derive_skill_name(skill_path, text)
-        if warning is not None:
-            print(warning, file=sys.stderr)
+        skill_name = derive_skill_name(skill_path, text)
 
         # Auto-discover eval spec
         eval_spec = None
