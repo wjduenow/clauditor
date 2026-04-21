@@ -301,6 +301,28 @@ Confirmed in Q4. No edits to:
   leaned toward deletion, but Phase 2 test-isolation review
   established the pattern's load-bearing reason is independent of
   the skill's bundling status. Refresh + keep.
+- **Plan-discovery gap surfaced during US-001 execution.** The Phase
+  1 grep table missed `tests/test_bundled_skill.py:32` (the
+  `REVIEW_SKILL_MD` constant — distinct from the `test_bundled_review_skill.py`
+  file the plan did list). The Phase 1 Scout subagent actually did
+  surface this; the plan author (me) collapsed it into the wrong
+  row. The US-001 worker hit a `FileNotFoundError` during pytest,
+  reported the gap per `.claude/rules/plan-contradiction-stop.md`
+  shape, and included the one-line `REVIEW_SKILL_MD` repoint in the
+  atomic commit since it was mechanically in-scope ("update every
+  reference"). Files touched by US-001's commit therefore grew from
+  the plan's "3 edits" to 4: `tests/test_bundled_review_skill.py`,
+  `tests/test_bundled_skill.py`, `examples/review-agentskills-spec.md`,
+  `tests/fixtures/review-agentskills-spec/README.md`.
+- **Residual `rg` hits in plan docs** (US-001 final check): after
+  the move, `rg 'src/clauditor/skills/review-agentskills-spec'`
+  returns 2 hits, both in plan documents (`plans/super/75-*.md`
+  itself and the historical `plans/super/71-agentskills-lint.md`).
+  Both are hands-off per plan convention — back-editing historical
+  plan docs would falsify the record; editing this plan's own paths
+  mid-flight would muddy the audit trail. All *active* references
+  (code, tests, user-facing docs) are updated. Mention this in
+  US-004's Patterns & Memory if it generalizes to a durable pattern.
 
 ## Detailed breakdown
 
