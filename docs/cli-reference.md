@@ -6,6 +6,9 @@ Full reference for every `clauditor` subcommand: arguments, flags, the persisten
 
 ```bash
 clauditor init <skill.md>              # Generate starter eval.json
+clauditor lint <skill.md>              # Static agentskills.io spec conformance
+clauditor lint <skill.md> --strict     # Treat warnings as exit-2 failures
+clauditor lint <skill.md> --json       # JSON envelope for CI
 clauditor validate <skill.md>          # Run Layer 1 assertions
 clauditor validate <skill.md> --json   # JSON output for CI
 clauditor run <skill-name> --args "…"  # Run skill, print output
@@ -31,6 +34,56 @@ clauditor propose-eval <skill.md>      # LLM-assisted EvalSpec bootstrap (SKILL.
 clauditor setup                        # Install the bundled /clauditor slash command symlink
 clauditor doctor                       # Report environment diagnostics
 ```
+
+## lint
+
+Static conformance check against the [agentskills.io specification](https://agentskills.io/specification). `clauditor lint <SKILL.md>` reads the file, parses its YAML frontmatter via the project's `_frontmatter.parse_frontmatter` helper, and runs every rule from the spec (required/optional frontmatter keys, name-vs-parent-dir match, body-line budget, layout expectations) through the pure `check_conformance` helper in `src/clauditor/conformance.py`. The command is **non-LLM** — no tokens spent, no network calls — so it is safe to run on every commit, in CI, and as a pre-publish check before uploading a skill to a registry.
+
+### Required inputs
+
+- `<skill_md>` (positional) — path to the SKILL.md file to lint. Absolute paths are accepted; symlinks are followed to their real target; directories, sockets, and missing paths exit 1.
+
+### Flags
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--strict` | Treat warnings as failures (exit 2). Errors always exit 2 regardless. Parse failures (`AGENTSKILLS_FRONTMATTER_INVALID_YAML`) always exit 1 even under `--strict` — `--strict` never escalates load-layer parse failures. |
+| `--json` | Emit a JSON envelope to stdout instead of the human-readable text. Exit codes are identical to the human-output path. `schema_version: 1` is the first key in the payload. |
+
+### Examples
+
+```bash
+# Basic conformance check — exits 0 on pass with a success line.
+clauditor lint .claude/skills/my-skill/SKILL.md
+
+# Strict mode — warnings promoted to exit 2 (pre-publish gate).
+clauditor lint --strict .claude/skills/my-skill/SKILL.md
+
+# JSON envelope for CI — pipe through jq for programmatic checks.
+clauditor lint --json .claude/skills/my-skill/SKILL.md | jq .passed
+```
+
+### Exit codes
+
+Non-LLM 0/1/2 taxonomy per `.claude/rules/llm-cli-exit-code-taxonomy.md`:
+
+| Code | Meaning |
+| ---- | ------- |
+| `0` | Pass — no issues, OR warning-only result without `--strict`. Success line printed to stdout. |
+| `1` | Load/parse failure — path does not resolve to a regular file, file is unreadable (OSError / UnicodeDecodeError), or frontmatter is malformed YAML (`AGENTSKILLS_FRONTMATTER_INVALID_YAML`). Never escalated by `--strict`. |
+| `2` | Conformance failure — one or more error-severity issues, OR warnings with `--strict` set. Issues rendered on stderr as `clauditor.conformance: <CODE>: <message>`. |
+
+### Claude Code extension allowlist
+
+The agentskills.io spec defines the frontmatter keys `name`, `description`, `license`, `compatibility`, `metadata`, and `allowed-tools`. Unknown keys normally trigger `AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY` (warning). Two Claude Code extension keys are allowlisted and do NOT trigger the warning: `argument-hint` and `disable-model-invocation`. The allowlist is maintained by the bundled `/review-agentskills-spec` skill, which periodically diffs Claude Code's published frontmatter documentation against the `KNOWN_CLAUDE_CODE_EXTENSION_KEYS` constant in `src/clauditor/conformance.py` (per DEC-009 and DEC-013 of `plans/super/71-agentskills-lint.md`).
+
+### Soft-warn hook on every skill load
+
+Beyond the standalone `lint` command, `SkillSpec.from_file` calls `check_conformance` on every skill load and emits **warnings only** to stderr with the `clauditor.conformance:` prefix. Errors are silent at that seam — they surface when the user runs `clauditor lint`. The hook never blocks `from_file`; a skill that would fail `lint` today still loads for `validate`, `grade`, and downstream commands (per DEC-003).
+
+### See also
+
+- **`/review-agentskills-spec`** — the maintainer-facing sibling bundled skill (internal-only; excluded from `clauditor setup`). **`clauditor lint`** checks a user's skill against the spec; **`/review-agentskills-spec`** audits the upstream spec itself (and Claude Code's frontmatter documentation) for drift against clauditor's enforcement. Two sides of the same check: one catches user skills that drift from the spec, the other catches clauditor's enforcement drifting from the spec.
 
 ## propose-eval
 
