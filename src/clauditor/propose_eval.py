@@ -454,7 +454,7 @@ def build_propose_eval_prompt(propose_input: ProposeEvalInput) -> str:
     # ``plans/super/61-propose-eval-key-mismatch.md``). The word
     # "required" appears in every row so the prompt-builder tests
     # can anchor on literal substrings like
-    # ``"min_count → required: value · optional: minimum"``. Rows
+    # ``"min_count → required: count, pattern"`` (post-#67 rename). Rows
     # with no required keys render ``required: (none)`` so the
     # model sees the type is still known, just fully-optional.
     parts.append(

@@ -17,10 +17,10 @@ This creates `my-skill.eval.json` alongside your skill file:
   "skill_name": "my-skill",
   "test_args": "\"San Jose, CA\" --depth quick",
   "assertions": [
-    {"id": "contains_results", "type": "contains", "value": "Results"},
-    {"id": "has_entries_3",    "type": "has_entries", "value": "3"},
-    {"id": "has_urls_3",       "type": "has_urls", "value": "3"},
-    {"id": "min_length_500",   "type": "min_length", "value": "500"}
+    {"id": "contains_results", "type": "contains", "needle": "Results"},
+    {"id": "has_entries_3",    "type": "has_entries", "count": 3},
+    {"id": "has_urls_3",       "type": "has_urls", "count": 3},
+    {"id": "min_length_500",   "type": "min_length", "length": 500}
   ],
   "sections": [
     {

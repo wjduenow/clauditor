@@ -122,7 +122,7 @@ An `<skill-name>.eval.json` lives next to the skill's `.md` file and drives all 
 {
   "skill_name": "find-kid-activities",
   "test_args":  "\"Cupertino, CA\" --ages 4-6",
-  "assertions": [{"id": "has_venues", "type": "contains", "value": "Venues"}],
+  "assertions": [{"id": "has_venues", "type": "contains", "needle": "Venues"}],
   "sections":   [{"name": "Venues", "tiers": [{"label": "default", "min_entries": 3, "fields": [{"id": "v_name", "name": "name", "required": true}]}]}],
   "grading_criteria": [{"id": "distance_ok", "criterion": "Are all venues within the specified distance?"}]
 }
