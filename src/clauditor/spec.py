@@ -137,7 +137,17 @@ class SkillSpec:
             effective_cwd = run_dir / "inputs"
             print(f"Staged {len(sources)} input file(s) into {effective_cwd}")
 
-        result = self.runner.run(self.skill_name, run_args, cwd=effective_cwd)
+        # DEC-005: thread the per-eval escape hatch into the runner. When
+        # no eval_spec is attached, default to True (back-compat).
+        allow_hang_heuristic = (
+            self.eval_spec.allow_hang_heuristic if self.eval_spec else True
+        )
+        result = self.runner.run(
+            self.skill_name,
+            run_args,
+            cwd=effective_cwd,
+            allow_hang_heuristic=allow_hang_heuristic,
+        )
 
         # Read output from files if eval spec specifies file-based output
         # Only read files on successful runs to avoid stale output

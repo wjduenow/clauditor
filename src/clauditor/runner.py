@@ -85,6 +85,101 @@ class SkillResult:
 _RESULT_TEXT_MAX_BYTES = 4096
 
 
+# DEC-005 / DEC-010: interactive-hang heuristic warning tag. The prefix
+# ``"interactive-hang:"`` is load-bearing — :attr:`SkillResult.succeeded_cleanly`
+# looks for exactly this prefix in ``warnings`` to down-classify an
+# apparently-successful run that actually waited for input.
+_INTERACTIVE_HANG_WARNING_PREFIX = "interactive-hang:"
+_INTERACTIVE_HANG_WARNING = (
+    "interactive-hang: skill may have asked for input — "
+    "ensure all parameters are in test_args (heuristic)"
+)
+
+
+def _detect_interactive_hang(
+    stream_events: list[dict], final_text: str
+) -> bool:
+    """Return True when a stream-json capture looks like an interactive hang.
+
+    Pure helper (no I/O, no global state) per
+    ``.claude/rules/pure-compute-vs-io-split.md``. Returns True only
+    when ALL of:
+
+    - The run made exactly 1 turn. Read ``num_turns`` off the
+      ``type="result"`` message; if absent, return False (conservative).
+    - The final assistant message's ``stop_reason`` is ``"end_turn"``.
+      If missing, return False.
+    - Either (a) ``final_text.strip()`` ends with ``"?"``, OR (b) any
+      assistant message's ``content`` list contains a ``tool_use``
+      block whose ``name`` is ``"AskUserQuestion"``.
+
+    Tolerates missing / malformed fields via ``.get`` + ``isinstance``.
+    Malformed events degrade to False rather than raising — the
+    detector is advisory and must never abort a run.
+    """
+    # num_turns check (conservative: missing or not 1 → False).
+    num_turns: int | None = None
+    for event in stream_events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "result":
+            continue
+        raw = event.get("num_turns")
+        if isinstance(raw, int):
+            num_turns = raw
+        # Last result message wins if multiple are present (defensive).
+    if num_turns != 1:
+        return False
+
+    # Last assistant message's stop_reason (conservative: must be
+    # "end_turn" — anything else means the model did not end cleanly
+    # on a question).
+    last_stop_reason: str | None = None
+    for event in stream_events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        stop_reason = message.get("stop_reason")
+        if isinstance(stop_reason, str):
+            last_stop_reason = stop_reason
+    if last_stop_reason != "end_turn":
+        return False
+
+    # Signal (a): trailing question mark on the concatenated text.
+    trailing_question = final_text.strip().endswith("?")
+
+    # Signal (b): AskUserQuestion tool_use in assistant content.
+    ask_user_question = False
+    for event in stream_events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if (
+                block.get("type") == "tool_use"
+                and block.get("name") == "AskUserQuestion"
+            ):
+                ask_user_question = True
+                break
+        if ask_user_question:
+            break
+
+    return trailing_question or ask_user_question
+
+
 def _classify_result_message(msg: dict) -> tuple[str | None, str | None]:
     """Classify a stream-json ``type="result"`` message's error payload.
 
@@ -170,6 +265,7 @@ class SkillRunner:
         args: str = "",
         *,
         cwd: Path | None = None,
+        allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         """Run a skill and capture its output.
 
@@ -178,6 +274,10 @@ class SkillRunner:
             args: Pre-filled arguments to skip interactive prompts
             cwd: Optional override for the subprocess working directory.
                 When ``None``, falls back to ``self.project_dir``.
+            allow_hang_heuristic: When False, skip the interactive-hang
+                heuristic (DEC-005). Threaded here from
+                ``EvalSpec.allow_hang_heuristic`` so authors can opt out
+                when the heuristic is wrong for a particular skill.
 
         Returns:
             SkillResult with captured output
@@ -185,13 +285,20 @@ class SkillRunner:
         prompt = f"/{skill_name}"
         if args:
             prompt += f" {args}"
-        return self._invoke(prompt=prompt, skill_name=skill_name, args=args, cwd=cwd)
+        return self._invoke(
+            prompt=prompt,
+            skill_name=skill_name,
+            args=args,
+            cwd=cwd,
+            allow_hang_heuristic=allow_hang_heuristic,
+        )
 
     def run_raw(
         self,
         prompt: str,
         *,
         cwd: Path | None = None,
+        allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         """Run a raw prompt without skill prefix for baseline comparison.
 
@@ -200,6 +307,8 @@ class SkillRunner:
             cwd: Optional override for the subprocess working directory.
                 When ``None``, falls back to ``self.project_dir`` — see
                 ``.claude/rules/subprocess-cwd.md`` for the rationale.
+            allow_hang_heuristic: When False, skip the interactive-hang
+                heuristic (DEC-005).
 
         Returns:
             SkillResult with skill_name="__baseline__"
@@ -209,6 +318,7 @@ class SkillRunner:
             skill_name="__baseline__",
             args=prompt,
             cwd=cwd,
+            allow_hang_heuristic=allow_hang_heuristic,
         )
 
     # ------------------------------------------------------------------ #
@@ -222,6 +332,7 @@ class SkillRunner:
         skill_name: str,
         args: str,
         cwd: Path | None = None,
+        allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         """Run ``claude`` with stream-json output and parse the NDJSON stream.
 
@@ -447,6 +558,22 @@ class SkillRunner:
                     "token usage unavailable"
                 )
 
+            # DEC-005 / DEC-010: interactive-hang heuristic. Only run the
+            # detector when the escape hatch is enabled AND no API-error
+            # classification already landed (stream-json error wins). When
+            # the detector fires, append the prefixed warning and mark
+            # ``error_category = "interactive"`` WITHOUT setting an error
+            # text — the run's ``output`` and ``exit_code`` still reflect
+            # the nominally-successful stream.
+            final_text = "\n".join(text_chunks)
+            if (
+                allow_hang_heuristic
+                and stream_json_error_text is None
+                and _detect_interactive_hang(stream_events, final_text)
+            ):
+                warnings.append(_INTERACTIVE_HANG_WARNING)
+                stream_json_error_category = "interactive"
+
             # DEC-001: stream-json ``is_error: true`` wins over stderr.
             # When classified, stderr (if any) moves into warnings so it
             # is still observable to callers without shadowing the
@@ -456,6 +583,10 @@ class SkillRunner:
                 final_category: str | None = stream_json_error_category
                 if stderr_text:
                     warnings.append(stderr_text)
+            elif stream_json_error_category == "interactive":
+                # Hang heuristic set the category without an error text.
+                final_error = None
+                final_category = "interactive"
             else:
                 final_error = (
                     stderr_text if returncode != 0 and stderr_text else None
@@ -463,7 +594,7 @@ class SkillRunner:
                 final_category = None
 
             result = SkillResult(
-                output="\n".join(text_chunks),
+                output=final_text,
                 exit_code=returncode,
                 skill_name=skill_name,
                 args=args,
