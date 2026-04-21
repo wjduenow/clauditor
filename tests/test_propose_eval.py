@@ -1099,10 +1099,10 @@ class TestBuildRepairProposeEvalPrompt:
         """<validation_errors> contains every error verbatim, newline-joined."""
         errors = [
             (
-                "assertions[0] (type='regex'): unknown key 'pattern' "
-                "— did you mean 'value'?"
+                "assertions[0] (type='regex'): unknown key 'value' "
+                "— did you mean 'pattern'?"
             ),
-            "assertions[1] (type='min_count'): missing required key 'minimum'",
+            "assertions[1] (type='min_count'): missing required key 'count'",
             "grading_criteria[0]: duplicate id 'greets-user'",
         ]
         repair = build_repair_propose_eval_prompt(
