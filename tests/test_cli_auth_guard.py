@@ -280,6 +280,49 @@ class TestAuthGuardMissingKey:
         err = capsys.readouterr().err
         _assert_guard_stderr(err, cmd_name="extract")
 
+    def test_compare_blind_missing_key_exits_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """QG pass 2 of #83: ``compare --blind`` is also LLM-mediated.
+
+        The blind A/B judge routes through ``blind_compare_from_spec`` →
+        ``call_anthropic``, so subscription-only users need the same
+        actionable exit-2 message.
+        """
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.chdir(tmp_path)
+        skill_md = _write_skill_md(tmp_path)
+        _write_eval_json(
+            skill_md,
+            {
+                "skill_name": "greeter",
+                "description": "A greeter",
+                "user_prompt": "Say hi to the user.",
+                "grading_criteria": [
+                    {"id": "g1", "criterion": "greets warmly"},
+                ],
+            },
+        )
+        before = tmp_path / "before.txt"
+        after = tmp_path / "after.txt"
+        before.write_text("hi there")
+        after.write_text("hello friend")
+
+        rc = main(
+            [
+                "compare",
+                str(before),
+                str(after),
+                "--spec",
+                str(skill_md),
+                "--blind",
+            ]
+        )
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        _assert_guard_stderr(err, cmd_name="compare --blind")
+
 
 # ---------------------------------------------------------------------------
 # --dry-run exempts the guard (DEC-002): four commands have --dry-run.

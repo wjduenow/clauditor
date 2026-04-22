@@ -714,3 +714,17 @@ class TestCheckAnthropicAuth:
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "some-token")
         with pytest.raises(AnthropicAuthMissingError):
             check_anthropic_auth("grade")
+
+    def test_key_whitespace_surrounded_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-empty value with surrounding whitespace counts as present.
+
+        The guard is about *presence*, not normalization: if the user
+        exports a key with accidental surrounding whitespace, the SDK
+        will handle it (or surface its own 401 if malformed). Pinning
+        this intent keeps a future "tighten to require trimmed value"
+        edit from silently regressing behavior without a test churn.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "  sk-test  ")
+        assert check_anthropic_auth("grade") is None

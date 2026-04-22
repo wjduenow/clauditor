@@ -188,7 +188,7 @@ Anthropic exposes two distinct auth modes, and clauditor commands split cleanly 
 - **API key** — pay-per-token, set via the `ANTHROPIC_API_KEY` environment variable. Required by any clauditor command that calls the Anthropic API from the Python process.
 - **Claude Pro/Max subscription** — flat-rate plan, credentials cached under `~/.claude/` by the `claude` CLI. Works for commands that only spawn the `claude -p` skill subprocess.
 
-The Python `anthropic` SDK is API-only: it does not read subscription credentials from `~/.claude/`. That is why the five LLM-mediated commands below (`grade`, `propose-eval`, `suggest`, `triggers`, `extract`) require `ANTHROPIC_API_KEY` even when the user is signed in to Claude Pro/Max. Commands that only run the skill subprocess work under either auth mode.
+The Python `anthropic` SDK is API-only: it does not read subscription credentials from `~/.claude/`. That is why the LLM-mediated commands below (`grade`, `propose-eval`, `suggest`, `triggers`, `extract`, and `compare --blind`) require `ANTHROPIC_API_KEY` even when the user is signed in to Claude Pro/Max. Commands that only run the skill subprocess work under either auth mode.
 
 ### Feature-impact matrix
 
@@ -203,11 +203,12 @@ The Python `anthropic` SDK is API-only: it does not read subscription credential
 | `clauditor audit` | ✓ | Reads persisted sidecars. |
 | `clauditor trend` | ✓ | Reads persisted sidecars. |
 | `clauditor grade` | ✗ | L3 grader is a direct `anthropic.AsyncAnthropic` call. |
-| `clauditor grade --variance N` (blind compare) | ✗ | Same — each variance rep calls the SDK directly. |
+| `clauditor grade --variance N` | ✗ | Each variance rep re-runs the L3 grader. |
 | `clauditor propose-eval` | ✗ | Direct SDK call via `_anthropic.call_anthropic`. |
 | `clauditor suggest` | ✗ | Direct SDK call via `_anthropic.call_anthropic`. |
 | `clauditor triggers` | ✗ | Direct SDK call via `_anthropic.call_anthropic`. |
 | `clauditor extract` | ✗ | Direct SDK call via `_anthropic.call_anthropic`. |
+| `clauditor compare --blind` | ✗ | Runs the blind A/B judge via `_anthropic.call_anthropic`. |
 
 ### Error behavior
 
@@ -228,7 +229,7 @@ The exit code (`2`) matches the pre-call input-validation category in the [four-
 
 ### Subscription support (follow-up)
 
-Routing L3 grading, `propose-eval`, `suggest`, `triggers`, and `extract` through the `claude -p` subprocess (so a Pro/Max subscription alone is enough) is tracked in [GitHub issue #86](https://github.com/wjduenow/clauditor/issues/86). Until that lands, the five LLM-mediated commands above need a direct API key.
+Routing L3 grading, `propose-eval`, `suggest`, `triggers`, `extract`, and `compare --blind` through the `claude -p` subprocess (so a Pro/Max subscription alone is enough) is tracked in [GitHub issue #86](https://github.com/wjduenow/clauditor/issues/86). Until that lands, the LLM-mediated commands above need a direct API key.
 
 ## Persistent metric history
 
