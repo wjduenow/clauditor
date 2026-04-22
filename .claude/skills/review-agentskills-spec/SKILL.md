@@ -1,7 +1,7 @@
 ---
 name: review-agentskills-spec
 description: Review the current agentskills.io specification and evaluate whether clauditor's spec-conformance logic needs updates. Use when the user asks to audit upstream spec drift, check for new required fields, or after an agentskills.io announcement. Previews proposed code changes and offers to open a GitHub issue.
-compatibility: Requires network access to fetch https://agentskills.io/specification. Optional: the gh CLI for issue creation.
+compatibility: "Requires network access to fetch https://agentskills.io/specification. Optional: the gh CLI for issue creation."
 metadata:
   clauditor-version: "0.0.0-dev"
 disable-model-invocation: true
