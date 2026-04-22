@@ -111,6 +111,7 @@ clauditor validate <skill.md>         # Layer 1 assertions
 clauditor grade <skill.md>            # Layer 3 quality grading
 clauditor compare --skill <s> --from 1 --to 2  # Diff iterations
 clauditor trend <skill> --metric total.total   # History + sparkline
+clauditor badge <skill.md>            # Shields.io endpoint JSON for README embed
 ```
 
 **Covered in the full reference:** every subcommand flag (`--variance`, `--iteration`, `--diff`, …), exit codes, `history.jsonl` shape, `clauditor trend` metric paths. Full reference: [docs/cli-reference.md](docs/cli-reference.md).
@@ -167,6 +168,7 @@ clauditor implements (and extends) the workflow at [agentskills.io/skill-creatio
 - [`docs/eval-spec-reference.md`](docs/eval-spec-reference.md) — complete `.eval.json` schema
 - [`docs/pytest-plugin.md`](docs/pytest-plugin.md) — pytest fixtures and options
 - [`docs/skill-usage.md`](docs/skill-usage.md) — using `/clauditor` in Claude Code
+- [`docs/badges.md`](docs/badges.md) — shields.io badges from iteration sidecars (`clauditor badge`)
 - [`docs/stream-json-schema.md`](docs/stream-json-schema.md) — `claude` stream-json parser contract
 - [`CONTRIBUTING.md`](CONTRIBUTING.md#pre-release-dogfood) — maintainer pre-release dogfood gate + contribution workflow
 
