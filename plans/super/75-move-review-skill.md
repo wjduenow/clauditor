@@ -47,9 +47,9 @@ All references to the skill's current on-disk path:
 | `tests/test_bundled_review_skill.py` | 316-318 | Comments about "internal-only" — rephrase to match new framing |
 | `examples/review-agentskills-spec.md` | 5 | "bundled `review-agentskills-spec` skill" wording — no longer bundled |
 | `examples/review-agentskills-spec.md` | 18-19 | Files table — two path rows |
-| `examples/review-agentskills-spec.md` | 95 | `clauditor capture` command path (see DEC-004 — this line has a pre-existing bug) |
+| `examples/review-agentskills-spec.md` | 95 | `clauditor capture` command path (see DEC-003 — this line has a pre-existing bug) |
 | `tests/fixtures/review-agentskills-spec/README.md` | 26 | Same `clauditor capture` command bug |
-| `.claude/rules/internal-skill-live-test-tmp-symlink.md` | 130, 133, 143 | Rule references this skill as its canonical anchor (see DEC-003) |
+| `.claude/rules/internal-skill-live-test-tmp-symlink.md` | 130, 133, 143 | Rule references this skill as its canonical anchor (see DEC-002; story split in DEC-006) |
 | `~/.claude/.../memory/feedback_review_agentskills_spec_internal.md` | (path reference line) | Update exclusion framing to match new location |
 
 ### Packaging / build seams (verified)
@@ -86,7 +86,7 @@ shape is:
 uv run clauditor capture review-agentskills-spec
 ```
 
-This is a shipped-with-#72 documentation bug. See DEC-004 for
+This is a shipped-with-#72 documentation bug. See DEC-003 for
 disposition.
 
 ### Rule applicability (Convention Checker)
@@ -94,7 +94,7 @@ disposition.
 | Rule | Applies? | Constraint |
 | --- | --- | --- |
 | `skill-identity-from-frontmatter.md` | Yes | Parent dir after move is still `review-agentskills-spec`, matches frontmatter `name:` — invariant preserved. No rule edits. |
-| `internal-skill-live-test-tmp-symlink.md` | Yes — and needs a refresh | See DEC-003 |
+| `internal-skill-live-test-tmp-symlink.md` | Yes — and needs a refresh | See DEC-002 |
 | `bundled-skill-docs-sync.md` | No | Rule's "When does NOT apply" explicitly scopes to `skills/clauditor/` only. |
 | `readme-promotion-recipe.md` | No | Doc stays in `examples/`, not promoted to `docs/`. |
 
@@ -255,8 +255,8 @@ Phase 2 rule-integrity concern. Per DEC-002, the rule needs more
 than a sed-style path swap — the "Why this rule applies" and "What
 NOT to do" framing needs rewording so future readers understand the
 pattern still holds after the move. Carve it into its own story
-(US-003) with prose-review acceptance criteria, separate from the
-mechanical path updates in US-002.
+(US-002) with prose-review acceptance criteria, separate from the
+mechanical path updates in US-001.
 
 **DEC-007 — Live-test symlink pattern preserved unchanged.**
 Phase 2 test-isolation finding. `tests/test_bundled_review_skill.py`
@@ -427,9 +427,16 @@ leave tests failing until paths update).
     wrong path).
   - `tests/fixtures/review-agentskills-spec/README.md:26` — same DEC-003
     fix.
-  - `~/.claude/projects/-home-wesd-Projects-clauditor/memory/feedback_review_agentskills_spec_internal.md`
-    — update the path reference per DEC-008; do NOT rewrite the
-    "no `clauditor setup` install" guidance (still applies).
+
+**Developer-local side-effect (NOT part of the atomic commit).**
+After committing the above repo changes, update the developer-local
+memory file at
+`~/.claude/projects/-home-wesd-Projects-clauditor/memory/feedback_review_agentskills_spec_internal.md`
+per DEC-008: update the path reference; do NOT rewrite the
+"no `clauditor setup` install" guidance (still applies). This path
+is outside the repository and is not tracked by git, so it cannot be
+in the commit — it's a parallel maintenance step the worker performs
+after the main commit lands.
 
 **Depends on:** none (first story).
 
