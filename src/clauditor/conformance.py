@@ -247,6 +247,14 @@ def check_conformance(
         _check_body(body, issues)
         return issues
 
+    # Strict-YAML-ambiguity check runs AFTER the permissive parse
+    # succeeds. Rejects unquoted ``: `` (space-colon-space) inside
+    # scalar values — the exact YAML ambiguity class that caused #79.
+    # Walks the raw text directly; does not need ``parsed``. See
+    # DEC-001 through DEC-007 of
+    # ``plans/super/80-strict-frontmatter-yaml.md``.
+    _check_unquoted_colon_in_scalar(skill_md_text, issues)
+
     _check_name(parsed, skill_path, is_modern_layout, issues)
     _check_description(parsed, issues)
     _check_license(parsed, issues)
@@ -667,3 +675,77 @@ def _check_body(body: str, issues: list[ConformanceIssue]) -> None:
                 ),
             )
         )
+
+
+def _check_unquoted_colon_in_scalar(
+    skill_md_text: str, issues: list[ConformanceIssue]
+) -> None:
+    """Reject unquoted ``: `` (space-colon-space) inside scalar values.
+
+    Walks the raw frontmatter text line-by-line. For each line that
+    looks like ``key: value``, extract the value portion, skip it if
+    empty or wrapped in matching quotes, otherwise flag the line if
+    ``": "`` appears anywhere in the value.
+
+    Runs AFTER ``parse_frontmatter`` has already succeeded; the
+    existing ``AGENTSKILLS_FRONTMATTER_INVALID_YAML`` short-circuit
+    handles files that fail permissive parsing first.
+
+    This catches the YAML ambiguity class that caused #79: strict
+    parsers (PyYAML, GitHub's renderer) treat ``foo: bar: baz`` as a
+    nested mapping, while clauditor's permissive ``_frontmatter.py``
+    accepts it as a plain scalar. See DEC-007 of
+    ``plans/super/80-strict-frontmatter-yaml.md``.
+    """
+    # Extract the frontmatter block (between the two ``---`` markers).
+    # If no frontmatter, no-op.
+    lines = skill_md_text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return
+    try:
+        end_idx = next(
+            i for i, line in enumerate(lines[1:], start=1)
+            if line.strip() == "---"
+        )
+    except StopIteration:
+        # Malformed — already caught by INVALID_YAML.
+        return
+
+    for lineno, line in enumerate(lines[1:end_idx], start=2):
+        # 1-based line numbers in error messages (YAML convention,
+        # matches GitHub's "line 3 column 95" style).
+        stripped = line.lstrip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" not in stripped:
+            continue
+        key, _, value = stripped.partition(":")
+        value = value.lstrip()
+        if not value:
+            # ``metadata:`` block header — no scalar to check.
+            continue
+        # Quote detection: first-and-last char match. The permissive
+        # parser already stripped matching quotes, but here we're
+        # inspecting raw text, so this is our own check. Trailing
+        # whitespace after the quote is tolerated; a stray quote
+        # mid-string falls through to the ``": "`` check (conservative).
+        trimmed = value.rstrip()
+        if len(trimmed) >= 2 and (
+            (trimmed[0] == '"' and trimmed[-1] == '"')
+            or (trimmed[0] == "'" and trimmed[-1] == "'")
+        ):
+            continue
+        if ": " in value:
+            issues.append(
+                ConformanceIssue(
+                    code="AGENTSKILLS_FRONTMATTER_UNQUOTED_COLON_IN_SCALAR",
+                    severity="error",
+                    message=(
+                        f"Frontmatter line {lineno} has ': ' inside "
+                        f"an unquoted value for key {key.strip()!r}: "
+                        f"strict YAML parsers (including GitHub's) "
+                        f"treat this as a nested mapping. Wrap the "
+                        f"value in double quotes."
+                    ),
+                )
+            )

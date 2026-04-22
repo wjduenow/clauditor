@@ -778,3 +778,189 @@ class TestConformanceIssueInvariants:
                 assert "\r" not in issue.message, (
                     f"CR in message from {issue.code}: {issue.message!r}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# AGENTSKILLS_FRONTMATTER_UNQUOTED_COLON_IN_SCALAR — #80 US-001
+# ---------------------------------------------------------------------------
+
+
+_UNQUOTED_COLON_CODE = "AGENTSKILLS_FRONTMATTER_UNQUOTED_COLON_IN_SCALAR"
+
+
+class TestUnquotedColonInScalarDetection:
+    """Regression + negative cases for the #80 strict-YAML check.
+
+    Tests per DEC-006 of ``plans/super/80-strict-frontmatter-yaml.md``.
+    The pre-#79 fixture is the exact content that caused GitHub's YAML
+    renderer to reject ``.claude/skills/review-agentskills-spec/SKILL.md``
+    with ``mapping values are not allowed in this context``.
+    """
+
+    def test_pre_79_fixture_flagged(self):
+        # Verbatim pre-#79 frontmatter (see plan Discovery section).
+        # The bug is the unquoted ``Optional: `` on the compatibility:
+        # line.
+        text = (
+            "---\n"
+            "name: review-agentskills-spec\n"
+            "description: Review the current agentskills.io specification "
+            "and open follow-up issues.\n"
+            "compatibility: Requires network access to fetch "
+            "https://agentskills.io/specification. Optional: the gh CLI "
+            "for issue creation.\n"
+            "metadata:\n"
+            '  clauditor-version: "0.0.0-dev"\n'
+            "disable-model-invocation: true\n"
+            "allowed-tools: WebFetch, Read, Grep, Glob, "
+            "Bash(gh issue create:*)\n"
+            "---\n"
+            "\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path("review-agentskills-spec"))
+        flagged = _by_code(issues, _UNQUOTED_COLON_CODE)
+        assert len(flagged) >= 1, (
+            f"expected at least one {_UNQUOTED_COLON_CODE} issue, got "
+            f"codes={_codes(issues)}"
+        )
+        assert all(i.severity == "error" for i in flagged)
+
+    def test_post_79_fixture_passes(self):
+        # Same content, with compatibility value wrapped in double quotes.
+        text = (
+            "---\n"
+            "name: review-agentskills-spec\n"
+            "description: Review the current agentskills.io specification "
+            "and open follow-up issues.\n"
+            'compatibility: "Requires network access to fetch '
+            "https://agentskills.io/specification. Optional: the gh CLI "
+            'for issue creation."\n'
+            "metadata:\n"
+            '  clauditor-version: "0.0.0-dev"\n'
+            "disable-model-invocation: true\n"
+            "allowed-tools: WebFetch, Read, Grep, Glob, "
+            "Bash(gh issue create:*)\n"
+            "---\n"
+            "\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path("review-agentskills-spec"))
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+    def test_clauditor_bundled_skill_passes(self):
+        # Read the bundled SKILL.md via the clauditor package path — the
+        # one exception to "no file I/O in tests" is that the bundled
+        # skill path is stable and this is the canonical regression guard
+        # that the new check does not break shipped skills.
+        import clauditor  # noqa: PLC0415
+
+        skill_path = (
+            Path(clauditor.__file__).parent / "skills" / "clauditor" / "SKILL.md"
+        )
+        text = skill_path.read_text(encoding="utf-8")
+        issues = check_conformance(text, skill_path)
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == [], (
+            "bundled clauditor SKILL.md must not trigger the new check; "
+            f"got issues={[(i.code, i.message) for i in issues]}"
+        )
+
+
+class TestQuoteAwareness:
+    """Quote-detection edges: values wrapped in ``"..."`` / ``'...'``
+    bypass the check; unquoted values containing ``: `` trigger it.
+
+    Also pins the URL and ``Bash(... create:*)`` patterns as non-triggers
+    because the colon is NOT followed by a space.
+    """
+
+    def test_double_quoted_value_with_colon_space_passes(self):
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            'description: "Note: when X happens, do Y"\n'
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+    def test_single_quoted_value_with_colon_space_passes(self):
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: 'Note: when X happens, do Y'\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+    def test_unquoted_value_with_colon_space_flagged(self):
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: Note: when X happens, do Y\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        flagged = _by_code(issues, _UNQUOTED_COLON_CODE)
+        assert len(flagged) == 1
+        assert flagged[0].severity == "error"
+        # Message should name the offending key so the author can find it.
+        assert "description" in flagged[0].message
+
+    def test_url_in_unquoted_value_passes(self):
+        # Colon-slash, no space after colon → not ambiguous YAML.
+        # ``description`` is used so we're testing a known spec key.
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: See https://example.com/page for details\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+    def test_allowed_tools_colon_star_passes(self):
+        # Colon-star glob in a Bash tool spec is a legitimate value; the
+        # colon is NOT followed by a space, so no ambiguity.
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: A skill\n"
+            "allowed-tools: Bash(gh issue create:*)\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+
+class TestNestedMetadataScope:
+    """The walker visits nested ``metadata:`` child lines too (DEC-005).
+
+    Same rule applies at any indent: unquoted ``: `` inside a child
+    scalar is a bug even when the parent is the ``metadata`` block.
+    """
+
+    def test_nested_unquoted_value_with_colon_space_flagged(self):
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: A skill\n"
+            "metadata:\n"
+            "  note: foo: bar baz\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        flagged = _by_code(issues, _UNQUOTED_COLON_CODE)
+        assert len(flagged) == 1
+        assert flagged[0].severity == "error"
+
+    def test_nested_quoted_value_with_colon_space_passes(self):
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: A skill\n"
+            "metadata:\n"
+            '  note: "foo: bar baz"\n'
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
