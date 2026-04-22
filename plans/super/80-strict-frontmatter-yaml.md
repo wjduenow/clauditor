@@ -3,7 +3,7 @@
 ## Meta
 
 - **Ticket:** [#80](https://github.com/wjduenow/clauditor/issues/80)
-- **Phase:** detailing
+- **Phase:** devolved
 - **Sessions:** 1
 - **Last session:** 2026-04-22
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/80-strict-frontmatter-yaml`
@@ -584,4 +584,13 @@ advances to `devolved`.
 
 ## Beads manifest
 
-*(Phase 7 — filled on devolve.)*
+- **Epic:** `clauditor-7eb` — `#80: Tighten SKILL.md frontmatter
+  validation for strict YAML (epic)`
+- **Tasks:**
+  - `clauditor-7eb.1` — US-001 — Implement check + tests + doc note
+    (ready; no blockers)
+  - `clauditor-7eb.2` — US-002 — Quality Gate (blocked on `.1`)
+  - `clauditor-7eb.3` — US-003 — Patterns & Memory (blocked on `.2`)
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/80-strict-frontmatter-yaml`
+- **Branch:** `feature/80-strict-frontmatter-yaml`
+- **Plan PR:** https://github.com/wjduenow/clauditor/pull/82
