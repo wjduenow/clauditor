@@ -140,7 +140,7 @@ class TestCmdBadgeHappyPath:
     def test_writes_badge_json_default_path(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """Default output lands at ``.clauditor/badges/<skill>.json``."""
+        """Default output writes BOTH sidecars at ``.clauditor/badges/``."""
         skill_md = _write_skill(tmp_path)
         _setup_iteration(tmp_path, 1)
         monkeypatch.chdir(tmp_path)
@@ -149,15 +149,24 @@ class TestCmdBadgeHappyPath:
         assert rc == 0
 
         target = tmp_path / ".clauditor" / "badges" / "demo.json"
+        ext_target = tmp_path / ".clauditor" / "badges" / "demo.clauditor.json"
         assert target.exists()
-        data = json.loads(target.read_text())
-        # Shields.io contract keys + our nested extension.
-        assert data["schemaVersion"] == 1
-        assert data["label"] == "clauditor"
-        assert data["color"] == "brightgreen"
-        assert data["message"] == "3/3"
-        assert data["clauditor"]["skill_name"] == "demo"
-        assert data["clauditor"]["iteration"] == 1
+        assert ext_target.exists()
+
+        # Shields.io payload: minimal, no ``clauditor`` key (shields.io
+        # rejects unknown top-level fields with "invalid properties").
+        shields = json.loads(target.read_text())
+        assert shields["schemaVersion"] == 1
+        assert shields["label"] == "clauditor"
+        assert shields["color"] == "brightgreen"
+        assert shields["message"] == "3/3"
+        assert "clauditor" not in shields
+
+        # Extension sidecar: carries iteration + layer detail.
+        ext = json.loads(ext_target.read_text())
+        assert ext["skill_name"] == "demo"
+        assert ext["iteration"] == 1
+        assert "l1" in ext["layers"]
 
     def test_writes_badge_json_custom_output(
         self, tmp_path: Path, monkeypatch
@@ -227,11 +236,19 @@ class TestCmdBadgeNoIteration:
         assert rc == 0
 
         target = tmp_path / ".clauditor" / "badges" / "demo.json"
+        ext_target = tmp_path / ".clauditor" / "badges" / "demo.clauditor.json"
         assert target.exists()
-        data = json.loads(target.read_text())
-        assert data["color"] == "lightgrey"
-        assert data["message"] == "no data"
-        assert data["clauditor"]["iteration"] is None
+        assert ext_target.exists()
+        # Shields.io payload: minimal, no clauditor key (it rejects
+        # unknown top-level fields with "invalid properties" SVG).
+        shields = json.loads(target.read_text())
+        assert shields["color"] == "lightgrey"
+        assert shields["message"] == "no data"
+        assert "clauditor" not in shields
+        # Extension sidecar: full telemetry.
+        ext = json.loads(ext_target.read_text())
+        assert ext["schema_version"] == 1
+        assert ext["iteration"] is None
 
     def test_emits_dec021_warning(
         self, tmp_path: Path, monkeypatch, capsys
@@ -279,6 +296,62 @@ class TestCmdBadgeNoIteration:
         assert rc == 0
         data = json.loads(target.read_text())
         assert data["color"] == "lightgrey"
+
+    def test_extension_only_exists_rejects_without_force(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """Regression guard for the sidecar-pair ``--force`` policy.
+
+        If a prior run (or a manual git operation) left only the
+        extension file on disk without the shields.io file, re-running
+        ``clauditor badge`` without ``--force`` must still reject:
+        silently overwriting a stale ``<skill>.clauditor.json``
+        alongside a fresh ``<skill>.json`` would ship a mismatched
+        pair to downstream consumers. Exit 1 names the extension file.
+        """
+        skill_md = _write_skill(tmp_path)
+        ext_target = (
+            tmp_path / ".clauditor" / "badges" / "demo.clauditor.json"
+        )
+        ext_target.parent.mkdir(parents=True)
+        ext_target.write_text('{"stale-extension": true}\n')
+        monkeypatch.chdir(tmp_path)
+
+        # Main target absent → first guard passes, then second fires.
+        rc = main(["badge", str(skill_md)])
+        assert rc == 1
+
+        err = capsys.readouterr().err
+        assert "demo.clauditor.json" in err
+        assert "already exists" in err
+        # Stale extension untouched.
+        assert ext_target.read_text() == '{"stale-extension": true}\n'
+
+    def test_extension_only_exists_force_overwrites_pair(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """``--force`` lets the pair write proceed even when only the
+        extension file pre-existed. Both files land with the fresh
+        lightgrey placeholder content.
+        """
+        skill_md = _write_skill(tmp_path)
+        target = tmp_path / ".clauditor" / "badges" / "demo.json"
+        ext_target = (
+            tmp_path / ".clauditor" / "badges" / "demo.clauditor.json"
+        )
+        ext_target.parent.mkdir(parents=True)
+        ext_target.write_text('{"stale-extension": true}\n')
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(["badge", str(skill_md), "--force"])
+        assert rc == 0
+
+        # Main file now exists with fresh content.
+        assert json.loads(target.read_text())["color"] == "lightgrey"
+        # Extension file was overwritten with fresh content.
+        ext = json.loads(ext_target.read_text())
+        assert ext["schema_version"] == 1
+        assert ext["skill_name"] == "demo"
 
 
 # ---------------------------------------------------------------------------

@@ -495,7 +495,14 @@ class TestLayerSemantics:
 
 class TestBadgeSerialization:
     def test_top_level_key_order(self):
-        """Endpoint JSON top-level key order is fixed."""
+        """Shields.io endpoint JSON is minimal — shields-only, no clauditor block.
+
+        Shields.io strictly validates its endpoint schema and rejects
+        any unknown top-level key with an ``invalid properties: <key>``
+        SVG response (verified on 2026-04-22 against the live badge).
+        The clauditor extension lives in a SIBLING file (see
+        :meth:`Badge.to_clauditor_extension_json`).
+        """
         badge = compute_badge(
             _make_assertions_dict(passed=8, total=8),
             None,
@@ -510,7 +517,8 @@ class TestBadgeSerialization:
         assert keys[1] == "label"
         assert keys[2] == "message"
         assert keys[3] == "color"
-        assert keys[-1] == "clauditor"
+        # No clauditor extension in the shields.io-facing payload.
+        assert "clauditor" not in result
 
     def test_shields_schema_version_is_camelcase(self):
         """DEC-027: shields.io's field is camelCase ``schemaVersion``."""
@@ -524,11 +532,11 @@ class TestBadgeSerialization:
         )
         result = badge.to_endpoint_json()
         assert result["schemaVersion"] == 1
-        # The snake_case form is reserved for the nested block.
+        # The snake_case form is reserved for the extension file.
         assert "schema_version" not in result
 
-    def test_clauditor_schema_version_is_first_key(self):
-        """DEC-027: nested block obeys json-schema-version first-key rule."""
+    def test_clauditor_extension_schema_version_is_first_key(self):
+        """DEC-027 + json-schema-version.md: extension file's first key."""
         badge = compute_badge(
             _make_assertions_dict(passed=8, total=8),
             None,
@@ -537,14 +545,14 @@ class TestBadgeSerialization:
             iteration=1,
             generated_at=_GEN_AT,
         )
-        result = badge.to_endpoint_json()
-        inner_keys = list(result["clauditor"].keys())
+        ext = badge.to_clauditor_extension_json()
+        inner_keys = list(ext.keys())
         assert inner_keys[0] == "schema_version"
-        assert result["clauditor"]["schema_version"] == 1
+        assert ext["schema_version"] == 1
 
-    def test_clauditor_key_order(self):
-        """Inside ``clauditor``: schema_version, skill_name, generated_at,
-        iteration, layers."""
+    def test_clauditor_extension_key_order(self):
+        """Extension file layout: schema_version, skill_name,
+        generated_at, iteration, layers."""
         badge = compute_badge(
             _make_assertions_dict(passed=8, total=8),
             None,
@@ -553,13 +561,18 @@ class TestBadgeSerialization:
             iteration=1,
             generated_at=_GEN_AT,
         )
-        result = badge.to_endpoint_json()
-        keys = list(result["clauditor"].keys())
-        assert keys == ["schema_version", "skill_name", "generated_at",
-                        "iteration", "layers"]
+        ext = badge.to_clauditor_extension_json()
+        keys = list(ext.keys())
+        assert keys == [
+            "schema_version",
+            "skill_name",
+            "generated_at",
+            "iteration",
+            "layers",
+        ]
 
     def test_generated_at_z_suffix(self):
-        """DEC-012: generated_at carries the trailing ``Z``."""
+        """DEC-012: generated_at carries the trailing ``Z`` in extension."""
         badge = compute_badge(
             _make_assertions_dict(passed=8, total=8),
             None,
@@ -568,8 +581,8 @@ class TestBadgeSerialization:
             iteration=1,
             generated_at=_GEN_AT,
         )
-        result = badge.to_endpoint_json()
-        assert result["clauditor"]["generated_at"].endswith("Z")
+        ext = badge.to_clauditor_extension_json()
+        assert ext["generated_at"].endswith("Z")
 
     def test_variance_omitted_when_absent(self):
         """DEC-003: no variance sidecar → no ``layers.variance`` key."""
@@ -581,8 +594,8 @@ class TestBadgeSerialization:
             iteration=1,
             generated_at=_GEN_AT,
         )
-        result = badge.to_endpoint_json()
-        assert "variance" not in result["clauditor"]["layers"]
+        ext = badge.to_clauditor_extension_json()
+        assert "variance" not in ext["layers"]
 
     def test_l3_omitted_when_grading_absent(self):
         """No grading sidecar → no ``layers.l3`` key."""
@@ -594,9 +607,9 @@ class TestBadgeSerialization:
             iteration=1,
             generated_at=_GEN_AT,
         )
-        result = badge.to_endpoint_json()
-        assert "l3" not in result["clauditor"]["layers"]
-        assert "l1" in result["clauditor"]["layers"]
+        ext = badge.to_clauditor_extension_json()
+        assert "l3" not in ext["layers"]
+        assert "l1" in ext["layers"]
 
     def test_l3_omitted_when_parse_failed(self):
         """DEC-009: L3 parse-failed → ``layers.l3`` omitted AND color red."""
@@ -608,9 +621,10 @@ class TestBadgeSerialization:
             iteration=1,
             generated_at=_GEN_AT,
         )
-        result = badge.to_endpoint_json()
-        assert "l3" not in result["clauditor"]["layers"]
-        assert result["color"] == "red"
+        shields = badge.to_endpoint_json()
+        ext = badge.to_clauditor_extension_json()
+        assert "l3" not in ext["layers"]
+        assert shields["color"] == "red"
 
     def test_l1_omitted_when_no_l1_signal(self):
         """DEC-020: assertions=None → ``layers.l1`` omitted entirely."""
@@ -622,13 +636,15 @@ class TestBadgeSerialization:
             iteration=None,
             generated_at=_GEN_AT,
         )
-        result = badge.to_endpoint_json()
-        assert "l1" not in result["clauditor"]["layers"]
+        ext = badge.to_clauditor_extension_json()
+        assert "l1" not in ext["layers"]
         # And iteration is None (placeholder case).
-        assert result["clauditor"]["iteration"] is None
+        assert ext["iteration"] is None
 
-    def test_style_overrides_alphabetized(self):
-        """DEC-015: ``--style`` passthroughs land alphabetically."""
+    def test_style_overrides_alphabetized_after_color(self):
+        """DEC-015: ``--style`` passthroughs land alphabetically in the
+        shields.io payload (no ``clauditor`` key present to bound them).
+        """
         badge = compute_badge(
             _make_assertions_dict(passed=8, total=8),
             None,
@@ -644,10 +660,8 @@ class TestBadgeSerialization:
         )
         result = badge.to_endpoint_json()
         keys = list(result.keys())
-        # After color, before clauditor, in alphabetical order.
         color_idx = keys.index("color")
-        clauditor_idx = keys.index("clauditor")
-        style_slice = keys[color_idx + 1 : clauditor_idx]
+        style_slice = keys[color_idx + 1 :]
         assert style_slice == ["cacheSeconds", "logoSvg", "style"]
         assert result["style"] == "flat"
         assert result["cacheSeconds"] == "3600"
@@ -678,7 +692,7 @@ class TestBadgeSerialization:
         assert badge.label == "review-pr"
 
     def test_payload_is_json_serializable(self):
-        """The returned dict must round-trip through ``json``."""
+        """Both sidecar payloads round-trip through ``json``."""
         badge = compute_badge(
             _make_assertions_dict(passed=8, total=8),
             _make_grading_dict(pass_fractions=(True, True, True, True)),
@@ -688,11 +702,13 @@ class TestBadgeSerialization:
             generated_at=_GEN_AT,
             style_overrides={"style": "flat"},
         )
-        raw = json.dumps(badge.to_endpoint_json())
-        round_trip = json.loads(raw)
-        assert round_trip["color"] == "brightgreen"
-        assert round_trip["clauditor"]["skill_name"] == "demo"
-        assert round_trip["clauditor"]["iteration"] == 7
+        shields = json.loads(json.dumps(badge.to_endpoint_json()))
+        ext = json.loads(json.dumps(badge.to_clauditor_extension_json()))
+        assert shields["color"] == "brightgreen"
+        assert shields["style"] == "flat"
+        assert "clauditor" not in shields
+        assert ext["skill_name"] == "demo"
+        assert ext["iteration"] == 7
 
 
 # ---------------------------------------------------------------------------
@@ -808,7 +824,7 @@ class TestDefensiveBranches:
             generated_at=_GEN_AT,
         )
         assert badge.color == "red"
-        assert "l3" not in badge.to_endpoint_json()["clauditor"]["layers"]
+        assert "l3" not in badge.to_clauditor_extension_json()["layers"]
 
     def test_l3_thresholds_non_dict_falls_back_to_defaults(self):
         """Grading dict with ``thresholds`` not a dict → defaults applied."""

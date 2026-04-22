@@ -2,28 +2,5 @@
   "schemaVersion": 1,
   "label": "clauditor",
   "message": "5/5 · L3 100%",
-  "color": "brightgreen",
-  "clauditor": {
-    "schema_version": 1,
-    "skill_name": "review-agentskills-spec",
-    "generated_at": "2026-04-22T13:59:18Z",
-    "iteration": 4,
-    "layers": {
-      "l1": {
-        "count": 5,
-        "total": 5,
-        "pass_rate": 1.0,
-        "passed": true
-      },
-      "l3": {
-        "pass_rate": 1.0,
-        "mean_score": 0.9700000000000001,
-        "passed": true,
-        "thresholds": {
-          "min_pass_rate": 0.7,
-          "min_mean_score": 0.5
-        }
-      }
-    }
-  }
+  "color": "brightgreen"
 }

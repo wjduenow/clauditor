@@ -301,38 +301,89 @@ def _list_available_iterations(project_dir: Path, skill_name: str) -> list[int]:
     return sorted(found)
 
 
-def _write_badge_json(
+def _extension_path_for(target: Path) -> Path:
+    """Return the ``<target>.clauditor.json`` sibling path.
+
+    Uses :meth:`pathlib.Path.with_suffix` to replace the final
+    extension so both ``demo.json`` and ``demo.svg`` (or a suffix-less
+    path) all produce ``demo.clauditor.json`` in the same directory.
+    """
+    return target.with_suffix(".clauditor.json")
+
+
+def _atomic_write_json(target: Path, payload: dict) -> None:
+    """Write ``payload`` to ``target`` via tempfile + ``os.replace``.
+
+    Raises ``OSError`` on failure with best-effort cleanup of the
+    sibling tempfile; the existing ``target`` (if any) is left
+    untouched in the failure case.
+
+    ``ensure_ascii=False`` writes the UTF-8 middle-dot glyph in
+    messages verbatim (review pass 3, C3-4) so the on-disk bytes
+    match the sample JSON in ``docs/badges.md``.
+    """
+    tmp_target = target.with_name(f".{target.name}.tmp")
+    try:
+        tmp_target.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp_target, target)
+    except OSError:
+        try:
+            tmp_target.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _write_badge_sidecars(
     target: Path,
-    payload: dict,
+    badge,
     *,
     force: bool,
     iteration: int | None,
     verbose: bool,
     post_write_warning: str | None = None,
 ) -> int:
-    """Write the badge JSON payload to ``target`` atomically.
+    """Write the badge sidecar pair (shields.io + clauditor extension).
 
-    DEC-011 overwrite policy: if ``target`` exists and ``force`` is
-    ``False``, print the error and return exit 1 without writing.
+    The shields.io endpoint strictly validates its schema and rejects
+    any unknown top-level key with an ``invalid properties: <key>``
+    SVG response. The extension block therefore cannot be embedded;
+    it lives in a sibling ``<target>.clauditor.json`` file. Readers:
 
-    Atomic publication (review pass 2, C2-3): writes to a sibling
-    temp file first, then :func:`os.replace` publishes it into
-    place. A mid-write failure (disk full, EIO) leaves the existing
-    target untouched rather than truncating it to empty.
+    - ``<target>`` is what shields.io fetches. Minimal shape
+      (``schemaVersion``, ``label``, ``message``, ``color``, plus
+      any whitelisted ``--style`` passthroughs).
+    - ``<target>.clauditor.json`` carries the per-layer breakdown,
+      thresholds, iteration number, and ``generated_at`` timestamp
+      for trend-audit / forensic consumers.
 
-    ``post_write_warning`` — optional stderr line printed AFTER a
-    successful write (review pass 2, N2-4). A write-claim message
-    like "wrote lightgrey placeholder" is gated on actual success,
-    not pre-write intent, so collisions or disk errors don't leave
-    a misleading stderr trail.
+    DEC-011 overwrite policy applies to BOTH files as a set. Either
+    target existing without ``--force`` fails the whole write.
 
-    ``iteration=None`` renders the verbose line with a
-    ``(no iteration)`` fragment to signal the DEC-001 lightgrey
-    placeholder path; otherwise ``(iteration N)``.
+    Atomic publication (review pass 2, C2-3): each file is written
+    to a sibling tempfile, then ``os.replace`` publishes it. On
+    partial failure (e.g. first succeeds, second fails), the tmp
+    files are cleaned up and the error is surfaced — but the first
+    file's replace may already have landed. This is a known
+    non-atomicity across two files and is acceptable because badge
+    artifacts are fully regenerable. Document the pair semantics in
+    ``.claude/rules/dual-version-external-schema-embed.md``.
     """
+    extension_target = _extension_path_for(target)
+
     if target.exists() and not force:
         print(
             f"ERROR: {target} already exists (pass --force to overwrite)",
+            file=sys.stderr,
+        )
+        return 1
+    if extension_target.exists() and not force:
+        print(
+            f"ERROR: {extension_target} already exists (pass --force to "
+            "overwrite)",
             file=sys.stderr,
         )
         return 1
@@ -343,30 +394,14 @@ def _write_badge_json(
     # should not error.
     target.parent.mkdir(parents=True, exist_ok=True)
 
-    # Atomic write via sibling tempfile + os.replace (review pass 2,
-    # C2-3). A TOCTOU race between the ``target.exists()`` check and
-    # the rename is still possible under concurrent ``clauditor
-    # badge`` runs, but the artifact is regenerable and the consequence
-    # is a lost update — not data corruption.
-    tmp_target = target.with_name(f".{target.name}.tmp")
     try:
-        # ``ensure_ascii=False`` writes the UTF-8 middle-dot glyph in
-        # the message verbatim (review pass 3, C3-4) so the on-disk
-        # bytes match the sample JSON in ``docs/badges.md``. Shields.io
-        # decodes either form fine.
-        tmp_target.write_text(
-            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
+        _atomic_write_json(target, badge.to_endpoint_json())
+        _atomic_write_json(
+            extension_target, badge.to_clauditor_extension_json()
         )
-        os.replace(tmp_target, target)
     except OSError as exc:
-        # Best-effort cleanup of the tmp file; ignore if already gone.
-        try:
-            tmp_target.unlink()
-        except OSError:
-            pass
         print(
-            f"ERROR: could not write {target}: {exc}",
+            f"ERROR: could not write badge sidecars: {exc}",
             file=sys.stderr,
         )
         return 1
@@ -381,7 +416,7 @@ def _write_badge_json(
             else "(no iteration)"
         )
         print(
-            f"clauditor.badge: wrote {target} {tail}",
+            f"clauditor.badge: wrote {target} + {extension_target.name} {tail}",
             file=sys.stderr,
         )
     return 0
@@ -686,9 +721,9 @@ def cmd_badge(args: argparse.Namespace) -> int:
             "lightgrey 'no data' badge"
         )
 
-    return _write_badge_json(
+    return _write_badge_sidecars(
         target_path,
-        badge.to_endpoint_json(),
+        badge,
         force=args.force,
         iteration=iteration_n,
         verbose=args.verbose,
@@ -709,8 +744,9 @@ def _handle_no_iteration(
     When ``--url-only`` is set, just render the Markdown image line
     (no JSON write). Otherwise compose the lightgrey Badge, emit the
     DEC-021 placeholder warning, and route the write through
-    :func:`_write_badge_json` (which still respects DEC-011 ``--force``
-    — the placeholder does NOT clobber a "real" badge silently).
+    :func:`_write_badge_sidecars` (which still respects DEC-011
+    ``--force`` — the placeholder does NOT clobber a "real" badge
+    silently).
     """
     if args.url_only:
         # --url-only doesn't depend on sidecar state — render and go.
@@ -733,9 +769,9 @@ def _handle_no_iteration(
     # The "wrote lightgrey placeholder" stderr line is deferred to
     # post-write so a collision-without-force exit 1 doesn't leave a
     # false trail (review pass 2, N2-4).
-    return _write_badge_json(
+    return _write_badge_sidecars(
         target_path,
-        badge.to_endpoint_json(),
+        badge,
         force=args.force,
         iteration=None,
         verbose=args.verbose,
