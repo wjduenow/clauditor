@@ -320,21 +320,59 @@ class TestCmdBadgeExplicitIterationMissing:
     def test_non_integer_from_iteration_exits_2(
         self, tmp_path: Path, monkeypatch, capsys
     ) -> None:
+        """``--from-iteration abc`` fails argparse ``_positive_int`` validation.
+
+        argparse raises ``SystemExit(2)`` directly with its own error
+        format; the SkillSpec load never happens (review pass 1, B-2
+        — validate before paying the load cost).
+        """
         skill_md = _write_skill(tmp_path)
         monkeypatch.chdir(tmp_path)
-        rc = main(["badge", str(skill_md), "--from-iteration", "abc"])
-        assert rc == 2
+        with pytest.raises(SystemExit) as excinfo:
+            main(["badge", str(skill_md), "--from-iteration", "abc"])
+        assert excinfo.value.code == 2
 
         err = capsys.readouterr().err
-        assert "--from-iteration must be a positive integer" in err
+        # argparse's own error message references the flag and the value.
+        assert "--from-iteration" in err
+        assert "'abc'" in err
 
     def test_zero_from_iteration_exits_2(
         self, tmp_path: Path, monkeypatch, capsys
     ) -> None:
+        """``--from-iteration 0`` also rejected by ``_positive_int``."""
         skill_md = _write_skill(tmp_path)
         monkeypatch.chdir(tmp_path)
-        rc = main(["badge", str(skill_md), "--from-iteration", "0"])
-        assert rc == 2
+        with pytest.raises(SystemExit) as excinfo:
+            main(["badge", str(skill_md), "--from-iteration", "0"])
+        assert excinfo.value.code == 2
+
+        err = capsys.readouterr().err
+        assert "--from-iteration" in err
+        assert "must be >= 1" in err
+
+    def test_url_only_with_missing_explicit_iteration_exits_1(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """Precedence anchor: DEC-016 wins over ``--url-only`` (review pass
+        2, N2-2). An explicit ``--from-iteration N`` that does not exist
+        is an input error even in URL-only mode — the user asked for a
+        specific iteration and should be told it isn't there.
+        """
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        rc = main(
+            [
+                "badge",
+                str(skill_md),
+                "--url-only",
+                "--from-iteration",
+                "9999",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "iteration 9999 not found" in err
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +571,8 @@ class TestCmdBadgeStyleValidation:
             (tmp_path / ".clauditor" / "badges" / "demo.json").read_text()
         )
         assert data["style"] == "flat"
-        assert data["cacheSeconds"] == "300"
+        # cacheSeconds is int-coerced per review pass 3, C3-1.
+        assert data["cacheSeconds"] == 300
 
     def test_control_char_rejects_exit_2(
         self, tmp_path: Path, monkeypatch, capsys
@@ -560,6 +599,142 @@ class TestCmdBadgeStyleValidation:
         assert rc == 2
         err = capsys.readouterr().err
         assert "length 600" in err
+
+    def test_value_with_embedded_equals(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """``--style link=https://foo.com?x=y`` — value containing ``=``.
+
+        The ``split("=", 1)`` handling must preserve the second ``=``
+        in the value verbatim (review pass 2, N2-1).
+        """
+        skill_md = _write_skill(tmp_path)
+        _setup_iteration(tmp_path, 1)
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(
+            [
+                "badge",
+                str(skill_md),
+                "--style",
+                "link=https://foo.com?x=y",
+            ]
+        )
+        assert rc == 0
+        data = json.loads(
+            (tmp_path / ".clauditor" / "badges" / "demo.json").read_text()
+        )
+        assert data["link"] == "https://foo.com?x=y"
+
+    def test_cache_seconds_coerced_to_int(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Review pass 3, C3-1: ``cacheSeconds`` is typed int per shields.io."""
+        skill_md = _write_skill(tmp_path)
+        _setup_iteration(tmp_path, 1)
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(
+            [
+                "badge",
+                str(skill_md),
+                "--style",
+                "cacheSeconds=300",
+            ]
+        )
+        assert rc == 0
+        data = json.loads(
+            (tmp_path / ".clauditor" / "badges" / "demo.json").read_text()
+        )
+        # Native int in the JSON, not string "300".
+        assert data["cacheSeconds"] == 300
+        assert isinstance(data["cacheSeconds"], int)
+
+    def test_non_numeric_cache_seconds_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """Non-integer value for an int-typed style key rejects at parse."""
+        skill_md = _write_skill(tmp_path)
+        _setup_iteration(tmp_path, 1)
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(
+            [
+                "badge",
+                str(skill_md),
+                "--style",
+                "cacheSeconds=abc",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "cacheSeconds" in err
+        assert "integer" in err
+
+
+# ---------------------------------------------------------------------------
+# --label validation (review pass 1, B-3).
+# ---------------------------------------------------------------------------
+
+
+class TestCmdBadgeLabelValidation:
+    """Reject --label values that break Markdown ``![alt](url)`` syntax."""
+
+    @pytest.mark.parametrize(
+        "bad_label",
+        [
+            "broken[label",
+            "broken]label",
+            "broken(label",
+            "broken)label",
+            "multi\nline",
+            "carriage\rreturn",
+        ],
+    )
+    def test_label_with_markdown_breaking_chars_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys, bad_label: str
+    ) -> None:
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        rc = main(["badge", str(skill_md), "--label", bad_label])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--label" in err
+
+    def test_overlong_label_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        rc = main(["badge", str(skill_md), "--label", "x" * 600])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "--label is too long" in err
+
+    @pytest.mark.parametrize("empty_label", ["", "   ", "\t"])
+    def test_empty_label_exits_2(
+        self, tmp_path: Path, monkeypatch, capsys, empty_label: str
+    ) -> None:
+        """Review pass 3, N3-2: empty/whitespace labels rejected.
+
+        Accessibility-hostile ``![](url)`` output is not what users
+        intended when they pass ``--label ""``.
+        """
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        rc = main(["badge", str(skill_md), "--label", empty_label])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "must not be empty" in err
+
+    def test_label_with_spaces_and_unicode_accepted(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        skill_md = _write_skill(tmp_path)
+        _setup_iteration(tmp_path, 1)
+        monkeypatch.chdir(tmp_path)
+        rc = main(["badge", str(skill_md), "--label", "My Skill — ✓"])
+        assert rc == 0
 
 
 # ---------------------------------------------------------------------------
@@ -617,11 +792,10 @@ class TestCmdBadgeUrlOnly:
             rc = main(["badge", str(skill_md), "--url-only"])
 
         assert rc == 0
-        out = capsys.readouterr().out
-        assert "myorg/myrepo/master" in out
+        captured = capsys.readouterr()
+        assert "myorg/myrepo/master" in captured.out
         # No placeholder warning when auto-detect succeeds.
-        err = capsys.readouterr().err
-        assert "placeholder" not in err
+        assert "placeholder" not in captured.err
 
     def test_auto_detect_slug_missing_uses_placeholder(
         self, tmp_path: Path, monkeypatch, capsys
@@ -795,6 +969,47 @@ class TestCmdBadgeZeroL1Assertions:
         assert data["color"] == "lightgrey"
         assert data["message"] == "no data"
 
+    def test_zero_assertions_with_url_only_does_not_mention_write(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """Review pass 1, B-1: the DEC-007 "wrote lightgrey badge" warning
+        must NOT fire under ``--url-only`` (which prints a Markdown line
+        and does not write JSON). Otherwise stderr claims a write that
+        never happened.
+        """
+        skill_md = _write_skill(tmp_path)
+        iter_skill_dir = (
+            tmp_path / ".clauditor" / "iteration-1" / "demo"
+        )
+        iter_skill_dir.mkdir(parents=True)
+        (iter_skill_dir / "assertions.json").write_text(
+            json.dumps({"input_tokens": 0, "output_tokens": 0, "results": []})
+        )
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(
+            [
+                "badge",
+                str(skill_md),
+                "--url-only",
+                "--repo",
+                "u/r",
+                "--branch",
+                "main",
+            ]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        # Markdown line printed to stdout.
+        assert "img.shields.io/endpoint" in captured.out
+        # No "wrote lightgrey" claim on stderr.
+        assert "wrote lightgrey" not in captured.err
+        assert "0 L1 assertions" not in captured.err
+        # JSON file NOT created.
+        assert not (
+            tmp_path / ".clauditor" / "badges" / "demo.json"
+        ).exists()
+
 
 # ---------------------------------------------------------------------------
 # Disk-write error path (exit 1).
@@ -824,6 +1039,42 @@ class TestCmdBadgeDiskWriteError:
         err = capsys.readouterr().err
         assert "could not write" in err
         assert "disk full" in err
+
+    def test_atomic_write_preserves_existing_on_failure(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """Review pass 2, C2-3: failed write must NOT truncate existing badge.
+
+        The atomic tmp+rename pattern guarantees that a mid-write
+        OSError (disk full, EIO) leaves the existing target untouched.
+        A naive ``Path.write_text`` on the target would truncate it
+        at open-time and the failure would leave an empty file.
+        """
+        skill_md = _write_skill(tmp_path)
+        _setup_iteration(tmp_path, 1)
+        monkeypatch.chdir(tmp_path)
+
+        # Seed an existing badge file with known content.
+        target = tmp_path / ".clauditor" / "badges" / "demo.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        original = '{"schemaVersion": 1, "message": "prior good badge"}\n'
+        target.write_text(original)
+
+        from unittest.mock import MagicMock
+
+        # Patch Path.write_text to fail — this fires on the tmp
+        # sibling, not on the target itself.
+        with patch(
+            "clauditor.cli.badge.Path.write_text",
+            MagicMock(side_effect=OSError("disk full")),
+        ):
+            rc = main(["badge", str(skill_md), "--force"])
+
+        assert rc == 1
+        # Target is still the original — NOT truncated to empty.
+        assert target.read_text() == original
+        # And no stray .tmp file left behind.
+        assert not list(target.parent.glob(".*.tmp"))
 
 
 # ---------------------------------------------------------------------------

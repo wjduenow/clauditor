@@ -928,6 +928,22 @@ class TestDiscoverIteration:
         (tmp_path / ".clauditor" / "badges").mkdir()  # unrelated subdir
         assert discover_iteration(tmp_path, "demo", None) is None
 
+    def test_explicit_zero_returns_none(self, tmp_path):
+        """``explicit=0`` rejected defensively (review pass 1, C-3).
+
+        Iteration numbers start at 1; a direct in-process caller that
+        bypasses argparse ``_positive_int`` validation should not be
+        able to coerce this helper into returning a "missing" signal
+        for a malformed request.
+        """
+        _mk_iteration(tmp_path, 1, "demo")
+        assert discover_iteration(tmp_path, "demo", 0) is None
+
+    def test_explicit_negative_returns_none(self, tmp_path):
+        """Same defensive guard for negative iteration numbers."""
+        _mk_iteration(tmp_path, 1, "demo")
+        assert discover_iteration(tmp_path, "demo", -1) is None
+
 
 class TestLoadIterationSidecars:
     """Tests for :func:`clauditor.badge.load_iteration_sidecars`."""

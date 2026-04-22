@@ -177,8 +177,8 @@ The command is a **read-only aggregator** — it does NOT run the skill and does
 | `--force` | off | Overwrite an existing badge JSON file. Without it, a collision exits 1 (DEC-011). The DEC-001 lightgrey placeholder write honors `--force` too — it does not silently clobber a "real" badge. |
 | `--repo USER/REPO` | git auto-detect | Override the origin-slug auto-detect used by `--url-only` (DEC-002). Falls back to the literal placeholder `USER/REPO` with a stderr warning when auto-detect fails and no override is supplied. |
 | `--branch NAME` | git auto-detect | Override the default-branch auto-detect used by `--url-only` (DEC-002). Falls back to `main` with a stderr warning when auto-detect fails. |
-| `--label TEXT` | `"clauditor"` | Shields.io badge label text (the left side of the rendered SVG). |
-| `--style KEY=VALUE` | none | Shields.io style passthrough; repeatable. Whitelist: `style`, `logoSvg`, `logoColor`, `labelColor`, `cacheSeconds`, `link` (DEC-015). Unknown keys emit a stderr warning but still land in the JSON (shields.io silently ignores what it does not know). Values are rejected on control characters or length >512 (DEC-023). |
+| `--label TEXT` | `"clauditor"` | Shields.io badge label text (the left side of the rendered SVG). Rejects `[`, `]`, `(`, `)`, and newlines (would break the Markdown `![alt](url)` syntax) and empty/whitespace values with exit 2. |
+| `--style KEY=VALUE` | none | Shields.io style passthrough; repeatable. Whitelist: `style`, `logoSvg`, `logoColor`, `labelColor`, `cacheSeconds`, `link` (DEC-015). Unknown keys emit a stderr warning but still land in the JSON (shields.io silently ignores what it does not know). Values are rejected on control characters or length >512 (DEC-023). `cacheSeconds` is coerced to `int`; non-numeric input exits 2. |
 | `-v, --verbose` | off | On success, print a stderr info line naming the written path and iteration (`clauditor.badge: wrote <path> (iteration N)`) per DEC-018. |
 
 ### Examples

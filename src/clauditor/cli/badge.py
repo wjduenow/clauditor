@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -40,6 +41,7 @@ from clauditor.badge import (
     discover_iteration,
     load_iteration_sidecars,
 )
+from clauditor.cli import _positive_int
 from clauditor.spec import SkillSpec
 
 # ---------------------------------------------------------------------------
@@ -55,10 +57,24 @@ _ALLOWED_STYLE_KEYS: frozenset[str] = frozenset(
     {"style", "logoSvg", "logoColor", "labelColor", "cacheSeconds", "link"}
 )
 
+# Shields.io style keys whose values are typed as integers in the
+# endpoint schema (review pass 3, C3-1). A string-typed value in
+# these slots is not guaranteed to be honored by shields.io; the
+# CLI coerces to ``int`` at serialization and rejects non-numeric
+# input with exit 2.
+_INT_STYLE_KEYS: frozenset[str] = frozenset({"cacheSeconds"})
+
 # Upper bound on a ``--style`` value (DEC-023). 512 chars is generous
 # for any reasonable shields.io field (even inline SVG data URLs stay
 # well under that when they show up in practice).
 _STYLE_VALUE_MAX_LEN: int = 512
+
+# Characters that break Markdown ``![alt](url)`` syntax when interpolated
+# into the alt-text slot. Rejected at the CLI layer so users get exit 2
+# instead of a silently-broken badge line (review pass 1, B-3).
+_LABEL_FORBIDDEN_CHARS: frozenset[str] = frozenset(
+    {"[", "]", "(", ")", "\n", "\r"}
+)
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -76,6 +92,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--from-iteration",
+        type=_positive_int,
         default=None,
         metavar="N",
         help=(
@@ -200,6 +217,41 @@ def _validate_style_value(key: str, value: str) -> None:
         )
 
 
+def _validate_label(label: str) -> None:
+    """Reject label values that would break Markdown ``![label](...)`` syntax.
+
+    Raises :class:`ValueError` for:
+
+    - ``[``, ``]``, ``(``, ``)``, or newline characters: these are
+      structural Markdown chars that, if interpolated verbatim into
+      the alt-text slot, close it early or break the URL portion.
+    - Empty or whitespace-only labels: ``![]`` renders accessibility-
+      hostile empty alt-text (review pass 3, N3-2). Non-default labels
+      are the common case for distinguishing skills in a catalog, so
+      an explicit rejection is cheaper than a silent degradation.
+    - Values longer than :data:`_STYLE_VALUE_MAX_LEN` — same cap as
+      ``--style`` passthrough values for belt-and-suspenders.
+    """
+    if not label.strip():
+        raise ValueError("--label must not be empty or whitespace-only")
+    for ch in label:
+        if ch in _LABEL_FORBIDDEN_CHARS:
+            # Name the offending char + show a truncated preview so
+            # the user can locate the problem quickly when the label
+            # is pasted from elsewhere (review pass 2, C2-1).
+            preview = label if len(label) <= 60 else label[:57] + "..."
+            raise ValueError(
+                f"--label contains forbidden char {ch!r} (Markdown "
+                f"alt-text syntax — '[', ']', '(', ')', or newline): "
+                f"{preview!r}"
+            )
+    if len(label) > _STYLE_VALUE_MAX_LEN:
+        raise ValueError(
+            f"--label is too long ({len(label)} chars, max "
+            f"{_STYLE_VALUE_MAX_LEN})"
+        )
+
+
 def _now_iso_z() -> str:
     """Return the current UTC time in the DEC-012 ``Z``-suffix form.
 
@@ -231,6 +283,8 @@ def _list_available_iterations(project_dir: Path, skill_name: str) -> list[int]:
             n = int(suffix)
         except ValueError:
             continue
+        if n < 1:
+            continue  # iteration-0 / iteration--1 shapes don't count
         if (child / skill_name).is_dir():
             found.append(n)
     return sorted(found)
@@ -243,20 +297,27 @@ def _write_badge_json(
     force: bool,
     iteration: int | None,
     verbose: bool,
+    post_write_warning: str | None = None,
 ) -> int:
-    """Write the badge JSON payload to ``target``.
+    """Write the badge JSON payload to ``target`` atomically.
 
-    Handles the DEC-011 overwrite-policy check: if ``target`` exists
-    and ``force`` is ``False``, print the error to stderr and return
-    exit 1 without writing. On a successful write, optionally prints
-    the DEC-018 stderr info line when ``verbose=True``.
+    DEC-011 overwrite policy: if ``target`` exists and ``force`` is
+    ``False``, print the error and return exit 1 without writing.
+
+    Atomic publication (review pass 2, C2-3): writes to a sibling
+    temp file first, then :func:`os.replace` publishes it into
+    place. A mid-write failure (disk full, EIO) leaves the existing
+    target untouched rather than truncating it to empty.
+
+    ``post_write_warning`` — optional stderr line printed AFTER a
+    successful write (review pass 2, N2-4). A write-claim message
+    like "wrote lightgrey placeholder" is gated on actual success,
+    not pre-write intent, so collisions or disk errors don't leave
+    a misleading stderr trail.
 
     ``iteration=None`` renders the verbose line with a
     ``(no iteration)`` fragment to signal the DEC-001 lightgrey
     placeholder path; otherwise ``(iteration N)``.
-
-    Returns the exit code the caller should surface (0 on success,
-    1 on collision).
     """
     if target.exists() and not force:
         print(
@@ -271,17 +332,36 @@ def _write_badge_json(
     # should not error.
     target.parent.mkdir(parents=True, exist_ok=True)
 
+    # Atomic write via sibling tempfile + os.replace (review pass 2,
+    # C2-3). A TOCTOU race between the ``target.exists()`` check and
+    # the rename is still possible under concurrent ``clauditor
+    # badge`` runs, but the artifact is regenerable and the consequence
+    # is a lost update — not data corruption.
+    tmp_target = target.with_name(f".{target.name}.tmp")
     try:
-        target.write_text(
-            json.dumps(payload, indent=2) + "\n",
+        # ``ensure_ascii=False`` writes the UTF-8 middle-dot glyph in
+        # the message verbatim (review pass 3, C3-4) so the on-disk
+        # bytes match the sample JSON in ``docs/badges.md``. Shields.io
+        # decodes either form fine.
+        tmp_target.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
         )
+        os.replace(tmp_target, target)
     except OSError as exc:
+        # Best-effort cleanup of the tmp file; ignore if already gone.
+        try:
+            tmp_target.unlink()
+        except OSError:
+            pass
         print(
             f"ERROR: could not write {target}: {exc}",
             file=sys.stderr,
         )
         return 1
+
+    if post_write_warning is not None:
+        print(post_write_warning, file=sys.stderr)
 
     if verbose:
         tail = (
@@ -392,9 +472,18 @@ def cmd_badge(args: argparse.Namespace) -> int:
         )
         return 2
 
+    # Label validation (review pass 1, B-3). Reject chars that break
+    # Markdown ``![label](url)`` syntax up-front so a user typo does
+    # not produce a silently-broken badge line.
+    try:
+        _validate_label(args.label)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
     # Parse --style flags up-front (DEC-015 / DEC-023). A bad value
     # here blocks before any sidecar read / disk write.
-    style_overrides: dict[str, str] = {}
+    style_overrides: dict[str, str | int] = {}
     for raw in args.style or []:
         try:
             key, value = _parse_style_arg(raw)
@@ -412,7 +501,21 @@ def cmd_badge(args: argparse.Namespace) -> int:
                 "passing through anyway",
                 file=sys.stderr,
             )
-        style_overrides[key] = value
+        # Coerce integer-typed style keys (review pass 3, C3-1).
+        # Shields.io's endpoint schema types ``cacheSeconds`` as int;
+        # a string slot is not guaranteed to be honored.
+        if key in _INT_STYLE_KEYS:
+            try:
+                style_overrides[key] = int(value)
+            except ValueError:
+                print(
+                    f"ERROR: --style {key} must be an integer, got "
+                    f"{value!r}",
+                    file=sys.stderr,
+                )
+                return 2
+        else:
+            style_overrides[key] = value
 
     # Skill spec load. Any load error is a pre-call input error → 2.
     skill_path = Path(args.skill)
@@ -440,22 +543,10 @@ def cmd_badge(args: argparse.Namespace) -> int:
     skill_name = spec.skill_name
     project_dir = Path.cwd()
 
-    # Parse --from-iteration to int here so validation errors surface
-    # before any disk walk. argparse takes the raw string to give the
-    # error message a clean shape.
-    explicit_iter: int | None = None
-    if args.from_iteration is not None:
-        try:
-            explicit_iter = int(args.from_iteration)
-            if explicit_iter < 1:
-                raise ValueError("must be >= 1")
-        except ValueError as exc:
-            print(
-                f"ERROR: --from-iteration must be a positive integer, "
-                f"got {args.from_iteration!r}: {exc}",
-                file=sys.stderr,
-            )
-            return 2
+    # argparse ``type=_positive_int`` already rejected non-int / <=0
+    # --from-iteration values with exit 2 before we got here (pass 1
+    # review B-2 — move validation ahead of the SKILL.md load cost).
+    explicit_iter: int | None = args.from_iteration
 
     # Resolve the output path target. DEC-005 accepts absolute paths;
     # DEC-022 validates parent-dir existence when the user supplied
@@ -526,7 +617,17 @@ def cmd_badge(args: argparse.Namespace) -> int:
         )
         return 1
 
-    # Code path 4 — happy path. Compute and dispatch on --url-only.
+    # Code path 4 — happy path. Short-circuit --url-only BEFORE
+    # compute_badge (review pass 2, C2-4) — the Markdown image URL
+    # does not depend on sidecar data, so computing a Badge we'll
+    # discard is wasted work.
+    if args.url_only:
+        return _render_url_only(
+            args=args,
+            project_dir=project_dir,
+            skill_name=skill_name,
+        )
+
     badge = compute_badge(
         assertions=sidecars.assertions,
         grading=sidecars.grading,
@@ -540,19 +641,14 @@ def cmd_badge(args: argparse.Namespace) -> int:
 
     # DEC-021 sibling to DEC-001: if the badge came out lightgrey with
     # an iteration loaded, the L1 spec has zero assertions (DEC-007).
-    # Warn so users notice the spec is under-specified.
+    # The warning is deferred to post-write so a collision-without-
+    # --force exit 1 does not leave a false "wrote ..." trail on
+    # stderr (review pass 2, N2-4).
+    post_write_warning: str | None = None
     if badge.color == "lightgrey":
-        print(
+        post_write_warning = (
             "warning: eval spec declares 0 L1 assertions — wrote "
-            "lightgrey 'no data' badge",
-            file=sys.stderr,
-        )
-
-    if args.url_only:
-        return _render_url_only(
-            args=args,
-            project_dir=project_dir,
-            skill_name=skill_name,
+            "lightgrey 'no data' badge"
         )
 
     return _write_badge_json(
@@ -561,6 +657,7 @@ def cmd_badge(args: argparse.Namespace) -> int:
         force=args.force,
         iteration=iteration_n,
         verbose=args.verbose,
+        post_write_warning=post_write_warning,
     )
 
 
@@ -569,7 +666,7 @@ def _handle_no_iteration(
     target_path: Path,
     skill_name: str,
     args: argparse.Namespace,
-    style_overrides: dict[str, str],
+    style_overrides: dict[str, str | int],
     project_dir: Path,
 ) -> int:
     """DEC-001: no iteration → lightgrey placeholder + exit 0.
@@ -598,17 +695,20 @@ def _handle_no_iteration(
         label=args.label,
         style_overrides=style_overrides,
     )
-    print(
-        f"warning: no iteration found for skill {skill_name} — "
-        "wrote lightgrey placeholder (run 'clauditor grade' to populate)",
-        file=sys.stderr,
-    )
+    # The "wrote lightgrey placeholder" stderr line is deferred to
+    # post-write so a collision-without-force exit 1 doesn't leave a
+    # false trail (review pass 2, N2-4).
     return _write_badge_json(
         target_path,
         badge.to_endpoint_json(),
         force=args.force,
         iteration=None,
         verbose=args.verbose,
+        post_write_warning=(
+            f"warning: no iteration found for skill {skill_name} — "
+            "wrote lightgrey placeholder (run 'clauditor grade' to "
+            "populate)"
+        ),
     )
 
 

@@ -56,6 +56,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`clauditor badge` — shields.io endpoint JSON for skill quality (#77).**
+  A non-LLM aggregator that reads the latest (or `--from-iteration N`)
+  iteration sidecars and produces a shields.io-compatible JSON file
+  pasted into a README as a one-line Markdown image. Badge JSON carries
+  a top-level `schemaVersion: 1` (shields.io's contract) and a nested
+  `clauditor.schema_version: 1` extension block (our internal version,
+  per `.claude/rules/json-schema-version.md`).
+  - Positional `<skill-path>` loads via `SkillSpec.from_file` (derives
+    `skill_name` from frontmatter, per
+    `.claude/rules/skill-identity-from-frontmatter.md`).
+  - Default output `.clauditor/badges/<skill>.json`; `--output PATH`
+    accepts absolute paths, `--force` required to overwrite.
+  - `--url-only` prints the Markdown image line to stdout with
+    `git remote get-url origin` + default-branch auto-detection;
+    `--repo USER/REPO [--branch NAME]` overrides; `USER/REPO/main`
+    placeholder with a stderr warning when detection fails.
+  - Color logic: `brightgreen` (L1 all-pass + L3 met or absent),
+    `yellow` (L1 all-pass + L3 below thresholds), `red` (any L1 fail
+    OR L3 all parse-failed), `lightgrey` (no iteration yet OR spec
+    declares zero L1 assertions — both write a "no data" placeholder
+    and exit 0 so CI pipelines have a persistent badge).
+  - `--style KEY=VALUE` (repeatable) passes shields.io fields through:
+    `style`, `logoSvg`, `logoColor`, `labelColor`, `cacheSeconds`,
+    `link`. Unknown keys warn but still emit (shields.io ignores).
+  - Exit codes 0 / 1 / 2 per
+    `.claude/rules/llm-cli-exit-code-taxonomy.md` (non-LLM branch):
+    0 success, 1 runtime failure (corrupt iteration, collision without
+    `--force`, explicit-missing iteration), 2 input validation (mutual
+    exclusion, bad `--output` parent, bad `--style`, bad `--label`).
+  - Pure compute lives in `src/clauditor/badge.py` per
+    `.claude/rules/pure-compute-vs-io-split.md`; CLI I/O lives in
+    `src/clauditor/cli/badge.py`; git metadata wrapper in
+    `src/clauditor/_git.py`.
+  - See [`docs/badges.md`](docs/badges.md) for the full placement
+    guide (README primary, catalog-page secondary, SKILL.md body
+    tradeoff) and the CI embedding recipe.
+
 - **`clauditor lint` — agentskills.io spec conformance check (#71).** A
   non-LLM static check that validates a `SKILL.md` file against the
   [agentskills.io specification](https://agentskills.io/specification).

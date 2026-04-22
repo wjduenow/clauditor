@@ -34,11 +34,13 @@ __all__ = ["get_default_branch", "get_repo_slug"]
 # that a wedged subprocess cannot stall the badge command.
 _GIT_TIMEOUT_SECONDS = 10
 
-# SSH-style URL: git@host:path/to/repo[.git]
-_SSH_URL_RE = re.compile(r"^[^@]+@[^:]+:(?P<slug>.+?)(?:\.git)?$")
+# SSH-style URL: [ssh://]git@host[:port]:path/to/repo[.git]  (scp-like)
+_SSH_URL_RE = re.compile(r"^[^@]+@[^:]+:(?P<slug>.+?)(?:\.git)?/?$")
 
-# HTTPS/HTTP URL: scheme://host/path/to/repo[.git]
-_HTTP_URL_RE = re.compile(r"^https?://[^/]+/(?P<slug>.+?)(?:\.git)?$")
+# HTTPS/HTTP/SSH URL: scheme://[user@]host[:port]/path/to/repo[.git]
+_URL_RE = re.compile(
+    r"^(?:https?|ssh|git)://[^/]+/(?P<slug>.+?)(?:\.git)?/?$"
+)
 
 
 def _parse_remote_url(url: str) -> str | None:
@@ -48,19 +50,29 @@ def _parse_remote_url(url: str) -> str | None:
 
     - ``https://host/path/to/repo[.git]`` (HTTPS, any host, nested
       group paths like gitlab's ``group/sub/repo``).
-    - ``git@host:path/to/repo[.git]`` (SSH).
+    - ``ssh://[user@]host/path/to/repo[.git]`` (explicit SSH scheme).
+    - ``git@host:path/to/repo[.git]`` (scp-like SSH).
+    - Trailing slash after the path is stripped before matching.
 
-    Returns ``None`` for unrecognized shapes.
+    Returns ``None`` for:
+
+    - Unrecognized URL shapes.
+    - Single-path-component slugs like ``USER`` alone (review pass 3,
+      C3-2 — a valid GitHub/GitLab slug has at least one ``/`` between
+      owner and repo).
     """
     url = url.strip()
     if not url:
         return None
 
-    for pattern in (_HTTP_URL_RE, _SSH_URL_RE):
+    for pattern in (_URL_RE, _SSH_URL_RE):
         match = pattern.match(url)
         if match is not None:
             slug = match.group("slug").strip("/")
-            if slug:
+            # A valid slug carries at least one ``/`` (owner/repo or
+            # group/.../repo). Single-component slugs produce broken
+            # shields.io URLs.
+            if slug and "/" in slug:
                 return slug
 
     return None

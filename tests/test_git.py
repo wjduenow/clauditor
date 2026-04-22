@@ -38,6 +38,13 @@ class TestGetRepoSlug:
             ("https://gitlab.com/group/sub/REPO", "group/sub/REPO"),
             ("git@gitlab.com:group/sub/REPO.git", "group/sub/REPO"),
             ("https://bitbucket.org/USER/REPO.git", "USER/REPO"),
+            # Review pass 3, C3-2: trailing slash survives .git strip.
+            ("https://github.com/USER/REPO.git/", "USER/REPO"),
+            ("https://github.com/USER/REPO/", "USER/REPO"),
+            # Explicit ssh:// scheme — docstring says SSH broadly.
+            ("ssh://git@github.com/USER/REPO.git", "USER/REPO"),
+            ("ssh://git@github.com/USER/REPO", "USER/REPO"),
+            ("git://github.com/USER/REPO", "USER/REPO"),
         ],
     )
     def test_parses_url_shapes(self, url: str, expected: str, tmp_path: Path) -> None:
@@ -46,6 +53,25 @@ class TestGetRepoSlug:
             return_value=_completed(stdout=f"{url}\n"),
         ):
             assert get_repo_slug(tmp_path) == expected
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            # Review pass 3, C3-2: single-component slugs are rejected.
+            "https://github.com/USER",
+            "https://github.com/USER/",
+            "git@github.com:USER",
+        ],
+    )
+    def test_rejects_single_component_slugs(
+        self, url: str, tmp_path: Path
+    ) -> None:
+        """A slug without a ``/`` cannot form a valid raw-content URL."""
+        with patch(
+            "clauditor._git.subprocess.run",
+            return_value=_completed(stdout=f"{url}\n"),
+        ):
+            assert get_repo_slug(tmp_path) is None
 
     def test_returns_none_when_git_not_installed(self, tmp_path: Path) -> None:
         with patch(

@@ -196,7 +196,10 @@ class Badge:
     message: str
     color: str
     clauditor: ClauditorExtension
-    style_overrides: dict[str, str] = field(default_factory=dict)
+    # Values are ``str | int`` because shields.io types some style
+    # keys (``cacheSeconds``) as integers per their endpoint schema;
+    # the CLI layer coerces those at parse time (review pass 3, C3-1).
+    style_overrides: dict[str, str | int] = field(default_factory=dict)
     schema_version: int = _SHIELDS_SCHEMA_VERSION
 
     def to_endpoint_json(self) -> dict[str, Any]:
@@ -528,7 +531,7 @@ def compute_badge(
     iteration: int | None,
     generated_at: str,
     label: str = "clauditor",
-    style_overrides: dict[str, str] | None = None,
+    style_overrides: dict[str, str | int] | None = None,
 ) -> Badge:
     """Aggregate per-iteration sidecars into a :class:`Badge`.
 
@@ -675,12 +678,24 @@ def discover_iteration(
     """
     clauditor_dir = project_dir / ".clauditor"
     if explicit is not None:
+        if explicit < 1:
+            # Iteration numbers start at 1 (see ``workspace.py``).
+            # An in-process caller that bypasses argparse validation
+            # should not be able to coerce this helper into a
+            # "missing" signal for what is actually a malformed
+            # request (review pass 1, C-3).
+            return None
         target = clauditor_dir / f"iteration-{explicit}" / skill_name
         if target.is_dir():
             return explicit, target
         return None
 
     for iter_num, iter_dir in _scan_iteration_dirs(clauditor_dir):
+        # Mirror the explicit<1 defensive guard (review pass 3, N3-3)
+        # — ``iteration-0`` or any ``iteration--N`` dir is not a valid
+        # iteration per ``workspace.py`` invariants.
+        if iter_num < 1:
+            continue
         skill_dir = iter_dir / skill_name
         if skill_dir.is_dir():
             return iter_num, skill_dir
