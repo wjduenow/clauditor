@@ -22,8 +22,7 @@ file from a live run:
 
 ```bash
 # Requires ANTHROPIC_API_KEY and the claude CLI installed.
-uv run clauditor capture \
-  src/clauditor/skills/review-agentskills-spec/SKILL.md
+uv run clauditor capture review-agentskills-spec
 
 # clauditor capture writes the transcript under
 # .clauditor/captures/<skill>.txt — copy it over this fixture:

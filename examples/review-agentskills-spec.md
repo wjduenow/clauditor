@@ -2,8 +2,9 @@
 
 A worked reference for testing a Claude Code skill in CI: a captured
 replay (always-on, deterministic, free) paired with a gated live run
-(opt-in canary, spends tokens). The bundled `review-agentskills-spec`
-skill is the example subject.
+(opt-in canary, spends tokens). The maintainer-only
+`review-agentskills-spec` skill (lives at repo-root `.claude/skills/`,
+not shipped in the installed wheel) is the example subject.
 
 > **Internal-only skill.** `review-agentskills-spec` is a maintainer
 > tool (it audits the upstream agentskills.io spec against clauditor's
@@ -15,8 +16,8 @@ skill is the example subject.
 
 | Path | Purpose |
 | --- | --- |
-| `src/clauditor/skills/review-agentskills-spec/SKILL.md` | The skill (frontmatter + workflow). |
-| `src/clauditor/skills/review-agentskills-spec/assets/review-agentskills-spec.eval.json` | Sibling eval spec: 5 L1 assertions + 3 L3 grading criteria. |
+| `.claude/skills/review-agentskills-spec/SKILL.md` | The skill (frontmatter + workflow). |
+| `.claude/skills/review-agentskills-spec/assets/review-agentskills-spec.eval.json` | Sibling eval spec: 5 L1 assertions + 3 L3 grading criteria. |
 | `tests/fixtures/review-agentskills-spec/captured-output.txt` | Captured representative skill output used by the replay test. |
 | `tests/fixtures/review-agentskills-spec/README.md` | Fixture provenance + refresh protocol. |
 | `tests/test_bundled_review_skill.py` | 16 tests across three layers (frontmatter contract, replay, live run). |
@@ -91,8 +92,7 @@ the fixture from a live capture:
 
 ```bash
 # Requires ANTHROPIC_API_KEY and the claude CLI installed.
-uv run clauditor capture \
-  src/clauditor/skills/review-agentskills-spec/SKILL.md
+uv run clauditor capture review-agentskills-spec
 
 cp .clauditor/captures/review-agentskills-spec.txt \
    tests/fixtures/review-agentskills-spec/captured-output.txt

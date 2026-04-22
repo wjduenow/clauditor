@@ -1,21 +1,23 @@
 # Rule: Live-runner tests for internal-only skills install via tmp_path symlink
 
-When a bundled skill is **intentionally excluded from `clauditor
-setup`** (because it is internal / maintainer-only) and you want a
-live-runner test that invokes `SkillRunner` against a real `claude`
-CLI, **set up a throwaway `.claude/skills/<name>/` symlink under
-`tmp_path` and pass that directory as `project_dir=` to the runner**.
-Do NOT install the skill into the real repo just to make the test work
-— that breaks the "internal-only" invariant the exclusion was created
-to protect.
+When a maintainer-only skill lives at repo-root `.claude/skills/`
+(not in the package, not installed by `clauditor setup`) and you
+want a live-runner test that invokes `SkillRunner` against a real
+`claude` CLI, **set up a throwaway `.claude/skills/<name>/` symlink
+under `tmp_path` and pass that directory as `project_dir=` to the
+runner**. Do NOT use the real repo's `.claude/` tree as the test's
+`project_dir` — test isolation is load-bearing; use `tmp_path` with
+a symlink to the skill source.
 
 ## The trap
 
 ```python
-# WRONG — assumes the skill is installed at .claude/skills/<name>/ in the
-# real project. For an internal-only skill, it isn't, so the claude CLI
-# resolves `/my-internal-skill` to "Unknown command" and the subprocess
-# returns exit 0 with an error in the result payload (not a crash).
+# WRONG — relies on cwd happening to be the repo root. Test
+# isolation requires tmp_path so the test passes regardless of
+# where pytest is invoked from. When cwd is outside the repo, the
+# claude CLI resolves `/my-internal-skill` to "Unknown command" and
+# the subprocess returns exit 0 with an error in the result payload
+# (not a crash).
 def test_live_run(self) -> None:
     runner = SkillRunner(project_dir=Path.cwd())
     result = runner.run("my-internal-skill")
@@ -42,7 +44,7 @@ def test_live_run(self, tmp_path: Path) -> None:
     project_dir = tmp_path / "project"
     (project_dir / ".claude" / "skills").mkdir(parents=True)
     (project_dir / ".git").mkdir()  # satisfy project-root detection
-    skill_root = SKILL_MD.parent  # src/clauditor/skills/<name>/
+    skill_root = SKILL_MD.parent  # .claude/skills/<name>/ (repo root)
     (project_dir / ".claude" / "skills" / "<name>").symlink_to(skill_root)
 
     # Bump the timeout — live LLM runs that do WebFetch or codebase
@@ -64,10 +66,9 @@ Three invariants the setup must preserve:
   `.claude/rules/project-root-home-exclusion.md`), but the marker is
   still required for the runner's project-root walk to accept the
   tmp dir.
-- **Symlink, not copy**: the symlink points at the bundled skill
-  dir in-place. A copy would diverge from the source if the test
-  edits either side, and would miss the packaging shape that the
-  real install uses.
+- **Symlink, not copy**: the symlink points at the skill source at
+  repo-root `.claude/skills/<name>/` in-place. A copy would diverge
+  from the source if the test edits either side.
 - **`project_dir=tmp_path/project`, not `cwd`**: every test gets
   its own isolated project dir. Never reuse `Path.cwd()` — the
   `claude` CLI inherits the cwd's `.claude/` tree, which
@@ -75,12 +76,13 @@ Three invariants the setup must preserve:
 
 ## Why this shape
 
-- **Respects the "internal-only" invariant.** The whole point of
-  excluding the skill from `clauditor setup` is to keep it off the
-  user's surface (no slash command, no docs, no list helper). If the
-  test installs it into the real repo to make the runner happy, the
-  invariant is violated every time the test runs. `tmp_path` keeps
-  the install scoped to the test.
+- **Respects test isolation.** `tmp_path` is a fresh project dir
+  free of unrelated `.claude/` state from the repo (other skills,
+  plugins, rules, settings). The symlink brings in ONLY the skill
+  under test, so the subprocess sees exactly what's under test and
+  nothing else. This also protects the maintainer-only invariant:
+  the skill should not show up on `clauditor setup`'s install list;
+  using `tmp_path` keeps any test-time install scoped to the test.
 - **Catches real failures.** The triple-lock gate + fixture replay
   already catch schema regressions. This test's job is to catch
   **behavior drift**: Claude stops producing a "Deltas" section,
@@ -99,10 +101,11 @@ Three invariants the setup must preserve:
 
 ## What NOT to do
 
-- Do NOT install the skill permanently in the repo (`.claude/skills/
-  <name>/` in the real working copy, or via an extension to
-  `clauditor setup`) to make the test easier. That's exactly the
-  exclusion this whole pattern is working around.
+- Do NOT extend `clauditor setup` to install `review-agentskills-spec`
+  (or any other maintainer-only skill). The skill's source location
+  at repo-root `.claude/skills/` is enough for maintainers who are
+  already in the repo; end users of the `clauditor` package should
+  not have it on their surface.
 - Do NOT reuse `Path.cwd()` as `project_dir`. The claude CLI resolves
   `.claude/skills/` relative to the subprocess cwd; sharing cwd
   between the real project and a live test either pollutes the real
@@ -141,16 +144,16 @@ failure mode this rule exists to prevent.
   override pattern; this rule is the test-side consumer of that
   contract.
 - Memory: `feedback_review_agentskills_spec_internal.md` — the
-  exclusion contract this rule preserves.
+  maintainer-only invariant this rule preserves.
 
 ## When this rule applies
 
-Any future bundled skill that is filtered out of `clauditor setup`
-(per a maintainer-only decision) AND has a live-runner test that
-invokes `SkillRunner.run(skill_name)` against the real `claude` CLI.
-The symlink + `tmp_path` project dir is the cheapest way to install
-the skill for the scope of one test without polluting the real
-`.claude/skills/` tree.
+Any future maintainer-only skill that lives at repo-root
+`.claude/skills/` (not installed by `clauditor setup`) AND has a
+live-runner test that invokes `SkillRunner.run(skill_name)` against
+the real `claude` CLI. The symlink + `tmp_path` project dir is the
+cheapest way to stage the skill for the scope of one test without
+polluting the repo's `.claude/skills/` tree with per-test symlinks.
 
 ## When this rule does NOT apply
 

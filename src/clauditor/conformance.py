@@ -75,7 +75,7 @@ AGENTSKILLS_NAME_RE: re.Pattern[str] = re.compile(
 # Keys in this set are NOT reported as
 # ``AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY``. Maintained against Claude
 # Code's published frontmatter docs by the ``/review-agentskills-spec``
-# bundled skill (DEC-013).
+# maintainer-only skill (DEC-013).
 KNOWN_CLAUDE_CODE_EXTENSION_KEYS: frozenset[str] = frozenset(
     {
         "argument-hint",

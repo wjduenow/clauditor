@@ -1,6 +1,6 @@
 {
   "skill_name": "review-agentskills-spec",
-  "description": "Eval spec for the bundled /review-agentskills-spec skill. Exercises clauditor's L1 machinery against a representative drift-report output; L3 grading criteria capture the rubric for a human review. The test in tests/test_bundled_review_skill.py runs the L1 assertions against a canned report string (no live subprocess, no Anthropic call).",
+  "description": "Eval spec for the maintainer-only /review-agentskills-spec skill. Exercises clauditor's L1 machinery against a representative drift-report output; L3 grading criteria capture the rubric for a human review. The test in tests/test_bundled_review_skill.py runs the L1 assertions against a canned report string (no live subprocess, no Anthropic call).",
   "test_args": "",
   "user_prompt": "Review the current agentskills.io specification and report any drift between it and clauditor's current conformance logic. Produce a markdown report with a 'Deltas' section, and list proposed changes with file paths. Do not edit any files.",
   "assertions": [
