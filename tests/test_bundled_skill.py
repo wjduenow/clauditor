@@ -21,16 +21,21 @@ from pathlib import Path
 import pytest
 
 from clauditor.schemas import EvalSpec, criterion_text
+from clauditor.spec import SkillSpec
 
-SKILL_DIR = (
-    Path(__file__).resolve().parent.parent
-    / "src"
-    / "clauditor"
-    / "skills"
-    / "clauditor"
+SKILLS_ROOT = (
+    Path(__file__).resolve().parent.parent / "src" / "clauditor" / "skills"
 )
+SKILL_DIR = SKILLS_ROOT / "clauditor"
 SKILL_MD = SKILL_DIR / "SKILL.md"
 EVAL_JSON = SKILL_DIR / "assets" / "clauditor.eval.json"
+REVIEW_SKILL_MD = (
+    Path(__file__).resolve().parent.parent
+    / ".claude"
+    / "skills"
+    / "review-agentskills-spec"
+    / "SKILL.md"
+)
 
 # agentskills.io naming constraints: lowercase a-z + digits + hyphens, with
 # hyphens between segments, 1-64 chars total.
@@ -199,6 +204,38 @@ class TestSkillMdFrontmatter:
         )
 
 
+class TestSkillMdBody:
+    def test_body_mentions_propose_eval(
+        self, frontmatter_and_body: tuple[dict, str]
+    ) -> None:
+        # Regression guard (DEC-007 of
+        # plans/super/54-teach-propose-eval-workflow.md): the bundled
+        # SKILL.md body must reference `propose-eval` so Step 3 of the
+        # workflow (LLM-assisted eval bootstrap) does not silently
+        # disappear on a future edit.
+        _, body = frontmatter_and_body
+        assert "propose-eval" in body, (
+            "bundled SKILL.md body must mention 'propose-eval' "
+            "(DEC-007 regression guard)"
+        )
+
+
+class TestBundledSkillViaSpec:
+    def test_bundled_skill_loads_via_skillspec(self) -> None:
+        # Regression guard (DEC-005 of plans/super/62-skill-md-layout.md):
+        # the bundled SKILL.md must load cleanly through
+        # ``SkillSpec.from_file`` with modern-layout name derivation —
+        # ``skill_name`` comes from the frontmatter ``name:`` field, not
+        # the file stem. We do NOT assert on ``spec.eval_spec`` here
+        # because auto-discovery looks for a sibling ``SKILL.eval.json``
+        # and the bundled eval intentionally lives at
+        # ``assets/clauditor.eval.json`` (covered by ``TestBundledEvalSpec``).
+        spec = SkillSpec.from_file(SKILL_MD)
+        assert spec.skill_name == "clauditor"
+        assert spec.skill_path.name == "SKILL.md"
+        assert spec.skill_path.parent.name == "clauditor"
+
+
 class TestBundledEvalSpec:
     def test_eval_spec_loads_via_eval_spec_from_file(self) -> None:
         # This must not raise — a raise here means the bundled eval spec
@@ -236,3 +273,80 @@ class TestBundledEvalSpec:
             assert criterion_text(c).strip(), (
                 f"criterion id={c['id']!r} has empty text"
             )
+
+
+class TestBundledSkillConformance:
+    """#71 US-007: regression guard that both bundled skills stay conformant.
+
+    Both shipped bundled skills MUST pass ``check_conformance`` with zero
+    errors. The ``AGENTSKILLS_ALLOWED_TOOLS_EXPERIMENTAL`` warning is
+    expected for both skills because each declares ``allowed-tools:`` —
+    the agentskills.io spec marks that field as experimental and emits
+    the warning for every skill that uses it. This is spec-faithful
+    signal, not noise to silence, so we do NOT extend
+    ``KNOWN_CLAUDE_CODE_EXTENSION_KEYS`` (DEC-009 is scoped to
+    UNKNOWN_KEY false positives, not experimental-field true
+    positives). Instead, the test records the single expected warning
+    code in its own allowlist and flags any other unexpected warning
+    as a regression.
+    """
+
+    _ACCEPTABLE_WARNING_CODES: frozenset[str] = frozenset(
+        {
+            "AGENTSKILLS_ALLOWED_TOOLS_EXPERIMENTAL",
+        }
+    )
+
+    def test_bundled_clauditor_skill_has_no_errors(self) -> None:
+        from clauditor.conformance import check_conformance
+
+        issues = check_conformance(SKILL_MD.read_text(), SKILL_MD)
+        errors = [i for i in issues if i.severity == "error"]
+        assert errors == [], (
+            f"Bundled /clauditor has conformance errors: {errors}"
+        )
+
+    def test_bundled_clauditor_skill_warnings_are_acceptable(self) -> None:
+        from clauditor.conformance import check_conformance
+
+        warnings = [
+            i
+            for i in check_conformance(SKILL_MD.read_text(), SKILL_MD)
+            if i.severity == "warning"
+        ]
+        unexpected = [
+            w for w in warnings if w.code not in self._ACCEPTABLE_WARNING_CODES
+        ]
+        assert unexpected == [], (
+            f"Bundled /clauditor has unexpected warnings: {unexpected}"
+        )
+
+    def test_bundled_review_skill_has_no_errors(self) -> None:
+        from clauditor.conformance import check_conformance
+
+        issues = check_conformance(
+            REVIEW_SKILL_MD.read_text(), REVIEW_SKILL_MD
+        )
+        errors = [i for i in issues if i.severity == "error"]
+        assert errors == [], (
+            f"/review-agentskills-spec has conformance errors: "
+            f"{errors}"
+        )
+
+    def test_bundled_review_skill_warnings_are_acceptable(self) -> None:
+        from clauditor.conformance import check_conformance
+
+        warnings = [
+            i
+            for i in check_conformance(
+                REVIEW_SKILL_MD.read_text(), REVIEW_SKILL_MD
+            )
+            if i.severity == "warning"
+        ]
+        unexpected = [
+            w for w in warnings if w.code not in self._ACCEPTABLE_WARNING_CODES
+        ]
+        assert unexpected == [], (
+            f"/review-agentskills-spec has unexpected warnings: "
+            f"{unexpected}"
+        )

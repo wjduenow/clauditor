@@ -6,6 +6,9 @@ Full reference for every `clauditor` subcommand: arguments, flags, the persisten
 
 ```bash
 clauditor init <skill.md>              # Generate starter eval.json
+clauditor lint <skill.md>              # Static agentskills.io spec conformance
+clauditor lint <skill.md> --strict     # Treat warnings as exit-2 failures
+clauditor lint <skill.md> --json       # JSON envelope for CI
 clauditor validate <skill.md>          # Run Layer 1 assertions
 clauditor validate <skill.md> --json   # JSON output for CI
 clauditor run <skill-name> --args "…"  # Run skill, print output
@@ -25,9 +28,154 @@ clauditor trend <skill> --list-metrics           # List available metric paths
 clauditor trend <skill> --metric grader.input_tokens --command extract  # Filter by subcommand
 clauditor triggers <skill.md>          # Trigger precision testing
 clauditor capture <skill> -- "args"    # Run skill, save stdout to tests/eval/captured/
+clauditor audit <skill>                # Aggregate per-assertion pass rates across iterations
 clauditor suggest <skill.md>           # Propose SKILL.md edits from prior failing iterations
+clauditor propose-eval <skill.md>      # LLM-assisted EvalSpec bootstrap (SKILL.md + optional capture)
+clauditor setup                        # Install the bundled /clauditor slash command symlink
 clauditor doctor                       # Report environment diagnostics
 ```
+
+## lint
+
+Static conformance check against the [agentskills.io specification](https://agentskills.io/specification). `clauditor lint <SKILL.md>` reads the file, parses its YAML frontmatter via the project's `_frontmatter.parse_frontmatter` helper, and runs every rule from the spec (required/optional frontmatter keys, name-vs-parent-dir match, body-line budget, layout expectations) through the pure `check_conformance` helper in `src/clauditor/conformance.py`. The command is **non-LLM** — no tokens spent, no network calls — so it is safe to run on every commit, in CI, and as a pre-publish check before uploading a skill to a registry.
+
+### Required inputs
+
+- `<skill_md>` (positional) — path to the SKILL.md file to lint. Absolute paths are accepted; symlinks are followed to their real target; directories, sockets, and missing paths exit 1.
+
+### Flags
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--strict` | Treat warnings as failures (exit 2). Errors always exit 2 regardless. Parse failures (`AGENTSKILLS_FRONTMATTER_INVALID_YAML`) always exit 1 even under `--strict` — `--strict` never escalates load-layer parse failures. |
+| `--json` | Emit a JSON envelope to stdout instead of the human-readable text. Exit codes are identical to the human-output path. `schema_version: 1` is the first key in the payload. |
+
+### Examples
+
+```bash
+# Basic conformance check — exits 0 on pass with a success line.
+clauditor lint .claude/skills/my-skill/SKILL.md
+
+# Strict mode — warnings promoted to exit 2 (pre-publish gate).
+clauditor lint --strict .claude/skills/my-skill/SKILL.md
+
+# JSON envelope for CI — pipe through jq for programmatic checks.
+clauditor lint --json .claude/skills/my-skill/SKILL.md | jq .passed
+```
+
+### Exit codes
+
+Non-LLM 0/1/2 taxonomy per `.claude/rules/llm-cli-exit-code-taxonomy.md`:
+
+| Code | Meaning |
+| ---- | ------- |
+| `0` | Pass — no issues, OR warning-only result without `--strict`. Success line printed to stdout. |
+| `1` | Load/parse failure — path does not resolve to a regular file, file is unreadable (OSError / UnicodeDecodeError), or frontmatter is malformed YAML (`AGENTSKILLS_FRONTMATTER_INVALID_YAML`). Never escalated by `--strict`. |
+| `2` | Conformance failure — one or more error-severity issues, OR warnings with `--strict` set. Issues rendered on stderr as `clauditor.conformance: <CODE>: <message>`. |
+
+### Claude Code extension allowlist
+
+The agentskills.io spec defines the frontmatter keys `name`, `description`, `license`, `compatibility`, `metadata`, and `allowed-tools`. Unknown keys normally trigger `AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY` (warning). Two Claude Code extension keys are allowlisted and do NOT trigger the warning: `argument-hint` and `disable-model-invocation`. The allowlist is maintained by the maintainer-only `/review-agentskills-spec` skill, which periodically diffs Claude Code's published frontmatter documentation against the `KNOWN_CLAUDE_CODE_EXTENSION_KEYS` constant in `src/clauditor/conformance.py` (per DEC-009 and DEC-013 of `plans/super/71-agentskills-lint.md`).
+
+### Soft-warn hook on every skill load
+
+Beyond the standalone `lint` command, `SkillSpec.from_file` calls `check_conformance` on every skill load and emits **warnings only** to stderr with the `clauditor.conformance:` prefix. Errors are silent at that seam — they surface when the user runs `clauditor lint`. The hook never blocks `from_file`; a skill that would fail `lint` today still loads for `validate`, `grade`, and downstream commands (per DEC-003).
+
+### See also
+
+- **`/review-agentskills-spec`** — the maintainer-only sibling skill (lives at repo-root `.claude/skills/`, not shipped in the wheel, not installed by `clauditor setup`). **`clauditor lint`** checks a user's skill against the spec; **`/review-agentskills-spec`** audits the upstream spec itself (and Claude Code's frontmatter documentation) for drift against clauditor's enforcement. Two sides of the same check: one catches user skills that drift from the spec, the other catches clauditor's enforcement drifting from the spec.
+
+## propose-eval
+
+LLM-assisted EvalSpec bootstrap. `clauditor propose-eval <skill.md>` reads the SKILL.md file and (optionally) a captured skill run, asks Sonnet to propose a full three-layer EvalSpec (L1 assertions, L2 tiered extraction, L3 rubric), validates the proposal through `EvalSpec.from_dict`, and writes a sibling `<skill>.eval.json` next to the SKILL.md (the same path `SkillSpec.from_file` and `clauditor init` auto-discover). Use it to skip the blank-spec drudgery when onboarding a new skill.
+
+### Required inputs
+
+- `<skill_md>` (positional) — path to the SKILL.md file. The generated spec is written to the sibling `<skill_stem>.eval.json` (e.g. `foo.md` → `foo.eval.json`, `SKILL.md` → `SKILL.eval.json`).
+
+### Flags
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--from-capture PATH` | Override capture discovery with an explicit file. Wins over `--from-iteration`. |
+| `--from-iteration N` | Load the capture from `.clauditor/runs/iteration-N/<skill>/run-0/output.txt` (N must be a positive integer). |
+| `--force` | Overwrite an existing sibling `<skill>.eval.json`. Without it, the command refuses with exit 1. |
+| `--dry-run` | Print the built proposer prompt to stdout and exit; do not call Anthropic and do not write a file. Cost-free preview. |
+| `--model MODEL` | Override the proposer model (default: `claude-sonnet-4-6`). |
+| `--json` | Emit the full `ProposeEvalReport` JSON envelope on stdout (includes `schema_version`, tokens, duration, validation errors). |
+| `-v, --verbose` | Log capture source, redaction count, model, and token estimates to stderr. |
+| `--project-dir PATH` | Override project root (default: cwd). Used for capture discovery and relative-path reporting. |
+
+### Examples
+
+```bash
+# Basic bootstrap — uses DEC-001 capture discovery, writes eval.json
+clauditor propose-eval .claude/commands/my-skill.md
+
+# Preview the built proposer prompt (no Anthropic call)
+clauditor propose-eval .claude/commands/my-skill.md --dry-run
+
+# Bootstrap from an explicit capture file (takes precedence over discovery)
+clauditor propose-eval .claude/commands/my-skill.md --from-capture tests/eval/captured/my-skill.txt
+
+# Overwrite an existing eval.json
+clauditor propose-eval .claude/commands/my-skill.md --force
+```
+
+### Exit codes
+
+Mirrors the DEC-006 contract in `src/clauditor/cli/propose_eval.py`:
+
+| Code | Meaning |
+| ---- | ------- |
+| `0` | Success — prompt printed (`--dry-run`), report envelope printed (`--json`), or spec written to `eval.json`. |
+| `1` | Response-parse failure from the proposer (malformed JSON, missing top-level shape) OR collision: `eval.json` already exists and `--force` was not passed. |
+| `2` | Spec-validation failure OR pre-call input error — the proposed dict did not survive `EvalSpec.from_dict` (missing required fields, duplicate ids, invalid `format` strings, …), OR the prompt exceeded the token budget, OR `--from-capture`/`--from-iteration` pointed at a missing/invalid target. Errors printed on stderr. |
+| `3` | Anthropic API error — auth failure, rate-limit exhaustion, connection error, or any non-retriable SDK error surfaced by `clauditor._anthropic.call_anthropic`. |
+
+### Capture discovery (DEC-001)
+
+When neither `--from-capture` nor `--from-iteration` is provided, the loader looks for a capture file in this order and uses the first match:
+
+1. `<project_dir>/tests/eval/captured/<skill_name>.txt` (primary — the same directory `clauditor capture` writes to).
+2. `<project_dir>/.clauditor/captures/<skill_name>.txt` (fallback).
+
+The `<skill_name>` is resolved from the SKILL.md frontmatter's `name` field, falling back to the containing directory's basename, and finally to the literal string `"skill"` if neither source matches the security regex (`^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$`). This clamp blocks path-traversal attempts via a malicious `name:` field (e.g. `"../../etc/passwd"`). If no capture is found, the proposer runs against the SKILL.md alone — the quality of the generated spec will be lower, but the command does not error out. Malformed frontmatter emits a stderr warning and falls through to treating the whole file as body.
+
+### Token budget (DEC-005 / DEC-011)
+
+The prompt is pre-checked against a **50,000-token cap** via a `len(prompt) / 4` heuristic before the Anthropic call. This is a coarse safety rail that prevents a mid-stream 413 when a SKILL.md + capture is pathologically large. Oversize inputs fail fast with an `ERROR:` line on stderr and exit code **2** (pre-call input error per DEC-006) before any Anthropic call is made.
+
+### Security / scrubbing (DEC-008)
+
+Captured skill output is scrubbed through `clauditor.transcripts.redact` before it lands in the prompt OR the sidecar. The redaction is non-mutating (per `.claude/rules/non-mutating-scrub.md`): secret-shaped substrings (Anthropic keys, GitHub PATs, Bearer tokens) are replaced in a new copy while the caller's in-memory representation — if any — stays untouched. Both CLI-override paths (`--from-capture`, `--from-iteration`) apply the same scrub; the loader-discovered path is scrubbed by the loader itself.
+
+### Relationship to `init` and `capture`
+
+- `clauditor init` writes a **skill stub** (`SKILL.md` + starter `eval.json`) for a brand-new skill. Use it first when the skill itself does not yet exist.
+- `clauditor propose-eval` fills in an `eval.json` for a skill whose **SKILL.md already exists**. It does not write a skill stub and does not regenerate SKILL.md.
+- `clauditor capture <skill> -- "args"` produces the captured run that `propose-eval` reads as grounding context. Capturing before `propose-eval` typically lifts the quality of the generated spec (the proposer sees what real output looks like).
+
+## Shared runner flags (`validate`, `grade`, `capture`, `run`)
+
+Four skill-invoking commands share two flags that control the `claude -p` subprocess the runner spawns. Both default to "not set" so today's behavior is unchanged when neither flag is passed.
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--no-api-key` | Strip both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the subprocess environment before invoking `claude -p`. The child then falls back to whatever auth is cached in `~/.claude/` — typically a Pro/Max subscription, which carries a much higher throughput ceiling than the API-key tier. Useful for research-heavy skills (multi-agent, deep-research) that exhaust the free API tier in a single run. Non-auth Anthropic env vars such as `ANTHROPIC_BASE_URL` are preserved. |
+| `--timeout SECONDS` | Override the runner's 180-second watchdog for a single invocation. Must be a positive integer; `--timeout 0`, `--timeout -5`, and `--timeout foo` exit `2` at argparse time. Precedence: the CLI flag wins when passed explicitly; otherwise the `EvalSpec.timeout` field wins when set; otherwise the built-in 180s default applies. See [`docs/eval-spec-reference.md#optional-top-level-fields`](eval-spec-reference.md#optional-top-level-fields) for the spec-field side of the contract. |
+
+When `claude -p` emits an `apiKeySource` value on its stream-json `init` event, the runner captures it on `SkillResult.api_key_source` and prints one stderr info line of the form `clauditor.runner: apiKeySource=<value>`. Values are labels (`"ANTHROPIC_API_KEY"`, `"claude.ai"`, `"none"`), not secrets. Older `claude` builds that omit the field leave `api_key_source` at `None` and suppress the stderr line — absence is the signal. See [`docs/stream-json-schema.md`](stream-json-schema.md#type-system) for the parser contract.
+
+```bash
+# Force subscription auth, raise the watchdog to five minutes.
+clauditor grade .claude/commands/deep-research.md --no-api-key --timeout 300
+
+# Pro/Max operator running a fast-failing CI check — CLI wins over spec.
+clauditor validate .claude/commands/my-skill.md --no-api-key --timeout 30
+```
+
+Pytest integration: `--clauditor-no-api-key` is the plugin-option counterpart to `--no-api-key` on the CLI. It threads the same env scrub through the `clauditor_spec` fixture's `env_override`. The existing `--clauditor-timeout` pytest option continues to control the per-runner default (constructor `timeout=...`); per-invocation overrides flow through the fixture factory just like the CLI path. See [`docs/pytest-plugin.md`](pytest-plugin.md).
 
 ## Persistent metric history
 
@@ -67,6 +215,6 @@ clauditor uses structured exit codes so scripts and CI pipelines can distinguish
 | `0`  | Success. The command completed and, where applicable, the skill passed its gate (all assertions satisfied, all criteria above threshold, no regression detected, no trigger miss). |
 | `1`  | Signal failed. The tool ran fine, but the skill did not meet its bar: an L1 assertion failed, an L3 criterion scored below threshold, `clauditor compare` detected a regression relative to baseline, or a trigger classification was wrong. The on-disk artifacts are complete and valid; the skill needs fixing, not the tool. |
 | `2`  | Input error. A user-supplied argument was missing, malformed, or incompatible with another flag (e.g. `--iteration` without an integer value, a skill `.md` file that does not exist, an eval spec that fails schema validation). The command exited before doing work; re-run with corrected arguments. |
-| `3`  | Anthropic API error. `clauditor suggest` only. The Anthropic SDK returned a non-retriable failure (auth, malformed request, exhausted retries). No sidecar is written; re-run once the upstream issue is resolved. |
+| `3`  | Anthropic API error. `clauditor suggest` and `clauditor propose-eval`. The Anthropic SDK returned a non-retriable failure (auth, malformed request, exhausted retries). No sidecar is written; re-run once the upstream issue is resolved. |
 
 Commands that only invoke the Anthropic API transiently (`extract`, `grade`, `triggers`) funnel API failures through the same retry policy as `suggest` but surface them as exit 1 with an `ERROR:` line on stderr rather than a distinct code.

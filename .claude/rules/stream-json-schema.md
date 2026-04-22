@@ -39,6 +39,17 @@ for raw_line in proc.stdout:
 
     elif mtype == "result":
         saw_result = True
+        # Error classification — strict ``is True`` check. A missing
+        # field, ``False``, or truthy non-bool (``"true"``, ``1``) is
+        # treated as success so older CLI builds that omit the field
+        # still parse cleanly. The canonical keyword classifier +
+        # 4 KB truncation lives in
+        # ``src/clauditor/runner.py::_classify_result_message``.
+        if msg.get("is_error") is True:
+            err_text, err_category = _classify_result_message(msg)
+            if err_text is not None:
+                stream_json_error_text = err_text
+                stream_json_error_category = err_category
         usage = msg.get("usage") or {}
         if isinstance(usage, dict):
             try:
@@ -75,6 +86,24 @@ if not saw_result:
   ValueError)` falls back to 0 instead of aborting. Token counts are
   observability data, not correctness data — losing them should be a
   warning, not a crash.
+- **Strict `is True` on `is_error`**: only a literal boolean `True`
+  triggers the error branch. The string `"true"`, the int `1`, and any
+  other truthy-but-non-bool value falls through as success. This is
+  deliberate back-compat discipline: older CLI builds may omit
+  `is_error` on success, and a future build that ever emits it as a
+  stringified bool should not suddenly start firing false-positive
+  errors on every successful run. Change the classifier, then this
+  rule — not the other way around.
+- **`result` field is untrusted data**: the user-facing error string
+  comes from the Anthropic API via the CLI, so clauditor treats it
+  defensively — non-string fallback to `"API error (no detail)"`,
+  truncation at 4 KB with a `" ... (truncated)"` suffix for
+  `SkillResult.error` (full text retained in `stream_events` for
+  forensics), keyword classification that is ordered so rate-limit
+  wins over auth on an ambiguous message. Keyword matching is the
+  cheapest viable classifier; escalating to regex or an LLM classifier
+  here would spend API budget to re-derive what the prefix already
+  tells us.
 - **`saw_result` flag + stderr warning on EOF**: a stream that ends
   without a `result` message is suspicious but not fatal — the run still
   produced output. Warn, return zero tokens, let the caller decide.
@@ -86,9 +115,15 @@ if not saw_result:
 ## Canonical implementation
 
 `src/clauditor/runner.py::SkillRunner._invoke` — the `for raw_line in
-proc.stdout` loop. The human-readable schema reference lives at
+proc.stdout` loop. The error-classification helper
+`src/clauditor/runner.py::_classify_result_message` is the pure
+counterpart: given a result-message dict it returns
+`(error_text, error_category)` with the 4 KB truncation and the
+ordered keyword classifier (`rate_limit` before `auth` before `api`).
+The human-readable schema reference lives at
 `docs/stream-json-schema.md` and enumerates every field clauditor reads,
-with concrete JSONL examples and an error-handling table.
+with concrete JSONL examples (success + 429 failure) and an
+error-handling table.
 
 ## When this rule applies
 
@@ -98,4 +133,8 @@ not appropriate for internal sidecars clauditor *writes* and reads back —
 those use `schema_version` hard checks (see
 `.claude/rules/json-schema-version.md`). The distinction is trust: our
 own artifacts are versioned and validated; a third-party streaming
-format is parsed permissively.
+format is parsed permissively. New `result`-message fields (beyond
+`is_error` + `result`) follow the same two-step recipe: add the
+tolerated-if-missing read here with a descriptive comment, then
+document the field in `docs/stream-json-schema.md` under the
+`type: "result"` section.

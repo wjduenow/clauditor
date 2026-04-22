@@ -65,6 +65,10 @@ select = ["E", "F", "I", "N", "W", "UP"]
 testpaths = ["tests"]
 asyncio_mode = "strict"
 addopts = "--import-mode=importlib --cov-fail-under=80"
+markers = [
+    "slow: end-to-end tests that build wheels and spin up venvs (~2s total per run thanks to a session-scoped fixture; opt out via -m 'not slow')",
+    "live: opt-in tests that invoke the real 'claude' CLI and spend Anthropic tokens (require CLAUDITOR_RUN_LIVE=1 + ANTHROPIC_API_KEY + claude on PATH; skipped otherwise, never run in default CI)",
+]
 
 [dependency-groups]
 dev = [

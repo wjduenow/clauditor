@@ -12,7 +12,7 @@ from clauditor import history
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.benchmark import Benchmark, compute_benchmark
 from clauditor.paths import resolve_clauditor_dir
-from clauditor.runner import SkillResult
+from clauditor.runner import SkillResult, env_without_api_key
 from clauditor.spec import SkillSpec
 from clauditor.workspace import (
     InvalidSkillNameError,
@@ -125,6 +125,24 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "Run only criteria whose name/description contains SUBSTRING"
             " (case-insensitive, repeatable)"
+        ),
+    )
+    p_grade.add_argument(
+        "--no-api-key",
+        action="store_true",
+        help=(
+            "Strip ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN from the "
+            "subprocess environment to force subscription auth."
+        ),
+    )
+    p_grade.add_argument(
+        "--timeout",
+        type=_positive_int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Override the runner timeout (seconds); must be > 0. "
+            "Defaults to EvalSpec.timeout or 180s."
         ),
     )
 
@@ -337,6 +355,20 @@ def _run_skill_variants(
     non-``None`` when the caller should return that exit code (skill
     subprocess failure).
     """
+    # Shared helper lives in ``clauditor.cli`` (package __init__). Import
+    # lazily to avoid a circular import at module load.
+    from clauditor.cli import _render_skill_error
+
+    # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags through
+    # to every ``spec.run`` invocation (primary + variance). Defaults
+    # are both None (today's behavior).
+    env_override = (
+        env_without_api_key()
+        if getattr(args, "no_api_key", False)
+        else None
+    )
+    timeout_override = getattr(args, "timeout", None)
+
     run_outputs: list[tuple[str, list[dict]]] = []
     # Parallel list of SkillResult objects — None entries correspond to
     # captured-text (--output) runs where no subprocess SkillResult exists.
@@ -363,10 +395,13 @@ def _run_skill_variants(
         )
         primary_skill_result = spec.run(
             run_dir=workspace.tmp_path / "run-0",
+            timeout_override=timeout_override,
+            env_override=env_override,
         )
-        if not primary_skill_result.succeeded:
+        if not primary_skill_result.succeeded_cleanly:
             print(
-                f"ERROR: Skill failed: {primary_skill_result.error}",
+                f"ERROR: Skill failed: "
+                f"{_render_skill_error(primary_skill_result)}",
                 file=sys.stderr,
             )
             return run_outputs, skill_results, 0, 0, 0.0, 1
@@ -389,10 +424,15 @@ def _run_skill_variants(
             if args.output
             else workspace.tmp_path / f"run-{variance_idx + 1}"
         )
-        variance_result = spec.run(run_dir=variance_run_dir)
-        if not variance_result.succeeded:
+        variance_result = spec.run(
+            run_dir=variance_run_dir,
+            timeout_override=timeout_override,
+            env_override=env_override,
+        )
+        if not variance_result.succeeded_cleanly:
             print(
-                f"ERROR: Variance skill run failed: {variance_result.error}",
+                f"ERROR: Variance skill run failed: "
+                f"{_render_skill_error(variance_result)}",
                 file=sys.stderr,
             )
             return run_outputs, skill_results, 0, 0, 0.0, 1
@@ -510,6 +550,11 @@ def _write_workspace_sidecars(
         _write_extraction_sidecar(skill_dir, primary_text, spec)
 
     if getattr(args, "baseline", False):
+        # Mirror the primary arm's env/timeout wiring so --no-api-key
+        # and --timeout apply to both halves of the baseline delta.
+        no_api_key = bool(getattr(args, "no_api_key", False))
+        env_override = env_without_api_key() if no_api_key else None
+        timeout_override = getattr(args, "timeout", None)
         return _write_baseline_and_benchmark(
             spec=spec,
             skill_dir=skill_dir,
@@ -517,6 +562,8 @@ def _write_workspace_sidecars(
             skill_results=skill_results,
             reports=reports,
             model=model,
+            env_override=env_override,
+            timeout_override=timeout_override,
         )
 
     return None
@@ -646,18 +693,27 @@ def _write_baseline_and_benchmark(
     skill_results: list[SkillResult | None],
     reports: list[GradingReport],
     model: str,
+    env_override: dict[str, str] | None = None,
+    timeout_override: int | None = None,
 ) -> Benchmark | None:
     """Run the baseline phase and compute+persist the benchmark delta.
 
     Returns the computed :class:`Benchmark` when every primary run has
     a real :class:`SkillResult` (i.e. not ``--output`` mode); otherwise
     returns ``None`` (the baseline sidecars still land on disk).
+
+    ``env_override`` and ``timeout_override`` thread the CLI's
+    ``--no-api-key`` / ``--timeout`` flags through to the baseline
+    subprocess so both arms of a ``--baseline`` run share the same
+    auth/deadline — otherwise the baseline bypasses those flags.
     """
     baseline_grading, baseline_skill_result = _run_baseline_phase(
         spec=spec,
         skill_dir=skill_dir,
         iteration=workspace.iteration,
         model=model,
+        env_override=env_override,
+        timeout_override=timeout_override,
     )
 
     # #28 US-002: compute the pair-run benchmark delta and persist
@@ -712,12 +768,19 @@ def _run_baseline_phase(
     skill_dir: Path,
     iteration: int,
     model: str,
+    env_override: dict[str, str] | None = None,
+    timeout_override: int | None = None,
 ) -> tuple[GradingReport, SkillResult]:
     """Run the baseline (no skill prefix) and persist sidecars.
 
     Thin I/O wrapper around :func:`clauditor.baseline.compute_baseline`:
     handles subprocess invocation, input-file staging, stderr progress,
     and sidecar writes into ``skill_dir`` (the staging iteration dir).
+
+    ``env_override`` and ``timeout_override`` mirror the primary arm's
+    wiring so ``--no-api-key`` / ``--timeout`` apply to both arms of a
+    ``--baseline`` run (otherwise the baseline subprocess would bypass
+    the flags, defeating their intent).
 
     Returns ``(GradingReport, SkillResult)`` so the caller can feed
     them to :func:`clauditor.benchmark.compute_benchmark`.
@@ -735,7 +798,12 @@ def _run_baseline_phase(
         stage_inputs(baseline_run_dir, sources)
         effective_cwd = baseline_run_dir / "inputs"
     print(f"Running baseline (no skill prefix) {test_args}...")
-    baseline_result = spec.runner.run_raw(test_args, cwd=effective_cwd)
+    baseline_result = spec.runner.run_raw(
+        test_args,
+        cwd=effective_cwd,
+        env=env_override,
+        timeout=timeout_override,
+    )
 
     reports = compute_baseline(
         skill_result=baseline_result,

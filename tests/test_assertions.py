@@ -139,12 +139,12 @@ class TestHasEntries:
 class TestRunAssertions:
     def test_all_pass(self):
         assertions = [
-            {"type": "contains", "value": "Venues"},
-            {"type": "contains", "value": "Events"},
-            {"type": "has_urls", "value": "3"},
-            {"type": "has_entries", "value": "3"},
-            {"type": "not_contains", "value": "ERROR"},
-            {"type": "min_length", "value": "500"},
+            {"type": "contains", "needle": "Venues"},
+            {"type": "contains", "needle": "Events"},
+            {"type": "has_urls", "count": 3},
+            {"type": "has_entries", "count": 3},
+            {"type": "not_contains", "needle": "ERROR"},
+            {"type": "min_length", "length": 500},
         ]
         results = run_assertions(SAMPLE_OUTPUT, assertions)
         assert results.passed
@@ -152,8 +152,8 @@ class TestRunAssertions:
 
     def test_mixed_results(self):
         assertions = [
-            {"type": "contains", "value": "Venues"},
-            {"type": "contains", "value": "Nonexistent"},
+            {"type": "contains", "needle": "Venues"},
+            {"type": "contains", "needle": "Nonexistent"},
         ]
         results = run_assertions(SAMPLE_OUTPUT, assertions)
         assert not results.passed
@@ -161,13 +161,13 @@ class TestRunAssertions:
         assert len(results.failed) == 1
 
     def test_unknown_type(self):
-        results = run_assertions(SAMPLE_OUTPUT, [{"type": "bogus", "value": "x"}])
+        results = run_assertions(SAMPLE_OUTPUT, [{"type": "bogus", "needle": "x"}])
         assert not results.passed
 
     def test_summary(self):
         assertions = [
-            {"type": "contains", "value": "Venues"},
-            {"type": "contains", "value": "Missing"},
+            {"type": "contains", "needle": "Venues"},
+            {"type": "contains", "needle": "Missing"},
         ]
         results = run_assertions(SAMPLE_OUTPUT, assertions)
         summary = results.summary()
@@ -385,36 +385,36 @@ class TestRunAssertionsEdgeCases:
         assert len(result.results) == 0
 
     def test_unknown_type_message(self):
-        result = run_assertions("text", [{"type": "bogus", "value": "x"}])
+        result = run_assertions("text", [{"type": "bogus", "needle": "x"}])
         assert not result.passed
         assert len(result.results) == 1
         assert "Unknown assertion type" in result.results[0].message
         assert result.results[0].name == "unknown:bogus"
 
     def test_max_length_via_run(self):
-        result = run_assertions("short", [{"type": "max_length", "value": "100"}])
+        result = run_assertions("short", [{"type": "max_length", "length": 100}])
         assert result.passed
 
     def test_regex_via_run(self):
-        result = run_assertions("hello 123", [{"type": "regex", "value": r"\d+"}])
+        result = run_assertions("hello 123", [{"type": "regex", "pattern": r"\d+"}])
         assert result.passed
 
     def test_min_count_via_run(self):
-        assertion = {"type": "min_count", "value": "a", "minimum": 3}
+        assertion = {"type": "min_count", "pattern": "a", "count": 3}
         result = run_assertions("aaa", [assertion])
         assert result.passed
 
     def test_has_urls_via_run(self):
         result = run_assertions(
             "visit https://example.com",
-            [{"type": "has_urls", "value": "1"}],
+            [{"type": "has_urls", "count": 1}],
         )
         assert result.passed
 
     def test_has_entries_via_run(self):
         result = run_assertions(
             "**1. Item** **2. Item**",
-            [{"type": "has_entries", "value": "2"}],
+            [{"type": "has_entries", "count": 2}],
         )
         assert result.passed
 
@@ -427,14 +427,14 @@ class TestRunAssertionsEdgeCases:
         ):
             result = run_assertions(
                 "visit https://example.com",
-                [{"type": "urls_reachable", "value": "1"}],
+                [{"type": "urls_reachable", "count": 1}],
             )
             assert result.passed
 
     def test_has_format_via_run(self):
         result = run_assertions(
             "contact user@example.com or admin@test.org",
-            [{"type": "has_format", "format": "email", "value": "2"}],
+            [{"type": "has_format", "format": "email", "count": 2}],
         )
         assert result.passed
 
@@ -927,8 +927,8 @@ class TestAssertionSetJson:
         """run_assertions stamps the spec ``id`` onto every result so
         assertions.json is keyed by id, not by list position."""
         assertions = [
-            {"id": "venues", "type": "contains", "value": "Venues"},
-            {"id": "min-len", "type": "min_length", "value": "10"},
+            {"id": "venues", "type": "contains", "needle": "Venues"},
+            {"id": "min-len", "type": "min_length", "length": 10},
         ]
         result_set = run_assertions(SAMPLE_OUTPUT, assertions)
         payload = result_set.to_json()

@@ -105,7 +105,7 @@ class TestRunAssertions:
     def test_delegates_to_assertions_module(self):
         asserter = SkillAsserter(_result("hello world"))
         assertion_set = asserter.run_assertions(
-            [{"type": "contains", "value": "hello"}]
+            [{"type": "contains", "needle": "hello"}]
         )
         assert assertion_set.passed
 

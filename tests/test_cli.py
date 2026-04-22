@@ -298,7 +298,10 @@ class TestCmdGradeInputFilesStaging:
         spec = _make_spec(eval_spec=eval_spec)
         outputs_iter = iter(outputs)
 
-        def _run(args=None, *, run_dir=None):
+        def _run(args=None, *, run_dir=None, **kwargs):
+            # kwargs absorbs US-006 ``timeout_override`` / ``env_override``
+            # plumbing without coupling this staging fixture to their
+            # presence.
             if run_dir is not None and eval_spec.input_files:
                 stage_inputs(
                     run_dir, [_Path(p) for p in eval_spec.input_files]
@@ -829,8 +832,8 @@ class TestCmdGradeSaveDiff:
 
         eval_spec = _make_eval_spec(
             assertions=[
-                {"id": "has-hello", "type": "contains", "value": "hello"},
-                {"id": "min-len", "type": "min_length", "value": "5"},
+                {"id": "has-hello", "type": "contains", "needle": "hello"},
+                {"id": "min-len", "type": "min_length", "length": 5},
             ]
         )
         spec = _make_spec(eval_spec=eval_spec)
@@ -875,8 +878,8 @@ class TestCmdGradeSaveDiff:
         monkeypatch.chdir(tmp_path)
         eval_spec = _make_eval_spec(
             assertions=[
-                {"id": "has-primary", "type": "contains", "value": "primary"},
-                {"id": "min-len", "type": "min_length", "value": "3"},
+                {"id": "has-primary", "type": "contains", "needle": "primary"},
+                {"id": "min-len", "type": "min_length", "length": 3},
             ]
         )
         spec = _make_spec(eval_spec=eval_spec)
@@ -916,8 +919,8 @@ class TestCmdGradeSaveDiff:
         monkeypatch.chdir(tmp_path)
         eval_spec = _make_eval_spec(
             assertions=[
-                {"id": "has-primary", "type": "contains", "value": "primary"},
-                {"id": "min-len", "type": "min_length", "value": "3"},
+                {"id": "has-primary", "type": "contains", "needle": "primary"},
+                {"id": "min-len", "type": "min_length", "length": 3},
             ]
         )
         spec = _make_spec(eval_spec=eval_spec)
@@ -963,7 +966,7 @@ class TestCmdGradeSaveDiff:
 
         eval_spec = _make_eval_spec(
             assertions=[
-                {"id": "has-text", "type": "contains", "value": "text"},
+                {"id": "has-text", "type": "contains", "needle": "text"},
             ]
         )
         spec = _make_spec(eval_spec=eval_spec)
@@ -1492,7 +1495,7 @@ class TestBaselineFlag:
             assertions=[
                 {
                     "type": "contains",
-                    "value": "hello",
+                    "needle": "hello",
                     "id": "a.hello.v1",
                 }
             ],
@@ -1939,6 +1942,71 @@ class TestBaselineFlag:
             skill_dir / "baseline-run" / "inputs" / "fixture.txt"
         ).is_file()
 
+    def test_run_baseline_phase_threads_env_and_timeout_overrides(
+        self, tmp_path, monkeypatch
+    ):
+        """#64 QG: _run_baseline_phase must forward env_override and
+        timeout_override to run_raw so --no-api-key and --timeout
+        apply to both arms of a --baseline run."""
+        from clauditor.cli import _run_baseline_phase
+
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec(sections=[])
+        spec = self._prepare_spec(eval_spec)
+        grading_report = self._make_grading_report()
+        skill_dir = tmp_path / "skill-dir"
+        skill_dir.mkdir()
+
+        sentinel_env = {"PATH": "/fake"}
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new_callable=AsyncMock,
+            return_value=grading_report,
+        ):
+            _run_baseline_phase(
+                spec=spec,
+                skill_dir=skill_dir,
+                iteration=1,
+                model="claude-sonnet-4-6",
+                env_override=sentinel_env,
+                timeout_override=77,
+            )
+
+        kwargs = spec.runner.run_raw.call_args.kwargs
+        assert kwargs["env"] is sentinel_env
+        assert kwargs["timeout"] == 77
+
+    def test_run_baseline_phase_defaults_env_and_timeout_to_none(
+        self, tmp_path, monkeypatch
+    ):
+        """Back-compat: _run_baseline_phase without overrides passes
+        env=None and timeout=None (today's Popen-inherit-os.environ
+        behavior)."""
+        from clauditor.cli import _run_baseline_phase
+
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec(sections=[])
+        spec = self._prepare_spec(eval_spec)
+        grading_report = self._make_grading_report()
+        skill_dir = tmp_path / "skill-dir"
+        skill_dir.mkdir()
+
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new_callable=AsyncMock,
+            return_value=grading_report,
+        ):
+            _run_baseline_phase(
+                spec=spec,
+                skill_dir=skill_dir,
+                iteration=1,
+                model="claude-sonnet-4-6",
+            )
+
+        kwargs = spec.runner.run_raw.call_args.kwargs
+        assert kwargs["env"] is None
+        assert kwargs["timeout"] is None
+
     # ---- #28 US-004: --min-baseline-delta gate ----
 
     def _make_report_with_pass_rate(
@@ -2181,7 +2249,7 @@ class TestCmdCompare:
         after_txt.write_text("hello world")
 
         eval_spec = _make_eval_spec(
-            assertions=[{"type": "contains", "value": "hello"}]
+            assertions=[{"type": "contains", "needle": "hello"}]
         )
         spec = _make_spec(eval_spec=eval_spec)
 
@@ -2777,6 +2845,151 @@ class TestCmdInit:
         assert rc == 0
         data = json.loads(eval_path.read_text())
         assert data["skill_name"] == "my-skill"
+
+    def test_init_modern_layout_uses_parent_dir_name(self, tmp_path):
+        """Modern layout (``<dir>/SKILL.md``) derives name from parent dir
+        via frontmatter ``name:`` — not the ``"SKILL"`` file stem."""
+        skill_dir = tmp_path / ".claude" / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text(
+            "---\n"
+            "name: foo\n"
+            "description: A test skill\n"
+            "---\n"
+            "\n"
+            "# Body\n"
+        )
+
+        rc = main(["init", str(skill_path)])
+
+        assert rc == 0
+        eval_path = skill_dir / "SKILL.eval.json"
+        assert eval_path.exists()
+        data = json.loads(eval_path.read_text())
+        assert data["skill_name"] == "foo"
+        assert data["description"] == "Eval spec for /foo"
+
+    def test_init_missing_skill_file(self, tmp_path, capsys):
+        """Missing skill file exits 1 with a descriptive stderr error."""
+        skill_path = tmp_path / "does-not-exist.md"
+
+        rc = main(["init", str(skill_path)])
+
+        assert rc == 1
+        assert "skill file not found" in capsys.readouterr().err
+
+    def test_init_unreadable_skill_file(self, tmp_path, capsys):
+        """OSError while reading the skill file exits 1 with an error message
+        that includes the underlying exception string."""
+        skill_path = tmp_path / "foo.md"
+        skill_path.write_text("# foo")
+
+        with patch(
+            "clauditor.cli.init.Path.read_text",
+            side_effect=OSError("Permission denied"),
+        ):
+            rc = main(["init", str(skill_path)])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "cannot read" in err
+        assert "Permission denied" in err
+
+    def test_init_non_utf8_skill_file(self, tmp_path, capsys):
+        """UnicodeDecodeError (non-UTF-8 skill file) exits 1 with a clean
+        message instead of an uncaught traceback. ``read_text`` is called
+        with ``encoding='utf-8'`` and ``UnicodeDecodeError`` is a
+        ``ValueError`` subclass (not ``OSError``), so the except clause
+        must catch both explicitly."""
+        skill_path = tmp_path / "bogus.md"
+        # Raw bytes that don't decode as UTF-8 (a Latin-1 é followed by
+        # high-range bytes).
+        skill_path.write_bytes(b"\xc3\x28\xa0\xa1")
+
+        rc = main(["init", str(skill_path)])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert f"cannot read {skill_path}" in err
+        # The underlying codec error is appended to the message.
+        assert "utf-8" in err or "codec" in err
+
+    def test_init_frontmatter_disagreement_silent(self, tmp_path, capsys):
+        """When frontmatter ``name:`` disagrees with the filesystem-derived
+        name, frontmatter wins. Per DEC-008 of
+        ``plans/super/71-agentskills-lint.md``, ``derive_skill_name`` no
+        longer emits a stderr warning for this case — the equivalent
+        ``AGENTSKILLS_NAME_PARENT_DIR_MISMATCH`` conformance code moves
+        to ``clauditor.conformance.check_conformance``, wired in by
+        US-006."""
+        skill_dir = tmp_path / ".claude" / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text(
+            "---\n"
+            "name: bar\n"
+            "description: Disagreement test\n"
+            "---\n"
+            "\n"
+            "# Body\n"
+        )
+
+        rc = main(["init", str(skill_path)])
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "clauditor.spec:" not in captured.err
+        assert "frontmatter name" not in captured.err
+        eval_path = skill_dir / "SKILL.eval.json"
+        data = json.loads(eval_path.read_text())
+        assert data["skill_name"] == "bar"
+        assert data["description"] == "Eval spec for /bar"
+
+    def test_init_generated_spec_uses_per_type_keys(self, tmp_path):
+        """Regression (DEC-001/DEC-002 of #67): generated eval.json loads
+        via ``EvalSpec.from_file`` (no legacy ``value`` keys) and uses
+        native JSON ints for counts/lengths — the starter scaffold must
+        stay in lockstep with the per-type validator.
+        """
+        from clauditor.schemas import EvalSpec
+
+        skill_path = tmp_path / "my-skill.md"
+        skill_path.write_text("# My Skill")
+
+        rc = main(["init", str(skill_path)])
+        assert rc == 0
+
+        eval_path = tmp_path / "my-skill.eval.json"
+        # Substring check: the generated file must not contain any
+        # legacy ``"value":`` assertion key. Cheap guard against a
+        # future regression that reverts the scaffold.
+        raw = eval_path.read_text(encoding="utf-8")
+        assert '"value":' not in raw, (
+            "generated eval.json must not contain legacy 'value' keys"
+        )
+
+        # Must load cleanly via EvalSpec.from_file — the per-type
+        # required-key + type-check validator from US-001 rejects the
+        # legacy shape at load time.
+        spec = EvalSpec.from_file(eval_path)
+        assert spec.skill_name == "my-skill"
+        # Starter scaffold ships 4 assertions per DEC-001 mapping.
+        assert len(spec.assertions) == 4
+
+        # Each assertion uses the per-type semantic key (DEC-001)
+        # with native JSON ints for counts/lengths (DEC-002). A
+        # future scaffold edit that swaps a key name (``length`` →
+        # ``len``) or reverts to stringly-typed ints (``500`` →
+        # ``"500"``) must fail this test, not silently pass.
+        by_id = {a["id"]: a for a in spec.assertions}
+        assert by_id["min_length_500"]["length"] == 500
+        assert isinstance(by_id["min_length_500"]["length"], int)
+        assert by_id["has_urls_3"]["count"] == 3
+        assert isinstance(by_id["has_urls_3"]["count"], int)
+        assert by_id["has_entries_3"]["count"] == 3
+        assert isinstance(by_id["has_entries_3"]["count"], int)
+        assert by_id["no_error"]["needle"] == "Error"
 
 
 @pytest.fixture
@@ -3408,7 +3621,9 @@ class TestCmdCapture:
         out_path = tmp_path / "tests/eval/captured/find-restaurants.txt"
         assert out_path.exists()
         assert out_path.read_text() == "captured stdout"
-        mock_runner.run.assert_called_once_with("find-restaurants", "")
+        mock_runner.run.assert_called_once_with(
+            "find-restaurants", "", env=None, timeout=None,
+        )
 
     def test_capture_custom_out(self, tmp_path):
         mock_runner = MagicMock()
@@ -3455,7 +3670,9 @@ class TestCmdCapture:
         with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "/find-restaurants"])
         assert rc == 0
-        mock_runner.run.assert_called_once_with("find-restaurants", "")
+        mock_runner.run.assert_called_once_with(
+            "find-restaurants", "", env=None, timeout=None,
+        )
         assert (tmp_path / "tests/eval/captured/find-restaurants.txt").exists()
 
     def test_capture_passes_trailing_args(self, tmp_path, monkeypatch):
@@ -3465,7 +3682,9 @@ class TestCmdCapture:
         with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
             rc = main(["capture", "find-restaurants", "--", "near", "San Jose"])
         assert rc == 0
-        mock_runner.run.assert_called_once_with("find-restaurants", "near San Jose")
+        mock_runner.run.assert_called_once_with(
+            "find-restaurants", "near San Jose", env=None, timeout=None,
+        )
 
     def test_capture_runner_failure_returns_nonzero(
         self, tmp_path, monkeypatch, capsys
@@ -3480,6 +3699,249 @@ class TestCmdCapture:
             rc = main(["capture", "find-restaurants"])
         assert rc == 1
         assert "boom" in capsys.readouterr().err
+
+
+class TestNoApiKeyFlag:
+    """US-006: --no-api-key strips both auth env vars on every skill-invoking CLI.
+
+    Each test threads the new ``env_override`` / ``env`` kwarg through
+    and asserts the resulting dict does NOT contain ``ANTHROPIC_API_KEY``
+    or ``ANTHROPIC_AUTH_TOKEN`` (DEC-001, DEC-006, DEC-007).
+    """
+
+    def _assert_env_stripped(self, env: dict | None) -> None:
+        assert env is not None, "env_override must be a dict, got None"
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_AUTH_TOKEN" not in env
+
+    def test_validate_no_api_key_threads_env_override(
+        self, tmp_path, monkeypatch
+    ):
+        """validate --no-api-key → SkillSpec.run(env_override=<stripped>)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--no-api-key"])
+        assert rc == 0
+        spec.run.assert_called_once()
+        env = spec.run.call_args.kwargs.get("env_override")
+        self._assert_env_stripped(env)
+
+    def test_grade_no_api_key_threads_env_override(
+        self, tmp_path, monkeypatch
+    ):
+        """grade --no-api-key → SkillSpec.run(env_override=<stripped>)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token")
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.return_value = make_skill_result(
+            output="primary output", duration_seconds=0.5,
+            input_tokens=10, output_tokens=5,
+        )
+        report = make_grading_report(passed=True)
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--no-api-key"])
+        assert rc == 0
+        spec.run.assert_called()
+        env = spec.run.call_args.kwargs.get("env_override")
+        self._assert_env_stripped(env)
+
+    def test_capture_no_api_key_threads_env(self, tmp_path, monkeypatch):
+        """capture --no-api-key → SkillRunner.run(env=<stripped>)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token")
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="captured stdout", skill_name="find-restaurants",
+            duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "find-restaurants", "--no-api-key"])
+        assert rc == 0
+        mock_runner.run.assert_called_once()
+        env = mock_runner.run.call_args.kwargs.get("env")
+        self._assert_env_stripped(env)
+
+    def test_run_no_api_key_threads_env(self, monkeypatch):
+        """run --no-api-key → SkillRunner.run(env=<stripped>)."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token")
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="skill output", skill_name="my-skill",
+            duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--no-api-key"])
+        assert rc == 0
+        mock_runner.run.assert_called_once()
+        env = mock_runner.run.call_args.kwargs.get("env")
+        self._assert_env_stripped(env)
+
+    def test_validate_without_no_api_key_passes_env_none(
+        self, tmp_path, monkeypatch
+    ):
+        """Without --no-api-key, env_override stays None (today's behavior)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+        assert rc == 0
+        assert spec.run.call_args.kwargs.get("env_override") is None
+
+    def test_grade_baseline_threads_env_and_timeout_to_run_raw(
+        self, tmp_path, monkeypatch
+    ):
+        """#64 QG: grade --baseline --no-api-key --timeout X threads env
+        AND timeout to the baseline's run_raw call, not just the primary
+        arm's spec.run. End-to-end guard for the pass-2 baseline-plumbing
+        fix (argparse → _write_workspace_sidecars →
+        _write_baseline_and_benchmark → _run_baseline_phase → run_raw)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token")
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.return_value = make_skill_result(
+            output="primary output",
+            duration_seconds=0.5,
+            input_tokens=10,
+            output_tokens=5,
+        )
+        spec.runner = MagicMock()
+        spec.runner.run_raw.return_value = make_skill_result(
+            output="baseline output",
+            duration_seconds=0.3,
+            input_tokens=8,
+            output_tokens=4,
+            skill_name="__baseline__",
+        )
+        report = make_grading_report(passed=True)
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade", "skill.md",
+                    "--baseline", "--no-api-key", "--timeout", "60",
+                ]
+            )
+        assert rc == 0
+        spec.runner.run_raw.assert_called_once()
+        kwargs = spec.runner.run_raw.call_args.kwargs
+        self._assert_env_stripped(kwargs.get("env"))
+        assert kwargs.get("timeout") == 60
+
+
+class TestTimeoutFlag:
+    """US-006: --timeout SECONDS threads to the runner, rejects <= 0 at parse time.
+
+    Covers argparse-level validation (exit 2 on 0, negative, non-int) and
+    the happy path (positive int → ``timeout_override`` / ``timeout``
+    kwarg on the underlying run call). Defaults to None (DEC-014).
+    """
+
+    def test_validate_timeout_300_threads_override(
+        self, tmp_path, monkeypatch
+    ):
+        """validate --timeout 300 → SkillSpec.run(timeout_override=300)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--timeout", "300"])
+        assert rc == 0
+        assert spec.run.call_args.kwargs.get("timeout_override") == 300
+
+    def test_validate_timeout_zero_exits_2(self, capsys):
+        """--timeout 0 → argparse rejects with exit 2."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["validate", "skill.md", "--timeout", "0"])
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "must be >= 1" in err or "must be > 0" in err
+
+    def test_validate_timeout_negative_exits_2(self, capsys):
+        """--timeout -5 → argparse rejects with exit 2."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["validate", "skill.md", "--timeout", "-5"])
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "must be >= 1" in err or "must be > 0" in err
+
+    def test_validate_timeout_non_int_exits_2(self, capsys):
+        """--timeout foo → argparse rejects with exit 2."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(["validate", "skill.md", "--timeout", "foo"])
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "not an integer" in err or "invalid" in err.lower()
+
+    def test_run_timeout_default_none_preserves_fallback(self):
+        """run (no --timeout) → SkillRunner.run(timeout=None), so the runner's
+        self.timeout default of 180s kicks in."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="skill output", skill_name="my-skill",
+            duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill"])
+        assert rc == 0
+        assert mock_runner.run.call_args.kwargs.get("timeout") is None
+
+    def test_run_timeout_300_threads_to_runner(self):
+        """run --timeout 300 → SkillRunner.run(timeout=300)."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="skill output", skill_name="my-skill",
+            duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--timeout", "300"])
+        assert rc == 0
+        assert mock_runner.run.call_args.kwargs.get("timeout") == 300
+
+    def test_capture_timeout_300_threads_to_runner(self, tmp_path, monkeypatch):
+        """capture --timeout 300 → SkillRunner.run(timeout=300)."""
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="captured stdout", skill_name="find-restaurants",
+            duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "find-restaurants", "--timeout", "300"])
+        assert rc == 0
+        assert mock_runner.run.call_args.kwargs.get("timeout") == 300
 
 
 class TestCmdDoctor:
@@ -5144,3 +5606,626 @@ class TestCmdSuggest:
         assert rc == 1
         err = capsys.readouterr().err
         assert "UTF-8" in err or "decode" in err
+
+
+class TestLoadSpecOrReport:
+    """Direct tests for ``cli._load_spec_or_report`` I/O error handling.
+
+    US-005 (#62) expanded the except clause from ``FileNotFoundError``
+    only to ``(FileNotFoundError, OSError)`` with branched messages:
+    missing file keeps the existing ``clauditor init`` hint, other
+    ``OSError`` subclasses get a generic ``ERROR: cannot read ...``
+    message. Traces to DEC-010 of ``plans/super/62-skill-md-layout.md``.
+    """
+
+    def test_file_not_found_keeps_init_hint_message(self, capsys):
+        """FileNotFoundError preserves the byte-identical init-hint message."""
+        from clauditor.cli import _load_spec_or_report
+
+        with patch(
+            "clauditor.cli.SkillSpec.from_file",
+            side_effect=FileNotFoundError(
+                "Skill file not found: missing.md"
+            ),
+        ):
+            result = _load_spec_or_report("missing.md", None)
+
+        assert result is None
+        err = capsys.readouterr().err
+        # Byte-identical to the pre-US-005 message: name the path and
+        # suggest `clauditor init` as the next step.
+        assert (
+            "ERROR: Skill file not found: missing.md. "
+            "Run 'clauditor init missing.md' to create one."
+        ) in err
+
+    def test_permission_error_emits_cannot_read_message(self, capsys):
+        """PermissionError (OSError subclass) routes to the generic branch."""
+        from clauditor.cli import _load_spec_or_report
+
+        with patch(
+            "clauditor.cli.SkillSpec.from_file",
+            side_effect=PermissionError("Permission denied"),
+        ):
+            result = _load_spec_or_report("protected.md", None)
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert "ERROR: cannot read protected.md: Permission denied" in err
+        # The init hint must NOT appear on the generic-OSError branch —
+        # the file exists, it's just unreadable.
+        assert "clauditor init" not in err
+
+    def test_is_a_directory_error_emits_cannot_read_message(
+        self, tmp_path, capsys
+    ):
+        """IsADirectoryError (OSError subclass) routes to the generic branch.
+
+        Pass ``tmp_path`` itself (a directory) as the skill path; the
+        real ``SkillSpec.from_file`` will try to ``read_text()`` it and
+        raise ``IsADirectoryError``. This exercises the helper against
+        a real OS error rather than a mocked one.
+        """
+        from clauditor.cli import _load_spec_or_report
+
+        result = _load_spec_or_report(str(tmp_path), None)
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert f"ERROR: cannot read {tmp_path}:" in err
+        assert "clauditor init" not in err
+
+    def test_unicode_decode_error_emits_cannot_read_message(self, capsys):
+        """UnicodeDecodeError (ValueError subclass) routes to the generic branch.
+
+        ``SkillSpec.from_file`` reads the skill file with
+        ``encoding="utf-8"``; a non-UTF-8 file raises
+        ``UnicodeDecodeError``, which is NOT an ``OSError`` subclass.
+        The except clause explicitly catches both so the user sees a
+        clean error message instead of an uncaught traceback.
+        """
+        from clauditor.cli import _load_spec_or_report
+
+        with patch(
+            "clauditor.cli.SkillSpec.from_file",
+            side_effect=UnicodeDecodeError(
+                "utf-8", b"\xff\xfe", 0, 1, "invalid start byte"
+            ),
+        ):
+            result = _load_spec_or_report("weird.md", None)
+
+        assert result is None
+        err = capsys.readouterr().err
+        assert "ERROR: cannot read weird.md:" in err
+        assert "clauditor init" not in err
+
+
+class TestRenderSkillError:
+    """Direct tests for ``cli._render_skill_error`` (US-005 / #63).
+
+    Pure helper: no I/O, reads only from the passed ``SkillResult`` and
+    module-level constants. Traces to DEC-002 (warnings as ``(warning:
+    ...)`` trailer — neutral label since ``warnings`` may contain
+    non-stderr entries like interactive-hang tags or malformed-line
+    notices), DEC-003 (1000-char truncation), DEC-004 (category
+    hint as a second line), DEC-011 (signature + ``_CATEGORY_HINTS``
+    lookup) of ``plans/super/63-runner-error-surfacing.md``.
+    """
+
+    def _mk(
+        self,
+        *,
+        error: str | None = None,
+        error_category: str | None = None,
+        warnings: list[str] | None = None,
+    ) -> SkillResult:
+        return SkillResult(
+            output="",
+            exit_code=-1,
+            skill_name="s",
+            args="",
+            error=error,
+            error_category=error_category,
+            warnings=warnings if warnings is not None else [],
+        )
+
+    def test_error_none_no_category_returns_unknown_fallback(self):
+        """No error, no category → default unknown fallback."""
+        from clauditor.cli import _render_skill_error
+
+        result = self._mk(error=None, error_category=None, warnings=[])
+        assert _render_skill_error(result) == "Unknown error"
+
+    def test_error_none_rate_limit_category_returns_hint_only(self):
+        """No error text, known category → hint is the base text (no duplicate)."""
+        from clauditor.cli import _render_skill_error
+
+        result = self._mk(
+            error=None, error_category="rate_limit", warnings=[]
+        )
+        assert (
+            _render_skill_error(result)
+            == "Hint: retry in ~60s (rate limit)"
+        )
+
+    @pytest.mark.parametrize(
+        ("category", "expected"),
+        [
+            ("rate_limit", "Hint: retry in ~60s (rate limit)"),
+            (
+                "auth",
+                "Hint: check the ANTHROPIC_API_KEY environment variable",
+            ),
+            (
+                "interactive",
+                "Hint: ensure all parameters are in test_args; "
+                "/clauditor cannot drive interactive skills",
+            ),
+            ("timeout", "Hint: skill exceeded the run timeout"),
+            (
+                "subprocess",
+                "Hint: the claude CLI itself errored — see stream_events",
+            ),
+            ("api", "Hint: see the error text above"),
+        ],
+    )
+    def test_error_none_each_category_returns_corresponding_hint(
+        self, category, expected
+    ):
+        """Every category key in _CATEGORY_HINTS resolves to its hint text."""
+        from clauditor.cli import _CATEGORY_HINTS, _render_skill_error
+
+        # Sanity: the parametrize table matches the module-level dict.
+        assert _CATEGORY_HINTS[category] == expected
+
+        result = self._mk(
+            error=None, error_category=category, warnings=[]
+        )
+        assert _render_skill_error(result) == expected
+
+    def test_error_set_no_category_returns_error_only(self):
+        """Error text with no category → error text alone, no hint."""
+        from clauditor.cli import _render_skill_error
+
+        result = self._mk(
+            error="API Error X", error_category=None, warnings=[]
+        )
+        assert _render_skill_error(result) == "API Error X"
+
+    def test_error_set_and_category_returns_two_lines(self):
+        """Error text + known category → error / hint on two lines."""
+        from clauditor.cli import _render_skill_error
+
+        result = self._mk(
+            error="API Error: 429 rate limit",
+            error_category="rate_limit",
+            warnings=[],
+        )
+        assert _render_skill_error(result) == (
+            "API Error: 429 rate limit\n"
+            "Hint: retry in ~60s (rate limit)"
+        )
+
+    def test_long_error_text_truncated(self):
+        """Error > 1000 chars is truncated with a stream_events pointer."""
+        from clauditor.cli import _ERROR_TEXT_MAX_CHARS, _render_skill_error
+
+        assert _ERROR_TEXT_MAX_CHARS == 1000  # anchor the constant
+        result = self._mk(error="X" * 2000, warnings=[])
+        out = _render_skill_error(result)
+
+        expected = "X" * 1000 + " ... (truncated; see stream_events)"
+        assert out == expected
+        # Exact length: 1000 X's + the suffix.
+        assert len(out) == 1000 + len(" ... (truncated; see stream_events)")
+        assert out.endswith(" ... (truncated; see stream_events)")
+
+    def test_short_error_text_not_truncated(self):
+        """Error <= 1000 chars is returned as-is (no truncation marker)."""
+        from clauditor.cli import _render_skill_error
+
+        result = self._mk(error="X" * 100, warnings=[])
+        out = _render_skill_error(result)
+        assert "(truncated" not in out
+        assert out == "X" * 100
+
+    def test_warnings_append_trailer(self):
+        """Non-empty warnings[0] → `(warning: <first-non-empty-line>)` trailer."""
+        from clauditor.cli import _render_skill_error
+
+        result = self._mk(
+            error="boom",
+            error_category=None,
+            warnings=["line1", "line3"],  # first-warning only is rendered
+        )
+        assert _render_skill_error(result) == "boom\n(warning: line1)"
+
+    def test_multiline_warning_uses_first_nonempty_line(self):
+        """Leading empty/whitespace lines are skipped; first non-empty wins."""
+        from clauditor.cli import _render_skill_error
+
+        result = self._mk(
+            error="boom",
+            warnings=["\n\n  real first line\nsecond line"],
+        )
+        # We pick the first line whose .strip() is non-empty and emit
+        # its stripped form — surrounding whitespace is dropped for
+        # cleanliness on the one-line trailer.
+        assert (
+            _render_skill_error(result)
+            == "boom\n(warning: real first line)"
+        )
+
+    def test_warnings_all_empty_no_trailer(self):
+        """Whitespace-only warnings[0] → no trailer; just the error text."""
+        from clauditor.cli import _render_skill_error
+
+        result = self._mk(
+            error="boom",
+            warnings=["", "   "],
+        )
+        assert _render_skill_error(result) == "boom"
+
+    def test_warnings_plus_category_produces_three_components(self):
+        """Error + category + warning → three lines in order."""
+        from clauditor.cli import _render_skill_error
+
+        result = self._mk(
+            error="API Error: 429",
+            error_category="rate_limit",
+            warnings=["stderr blather"],
+        )
+        assert _render_skill_error(result) == (
+            "API Error: 429\n"
+            "Hint: retry in ~60s (rate limit)\n"
+            "(warning: stderr blather)"
+        )
+
+    def test_empty_string_error_treated_as_none(self):
+        """``error=""`` is equivalent to ``error=None`` (matches spec.py idiom)."""
+        from clauditor.cli import _render_skill_error
+
+        result = self._mk(error="", error_category=None, warnings=[])
+        assert _render_skill_error(result) == "Unknown error"
+
+    def test_custom_unknown_fallback(self):
+        """The ``unknown_fallback`` kwarg overrides the default."""
+        from clauditor.cli import _render_skill_error
+
+        result = self._mk(error=None, error_category=None, warnings=[])
+        assert (
+            _render_skill_error(result, unknown_fallback="nothing here")
+            == "nothing here"
+        )
+
+    def test_unknown_category_uses_fallback(self):
+        """An error_category that's not a key in _CATEGORY_HINTS falls back.
+
+        Python's type system can't enforce the ``Literal[...]`` at
+        runtime, so the helper defensively checks membership in
+        ``_CATEGORY_HINTS`` rather than ``is not None``.
+        """
+        from clauditor.cli import _render_skill_error
+
+        result = self._mk(
+            error=None,
+            error_category="some_unexpected_string",  # type: ignore[arg-type]
+            warnings=[],
+        )
+        assert _render_skill_error(result) == "Unknown error"
+
+
+# ---------------------------------------------------------------------------
+# US-006 / DEC-011 / DEC-012 regression: the five CLI commands that surface
+# skill-run errors now route through ``_render_skill_error``. Cover the two
+# ticket repros (429 + interactive-hang) and at least one per-command hit so
+# we catch any regression that reverts ``{result.error}`` inline substitution.
+# ---------------------------------------------------------------------------
+
+
+class TestCmdValidateErrorSurfacingRegression:
+    """Regression guard for #63 ticket repros at the ``validate`` call site.
+
+    Before US-005/US-006, ``cmd_validate`` printed
+    ``f"ERROR: Skill failed to run: {skill_result.error}"`` which rendered
+    ``"... : None"`` when ``error`` was ``None`` (the 429 / interactive-
+    hang repros). After adopting ``_render_skill_error``, the provider
+    error text is surfaced verbatim AND a ``Hint: ...`` line is appended.
+    Traces to DEC-011 (helper returns tail only), DEC-012 (all five
+    commands) of ``plans/super/63-runner-error-surfacing.md``.
+    """
+
+    def test_validate_429_error_surfaces_actual_text(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A 429 ``rate_limit`` failure prints the full error + hint line.
+
+        Ticket repro: before the helper, stderr read
+        ``"ERROR: Skill failed to run: None"``. After, stderr carries the
+        actual ``API Error: ...`` payload and the ``rate_limit`` hint.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="",
+            exit_code=1,
+            duration_seconds=0.5,
+            error=(
+                "API Error: Request rejected (429). "
+                "Rate limit exceeded for your organization."
+            ),
+        )
+        spec.run.return_value.error_category = "rate_limit"
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "API Error: Request rejected (429)" in err
+        assert "Rate limit exceeded for your organization." in err
+        assert "Hint: retry in ~60s (rate limit)" in err
+        assert ": None" not in err
+        assert "Unknown error" not in err
+
+    def test_validate_interactive_hang_surfaces_warning(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Interactive-hang heuristic prints its warning + hint line.
+
+        Ticket repro: before the helper, an interactive-hang reach at
+        a failing run path rendered ``"... : None"`` because
+        ``error_category="interactive"`` leaves ``result.error`` ``None``.
+        After, the first warning line is rendered as the base text and
+        the interactive hint is appended.
+        """
+        from clauditor.runner import _INTERACTIVE_HANG_WARNING
+
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        # Synthesize a failing run (output="") with interactive-hang
+        # signals so the ``not succeeded`` branch fires the helper.
+        # Realistic interactive-hang shape: the skill emitted a question
+        # as assistant text and exited cleanly, so `succeeded` is True
+        # (non-empty output, exit_code=0). Only `succeeded_cleanly`
+        # catches it — proving the CLI guard is strict.
+        spec.run.return_value = make_skill_result(
+            output="What color do you want?",
+            exit_code=0,
+            duration_seconds=0.5,
+            error=None,
+        )
+        spec.run.return_value.error_category = "interactive"
+        spec.run.return_value.warnings = [_INTERACTIVE_HANG_WARNING]
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "interactive-hang:" in err
+        # Interactive hint from _CATEGORY_HINTS (the tail after the
+        # first-warning-as-base).
+        assert "/clauditor cannot drive interactive skills" in err
+        assert "failed to run: None" not in err
+        assert "Unknown error" not in err
+
+
+class TestCmdRunErrorSurfacingRegression:
+    """Regression guard for ``cmd_run`` adopting ``_render_skill_error``."""
+
+    def test_run_429_error_surfaces_actual_text(self, capsys):
+        """A 429 ``rate_limit`` failure renders full error + hint line."""
+        mock_runner = MagicMock()
+        result = make_skill_result(
+            output="",
+            exit_code=1,
+            skill_name="my-skill",
+            duration_seconds=0.5,
+            error=(
+                "API Error: Request rejected (429). "
+                "Rate limit exceeded for your organization."
+            ),
+        )
+        result.error_category = "rate_limit"
+        mock_runner.run.return_value = result
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "API Error: Request rejected (429)" in err
+        assert "Hint: retry in ~60s (rate limit)" in err
+        assert ": None" not in err
+        assert "Unknown error" not in err
+
+    def test_run_interactive_hang_surfaces_warning(self, capsys):
+        """Interactive-hang under ``cmd_run`` now renders (previously the
+        ``if result.error:`` guard silently suppressed it since
+        ``result.error`` is ``None`` for the heuristic).
+        """
+        from clauditor.runner import _INTERACTIVE_HANG_WARNING
+
+        mock_runner = MagicMock()
+        result = make_skill_result(
+            output="Would you like me to continue?",
+            exit_code=0,
+            skill_name="my-skill",
+            duration_seconds=0.5,
+            error=None,
+        )
+        result.error_category = "interactive"
+        result.warnings = [_INTERACTIVE_HANG_WARNING]
+        mock_runner.run.return_value = result
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill"])
+
+        err = capsys.readouterr().err
+        # ``cmd_run`` returns ``result.exit_code`` verbatim; interactive
+        # hangs exit 0 at the subprocess level, but the render path now
+        # still fires because ``succeeded_cleanly`` is False.
+        assert rc == 0
+        assert "interactive-hang:" in err
+        assert "/clauditor cannot drive interactive skills" in err
+        assert "Unknown error" not in err
+
+    def test_run_happy_path_no_error_rendered(self, capsys):
+        """A clean run emits no ERROR line (guard now checks
+        ``succeeded_cleanly``)."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="skill output here",
+            skill_name="my-skill",
+            duration_seconds=1.0,
+        )
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill"])
+
+        captured = capsys.readouterr()
+        assert rc == 0
+        assert "skill output here" in captured.out
+        assert "ERROR" not in captured.err
+
+
+class TestCmdCaptureErrorSurfacingRegression:
+    """Regression guard for ``cmd_capture`` adopting ``_render_skill_error``."""
+
+    def test_capture_429_error_surfaces_actual_text(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """A 429 ``rate_limit`` failure renders full error + hint line."""
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        result = make_skill_result(
+            output="",
+            exit_code=2,
+            skill_name="find-restaurants",
+            duration_seconds=0.1,
+            error=(
+                "API Error: Request rejected (429). "
+                "Rate limit exceeded for your organization."
+            ),
+        )
+        result.error_category = "rate_limit"
+        mock_runner.run.return_value = result
+
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "find-restaurants"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "API Error: Request rejected (429)" in err
+        assert "Hint: retry in ~60s (rate limit)" in err
+        assert ": None" not in err
+        assert "Unknown error" not in err
+
+
+class TestCmdGradeErrorSurfacingRegression:
+    """Regression guard for ``cmd_grade`` adopting ``_render_skill_error``.
+
+    Covers both call sites: primary-run failure (~line 369) and
+    variance-run failure (~line 395).
+    """
+
+    def test_grade_primary_429_error_surfaces_actual_text(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Primary-run 429 surfaces the full error + hint line."""
+        monkeypatch.chdir(tmp_path)
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        result = make_skill_result(
+            output="",
+            exit_code=1,
+            duration_seconds=0.5,
+            error=(
+                "API Error: Request rejected (429). "
+                "Rate limit exceeded for your organization."
+            ),
+        )
+        result.error_category = "rate_limit"
+        spec.run = MagicMock(return_value=result)
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["grade", "skill.md"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "API Error: Request rejected (429)" in err
+        assert "Hint: retry in ~60s (rate limit)" in err
+        assert ": None" not in err
+        assert "Unknown error" not in err
+
+    def test_grade_variance_429_error_surfaces_actual_text(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Variance-run 429 surfaces the full error + hint line.
+
+        Per ``.claude/rules/mock-side-effect-for-distinct-calls.md``:
+        distinct side_effect values per call since primary succeeds and
+        variance fails.
+        """
+        monkeypatch.chdir(tmp_path)
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        primary_ok = make_skill_result(
+            output="primary output",
+            input_tokens=10,
+            output_tokens=5,
+            duration_seconds=0.5,
+        )
+        variance_bad = make_skill_result(
+            output="",
+            exit_code=1,
+            error=(
+                "API Error: Request rejected (429). "
+                "Rate limit exceeded for your organization."
+            ),
+        )
+        variance_bad.error_category = "rate_limit"
+        spec.run = MagicMock(side_effect=[primary_ok, variance_bad])
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["grade", "skill.md", "--variance", "1"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "Variance skill run failed" in err
+        assert "API Error: Request rejected (429)" in err
+        assert "Hint: retry in ~60s (rate limit)" in err
+        assert ": None" not in err
+        assert "Unknown error" not in err
+
+
+class TestCmdExtractErrorSurfacingRegression:
+    """Regression guard for ``cmd_extract`` adopting ``_render_skill_error``."""
+
+    def test_extract_429_error_surfaces_actual_text(self, capsys):
+        """A 429 ``rate_limit`` failure renders full error + hint line."""
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+        result = make_skill_result(
+            output="",
+            exit_code=1,
+            duration_seconds=0.2,
+            error=(
+                "API Error: Request rejected (429). "
+                "Rate limit exceeded for your organization."
+            ),
+        )
+        result.error_category = "rate_limit"
+        spec.run.return_value = result
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["extract", "skill.md"])
+
+        err = capsys.readouterr().err
+        assert rc == 1
+        assert "Skill failed:" in err
+        assert "API Error: Request rejected (429)" in err
+        assert "Hint: retry in ~60s (rate limit)" in err
+        assert ": None" not in err
+        assert "Unknown error" not in err

@@ -15,12 +15,13 @@ This creates `my-skill.eval.json` alongside your skill file:
 ```json
 {
   "skill_name": "my-skill",
-  "test_args": "\"San Jose, CA\" --depth quick",
+  "description": "Eval spec for /my-skill",
+  "test_args": "",
   "assertions": [
-    {"id": "contains_results", "type": "contains", "value": "Results"},
-    {"id": "has_entries_3",    "type": "has_entries", "value": "3"},
-    {"id": "has_urls_3",       "type": "has_urls", "value": "3"},
-    {"id": "min_length_500",   "type": "min_length", "value": "500"}
+    {"id": "min_length_500", "type": "min_length", "length": 500},
+    {"id": "has_urls_3", "type": "has_urls", "count": 3},
+    {"id": "has_entries_3", "type": "has_entries", "count": 3},
+    {"id": "no_error", "type": "not_contains", "needle": "Error"}
   ],
   "sections": [
     {
@@ -30,15 +31,30 @@ This creates `my-skill.eval.json` alongside your skill file:
           "label": "default",
           "min_entries": 3,
           "fields": [
-            {"id": "result_name",    "name": "name",    "required": true},
-            {"id": "result_address", "name": "address", "required": true}
+            {"id": "results_name", "name": "name", "required": true},
+            {"id": "results_address", "name": "address", "required": true}
           ]
         }
       ]
     }
-  ]
+  ],
+  "grading_criteria": [
+    {"id": "relevant", "criterion": "Are results relevant to the query?"},
+    {"id": "specific", "criterion": "Are descriptions specific (not generic filler)?"}
+  ],
+  "grading_model": "claude-sonnet-4-6",
+  "trigger_tests": {
+    "should_trigger": [],
+    "should_not_trigger": []
+  },
+  "variance": {
+    "n_runs": 3,
+    "min_stability": 0.8
+  }
 }
 ```
+
+Fill in `test_args` and customize assertions, sections, and grading criteria for your skill.
 
 ## 2. Validate against captured output
 

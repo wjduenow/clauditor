@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -12,6 +13,7 @@ import clauditor.spec as _spec_mod
 
 importlib.reload(_spec_mod)
 
+from clauditor.runner import SkillResult  # noqa: E402
 from clauditor.spec import SkillSpec, _failed_run_result  # noqa: E402
 
 # ── Minimal eval data for fixture ──────────────────────────────────────────
@@ -20,7 +22,7 @@ MINIMAL_EVAL = {
     "skill_name": "test-skill",
     "description": "test eval",
     "test_args": "--depth quick",
-    "assertions": [{"id": "a_hello", "type": "contains", "value": "hello"}],
+    "assertions": [{"id": "a_hello", "type": "contains", "needle": "hello"}],
 }
 
 
@@ -55,6 +57,246 @@ class TestFromFile:
         assert spec.eval_spec is not None
         assert spec.eval_spec.test_args == "--depth quick"
 
+    # ── Layout-aware identity derivation (DEC-001, DEC-002, DEC-009) ──
+
+    def test_from_file_modern_layout_matching_frontmatter(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Modern layout, frontmatter ``name:`` matches parent dir → silent."""
+        skill_path = tmp_skill_file(
+            "foo",
+            content="---\nname: foo\n---\n# Foo\n",
+            layout="modern",
+        )
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec.skill_name == "foo"
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_from_file_modern_layout_disagreement_silent(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Modern layout, frontmatter ``name:`` disagrees → frontmatter
+        wins (DEC-002). Per DEC-008 of
+        ``plans/super/71-agentskills-lint.md``, ``derive_skill_name`` no
+        longer emits a stderr warning for the mismatch — the equivalent
+        ``AGENTSKILLS_NAME_PARENT_DIR_MISMATCH`` conformance code is
+        routed through US-006's soft-warn hook (out of scope for this
+        test)."""
+        skill_path = tmp_skill_file(
+            "foo",
+            content="---\nname: bar\n---\n# Bar\n",
+            layout="modern",
+        )
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec.skill_name == "bar"
+        captured = capsys.readouterr()
+        assert "frontmatter name" not in captured.err
+
+    def test_from_file_modern_layout_missing_name_silent(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Modern layout with no frontmatter → falls back to parent dir
+        name silently (DEC-001)."""
+        skill_path = tmp_skill_file(
+            "foo",
+            content="# Foo\n\nNo frontmatter here.\n",
+            layout="modern",
+        )
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec.skill_name == "foo"
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_from_file_legacy_layout_matching_frontmatter(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Legacy layout, frontmatter ``name:`` matches stem → name-related
+        warnings stay silent.
+
+        Per DEC-005 + DEC-003 of ``plans/super/71-agentskills-lint.md``,
+        legacy single-file layouts unconditionally fire
+        ``AGENTSKILLS_LAYOUT_LEGACY`` (warning severity) via the US-006
+        soft-warn hook, so stderr is no longer empty — but the
+        frontmatter name matches the stem, so no
+        ``AGENTSKILLS_NAME_*`` warnings appear.
+        """
+        skill_path = tmp_skill_file(
+            "foo",
+            content="---\nname: foo\n---\n# Foo\n",
+            layout="legacy",
+        )
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec.skill_name == "foo"
+        captured = capsys.readouterr()
+        assert "AGENTSKILLS_LAYOUT_LEGACY" in captured.err
+        assert "AGENTSKILLS_NAME_" not in captured.err
+
+    def test_from_file_legacy_layout_missing_name_silent(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Legacy layout with no frontmatter → falls back to stem; name
+        path stays silent.
+
+        Per DEC-005 + DEC-003 of ``plans/super/71-agentskills-lint.md``,
+        ``AGENTSKILLS_LAYOUT_LEGACY`` (warning) fires unconditionally,
+        but ``AGENTSKILLS_NAME_MISSING`` is error-severity and the hook
+        filters errors out — so no ``AGENTSKILLS_NAME_*`` warning
+        appears here. This mirrors today's default legacy skill shape
+        (no frontmatter).
+        """
+        skill_path = tmp_skill_file(
+            "my-skill",
+            content="# My Skill\n\nNo frontmatter here.\n",
+            layout="legacy",
+        )
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec.skill_name == "my-skill"
+        captured = capsys.readouterr()
+        assert "AGENTSKILLS_LAYOUT_LEGACY" in captured.err
+        assert "AGENTSKILLS_NAME_" not in captured.err
+
+    def test_init_with_nonexistent_path_uses_layout_fallback(self):
+        """Direct ``SkillSpec(...)`` construction with a non-existent path
+        must not call ``read_text`` and must derive ``skill_name`` from
+        the layout (modern → parent dir, legacy → stem). Regression guard
+        for DEC-006 — the path taken by
+        ``tests/test_quality_grader.py`` when building a spec with a
+        placeholder ``Path("dummy.md")``.
+        """
+        # Modern fallback: path is a named dir / SKILL.md.
+        spec_modern = SkillSpec(skill_path=Path("/nonexistent/foo/SKILL.md"))
+        assert spec_modern.skill_name == "foo"
+
+        # Legacy fallback: path is <stem>.md.
+        spec_legacy = SkillSpec(skill_path=Path("/nonexistent/bar.md"))
+        assert spec_legacy.skill_name == "bar"
+
+    # ── Conformance soft-warn hook (US-006; DEC-003, DEC-014) ──────────
+
+    def test_from_file_emits_warning_conformance_to_stderr(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Modern layout + a long body → the hook emits
+        ``AGENTSKILLS_BODY_TOO_LONG`` (warning) with the
+        ``"clauditor.conformance: "`` prefix per DEC-014.
+        """
+        # Body with 501 lines (>500 threshold).
+        long_body = "\n".join(f"line {i}" for i in range(501))
+        content = (
+            "---\n"
+            "name: foo\n"
+            "description: A skill with an overly long body.\n"
+            "---\n"
+            f"{long_body}\n"
+        )
+        skill_path = tmp_skill_file(
+            "foo", content=content, layout="modern"
+        )
+        SkillSpec.from_file(skill_path, runner=mock_runner())
+        captured = capsys.readouterr()
+        assert "clauditor.conformance: AGENTSKILLS_BODY_TOO_LONG" in (
+            captured.err
+        )
+
+    def test_from_file_silent_on_error_conformance(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Modern layout with only error-severity conformance issues (and
+        no warnings) → hook emits nothing. Errors surface via
+        ``clauditor lint``, not via ``SkillSpec.from_file`` (DEC-003).
+        """
+        # Empty `name:` → AGENTSKILLS_NAME_EMPTY (error). No body
+        # issues, no other warnings.
+        content = (
+            "---\n"
+            'name: ""\n'
+            "description: test\n"
+            "---\n"
+            "# Body\n"
+        )
+        skill_path = tmp_skill_file(
+            "foo", content=content, layout="modern"
+        )
+        SkillSpec.from_file(skill_path, runner=mock_runner())
+        captured = capsys.readouterr()
+        assert "clauditor.conformance:" not in captured.err
+
+    def test_from_file_emits_only_warnings_when_mixed(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Modern layout that produces BOTH an error AND a warning → the
+        hook emits only the warning line. DEC-003: errors are silent at
+        this layer.
+        """
+        # Empty `name:` (error) + `allowed-tools` field present
+        # (AGENTSKILLS_ALLOWED_TOOLS_EXPERIMENTAL warning).
+        content = (
+            "---\n"
+            'name: ""\n'
+            "description: test\n"
+            "allowed-tools: Bash(ls)\n"
+            "---\n"
+            "# Body\n"
+        )
+        skill_path = tmp_skill_file(
+            "foo", content=content, layout="modern"
+        )
+        SkillSpec.from_file(skill_path, runner=mock_runner())
+        captured = capsys.readouterr()
+        assert (
+            "clauditor.conformance: AGENTSKILLS_ALLOWED_TOOLS_EXPERIMENTAL"
+            in captured.err
+        )
+        assert "AGENTSKILLS_NAME_EMPTY" not in captured.err
+
+    def test_from_file_does_not_raise_on_malformed_yaml(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """Malformed frontmatter → ``SkillSpec.from_file`` returns without
+        raising. The conformance issue ``AGENTSKILLS_FRONTMATTER_INVALID_YAML``
+        is error-severity, so the hook filters it out and stderr does
+        NOT gain a ``"clauditor.conformance:"`` line from the hook.
+        """
+        # Frontmatter block with an opening ``---`` but no closing
+        # delimiter — parse_frontmatter raises ValueError here.
+        content = (
+            "---\n"
+            "name: foo\n"
+            "description: broken\n"
+            "# body (note: missing closing ---)\n"
+        )
+        skill_path = tmp_skill_file(
+            "foo", content=content, layout="modern"
+        )
+        # Must not raise.
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec is not None
+        captured = capsys.readouterr()
+        assert "clauditor.conformance:" not in captured.err
+
+    def test_from_file_hook_preserves_skill_name(
+        self, tmp_skill_file, mock_runner, capsys
+    ):
+        """A fully-passing modern skill → ``spec.skill_name`` comes from
+        frontmatter ``name:`` and stderr stays empty (no warnings, no
+        errors).
+        """
+        content = (
+            "---\n"
+            "name: foo\n"
+            "description: A well-formed skill.\n"
+            "---\n"
+            "# Foo\n"
+        )
+        skill_path = tmp_skill_file(
+            "foo", content=content, layout="modern"
+        )
+        spec = SkillSpec.from_file(skill_path, runner=mock_runner())
+        assert spec.skill_name == "foo"
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
 
 class TestRun:
     """SkillSpec.run method."""
@@ -64,7 +306,14 @@ class TestRun:
         runner = mock_runner(output="explicit output")
         spec = SkillSpec.from_file(skill_path, runner=runner)
         result = spec.run(args="--custom flag")
-        runner.run.assert_called_once_with("run-skill", "--custom flag", cwd=None)
+        runner.run.assert_called_once_with(
+            "run-skill",
+            "--custom flag",
+            cwd=None,
+            allow_hang_heuristic=True,
+            timeout=None,
+            env=None,
+        )
         assert result.output == "explicit output"
 
     def test_run_uses_eval_test_args_when_no_args(self, tmp_skill_file, mock_runner):
@@ -72,7 +321,14 @@ class TestRun:
         runner = mock_runner(output="eval args output")
         spec = SkillSpec.from_file(skill_path, runner=runner)
         spec.run()
-        runner.run.assert_called_once_with("run-skill", "--depth quick", cwd=None)
+        runner.run.assert_called_once_with(
+            "run-skill",
+            "--depth quick",
+            cwd=None,
+            allow_hang_heuristic=True,
+            timeout=None,
+            env=None,
+        )
 
     def test_run_uses_empty_string_when_no_eval_no_args(
         self, tmp_skill_file, mock_runner
@@ -81,7 +337,14 @@ class TestRun:
         runner = mock_runner(output="empty args output")
         spec = SkillSpec.from_file(skill_path, runner=runner)
         spec.run()
-        runner.run.assert_called_once_with("run-skill", "", cwd=None)
+        runner.run.assert_called_once_with(
+            "run-skill",
+            "",
+            cwd=None,
+            allow_hang_heuristic=True,
+            timeout=None,
+            env=None,
+        )
 
 
 class TestEvaluate:
@@ -96,7 +359,7 @@ class TestEvaluate:
     def test_happy_path_with_explicit_output(self, tmp_skill_file, mock_runner):
         eval_data = {
             "skill_name": "eval-skill",
-            "assertions": [{"id": "a_hello", "type": "contains", "value": "hello"}],
+            "assertions": [{"id": "a_hello", "type": "contains", "needle": "hello"}],
         }
         skill_path, _ = tmp_skill_file("eval-skill", eval_data=eval_data)
         runner = mock_runner()
@@ -109,7 +372,7 @@ class TestEvaluate:
     def test_evaluate_runs_skill_when_no_output(self, tmp_skill_file, mock_runner):
         eval_data = {
             "skill_name": "auto-skill",
-            "assertions": [{"id": "a_mock", "type": "contains", "value": "mock"}],
+            "assertions": [{"id": "a_mock", "type": "contains", "needle": "mock"}],
         }
         skill_path, _ = tmp_skill_file("auto-skill", eval_data=eval_data)
         runner = mock_runner(output="mock output")
@@ -121,7 +384,7 @@ class TestEvaluate:
     def test_evaluate_returns_error_on_failed_run(self, tmp_skill_file, mock_runner):
         eval_data = {
             "skill_name": "fail-skill",
-            "assertions": [{"id": "a_any", "type": "contains", "value": "anything"}],
+            "assertions": [{"id": "a_any", "type": "contains", "needle": "anything"}],
         }
         skill_path, _ = tmp_skill_file("fail-skill", eval_data=eval_data)
         runner = mock_runner(output="", exit_code=1, error="boom")
@@ -131,6 +394,162 @@ class TestEvaluate:
         assert len(result.results) == 1
         assert "failed to run" in result.results[0].message
         assert "boom" in result.results[0].message
+
+
+class TestEvaluateFailureClassification:
+    """US-007: ``evaluate()`` uses ``succeeded_cleanly`` (strict) so an
+    apparently-successful run that actually hit an error signal still
+    short-circuits to an assertion-failure, and the failure message
+    reflects the right source (``error`` text vs interactive-hang
+    warning vs generic fallback). Per DEC-006 / DEC-010 of
+    ``plans/super/63-runner-error-surfacing.md``.
+    """
+
+    EVAL_DATA = {
+        "skill_name": "classify-skill",
+        "assertions": [
+            {"id": "a_hello", "type": "contains", "needle": "hello"},
+        ],
+    }
+
+    def test_interactive_hang_produces_assertion_failure(
+        self, tmp_skill_file, mock_runner
+    ):
+        """A run with output + exit_code=0 + ``error_category='interactive'``
+        + an ``"interactive-hang:"`` warning is ``succeeded=True`` (lenient)
+        but ``succeeded_cleanly=False`` (strict). Assertion evaluation
+        short-circuits and the failure message reflects the warning.
+        """
+        skill_path, _ = tmp_skill_file(
+            "classify-skill", eval_data=self.EVAL_DATA
+        )
+        runner = mock_runner()
+        # Replace the runner's return_value with one carrying the
+        # interactive-hang signal the fixture doesn't expose directly.
+        # Import the canonical string so a future rename propagates here
+        # instead of leaving this test silently out of sync.
+        from clauditor.runner import _INTERACTIVE_HANG_WARNING
+
+        hang_warning = _INTERACTIVE_HANG_WARNING
+        runner.run.return_value = SkillResult(
+            output="What color would you like?",
+            exit_code=0,
+            skill_name="classify-skill",
+            args="",
+            error=None,
+            error_category="interactive",
+            warnings=[hang_warning],
+        )
+
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        # Sanity-check the predicates agree with the plan.
+        assert runner.run.return_value.succeeded is True
+        assert runner.run.return_value.succeeded_cleanly is False
+
+        result = spec.evaluate()
+        assert not result.passed
+        assert len(result.results) == 1
+        msg = result.results[0].message
+        assert "failed to run" in msg
+        assert "interactive-hang:" in msg
+
+    def test_429_still_fails_as_before(self, tmp_skill_file, mock_runner):
+        """A ``rate_limit``-categorized run with a non-None ``error`` text
+        continues to land in the assertion-failure branch with the error
+        text surfaced — behavior unchanged from the pre-migration path.
+        """
+        skill_path, _ = tmp_skill_file(
+            "classify-skill", eval_data=self.EVAL_DATA
+        )
+        runner = mock_runner()
+        runner.run.return_value = SkillResult(
+            output="",
+            exit_code=1,
+            skill_name="classify-skill",
+            args="",
+            error="API Error: 429 Too Many Requests",
+            error_category="rate_limit",
+        )
+
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        result = spec.evaluate()
+        assert not result.passed
+        assert len(result.results) == 1
+        msg = result.results[0].message
+        assert "failed to run" in msg
+        assert "429" in msg
+
+    def test_clean_success_still_passes(self, tmp_skill_file, mock_runner):
+        """A ``succeeded_cleanly=True`` run (no error, no category, no
+        interactive-hang warning) proceeds to normal assertion evaluation.
+        Regression guard for the lenient-vs-strict split.
+        """
+        skill_path, _ = tmp_skill_file(
+            "classify-skill", eval_data=self.EVAL_DATA
+        )
+        runner = mock_runner(output="hello, world")
+        # Default fixture construction already yields a cleanly-succeeding
+        # result; verify the predicates to anchor the regression.
+        assert runner.run.return_value.succeeded_cleanly is True
+
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        result = spec.evaluate()
+        assert result.passed
+
+    def test_interactive_category_without_warning_uses_fallback(
+        self, tmp_skill_file, mock_runner
+    ):
+        """Defensive branch: ``error_category='interactive'`` but no
+        matching warning in ``warnings`` falls back to the
+        ``'interactive hang detected'`` literal.
+        """
+        skill_path, _ = tmp_skill_file(
+            "classify-skill", eval_data=self.EVAL_DATA
+        )
+        runner = mock_runner()
+        runner.run.return_value = SkillResult(
+            output="some output?",
+            exit_code=0,
+            skill_name="classify-skill",
+            args="",
+            error=None,
+            error_category="interactive",
+            warnings=[],  # no interactive-hang: prefix entry
+        )
+
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        result = spec.evaluate()
+        assert not result.passed
+        msg = result.results[0].message
+        assert "interactive hang detected" in msg
+
+    def test_generic_unknown_error_fallback(
+        self, tmp_skill_file, mock_runner
+    ):
+        """Defensive branch: no error text, no interactive category, but
+        ``succeeded_cleanly=False`` (e.g. ``succeeded=False`` due to
+        empty output / nonzero exit). Falls back to ``'Unknown error'``.
+        """
+        skill_path, _ = tmp_skill_file(
+            "classify-skill", eval_data=self.EVAL_DATA
+        )
+        runner = mock_runner()
+        runner.run.return_value = SkillResult(
+            output="",
+            exit_code=1,
+            skill_name="classify-skill",
+            args="",
+            error=None,
+            error_category=None,
+            warnings=[],
+        )
+
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        assert runner.run.return_value.succeeded_cleanly is False
+        result = spec.evaluate()
+        assert not result.passed
+        msg = result.results[0].message
+        assert "Unknown error" in msg
 
 
 class TestFileBasedOutput:
@@ -242,7 +661,15 @@ class TestOutputFilesResolutionWithStagedInputs:
         # Side-effect: the "skill" writes cleaned.csv into its staging CWD.
         base_result = runner.run.return_value
 
-        def side_effect(skill_name, args, *, cwd=None):
+        def side_effect(
+            skill_name,
+            args,
+            *,
+            cwd=None,
+            allow_hang_heuristic=True,
+            timeout=None,
+            env=None,
+        ):
             assert cwd == run_dir / "inputs"
             (cwd / "cleaned.csv").write_text(cleaned_text)
             return base_result
@@ -365,3 +792,173 @@ class TestFailedRunResult:
         assert "my-skill" in r.message
         assert "timeout" in r.message
         assert r.name == "skill_execution"
+
+
+class TestAllowHangHeuristicThreading:
+    """DEC-005 / US-003: the ``allow_hang_heuristic`` flag threads from the
+    EvalSpec through ``SkillSpec.run`` into ``SkillRunner.run(...)``.
+    """
+
+    def test_eval_spec_false_threads_to_runner(
+        self, tmp_skill_file, mock_runner
+    ):
+        eval_data = {
+            "skill_name": "off-skill",
+            "test_args": "",
+            "assertions": [],
+            "allow_hang_heuristic": False,
+        }
+        skill_path, _ = tmp_skill_file("off-skill", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run()
+        assert (
+            runner.run.call_args.kwargs.get("allow_hang_heuristic") is False
+        )
+
+    def test_eval_spec_default_threads_true(
+        self, tmp_skill_file, mock_runner
+    ):
+        eval_data = {
+            "skill_name": "on-skill",
+            "test_args": "",
+            "assertions": [],
+        }
+        skill_path, _ = tmp_skill_file("on-skill", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run()
+        assert (
+            runner.run.call_args.kwargs.get("allow_hang_heuristic") is True
+        )
+
+    def test_no_eval_spec_threads_true(self, tmp_skill_file, mock_runner):
+        skill_path = tmp_skill_file("bare-skill")
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run()
+        assert (
+            runner.run.call_args.kwargs.get("allow_hang_heuristic") is True
+        )
+
+
+class TestTimeoutPrecedence:
+    """DEC-002 / US-005: ``SkillSpec.run`` resolves the effective timeout
+    as CLI > spec > default, and threads ``env_override`` through to
+    ``SkillRunner.run(env=...)`` unchanged (no precedence merge per DEC-013).
+    """
+
+    def test_cli_override_wins(self, tmp_skill_file, mock_runner):
+        eval_data = {
+            "skill_name": "cli-wins",
+            "test_args": "",
+            "assertions": [],
+            "timeout": 300,
+        }
+        skill_path, _ = tmp_skill_file("cli-wins", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run(timeout_override=60)
+        assert runner.run.call_args.kwargs.get("timeout") == 60
+
+    def test_spec_wins_when_no_cli_override(
+        self, tmp_skill_file, mock_runner
+    ):
+        eval_data = {
+            "skill_name": "spec-wins",
+            "test_args": "",
+            "assertions": [],
+            "timeout": 300,
+        }
+        skill_path, _ = tmp_skill_file("spec-wins", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run(timeout_override=None)
+        assert runner.run.call_args.kwargs.get("timeout") == 300
+
+    def test_default_when_neither_set(self, tmp_skill_file, mock_runner):
+        eval_data = {
+            "skill_name": "both-none",
+            "test_args": "",
+            "assertions": [],
+        }
+        skill_path, _ = tmp_skill_file("both-none", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run()
+        assert runner.run.call_args.kwargs.get("timeout") is None
+
+    def test_env_override_threaded_through(
+        self, tmp_skill_file, mock_runner
+    ):
+        skill_path = tmp_skill_file("env-dict")
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run(env_override={"FOO": "bar"})
+        assert runner.run.call_args.kwargs.get("env") == {"FOO": "bar"}
+
+    def test_env_override_none_threaded_through(
+        self, tmp_skill_file, mock_runner
+    ):
+        skill_path = tmp_skill_file("env-none")
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run(env_override=None)
+        assert runner.run.call_args.kwargs.get("env") is None
+
+    def test_eval_spec_none_path(self, tmp_skill_file, mock_runner):
+        # Direct-constructor path: ``eval_spec`` is None. Timeout
+        # resolution must still work and default to None (runner falls
+        # back to its own ``self.timeout``).
+        skill_path = tmp_skill_file("no-spec")
+        runner = mock_runner(output="ok")
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+        spec.run()
+        assert runner.run.call_args.kwargs.get("timeout") is None
+
+
+# Path to the checked-in example eval spec used by
+# ``TestExampleEvalSpec`` below. Defined once at module scope so both
+# the class and any future regression tests can reference it.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+EXAMPLE_EVAL_JSON = (
+    _REPO_ROOT / "examples" / ".claude" / "commands" / "example-skill.eval.json"
+)
+
+
+class TestExampleEvalSpec:
+    """Regression: the checked-in example spec loads via ``EvalSpec.from_file``.
+
+    Traces to DEC-001 / DEC-002 of
+    ``plans/super/67-per-type-assertion-keys.md``: every assertion
+    entry uses the per-type semantic key (``needle`` / ``pattern`` /
+    ``length`` / ``count``) and counts/lengths are native JSON ints.
+    A future migration that misses this file will surface here as a
+    load-time ``ValueError`` from ``_require_assertion_keys``.
+    """
+
+    def test_example_eval_spec_loads(self):
+        # Import via the normal schemas path; ``EvalSpec.from_file``
+        # delegates to ``from_dict`` which runs the per-type
+        # required-key + type-check validator from US-001.
+        from clauditor.schemas import EvalSpec
+
+        # Must not raise.
+        spec = EvalSpec.from_file(EXAMPLE_EVAL_JSON)
+        assert spec.skill_name == "find-kid-activities"
+        # The load-bearing invariant is "loads without error" — avoid
+        # hard-coding the exact count, which would flip red on any
+        # legitimate addition/removal to the example spec for the
+        # wrong reason.
+        assert len(spec.assertions) >= 1
+
+    def test_example_eval_spec_has_no_legacy_value_keys(self):
+        # Substring guard: the migrated file must not contain any
+        # ``"value":`` keys in assertion dicts. Checking the raw JSON
+        # text is cheap and catches regressions that re-introduce the
+        # legacy shape via copy-paste.
+        raw = EXAMPLE_EVAL_JSON.read_text(encoding="utf-8")
+        assert '"value":' not in raw, (
+            "example eval spec must not contain legacy 'value' keys; "
+            "use per-type semantic keys (needle/pattern/length/count)"
+        )

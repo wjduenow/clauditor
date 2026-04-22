@@ -6,9 +6,12 @@ Combines the skill file, eval spec, and runner into a single interface.
 from __future__ import annotations
 
 import glob
+import sys
 from pathlib import Path
 
 from clauditor.assertions import AssertionSet, run_assertions
+from clauditor.conformance import check_conformance, format_issue_line
+from clauditor.paths import derive_project_dir, derive_skill_name
 from clauditor.runner import SkillResult, SkillRunner
 from clauditor.schemas import EvalSpec
 from clauditor.workspace import stage_inputs
@@ -32,11 +35,31 @@ class SkillSpec:
         skill_path: Path,
         eval_spec: EvalSpec | None = None,
         runner: SkillRunner | None = None,
+        *,
+        skill_name_override: str | None = None,
     ):
         self.skill_path = skill_path
-        self.skill_name = skill_path.stem
+        # Name derivation: `skill_name_override` is the happy path from
+        # `from_file`, which has already read the file and consulted
+        # frontmatter. When omitted (direct-constructor callers that may
+        # pass a non-existent path, e.g. tests/test_quality_grader.py
+        # uses `Path("dummy.md")`), fall back to layout-aware filesystem
+        # derivation without any file I/O. Modern (`SKILL.md` under a
+        # named dir) → parent.name; legacy → stem. See DEC-006.
+        if skill_name_override is not None:
+            self.skill_name = skill_name_override
+        elif skill_path.name == "SKILL.md":
+            self.skill_name = skill_path.parent.name
+        else:
+            self.skill_name = skill_path.stem
         self.eval_spec = eval_spec
-        self.runner = runner or SkillRunner(project_dir=skill_path.parent.parent.parent)
+        # Layout-aware project_dir derivation. `derive_project_dir`
+        # walks up for a `.git`/`.claude` marker first (with home-dir
+        # exclusion) and falls back to the appropriate ascent depth for
+        # modern vs legacy layouts. Replaces the previous hardcoded
+        # 3-deep ascent, which landed inside `.claude/` for modern
+        # skills. See DEC-003.
+        self.runner = runner or SkillRunner(project_dir=derive_project_dir(skill_path))
 
     @classmethod
     def from_file(
@@ -48,11 +71,39 @@ class SkillSpec:
         """Load a skill spec from a skill .md file.
 
         Automatically looks for a sibling eval.json if eval_path
-        is not specified. For `my-skill.md`, looks for `my-skill.eval.json`.
+        is not specified. For `my-skill.md`, looks for `my-skill.eval.json`;
+        for the modern `<dir>/SKILL.md` layout, looks for
+        `<dir>/SKILL.eval.json` (sibling of SKILL.md).
+
+        The skill's identity (``skill_name``) is derived from the file's
+        frontmatter ``name:`` field when present and valid; otherwise
+        from the filesystem (parent dir for modern, stem for legacy).
+        See DEC-001, DEC-002 of ``plans/super/62-skill-md-layout.md``.
+        Per DEC-008 of ``plans/super/71-agentskills-lint.md``, any
+        warning surfacing for invalid-name or name/filesystem
+        disagreement is now emitted by
+        :func:`clauditor.conformance.check_conformance` via the
+        soft-warn hook (US-006), not by this loader.
         """
         skill_path = Path(skill_path)
         if not skill_path.exists():
             raise FileNotFoundError(f"Skill file not found: {skill_path}")
+
+        text = skill_path.read_text(encoding="utf-8")
+        skill_name = derive_skill_name(skill_path, text)
+
+        # US-006 soft-warn hook (DEC-003 / DEC-014 of
+        # ``plans/super/71-agentskills-lint.md``): surface
+        # agentskills.io conformance warnings to stderr. Only
+        # ``severity="warning"`` issues fire here — errors are silent
+        # at this layer and must be discovered via ``clauditor lint``.
+        # ``check_conformance`` never raises, so no try/except needed.
+        # Uses ``format_issue_line`` (conformance module) so the prefix
+        # format stays in lockstep with the CLI renderer — a single
+        # seam per DEC-014.
+        for issue in check_conformance(text, skill_path):
+            if issue.severity == "warning":
+                print(format_issue_line(issue), file=sys.stderr)
 
         # Auto-discover eval spec
         eval_spec = None
@@ -63,13 +114,20 @@ class SkillSpec:
             if default_eval.exists():
                 eval_spec = EvalSpec.from_file(default_eval)
 
-        return cls(skill_path=skill_path, eval_spec=eval_spec, runner=runner)
+        return cls(
+            skill_path=skill_path,
+            eval_spec=eval_spec,
+            runner=runner,
+            skill_name_override=skill_name,
+        )
 
     def run(
         self,
         args: str | None = None,
         *,
         run_dir: Path | None = None,
+        timeout_override: int | None = None,
+        env_override: dict[str, str] | None = None,
     ) -> SkillResult:
         """Run the skill and return captured output.
 
@@ -96,7 +154,32 @@ class SkillSpec:
             effective_cwd = run_dir / "inputs"
             print(f"Staged {len(sources)} input file(s) into {effective_cwd}")
 
-        result = self.runner.run(self.skill_name, run_args, cwd=effective_cwd)
+        # DEC-005: thread the per-eval escape hatch into the runner. When
+        # no eval_spec is attached, default to True (back-compat).
+        allow_hang_heuristic = (
+            self.eval_spec.allow_hang_heuristic if self.eval_spec else True
+        )
+        # DEC-002: timeout precedence is CLI > spec > default. ``None``
+        # falls through to ``SkillRunner.run``, which then uses its own
+        # ``self.timeout`` default (180s). DEC-013: ``env_override`` has
+        # no merge — passed through to ``runner.run(env=...)`` unchanged.
+        effective_timeout = (
+            timeout_override
+            if timeout_override is not None
+            else (
+                self.eval_spec.timeout
+                if self.eval_spec is not None
+                else None
+            )
+        )
+        result = self.runner.run(
+            self.skill_name,
+            run_args,
+            cwd=effective_cwd,
+            allow_hang_heuristic=allow_hang_heuristic,
+            timeout=effective_timeout,
+            env=env_override,
+        )
 
         # Read output from files if eval spec specifies file-based output
         # Only read files on successful runs to avoid stale output
@@ -142,13 +225,28 @@ class SkillSpec:
 
         if output is None:
             result = self.run()
-            if not result.succeeded:
+            if not result.succeeded_cleanly:
+                # Prefer an explicit ``error`` string; fall back to the
+                # interactive-hang warning when that's the only signal
+                # (US-003 sets ``error_category="interactive"`` without
+                # setting ``error``). Else keep the generic fallback for
+                # defensive "should not happen" cases. Per DEC-006 /
+                # DEC-010 of ``plans/super/63-runner-error-surfacing.md``.
+                if result.error:
+                    msg = result.error
+                elif result.error_category == "interactive":
+                    msg = next(
+                        (
+                            w
+                            for w in result.warnings
+                            if w.startswith("interactive-hang:")
+                        ),
+                        "interactive hang detected",
+                    )
+                else:
+                    msg = "Unknown error"
                 return AssertionSet(
-                    results=[
-                        _failed_run_result(
-                            self.skill_name, result.error or "Unknown error"
-                        )
-                    ]
+                    results=[_failed_run_result(self.skill_name, msg)]
                 )
             output = result.output
 

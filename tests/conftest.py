@@ -79,15 +79,31 @@ def make_fake_skill_stream(
     input_tokens: int = 100,
     output_tokens: int = 50,
     extra_messages: list[dict] | None = None,
+    error_text: str | None = None,
+    init_message: dict | None = None,
 ) -> _FakePopen:
     """Build a ``_FakePopen`` emitting a realistic stream-json sequence.
 
     Produces:
-      1. one assistant message with a single ``text`` block containing ``text``
-      2. any ``extra_messages`` verbatim, in order
-      3. a final ``result`` message carrying token usage
+      1. optional ``init_message`` verbatim as the FIRST message
+         (typically a ``{"type": "system", "subtype": "init", ...}``
+         event — see US-004 of
+         ``plans/super/64-runner-auth-timeout.md``)
+      2. one assistant message with a single ``text`` block containing
+         ``text``
+      3. any ``extra_messages`` verbatim, in order
+      4. a final ``result`` message carrying token usage
+
+    When ``error_text`` is not ``None``, the final ``result`` message
+    carries ``is_error: True`` and ``result: <error_text>`` (per DEC-014
+    of ``plans/super/63-runner-error-surfacing.md``). The default
+    (``error_text=None``) preserves today's ``is_error: False`` output
+    byte-for-byte so every pre-existing test keeps working.
     """
-    messages: list[dict] = [
+    messages: list[dict] = []
+    if init_message is not None:
+        messages.append(init_message)
+    messages.append(
         {
             "type": "assistant",
             "message": {
@@ -95,20 +111,81 @@ def make_fake_skill_stream(
                 "content": [{"type": "text", "text": text}],
             },
         }
-    ]
+    )
     if extra_messages:
         messages.extend(extra_messages)
-    messages.append(
+    result_msg: dict = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        },
+    }
+    if error_text is not None:
+        result_msg["is_error"] = True
+        result_msg["result"] = error_text
+    messages.append(result_msg)
+    return _FakePopen([json.dumps(m) for m in messages])
+
+
+def make_fake_interactive_hang_stream(
+    text: str = "What would you like?",
+    use_tool_use: bool = False,
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+) -> _FakePopen:
+    """Build a ``_FakePopen`` emitting an interactive-hang stream-json sequence.
+
+    Models the failure mode where a skill ends its single turn by
+    asking the user a clarifying question (per DEC-014 of
+    ``plans/super/63-runner-error-surfacing.md``):
+
+      - A single ``assistant`` message with ``stop_reason: "end_turn"``.
+        Its content is either a single ``text`` block ending in ``?``
+        (when ``use_tool_use=False``) or a ``text`` block *and* a
+        ``tool_use`` block for ``AskUserQuestion`` (when
+        ``use_tool_use=True``).
+      - A final ``result`` message with ``is_error: False``,
+        ``subtype: "success"``, ``num_turns: 1`` (so downstream
+        detection can check the turn count), and the usual
+        ``usage`` block.
+
+    The caller is responsible for the ``text`` shape; passing a
+    non-``?`` string will still emit, but the interactive-hang
+    detector may not fire.
+    """
+    content: list[dict] = [{"type": "text", "text": text}]
+    if use_tool_use:
+        content.append(
+            {
+                "type": "tool_use",
+                "id": "toolu_fake",
+                "name": "AskUserQuestion",
+                "input": {"questions": [{"question": text}]},
+            }
+        )
+    messages: list[dict] = [
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "content": content,
+            },
+        },
         {
             "type": "result",
             "subtype": "success",
             "is_error": False,
+            "num_turns": 1,
             "usage": {
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
             },
-        }
-    )
+        },
+    ]
     return _FakePopen([json.dumps(m) for m in messages])
 
 
@@ -135,11 +212,11 @@ def sample_eval_data() -> dict:
         "description": "Eval for /find-kid-activities",
         "test_args": '"Cupertino, CA" --dates today --cost Free --depth quick',
         "assertions": [
-            {"type": "contains", "value": "Venues"},
-            {"type": "has_entries", "value": "3"},
-            {"type": "has_urls", "value": "2"},
-            {"type": "not_contains", "value": "ERROR"},
-            {"type": "min_length", "value": "500"},
+            {"type": "contains", "needle": "Venues"},
+            {"type": "has_entries", "count": 3},
+            {"type": "has_urls", "count": 2},
+            {"type": "not_contains", "needle": "ERROR"},
+            {"type": "min_length", "length": 500},
         ],
         "sections": [
             {
@@ -199,7 +276,7 @@ def make_eval_spec():
             "skill_name": "test-skill",
             "description": "A test eval spec",
             "test_args": "--depth quick",
-            "assertions": [{"type": "contains", "value": "test"}],
+            "assertions": [{"type": "contains", "needle": "test"}],
             "sections": [
                 SectionRequirement(
                     name="Results",
@@ -223,9 +300,17 @@ def make_eval_spec():
 
 @pytest.fixture
 def tmp_skill_file(tmp_path):
-    """Factory fixture that creates a temporary .md skill file.
+    """Factory fixture that creates a temporary skill file.
 
-    Optionally creates a sibling .eval.json file.
+    Supports two layouts (DEC-011 of ``plans/super/62-skill-md-layout.md``):
+
+    - ``layout="legacy"`` (default): writes ``tmp_path/<name>.md``. The
+      sibling eval lives at ``tmp_path/<name>.eval.json``. Byte-identical
+      to the pre-DEC-011 behavior so every existing test keeps working.
+    - ``layout="modern"``: writes
+      ``tmp_path/.claude/skills/<name>/SKILL.md``. The sibling eval lives
+      at ``tmp_path/.claude/skills/<name>/SKILL.eval.json`` — next to the
+      SKILL.md, which is what :func:`SkillSpec.from_file` auto-discovers.
 
     Usage:
         def test_something(tmp_skill_file):
@@ -235,18 +320,32 @@ def tmp_skill_file(tmp_path):
                 content="# My Skill",
                 eval_data={"skill_name": "my-skill", "assertions": []},
             )
+            # Modern layout:
+            skill_path = tmp_skill_file("foo", layout="modern")
     """
 
     def _factory(
         name: str = "test-skill",
         content: str = "# Test Skill\n\nA test skill for unit tests.",
+        layout: str = "legacy",
         eval_data: dict | None = None,
     ) -> Path | tuple[Path, Path]:
-        skill_path = tmp_path / f"{name}.md"
+        if layout == "legacy":
+            skill_path = tmp_path / f"{name}.md"
+        elif layout == "modern":
+            skill_dir = tmp_path / ".claude" / "skills" / name
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            skill_path = skill_dir / "SKILL.md"
+        else:
+            raise ValueError(
+                f"tmp_skill_file: layout must be 'legacy' or 'modern', "
+                f"got {layout!r}"
+            )
+
         skill_path.write_text(content)
 
         if eval_data is not None:
-            eval_path = tmp_path / f"{name}.eval.json"
+            eval_path = skill_path.with_suffix(".eval.json")
             eval_path.write_text(json.dumps(eval_data, indent=2))
             return skill_path, eval_path
 
@@ -339,7 +438,7 @@ def build_eval_spec(**overrides) -> EvalSpec:
         skill_name="test-skill",
         description="A test skill",
         test_args="--depth quick",
-        assertions=[{"type": "contains", "value": "hello"}],
+        assertions=[{"type": "contains", "needle": "hello"}],
         sections=[],
         grading_criteria=["Is the output relevant?"],
         grading_model="claude-sonnet-4-6",

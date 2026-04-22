@@ -9,42 +9,42 @@
   "assertions": [
     {
       "type": "contains",
-      "value": "Venues",
+      "needle": "Venues",
       "id": "contains_venues"
     },
     {
       "type": "contains",
-      "value": "Events",
+      "needle": "Events",
       "id": "contains_events"
     },
     {
       "type": "has_entries",
-      "value": "3",
+      "count": 3,
       "id": "has_entries_3"
     },
     {
       "type": "has_urls",
-      "value": "3",
+      "count": 3,
       "id": "has_urls_3"
     },
     {
       "type": "min_length",
-      "value": "500",
+      "length": 500,
       "id": "min_length_500"
     },
     {
       "type": "not_contains",
-      "value": "AskUserQuestion",
+      "needle": "AskUserQuestion",
       "id": "no_ask_user_question"
     },
     {
       "type": "regex",
-      "value": "\\*\\*\\d+\\.\\s+",
+      "pattern": "\\*\\*\\d+\\.\\s+",
       "id": "regex_numbered_bold"
     },
     {
       "type": "regex",
-      "value": "https?://[^\\s]+",
+      "pattern": "https?://[^\\s]+",
       "id": "regex_url"
     }
   ],

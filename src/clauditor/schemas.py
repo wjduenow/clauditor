@@ -11,6 +11,122 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 
+@dataclass(frozen=True)
+class AssertionKeySpec:
+    """Per-assertion-type key invariant (DEC-008 of #61, DEC-012 of #67).
+
+    Single source of truth for which assertion-dict keys each
+    ``type`` value in :data:`ASSERTION_TYPE_REQUIRED_KEYS` accepts.
+    ``required`` keys must be present; ``optional`` keys are
+    allowed but the handler falls back to a safe default when
+    they are omitted. Any key outside the union of ``required``,
+    ``optional``, and the metadata set ``{"id", "type", "name"}``
+    is rejected by ``_require_assertion_keys``. ``field_types``
+    declares the expected native JSON type for each payload key
+    (``str`` or ``int``); the loader validator enforces
+    ``isinstance(val, expected)`` per-key at load time (DEC-012
+    of #67) so string-typed ints like ``{"length": "500"}`` are
+    rejected loudly. Consumed by the loader-side validator and
+    the ``propose-eval`` prompt builder; kept in lockstep with
+    the ``_ASSERTION_HANDLERS`` dispatch table in
+    :mod:`clauditor.assertions` via a test-side drift guard.
+    """
+
+    required: frozenset[str]
+    optional: frozenset[str] = frozenset()
+    field_types: dict[str, type] = field(default_factory=dict)
+
+
+# Single source of truth (DEC-008 of #61, DEC-001/DEC-012 of #67):
+# every assertion ``type`` string accepted by
+# :func:`clauditor.assertions.run_assertions` maps to the set of keys
+# its handler reads from the assertion dict. The split between
+# ``required`` and ``optional`` mirrors handler runtime behavior — if
+# the handler reads ``.get(key, <default>)`` and the default is a
+# sensible value (e.g. ``1`` for a minimum count), the key is
+# optional; if the default is a sentinel that makes the assertion
+# vacuous (e.g. ``""`` for a regex pattern, ``0`` for a length
+# threshold), the key is required. ``field_types`` declares each
+# payload key's expected native JSON type (``str`` or ``int``).
+# Must stay in lockstep with ``_ASSERTION_HANDLERS`` in
+# :mod:`clauditor.assertions`; the drift guard lives in
+# ``tests/test_schemas.py::TestAssertionKeySpec``
+# (``test_handler_signature_agrees_with_constant``).
+ASSERTION_TYPE_REQUIRED_KEYS: dict[str, AssertionKeySpec] = {
+    "contains": AssertionKeySpec(
+        required=frozenset({"needle"}),
+        field_types={"needle": str},
+    ),
+    "not_contains": AssertionKeySpec(
+        required=frozenset({"needle"}),
+        field_types={"needle": str},
+    ),
+    "regex": AssertionKeySpec(
+        required=frozenset({"pattern"}),
+        field_types={"pattern": str},
+    ),
+    "min_count": AssertionKeySpec(
+        required=frozenset({"pattern", "count"}),
+        field_types={"pattern": str, "count": int},
+    ),
+    "min_length": AssertionKeySpec(
+        required=frozenset({"length"}),
+        field_types={"length": int},
+    ),
+    "max_length": AssertionKeySpec(
+        required=frozenset({"length"}),
+        field_types={"length": int},
+    ),
+    "has_urls": AssertionKeySpec(
+        required=frozenset(),
+        optional=frozenset({"count"}),
+        field_types={"count": int},
+    ),
+    "has_entries": AssertionKeySpec(
+        required=frozenset(),
+        optional=frozenset({"count"}),
+        field_types={"count": int},
+    ),
+    "urls_reachable": AssertionKeySpec(
+        required=frozenset(),
+        optional=frozenset({"count"}),
+        field_types={"count": int},
+    ),
+    "has_format": AssertionKeySpec(
+        required=frozenset({"format"}),
+        optional=frozenset({"count"}),
+        field_types={"format": str, "count": int},
+    ),
+}
+
+
+# Per-type drift-hint table (DEC-009 of #67). Sibling to
+# :data:`ASSERTION_TYPE_REQUIRED_KEYS`. For each assertion ``type``,
+# a map of ``common-wrong-key → correct-key-for-this-type``.
+# Consulted by ``_require_assertion_keys`` when flagging an unknown
+# key: emits `" — did you mean {suggestion!r}?"` if the wrong key
+# is hinted for that specific type, else no suffix. Keyed per-type
+# because ``pattern`` is a VALID key for ``regex``/``min_count``
+# but should suggest ``needle`` on ``contains``/``not_contains``.
+_ASSERTION_DRIFT_HINTS: dict[str, dict[str, str]] = {
+    "contains":       {"value": "needle", "pattern": "needle"},
+    "not_contains":   {"value": "needle", "pattern": "needle"},
+    "regex":          {"value": "pattern"},
+    "min_count":      {"value": "pattern", "minimum": "count",
+                       "min_count": "count", "threshold": "count"},
+    "min_length":     {"value": "length", "min": "length"},
+    "max_length":     {"value": "length", "max": "length"},
+    "has_urls":       {"value": "count", "minimum": "count",
+                       "min_count": "count", "threshold": "count"},
+    "has_entries":    {"value": "count", "minimum": "count",
+                       "min_count": "count", "threshold": "count"},
+    "urls_reachable": {"value": "count", "minimum": "count",
+                       "min_count": "count", "threshold": "count"},
+    "has_format":     {"value": "count", "minimum": "count",
+                       "min_count": "count"},
+}
+
+
 @dataclass
 class FieldRequirement:
     """A required field in a structured entry (venue, event, etc.).
@@ -146,20 +262,65 @@ class EvalSpec:
     trigger_tests: TriggerTests | None = None
     variance: VarianceConfig | None = None
     grade_thresholds: GradeThresholds | None = None
+    # DEC-005: escape hatch for the interactive-hang heuristic. Default
+    # is ``True`` so every pre-existing eval.json keeps the detector on.
+    # Set to ``False`` in an eval spec to opt a specific skill out when
+    # the heuristic consistently mis-classifies its output.
+    allow_hang_heuristic: bool = True
+    # DEC-002 / DEC-003 / DEC-008 / DEC-014 of #64: optional per-spec
+    # runner timeout (seconds). ``None`` means "unset" — the runner
+    # falls back to the CLI override if present, else to its own
+    # ``self.timeout`` default (180s). Positive int only; bool is
+    # explicitly rejected at load time per
+    # ``.claude/rules/constant-with-type-info.md``.
+    timeout: int | None = None
 
     @classmethod
     def from_file(cls, path: str | Path) -> EvalSpec:
-        """Load an eval spec from a JSON file."""
-        path = Path(path)
-        with open(path) as f:
-            data = json.load(f)
+        """Load an eval spec from a JSON file.
 
-        skill_name = data.get("skill_name", path.stem)
-        spec_dir = path.parent.resolve()
+        Thin wrapper around :meth:`from_dict`: opens the file, decodes JSON,
+        and delegates validation/construction to ``from_dict``. The file's
+        parent directory is passed as ``spec_dir`` so that ``input_files``
+        path resolution (strict containment relative to the spec dir)
+        matches the previous behavior.
+        """
+        path = Path(path)
+        with path.open() as f:
+            data = json.load(f)
+        # Preserve the prior behavior where a missing ``skill_name`` in the
+        # JSON defaults to the file stem. Injected via a new dict so the
+        # caller's data is not mutated (non-mutating rule applies to the
+        # input they own on disk, but defensive here too).
+        if isinstance(data, dict) and "skill_name" not in data:
+            data = {"skill_name": path.stem, **data}
+        return cls.from_dict(data, spec_dir=path.parent.resolve())
+
+    @classmethod
+    def from_dict(cls, data: dict, spec_dir: Path) -> EvalSpec:
+        """Construct an :class:`EvalSpec` from an in-memory dict.
+
+        ``spec_dir`` is used for ``input_files`` path resolution (strict
+        containment, no absolute paths, no traversal out of ``spec_dir``).
+        All validation currently performed by :meth:`from_file` lives here;
+        ``from_file`` is a thin loader wrapper.
+
+        Raises ``ValueError`` on any structural problem in ``data`` — see
+        the ``from_file`` test suite for the full error matrix.
+        """
+        # Top-level shape guard: a JSON file whose top value is a list,
+        # scalar, or null would otherwise crash with AttributeError on
+        # the first `.get()` call below (review #53).
+        if not isinstance(data, dict):
+            raise ValueError(
+                "EvalSpec: top-level JSON value must be an object, "
+                f"got {type(data).__name__}"
+            )
+        skill_name = data.get("skill_name", "")
         # Path resolution split (intentional): `input_files` are pre-existing
-        # static assets and resolve HERE at load time, relative to the spec
-        # file's parent dir, with strict source-containment. `output_files`
-        # are runtime artifacts and resolve at run time against the runner's
+        # static assets and resolve HERE at load time, relative to
+        # ``spec_dir``, with strict source-containment. `output_files` are
+        # runtime artifacts and resolve at run time against the runner's
         # effective CWD (staging dir when inputs are declared, else
         # project_dir) — see `spec.py` `_collect_outputs` / `effective_cwd`.
         # Any new path-bearing field must pick a side of this split.
@@ -178,7 +339,7 @@ class EvalSpec:
                     f"input_files[{i}]={entry!r} — absolute paths not allowed"
                 )
             try:
-                candidate = (path.parent / entry).resolve(strict=True)
+                candidate = (spec_dir / entry).resolve(strict=True)
             except FileNotFoundError as e:
                 raise ValueError(
                     f"EvalSpec(skill_name={skill_name!r}): "
@@ -247,9 +408,122 @@ class EvalSpec:
             seen_ids.add(raw)
             return raw
 
+        def _require_assertion_keys(entry: dict, ctx: str) -> None:
+            """Hard-validate per-assertion required and allowed keys.
+
+            DEC-001 / DEC-002 / DEC-008 of #61 and DEC-001 / DEC-009 /
+            DEC-012 of #67: every assertion dict must carry a known
+            ``type`` value and exactly the keys named by
+            :data:`ASSERTION_TYPE_REQUIRED_KEYS` for that type (plus
+            the always-allowed ``id``, ``type``, ``name`` metadata
+            keys). Each payload key is additionally type-checked
+            against ``spec.field_types`` so string-typed ints
+            (``{"length": "500"}``) reject at load time. Unknown
+            keys, missing required keys, and wrong-typed keys all
+            raise ``ValueError`` — strict rejection per
+            ``.claude/rules/pre-llm-contract-hard-validate.md``.
+            Unknown-key errors consult
+            :data:`_ASSERTION_DRIFT_HINTS` for a per-type
+            ``"did you mean X?"`` hint so hand-authors get a quick
+            migration nudge when renaming legacy aliases
+            (``value``, ``min``, ``max``, ``threshold``,
+            ``minimum``; ``pattern`` is a drift alias on
+            ``contains`` / ``not_contains`` only — it is a VALID
+            key for ``regex`` and ``min_count``).
+
+            Error-path order: (a) unknown/missing type →
+            (b) unknown key → (c) missing required → (d) wrong
+            type. Unknown-key fires before missing-required so a
+            user who wrote an old alias (``value`` on ``contains``)
+            gets the actionable ``"did you mean 'needle'?"`` hint
+            instead of the opaque ``"missing required key 'needle'"``
+            that would hide the rename from them. Each branch
+            raises at the first violation; no cascading noise.
+            """
+            # (a) Unknown or missing ``type``.
+            type_val = entry.get("type")
+            if (
+                not isinstance(type_val, str)
+                or type_val not in ASSERTION_TYPE_REQUIRED_KEYS
+            ):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): {ctx}: "
+                    f"unknown or missing 'type' (got {type_val!r})"
+                )
+            spec = ASSERTION_TYPE_REQUIRED_KEYS[type_val]
+            # (b) Unknown keys — fires before missing-required so
+            # legacy-alias migrations surface the drift hint that
+            # names the correct replacement key.
+            allowed = (
+                {"id", "type", "name"}
+                | set(spec.required)
+                | set(spec.optional)
+            )
+            for key in entry:
+                if key in allowed:
+                    continue
+                suggestion = _ASSERTION_DRIFT_HINTS.get(type_val, {}).get(key)
+                hint = (
+                    f" — did you mean {suggestion!r}?"
+                    if suggestion is not None
+                    else ""
+                )
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                    f"(type={type_val!r}): unknown key {key!r}{hint}"
+                )
+            # (c) Missing required keys.
+            for key in sorted(spec.required):
+                if key not in entry or entry[key] is None:
+                    raise ValueError(
+                        f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                        f"(type={type_val!r}): missing required key {key!r}"
+                    )
+            # (d) Wrong-typed payload keys. Check every declared
+            # ``field_types`` entry present in the user's dict.
+            # Two subtleties:
+            #   1. A present-but-``None`` optional key is rejected
+            #      — ``a.get("count", 1)`` does NOT substitute for
+            #      ``None`` at runtime, so accepting it at load
+            #      time would crash the handler downstream. The
+            #      ``None`` branch produces a friendlier error
+            #      ("must be int, not null …") than the generic
+            #      ``isinstance`` miss would.
+            #   2. ``bool`` is a subclass of ``int`` in Python, so
+            #      a raw ``isinstance`` check would silently
+            #      accept ``{"count": True}``. The int branch
+            #      guards with ``not isinstance(val, bool)``.
+            for key, expected in spec.field_types.items():
+                if key not in entry:
+                    continue
+                val = entry[key]
+                if val is None:
+                    raise ValueError(
+                        f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                        f"(type={type_val!r}): key {key!r} must be "
+                        f"{expected.__name__}, not null (omit the "
+                        f"key to use the default)"
+                    )
+                ok = isinstance(val, expected) and not (
+                    expected is int and isinstance(val, bool)
+                )
+                if not ok:
+                    raise ValueError(
+                        f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                        f"(type={type_val!r}): key {key!r} must be "
+                        f"{expected.__name__}, got "
+                        f"{type(val).__name__} {val!r}"
+                    )
+
         raw_assertions = data.get("assertions", [])
+        if not isinstance(raw_assertions, list):
+            raise ValueError(
+                f"EvalSpec(skill_name={skill_name!r}): 'assertions' "
+                f"must be a list, got {type(raw_assertions).__name__}"
+            )
         for i, a in enumerate(raw_assertions):
             _require_id(a, f"assertions[{i}]")
+            _require_assertion_keys(a, f"assertions[{i}]")
 
         sections = []
         for si, s in enumerate(data.get("sections", [])):
@@ -299,6 +573,12 @@ class EvalSpec:
             )
 
         raw_criteria = data.get("grading_criteria", [])
+        if not isinstance(raw_criteria, list):
+            raise ValueError(
+                f"EvalSpec(skill_name={skill_name!r}): "
+                f"'grading_criteria' must be a list, got "
+                f"{type(raw_criteria).__name__}"
+            )
         for i, c in enumerate(raw_criteria):
             _require_id(c, f"grading_criteria[{i}]")
             crit = c.get("criterion")
@@ -316,6 +596,44 @@ class EvalSpec:
                     f"must be a non-empty, non-whitespace string, "
                     f"got {user_prompt!r}"
                 )
+
+        # DEC-005: optional per-eval escape hatch for the
+        # interactive-hang heuristic. Absent → default True (back-compat).
+        # Present → must be a real bool (reject "false", 0, None, etc.)
+        # — this is a load-bearing behavioral switch, not a truthy flag.
+        allow_hang_heuristic: bool = True
+        if "allow_hang_heuristic" in data:
+            raw_flag = data["allow_hang_heuristic"]
+            if not isinstance(raw_flag, bool):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "allow_hang_heuristic must be a bool (true or false)"
+                )
+            allow_hang_heuristic = raw_flag
+
+        # DEC-002 / DEC-003 / DEC-008 / DEC-014 of #64: optional
+        # per-spec runner timeout override. ``None`` / missing →
+        # "unset" (runner falls back). Must be a positive int;
+        # ``bool`` is an ``int`` subclass in Python, so the check
+        # is ``isinstance(val, int) and not isinstance(val, bool)``
+        # per ``.claude/rules/constant-with-type-info.md``.
+        timeout: int | None = None
+        if "timeout" in data and data["timeout"] is not None:
+            raw_timeout = data["timeout"]
+            if not isinstance(raw_timeout, int) or isinstance(
+                raw_timeout, bool
+            ):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"'timeout' must be an int, got "
+                    f"{type(raw_timeout).__name__} {raw_timeout!r}"
+                )
+            if raw_timeout <= 0:
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"'timeout' must be > 0, got {raw_timeout}"
+                )
+            timeout = raw_timeout
 
         trigger_tests = None
         if "trigger_tests" in data:
@@ -356,6 +674,8 @@ class EvalSpec:
             trigger_tests=trigger_tests,
             variance=variance,
             grade_thresholds=grade_thresholds,
+            allow_hang_heuristic=allow_hang_heuristic,
+            timeout=timeout,
         )
 
     def to_dict(self) -> dict:
@@ -410,6 +730,10 @@ class EvalSpec:
             "grading_criteria": self.grading_criteria,
             "grading_model": self.grading_model,
         }
+        if not self.allow_hang_heuristic:
+            # Emit only on non-default to keep diffs minimal; omission
+            # at load time means "default True" per from_dict.
+            result["allow_hang_heuristic"] = False
         if self.output_file is not None:
             result["output_file"] = self.output_file
         if self.output_files:

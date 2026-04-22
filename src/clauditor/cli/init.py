@@ -7,6 +7,8 @@ import json
 import sys
 from pathlib import Path
 
+from clauditor.paths import derive_skill_name
+
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``init`` subparser."""
@@ -20,7 +22,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def cmd_init(args: argparse.Namespace) -> int:
-    """Generate a starter eval.json for a skill."""
+    """Generate a starter eval.json for a skill.
+
+    The starter ``assertions`` list uses the per-type semantic keys
+    introduced in #67 (DEC-001 of ``plans/super/67-per-type-assertion-keys.md``):
+    ``needle`` for ``contains``/``not_contains``, ``length`` for
+    ``min_length``/``max_length``, and ``count`` for the optional
+    threshold on ``has_urls``/``has_entries``. Counts and lengths are
+    written as native JSON ints (DEC-002), not strings.
+    """
     skill_path = Path(args.skill)
     eval_path = skill_path.with_suffix(".eval.json")
 
@@ -31,15 +41,27 @@ def cmd_init(args: argparse.Namespace) -> int:
         )
         return 1
 
+    if not skill_path.is_file():
+        print(f"ERROR: skill file not found: {skill_path}", file=sys.stderr)
+        return 1
+
+    try:
+        skill_md_text = skill_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"ERROR: cannot read {skill_path}: {exc}", file=sys.stderr)
+        return 1
+
+    skill_name = derive_skill_name(skill_path, skill_md_text)
+
     starter = {
-        "skill_name": skill_path.stem,
-        "description": f"Eval spec for /{skill_path.stem}",
+        "skill_name": skill_name,
+        "description": f"Eval spec for /{skill_name}",
         "test_args": "",
         "assertions": [
-            {"id": "min_length_500", "type": "min_length", "value": "500"},
-            {"id": "has_urls_3", "type": "has_urls", "value": "3"},
-            {"id": "has_entries_3", "type": "has_entries", "value": "3"},
-            {"id": "no_error", "type": "not_contains", "value": "Error"},
+            {"id": "min_length_500", "type": "min_length", "length": 500},
+            {"id": "has_urls_3", "type": "has_urls", "count": 3},
+            {"id": "has_entries_3", "type": "has_entries", "count": 3},
+            {"id": "no_error", "type": "not_contains", "needle": "Error"},
         ],
         "sections": [
             {

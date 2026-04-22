@@ -99,7 +99,7 @@ class TestPluginFunctionsDirect:
         parser.getgroup.assert_called_once_with(
             "clauditor", "Claude Code skill testing"
         )
-        assert group.addoption.call_count == 5
+        assert group.addoption.call_count == 6
         # Verify option names
         option_names = [call.args[0] for call in group.addoption.call_args_list]
         assert "--clauditor-project-dir" in option_names
@@ -107,6 +107,7 @@ class TestPluginFunctionsDirect:
         assert "--clauditor-claude-bin" in option_names
         assert "--clauditor-grade" in option_names
         assert "--clauditor-model" in option_names
+        assert "--clauditor-no-api-key" in option_names
 
     def test_pytest_configure_adds_marker(self):
         """pytest_configure registers the clauditor_grade, network, and slow markers."""
@@ -179,6 +180,7 @@ class TestPluginFunctionsDirect:
                 "--clauditor-project-dir": None,
                 "--clauditor-timeout": 180,
                 "--clauditor-claude-bin": "claude",
+                "--clauditor-no-api-key": False,
             }[opt]
         )
         factory = clauditor_spec.__wrapped__(request, tmp_path)
@@ -238,6 +240,7 @@ class TestPluginFunctionsDirect:
                 "--clauditor-project-dir": None,
                 "--clauditor-timeout": 180,
                 "--clauditor-claude-bin": "claude",
+                "--clauditor-no-api-key": False,
             }[opt]
         )
         factory = clauditor_spec.__wrapped__(request, tmp_path)
@@ -267,6 +270,7 @@ class TestClauditorSpecInputFiles:
                 "--clauditor-project-dir": None,
                 "--clauditor-timeout": 180,
                 "--clauditor-claude-bin": "claude",
+                "--clauditor-no-api-key": False,
             }[opt]
         )
         factory = clauditor_spec.__wrapped__(request, tmp_path)
@@ -300,6 +304,7 @@ class TestClauditorSpecInputFiles:
                 "--clauditor-project-dir": None,
                 "--clauditor-timeout": 180,
                 "--clauditor-claude-bin": "claude",
+                "--clauditor-no-api-key": False,
             }[opt]
         )
         factory = clauditor_spec.__wrapped__(request, tmp_path)
@@ -420,6 +425,7 @@ def _blind_compare_factory(tmp_path: Path, *, cli_model: str | None = None):
             "--clauditor-timeout": 180,
             "--clauditor-claude-bin": "claude",
             "--clauditor-model": cli_model,
+            "--clauditor-no-api-key": False,
         }[opt]
     )
     spec_factory = clauditor_spec.__wrapped__(request, tmp_path)
@@ -716,3 +722,156 @@ class TestClauditorTriggersFactory:
         factory = clauditor_triggers.__wrapped__(request, fake_clauditor_spec)
         with pytest.raises(ValueError, match="No eval spec found"):
             factory(tmp_path / "skill.md")
+
+
+class TestClauditorNoApiKeyOption:
+    """US-007: ``--clauditor-no-api-key`` pytest option parity.
+
+    DEC-006: when set, the ``clauditor_spec`` fixture threads
+    ``env_override=env_without_api_key()`` through ``SkillSpec.run``;
+    otherwise ``env_override`` stays unset and the existing call shape
+    is preserved for back-compat with the ``--clauditor-timeout``
+    wiring tests.
+    """
+
+    def _request(self, *, no_api_key: bool):
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": 180,
+                "--clauditor-claude-bin": "claude",
+                "--clauditor-no-api-key": no_api_key,
+            }[opt]
+        )
+        return request
+
+    def test_no_api_key_option_reaches_spec_run(self, tmp_path):
+        """Setting ``--clauditor-no-api-key`` threads ``env_override`` to spec.run.
+
+        The fixture must call ``original_run(..., env_override=<dict>)``
+        where the dict has both auth env vars stripped.
+        """
+        from clauditor.spec import SkillSpec
+
+        request = self._request(no_api_key=True)
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = mock_spec.run
+        original_run.return_value = "RESULT"
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+
+        # Wrapping happened because the option is set (even with no input_files).
+        assert result.run is not original_run
+
+        ret = result.run()
+        assert ret == "RESULT"
+        original_run.assert_called_once()
+        call_kwargs = original_run.call_args.kwargs
+        assert "env_override" in call_kwargs
+        env = call_kwargs["env_override"]
+        assert isinstance(env, dict)
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_AUTH_TOKEN" not in env
+
+    def test_timeout_option_still_works(self, tmp_path):
+        """Regression guard: ``--clauditor-timeout`` still reaches SkillRunner.
+
+        Adding ``--clauditor-no-api-key`` must not disturb the existing
+        timeout wiring from ``--clauditor-timeout`` → ``SkillRunner.timeout``.
+        """
+        request = self._request(no_api_key=False)
+        # Override the timeout to a distinct non-default value so a
+        # regression that reverts to the default 180 would be visible.
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": 99,
+                "--clauditor-claude-bin": "claude",
+                "--clauditor-no-api-key": False,
+            }[opt]
+        )
+        runner = clauditor_runner.__wrapped__(request)
+        assert runner.timeout == 99
+        # And clauditor_spec must not wrap spec.run when the option is
+        # off AND input_files is empty (pre-US-007 behavior preserved).
+        from clauditor.spec import SkillSpec
+
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = mock_spec.run
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+
+        assert result.run is original_run
+
+    def test_wrapper_accepts_timeout_override_kwarg(self, tmp_path):
+        """#64 QG: the fixture wrapper must accept ``timeout_override``.
+
+        Before the fix, ``_run_with_overrides`` only accepted
+        ``args`` + ``run_dir``, so a caller doing
+        ``spec.run(timeout_override=60)`` hit ``TypeError``. The
+        wrapper must now forward timeout_override to original_run.
+        """
+        from clauditor.spec import SkillSpec
+
+        request = self._request(no_api_key=True)
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = mock_spec.run
+        original_run.return_value = "RESULT"
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+
+        ret = result.run(timeout_override=60)
+        assert ret == "RESULT"
+        assert original_run.call_args.kwargs["timeout_override"] == 60
+
+    def test_caller_env_override_wins_over_fixture(self, tmp_path):
+        """#64 QG: when the caller passes env_override, it should win
+        over the fixture-level default (principle of least surprise)."""
+        from clauditor.spec import SkillSpec
+
+        request = self._request(no_api_key=True)
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = mock_spec.run
+        original_run.return_value = "RESULT"
+
+        caller_env = {"CUSTOM": "value"}
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+        result.run(env_override=caller_env)
+
+        assert original_run.call_args.kwargs["env_override"] is caller_env

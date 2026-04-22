@@ -13,12 +13,37 @@ rule: pattern, rationale, canonical implementation pointer).
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
+
+# Env vars stripped by :func:`env_without_api_key`. Both are
+# documented Anthropic SDK env-auth paths (DEC-007 of
+# ``plans/super/64-runner-auth-timeout.md``). Non-auth Anthropic env
+# vars such as ``ANTHROPIC_BASE_URL`` are intentionally preserved
+# (DEC-016).
+_API_KEY_ENV_VARS = frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"})
+
+
+def env_without_api_key(
+    base_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a new env dict with both auth env vars removed.
+
+    Pure, non-mutating helper per
+    ``.claude/rules/non-mutating-scrub.md``. When ``base_env`` is
+    ``None``, reads from ``os.environ``. Always returns a new dict
+    (never mutates the input). Strips ``ANTHROPIC_API_KEY`` and
+    ``ANTHROPIC_AUTH_TOKEN``; preserves every other key (including
+    ``ANTHROPIC_BASE_URL``).
+    """
+    source = base_env if base_env is not None else os.environ
+    return {k: v for k, v in source.items() if k not in _API_KEY_ENV_VARS}
 
 
 @dataclass
@@ -37,16 +62,219 @@ class SkillResult:
     args: str
     duration_seconds: float = 0.0
     error: str | None = None
+    # runtime-only — do not serialize to sidecars without bumping schema_version
+    error_category: (
+        Literal[
+            "rate_limit", "auth", "api", "interactive", "subprocess", "timeout"
+        ]
+        | None
+    ) = None
     outputs: dict[str, str] = field(default_factory=dict)
     input_tokens: int = 0
     output_tokens: int = 0
     raw_messages: list[dict] = field(default_factory=list)
     stream_events: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # US-004 / DEC-005: populated from the first stream-json
+    # ``type=="system" AND subtype=="init"`` message when the CLI
+    # emits an ``apiKeySource`` field. ``None`` when absent (older CLI
+    # builds or a malformed stream — per DEC-012 / DEC-015). The value
+    # is a label (``"ANTHROPIC_API_KEY"``, ``"claude.ai"``, ``"none"``),
+    # not a secret. See ``docs/stream-json-schema.md``.
+    api_key_source: str | None = None
 
     @property
     def succeeded(self) -> bool:
         return self.exit_code == 0 and self.output.strip() != ""
+
+    @property
+    def succeeded_cleanly(self) -> bool:
+        """True only when the run had zero error signals.
+
+        Stricter than :attr:`succeeded`: requires no ``error`` text,
+        no ``error_category``, and no interactive-hang warning tag in
+        ``warnings``. US-003 wires the real interactive-hang detector
+        to this ``"interactive-hang:"`` prefix.
+        """
+        if not self.succeeded:
+            return False
+        if self.error is not None:
+            return False
+        if self.error_category is not None:
+            return False
+        for w in self.warnings:
+            if w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX):
+                return False
+        return True
+
+
+# Soft cap applied to stream-json ``result`` text surfaced on
+# ``SkillResult.error``. Per DEC-008 of
+# ``plans/super/63-runner-error-surfacing.md`` — bound the memory
+# cost of a pathological multi-MB error payload without truncating
+# realistic 100-300 byte provider-error strings.
+_RESULT_TEXT_MAX_CHARS = 4096
+
+
+# DEC-005 / DEC-010: interactive-hang heuristic warning tag. The prefix
+# ``"interactive-hang:"`` is load-bearing — :attr:`SkillResult.succeeded_cleanly`
+# looks for exactly this prefix in ``warnings`` to down-classify an
+# apparently-successful run that actually waited for input.
+_INTERACTIVE_HANG_WARNING_PREFIX = "interactive-hang:"
+_INTERACTIVE_HANG_WARNING = (
+    "interactive-hang: skill may have asked for input — "
+    "ensure all parameters are in test_args (heuristic)"
+)
+
+
+def _detect_interactive_hang(
+    stream_events: list[dict], final_text: str
+) -> bool:
+    """Return True when a stream-json capture looks like an interactive hang.
+
+    Pure helper (no I/O, no global state) per
+    ``.claude/rules/pure-compute-vs-io-split.md``. Returns True only
+    when ALL of:
+
+    - The run made exactly 1 turn. Read ``num_turns`` off the
+      ``type="result"`` message; if absent, return False (conservative).
+    - The final assistant message's ``stop_reason`` is ``"end_turn"``.
+      If missing, return False.
+    - Either (a) ``final_text.strip()`` ends with ``"?"``, OR (b) any
+      assistant message's ``content`` list contains a ``tool_use``
+      block whose ``name`` is ``"AskUserQuestion"``.
+
+    Tolerates missing / malformed fields via ``.get`` + ``isinstance``.
+    Malformed events degrade to False rather than raising — the
+    detector is advisory and must never abort a run.
+    """
+    # num_turns check (conservative: missing or not 1 → False).
+    num_turns: int | None = None
+    for event in stream_events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "result":
+            continue
+        raw = event.get("num_turns")
+        if isinstance(raw, int):
+            num_turns = raw
+        # Last result message wins if multiple are present (defensive).
+    if num_turns != 1:
+        return False
+
+    # Last assistant message's stop_reason (conservative: must be
+    # "end_turn" — anything else means the model did not end cleanly
+    # on a question).
+    last_stop_reason: str | None = None
+    for event in stream_events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        stop_reason = message.get("stop_reason")
+        if isinstance(stop_reason, str):
+            last_stop_reason = stop_reason
+    if last_stop_reason != "end_turn":
+        return False
+
+    # Signal (a): trailing question mark on the concatenated text.
+    trailing_question = final_text.strip().endswith("?")
+
+    # Signal (b): AskUserQuestion tool_use in assistant content.
+    ask_user_question = False
+    for event in stream_events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if (
+                block.get("type") == "tool_use"
+                and block.get("name") == "AskUserQuestion"
+            ):
+                ask_user_question = True
+                break
+        if ask_user_question:
+            break
+
+    return trailing_question or ask_user_question
+
+
+def _classify_result_message(msg: dict) -> tuple[str | None, str | None]:
+    """Classify a stream-json ``type="result"`` message's error payload.
+
+    Pure helper. Given the full message dict, returns a
+    ``(error_text, error_category)`` pair:
+
+    - ``(None, None)`` when ``msg["is_error"]`` is not strictly
+      ``True`` (absent key, ``False``, or any non-True value like the
+      string ``"true"``).
+    - ``(<text>, <category>)`` otherwise. ``<text>`` is the
+      ``msg["result"]`` field, truncated to ``_RESULT_TEXT_MAX_CHARS``
+      (with a ``" ... (truncated)"`` suffix when clipped). A missing
+      or non-string ``result`` field falls back to
+      ``"API error (no detail)"``.
+
+    Category inference (per DEC-010) is a keyword match on the
+    error text, ordered to resolve ambiguity deterministically:
+
+    - ``"rate_limit"`` — any of ``"429"``, ``"rate limit"`` (case-
+      insensitive), ``"rate-limit"`` (case-insensitive).
+    - ``"auth"`` — any of ``"401"``, ``"403"``, ``"unauthorized"``
+      (case-insensitive), ``"authentication"`` (case-insensitive),
+      ``"auth error"`` (case-insensitive), or the substring
+      ``"ANTHROPIC_API_KEY"``.
+    - ``"api"`` — the fallback when no keyword matches.
+
+    The rate-limit check runs before the auth check so a message
+    that happens to contain both ``"429"`` and ``"auth"`` is
+    classified as a rate-limit failure.
+
+    Per ``.claude/rules/pure-compute-vs-io-split.md`` this helper
+    performs no I/O: no stderr writes, no global mutations. Callers
+    surface the result on ``SkillResult.error`` /
+    ``SkillResult.error_category`` at the I/O boundary in
+    :meth:`SkillRunner._invoke`.
+    """
+    if msg.get("is_error") is not True:
+        return None, None
+
+    result_text = msg.get("result")
+    if not isinstance(result_text, str):
+        error_text = "API error (no detail)"
+    else:
+        error_text = result_text
+
+    if len(error_text) > _RESULT_TEXT_MAX_CHARS:
+        error_text = error_text[:_RESULT_TEXT_MAX_CHARS] + " ... (truncated)"
+
+    lower = error_text.lower()
+    if "429" in error_text or "rate limit" in lower or "rate-limit" in lower:
+        category = "rate_limit"
+    elif (
+        "401" in error_text
+        or "403" in error_text
+        or "unauthorized" in lower
+        or "authentication" in lower
+        or "auth error" in lower
+        or "anthropic_api_key" in lower
+    ):
+        category = "auth"
+    else:
+        category = "api"
+
+    return error_text, category
 
 
 class SkillRunner:
@@ -68,6 +296,9 @@ class SkillRunner:
         args: str = "",
         *,
         cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
+        allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         """Run a skill and capture its output.
 
@@ -76,6 +307,18 @@ class SkillRunner:
             args: Pre-filled arguments to skip interactive prompts
             cwd: Optional override for the subprocess working directory.
                 When ``None``, falls back to ``self.project_dir``.
+            env: Optional env dict forwarded to ``subprocess.Popen``.
+                When ``None`` (default), ``Popen`` inherits ``os.environ``
+                — today's behavior. When a dict, it replaces the child's
+                environment entirely (DEC-013; mirrors ``cwd`` shape per
+                ``.claude/rules/subprocess-cwd.md``).
+            timeout: Optional per-invocation watchdog timeout in seconds.
+                When ``None`` (default), falls back to ``self.timeout``
+                (DEC-010).
+            allow_hang_heuristic: When False, skip the interactive-hang
+                heuristic (DEC-005). Threaded here from
+                ``EvalSpec.allow_hang_heuristic`` so authors can opt out
+                when the heuristic is wrong for a particular skill.
 
         Returns:
             SkillResult with captured output
@@ -83,13 +326,24 @@ class SkillRunner:
         prompt = f"/{skill_name}"
         if args:
             prompt += f" {args}"
-        return self._invoke(prompt=prompt, skill_name=skill_name, args=args, cwd=cwd)
+        return self._invoke(
+            prompt=prompt,
+            skill_name=skill_name,
+            args=args,
+            cwd=cwd,
+            env=env,
+            timeout=timeout,
+            allow_hang_heuristic=allow_hang_heuristic,
+        )
 
     def run_raw(
         self,
         prompt: str,
         *,
         cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
+        allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         """Run a raw prompt without skill prefix for baseline comparison.
 
@@ -98,6 +352,15 @@ class SkillRunner:
             cwd: Optional override for the subprocess working directory.
                 When ``None``, falls back to ``self.project_dir`` — see
                 ``.claude/rules/subprocess-cwd.md`` for the rationale.
+            env: Optional subprocess env dict. When ``None``, Popen
+                inherits ``os.environ``; when a dict, replaces verbatim.
+                Mirrors the ``env`` kwarg on :meth:`run`; callers that
+                want to strip credentials use
+                :func:`env_without_api_key`.
+            timeout: Optional per-invocation timeout (seconds). When
+                ``None``, falls back to ``self.timeout``.
+            allow_hang_heuristic: When False, skip the interactive-hang
+                heuristic (DEC-005).
 
         Returns:
             SkillResult with skill_name="__baseline__"
@@ -107,6 +370,9 @@ class SkillRunner:
             skill_name="__baseline__",
             args=prompt,
             cwd=cwd,
+            env=env,
+            timeout=timeout,
+            allow_hang_heuristic=allow_hang_heuristic,
         )
 
     # ------------------------------------------------------------------ #
@@ -120,12 +386,21 @@ class SkillRunner:
         skill_name: str,
         args: str,
         cwd: Path | None = None,
+        env: dict[str, str] | None = None,
+        timeout: int | None = None,
+        allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         """Run ``claude`` with stream-json output and parse the NDJSON stream.
 
         Uses ``try/finally`` so ``duration_seconds`` is populated on every
         exit path (success, timeout, CalledProcessError, FileNotFoundError).
+
+        ``env`` is forwarded to ``subprocess.Popen`` verbatim: ``None``
+        means "inherit ``os.environ``" (Popen's default); a dict replaces
+        the child's environment entirely. ``timeout`` overrides
+        ``self.timeout`` for the watchdog when not ``None`` (DEC-010).
         """
+        effective_timeout = timeout if timeout is not None else self.timeout
         start = time.monotonic()
         raw_messages: list[dict] = []
         stream_events: list[dict] = []
@@ -133,6 +408,19 @@ class SkillRunner:
         input_tokens = 0
         output_tokens = 0
         saw_result = False
+        # Stream-json ``is_error: true`` classification (US-002, DEC-001,
+        # DEC-010). Populated by :func:`_classify_result_message` when the
+        # ``result`` message signals an error. When set, takes precedence
+        # over stderr per DEC-001.
+        stream_json_error_text: str | None = None
+        stream_json_error_category: str | None = None
+        # US-004 / DEC-005 / DEC-015 / DEC-017: capture the first
+        # ``type=="system" AND subtype=="init"`` message's
+        # ``apiKeySource`` value. First init wins; subsequent inits
+        # ignored. ``None`` when absent (older CLI builds / malformed
+        # stream) — per DEC-012, suppresses the stderr info line.
+        api_key_source: str | None = None
+        init_captured = False
         result: SkillResult | None = None
         proc: subprocess.Popen | None = None
         stderr_thread: threading.Thread | None = None
@@ -158,6 +446,7 @@ class SkillRunner:
                     stderr=subprocess.PIPE,
                     text=True,
                     cwd=str(cwd) if cwd is not None else str(self.project_dir),
+                    env=env,
                 )
             except FileNotFoundError:
                 result = SkillResult(
@@ -224,7 +513,7 @@ class SkillRunner:
                             f"{type(exc).__name__}: {exc}"
                         )
 
-            watchdog = threading.Timer(self.timeout, _on_timeout)
+            watchdog = threading.Timer(effective_timeout, _on_timeout)
             watchdog.daemon = True
             watchdog.start()
 
@@ -260,6 +549,20 @@ class SkillRunner:
                         if "type" in msg:
                             stream_events.append(msg)
                         mtype = msg.get("type")
+                        # US-004 / DEC-017: capture ``apiKeySource`` from
+                        # the FIRST ``system/init`` message. DEC-015: later
+                        # init messages are ignored. DEC-012: absence
+                        # stays ``None`` (no stderr line here — emitted
+                        # once after the loop).
+                        if (
+                            not init_captured
+                            and mtype == "system"
+                            and msg.get("subtype") == "init"
+                        ):
+                            init_captured = True
+                            val = msg.get("apiKeySource")
+                            if isinstance(val, str):
+                                api_key_source = val
                         if mtype == "assistant":
                             message = msg.get("message") or {}
                             content = message.get("content") or []
@@ -273,6 +576,16 @@ class SkillRunner:
                                     text_chunks.append(block.get("text", ""))
                         elif mtype == "result":
                             saw_result = True
+                            # Classify is_error: true payload per DEC-001 /
+                            # DEC-008 / DEC-010. Only overwrite the
+                            # accumulator when the classifier reports an
+                            # error, so a benign later result message does
+                            # not erase a prior error classification
+                            # (defensive — in practice one result per run).
+                            err_text, err_category = _classify_result_message(msg)
+                            if err_text is not None:
+                                stream_json_error_text = err_text
+                                stream_json_error_category = err_category
                             usage = msg.get("usage") or {}
                             if isinstance(usage, dict):
                                 # Defensive int() casts — if the CLI ever
@@ -304,18 +617,31 @@ class SkillRunner:
             stderr_text = "".join(stderr_chunks)
 
             if timed_out["hit"] and returncode != 0:
+                # Preserve any captured stderr as a warning for operators
+                # debugging why the subprocess ran past the deadline.
+                # Parallel to the normal-exit path's stderr-to-warnings
+                # pattern (see below), but kept here because the timeout
+                # branch returns early and would otherwise drop it.
+                if stderr_text:
+                    warnings.append(stderr_text)
                 result = SkillResult(
                     output="\n".join(text_chunks),
                     exit_code=-1,
                     skill_name=skill_name,
                     args=args,
                     error="timeout",
+                    error_category="timeout",
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     raw_messages=raw_messages,
                     stream_events=stream_events,
                     warnings=list(warnings),
+                    api_key_source=api_key_source,
                 )
+                # Early return is load-bearing: a post-timeout stream-json
+                # is_error:true must not clobber the "timeout" error. Keep
+                # this as an early return; do not fall through to the
+                # normal-exit path below.
                 return result
 
             if not saw_result:
@@ -329,17 +655,72 @@ class SkillRunner:
                     "token usage unavailable"
                 )
 
+            # US-004 / DEC-005: emit one stderr info line per run when
+            # ``apiKeySource`` was captured. DEC-012: suppress entirely
+            # when the field is absent (no "apiKeySource=unavailable"
+            # line) — absence is the signal. Values are labels
+            # (``ANTHROPIC_API_KEY``, ``claude.ai``, ``none``), not
+            # secrets, so printing them is safe.
+            if api_key_source is not None:
+                print(
+                    f"clauditor.runner: apiKeySource={api_key_source}",
+                    file=sys.stderr,
+                )
+
+            # DEC-005 / DEC-010: interactive-hang heuristic. Only run the
+            # detector when the escape hatch is enabled AND no API-error
+            # classification already landed (stream-json error wins). When
+            # the detector fires, append the prefixed warning and mark
+            # ``error_category = "interactive"`` WITHOUT setting an error
+            # text — the run's ``output`` and ``exit_code`` still reflect
+            # the nominally-successful stream.
+            final_text = "\n".join(text_chunks)
+            if (
+                allow_hang_heuristic
+                and stream_json_error_text is None
+                and _detect_interactive_hang(stream_events, final_text)
+            ):
+                warnings.append(_INTERACTIVE_HANG_WARNING)
+                stream_json_error_category = "interactive"
+
+            # DEC-001: stream-json ``is_error: true`` wins over stderr.
+            # When classified, stderr (if any) moves into warnings so it
+            # is still observable to callers without shadowing the
+            # authoritative provider error on ``error``.
+            if stream_json_error_text is not None:
+                final_error: str | None = stream_json_error_text
+                final_category: str | None = stream_json_error_category
+                if stderr_text:
+                    warnings.append(stderr_text)
+            elif stream_json_error_category == "interactive":
+                # Hang heuristic set the category without an error text.
+                # Stderr may still carry subprocess diagnostics (e.g. a
+                # retry notice); preserve it in warnings so it's
+                # observable to callers, parallel to the stream-json
+                # error branch above.
+                final_error = None
+                final_category = "interactive"
+                if stderr_text:
+                    warnings.append(stderr_text)
+            else:
+                final_error = (
+                    stderr_text if returncode != 0 and stderr_text else None
+                )
+                final_category = None
+
             result = SkillResult(
-                output="\n".join(text_chunks),
+                output=final_text,
                 exit_code=returncode,
                 skill_name=skill_name,
                 args=args,
-                error=stderr_text if returncode != 0 and stderr_text else None,
+                error=final_error,
+                error_category=final_category,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 raw_messages=raw_messages,
                 stream_events=stream_events,
                 warnings=list(warnings),
+                api_key_source=api_key_source,
             )
             return result
         finally:

@@ -44,7 +44,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
     # Shared helpers live in ``clauditor.cli`` (package __init__). Import
     # lazily to avoid a circular import at module load: ``clauditor.cli``
     # imports this module to register the subparser.
-    from clauditor.cli import _load_spec_or_report
+    from clauditor.cli import _load_spec_or_report, _render_skill_error
 
     spec = _load_spec_or_report(args.skill, args.eval)
     if spec is None:
@@ -94,8 +94,11 @@ def cmd_extract(args: argparse.Namespace) -> int:
     else:
         print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
         skill_result = spec.run()
-        if not skill_result.succeeded:
-            print(f"ERROR: Skill failed: {skill_result.error}", file=sys.stderr)
+        if not skill_result.succeeded_cleanly:
+            print(
+                f"ERROR: Skill failed: {_render_skill_error(skill_result)}",
+                file=sys.stderr,
+            )
             return 1
         output = skill_result.output
 
