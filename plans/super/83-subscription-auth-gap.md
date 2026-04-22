@@ -4,8 +4,9 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/83
 - **Branch:** `feature/83-subscription-auth-gap`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/83-subscription-auth-gap`
-- **Phase:** `detailing`
-- **PR:** (pending)
+- **Phase:** `published`
+- **PR:** https://github.com/wjduenow/clauditor/pull/87
+- **Follow-up issue:** https://github.com/wjduenow/clauditor/issues/86
 - **Sessions:** 1
 - **Last session:** 2026-04-21
 
@@ -568,9 +569,14 @@ Validation command (appears in every story's Done-when):
 
 ## Session Notes
 
-### Session 1 — 2026-04-21 (Discovery)
+### Session 1 — 2026-04-21 → 2026-04-22 (Discovery → Publish)
 - Fetched ticket #83. Short name: `subscription-auth-gap`.
 - Created worktree `/home/wesd/dev/worktrees/clauditor/feature/83-subscription-auth-gap` off `origin/dev`.
 - Parallel research: Ticket Analyst, Codebase Scout, Convention Checker.
-- Drafted this plan doc; 9 open questions queued for Refinement (Phase 3).
-- Next: user reviews scoping questions below and picks options.
+- Phase 1 scoping: nine questions, nine answers (Q1..Q9 all A except Q6=B, Q7=C — DEC-001..DEC-009).
+- Phase 2 architecture review: Security PASS (with TypeError-sanitize mitigation), API/UX CONCERN (3 items), Observability PASS, Testing PASS.
+- Phase 3 refinement: five follow-up questions; user refined the error message twice — first to strip the "subprocess" jargon, then to name the offending command. Asked whether subscription auth could work for `grade`; chose hybrid option 3 (Option A now + file #86 for Option B). DEC-010..DEC-016 locked.
+- Filed GitHub issue #86 for the `claude -p` subprocess-transport follow-up.
+- Phase 4 detailing: 9 stories (US-001..US-009) with dependencies, TDD annotations, and rules-compliance notes.
+- Phase 5 publish: committed plan, pushed branch, opened draft PR #87 targeting `dev`.
+- **Next:** user reviews PR #87; on approval, run devolve to create beads from the 9 stories.
