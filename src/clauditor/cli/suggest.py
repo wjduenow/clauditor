@@ -84,7 +84,11 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
     - exit 0 on zero failing signals (Sonnet NOT called) and on success.
     - exit 1 when no prior grading.json exists or the proposer returns
       unparseable JSON (no sidecar).
-    - exit 2 when any proposal anchor fails validation (no sidecar).
+    - exit 2 when any proposal anchor fails validation (no sidecar),
+      OR when ``ANTHROPIC_API_KEY`` is unset — the pre-flight
+      ``check_anthropic_auth("suggest")`` guard raises
+      ``AnthropicAuthMissingError`` before any API call per #83
+      DEC-002/DEC-011 (no sidecar).
     - exit 3 on Anthropic API errors (no sidecar).
     """
     skill_path = Path(args.skill)
