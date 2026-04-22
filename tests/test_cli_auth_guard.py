@@ -26,6 +26,8 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from clauditor.cli import main
 from clauditor.quality_grader import GradingReport, GradingResult
 from clauditor.schemas import GradeThresholds
@@ -355,3 +357,115 @@ class TestAuthGuardDryRunExempt:
         assert rc == 0
         err = capsys.readouterr().err
         assert "ANTHROPIC_API_KEY is not set" not in err
+
+
+# ---------------------------------------------------------------------------
+# Regression guard (US-005 / DEC-003, DEC-009): eight non-LLM-mediated
+# commands remain usable without ``ANTHROPIC_API_KEY``. The guard from
+# US-003 must NOT have bled into any of these: ``validate``, ``capture``,
+# ``run``, ``lint``, ``init``, ``badge``, ``audit``, ``trend``.
+#
+# Per AC#3 of the ticket body — each command may exit non-zero for
+# unrelated input reasons (missing fixture, invalid input, unknown
+# subcommand); the only invariant this class asserts is that the
+# US-001 headline substring ``"ANTHROPIC_API_KEY is not set"`` is
+# NEVER present in stderr. A false positive here means US-003 wired
+# the guard into a command that should not need a key.
+# ---------------------------------------------------------------------------
+
+
+# Headline anchor from the US-001 error template — the single
+# substring the regression guard must confirm is absent.
+_AUTH_GUARD_HEADLINE = "ANTHROPIC_API_KEY is not set"
+
+
+class TestRegressionNoApiKey:
+    """Regression guard: eight commands stay usable without ``ANTHROPIC_API_KEY``."""
+
+    @pytest.mark.parametrize(
+        "cmd_name",
+        ["validate", "capture", "run", "lint", "init"],
+    )
+    def test_skill_command_not_guarded(
+        self, cmd_name, tmp_path, monkeypatch, capsys
+    ):
+        """Skill-accepting commands (need only a skill path arg) do not fire
+        the US-003 auth guard when ``ANTHROPIC_API_KEY`` is unset.
+
+        These commands accept a skill file path as their first positional.
+        We pass a non-existent path so the command errors out early on
+        input validation — well before any Anthropic-SDK code path. The
+        assertion is narrow: whatever error surfaces, it must not
+        contain the US-001 headline ``"ANTHROPIC_API_KEY is not set"``.
+        """
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+        monkeypatch.chdir(tmp_path)
+        missing_skill = tmp_path / "does-not-exist.md"
+
+        # ``run`` / ``capture`` take a skill *name*, not a path; the rest
+        # take a skill-file path. Either way, a non-existent target trips
+        # an early exit without touching the Anthropic SDK.
+        if cmd_name in ("run", "capture"):
+            arg = "nonexistent-skill-xyz"
+        else:
+            arg = str(missing_skill)
+
+        # ``main`` may or may not raise SystemExit depending on whether
+        # argparse rejects the input. Swallow either path; exit-code
+        # variability is explicitly allowed.
+        try:
+            main([cmd_name, arg])
+        except SystemExit:
+            pass
+
+        err = capsys.readouterr().err
+        assert _AUTH_GUARD_HEADLINE not in err, (
+            f"{cmd_name!r} unexpectedly tripped the auth guard. "
+            f"stderr: {err!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "cmd_args",
+        [
+            pytest.param(["audit", "nonexistent-skill"], id="audit"),
+            pytest.param(
+                ["trend", "nonexistent-skill", "--metric", "pass_rate"],
+                id="trend",
+            ),
+            pytest.param(["badge", "nonexistent-skill"], id="badge"),
+        ],
+    )
+    def test_history_command_not_guarded(
+        self, cmd_args, tmp_path, monkeypatch, capsys
+    ):
+        """History-reading commands (and a non-existent subcommand) do not
+        fire the US-003 auth guard when ``ANTHROPIC_API_KEY`` is unset.
+
+        ``audit`` and ``trend`` read ``.clauditor/history.jsonl`` / the
+        iteration workspaces; with an empty ``tmp_path`` cwd they exit
+        with a "no data" / "no history" message. ``badge`` is listed in
+        the plan (and in the US-001 error-message template's ``Commands
+        that don't need a key:`` line) but landed on ``dev`` after this
+        feature branch was cut; argparse will surface it as ``invalid
+        choice`` — also crucially NOT via the auth-guard message.
+
+        Once this branch rebases past the ``#81`` / ``#84`` ``badge``
+        commits, this parametrization upgrades from "argparse rejects
+        unknown subcommand" to "badge runs sidecar-only, no SDK call"
+        with no further edit needed.
+        """
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+        monkeypatch.chdir(tmp_path)
+
+        try:
+            main(cmd_args)
+        except SystemExit:
+            pass
+
+        err = capsys.readouterr().err
+        assert _AUTH_GUARD_HEADLINE not in err, (
+            f"{cmd_args[0]!r} unexpectedly tripped the auth guard. "
+            f"stderr: {err!r}"
+        )
