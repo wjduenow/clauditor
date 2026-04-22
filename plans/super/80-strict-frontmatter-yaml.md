@@ -3,7 +3,7 @@
 ## Meta
 
 - **Ticket:** [#80](https://github.com/wjduenow/clauditor/issues/80)
-- **Phase:** devolved
+- **Phase:** closed
 - **Sessions:** 1
 - **Last session:** 2026-04-22
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/80-strict-frontmatter-yaml`
@@ -396,6 +396,43 @@ No changes to:
   this round. If a future ticket needs quote-awareness for a
   different check, the parser-extension refactor becomes worth it;
   not now.
+
+### Ralph closeout (2026-04-22)
+
+- **5 commits on `feature/80-strict-frontmatter-yaml`:**
+  - `9b72dc7` — super-plan doc
+  - `5506b1a` — devolve + beads manifest
+  - `83af1c9` — US-001 implementation (check + 10 tests + doc note)
+  - `15802ba` — Quality Gate pass 2 (backtick key format + multi-
+    line emit regression test)
+  - (US-003 commit pending at plan write time)
+- **Quality Gate result:** 4 passes, pass 2 found 2 actionable nits
+  (both fixed), passes 1/3/4 clean. Full suite **2024 passed / 1
+  skipped (live) / 0 failed**. ~98 % coverage. Ruff green. Scope
+  guard (DEC-010) satisfied: zero changes to `_frontmatter.py`,
+  `pyproject.toml`, `cli/lint.py`, `spec.py`, `uv.lock`. PyYAML
+  convention preserved.
+- **Durable pattern codified (US-003).**
+  `.claude/rules/permissive-parser-strict-validator.md` — first
+  explicit rule capturing the two-layer shape that `_frontmatter.py`
+  + `conformance.py` embody. Two canonical anchors (existing
+  architecture + this #80 extension), plus named future callers
+  (rubric validator, plugin-upload validator, regen validator).
+  The pattern was implicit in the codebase before this refactor;
+  now it's discoverable via `.claude/rules/` search.
+- **Dep-convention lesson (not codified as a separate rule).**
+  Discovery flipped the ticket's PyYAML preference after finding
+  the "no PyYAML" convention in `tests/test_bundled_skill.py`'s
+  module docstring. A "check project conventions before adopting
+  a standard approach" meta-rule was considered but skipped —
+  it's a super-plan Phase-1 concern rather than a code pattern,
+  and rules without concrete future callers rot. The lesson
+  lives in the `permissive-parser-strict-validator.md` rule's
+  "Why this shape" section implicitly (the pyproject.toml's
+  empty `dependencies = []` is load-bearing).
+- **CodeRabbit review:** will run automatically on PR #82 push if
+  the repo is integrated. Any real findings handled as follow-up
+  before merge.
 
 ## Detailed breakdown
 
