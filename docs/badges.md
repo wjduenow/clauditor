@@ -30,7 +30,7 @@ Generate that exact line with `clauditor badge <skill.md> --url-only` (auto-dete
 
 ### 2. Secondary — dedicated `docs/skills.md` catalog page
 
-When the project ships many skills, a dedicated catalog page (`docs/skills.md`, or similar) with a table of skills + per-row badges gives a single-pane quality view. This is the right placement when you want a maintainer-facing dashboard that the README does not need to carry.
+When the project ships many skills, a dedicated catalog page (`docs/skills.md`, or similar) with a table of skills + per-row badges gives a single-pane quality view. This is the right placement when you want a maintainer-facing dashboard that the README does not need to carry. This repo ships one itself — see [docs/skills.md](./skills.md).
 
 ```markdown
 | Skill | Purpose | Quality |

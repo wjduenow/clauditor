@@ -30,8 +30,15 @@ coverage.xml
 .claude/agents/code-reviewer.md
 .claude/agents/planner.md
 
-# Clauditor local state (history, saved grade reports)
-.clauditor/
+# Clauditor local state (history, saved grade reports) —
+# .clauditor/* (not the directory itself) so /badges/ can be
+# re-included below. Per git-ignore semantics: a directory-level
+# "/clauditor/" exclude prevents children from being re-included,
+# but "/clauditor/*" + an explicit "!" re-include works.
+.clauditor/*
+# Badges ARE committed so shields.io can serve them via
+# raw.githubusercontent.com (per docs/badges.md embedding recipe).
+!.clauditor/badges/
 
 # Beads / Dolt files (added by bd init)
 .dolt/
