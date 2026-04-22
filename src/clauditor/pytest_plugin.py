@@ -201,6 +201,7 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
     """Fixture factory for quality grading. Returns a callable that grades a skill."""
     import asyncio
 
+    from clauditor._anthropic import check_anthropic_auth
     from clauditor.quality_grader import grade_quality
 
     model = request.config.getoption("--clauditor-model") or "claude-sonnet-4-6"
@@ -210,6 +211,13 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
         eval_path: str | Path | None = None,
         output: str | None = None,
     ):
+        # DEC-005 / DEC-013: pre-flight auth guard at factory-invocation
+        # time. Raises ``AnthropicAuthMissingError`` (same class the CLI
+        # catches) when ``ANTHROPIC_API_KEY`` is missing, so a CI run
+        # under subscription-only auth surfaces a clear error instead of
+        # silently skipping. Runs before any SDK-backed call so tests
+        # that mock ``call_anthropic`` with a dummy key set remain green.
+        check_anthropic_auth("grader")
         spec = clauditor_spec(skill_path, eval_path)
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
@@ -270,6 +278,7 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
     """
     import asyncio
 
+    from clauditor._anthropic import check_anthropic_auth
     from clauditor.quality_grader import BlindReport, blind_compare_from_spec
 
     def _factory(
@@ -280,6 +289,9 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
         *,
         model: str | None = None,
     ) -> BlindReport:
+        # DEC-005 / DEC-013: pre-flight auth guard at factory-invocation
+        # time (same as clauditor_grader). See that fixture for rationale.
+        check_anthropic_auth("blind_compare")
         spec = clauditor_spec(skill_path, eval_path)
         effective_model = model or request.config.getoption("--clauditor-model")
         return asyncio.run(
@@ -296,6 +308,7 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
     """Fixture factory for trigger precision testing."""
     import asyncio
 
+    from clauditor._anthropic import check_anthropic_auth
     from clauditor.triggers import test_triggers as run_triggers
 
     model = request.config.getoption("--clauditor-model") or "claude-sonnet-4-6"
@@ -303,6 +316,9 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
     def _factory(
         skill_path: str | Path, eval_path: str | Path | None = None
     ):
+        # DEC-005 / DEC-013: pre-flight auth guard at factory-invocation
+        # time (same as clauditor_grader). See that fixture for rationale.
+        check_anthropic_auth("triggers")
         spec = clauditor_spec(skill_path, eval_path)
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")

@@ -875,3 +875,109 @@ class TestClauditorNoApiKeyOption:
         result.run(env_override=caller_env)
 
         assert original_run.call_args.kwargs["env_override"] is caller_env
+
+
+class TestClauditorFixturesAuthGuard:
+    """US-004: auth guard fires at factory-invocation time for the three
+    grading fixtures.
+
+    Per DEC-005 the fixtures raise (not skip) so a CI run under
+    subscription-only auth surfaces a config regression instead of
+    silently skipping. Per DEC-013 the raised class is
+    ``AnthropicAuthMissingError`` — the same class the CLI catches — so
+    tests and CLI users see a byte-identical message shape.
+
+    Per DEC-012 the message must contain three durable substrings:
+    ``"ANTHROPIC_API_KEY"``, ``"Claude Pro"``, and
+    ``"console.anthropic.com"``. Each test also asserts the
+    per-fixture command-name substring (e.g. ``"clauditor grader"``) so
+    a future rename of the cmd_name argument trips the test.
+    """
+
+    def _request(self, model: str = "claude-sonnet-4-6"):
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {"--clauditor-model": model}.get(opt)
+        )
+        return request
+
+    def test_clauditor_grader_raises_on_missing_key(
+        self, tmp_path, monkeypatch
+    ):
+        """clauditor_grader factory raises AnthropicAuthMissingError when
+        ANTHROPIC_API_KEY is unset — before any SDK call happens.
+        """
+        from clauditor._anthropic import AnthropicAuthMissingError
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        request = self._request()
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            # Should never be reached — guard fires first.
+            raise AssertionError("spec factory called before auth guard")
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(AnthropicAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md")
+        msg = str(excinfo.value)
+        assert "ANTHROPIC_API_KEY" in msg
+        assert "Claude Pro" in msg
+        assert "console.anthropic.com" in msg
+        assert "clauditor grader" in msg
+
+    def test_clauditor_triggers_raises_on_missing_key(
+        self, tmp_path, monkeypatch
+    ):
+        """clauditor_triggers factory raises AnthropicAuthMissingError
+        when ANTHROPIC_API_KEY is unset — before any SDK call happens.
+        """
+        from clauditor._anthropic import AnthropicAuthMissingError
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        request = self._request()
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            raise AssertionError("spec factory called before auth guard")
+
+        factory = clauditor_triggers.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(AnthropicAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md")
+        msg = str(excinfo.value)
+        assert "ANTHROPIC_API_KEY" in msg
+        assert "Claude Pro" in msg
+        assert "console.anthropic.com" in msg
+        assert "clauditor triggers" in msg
+
+    def test_clauditor_blind_compare_raises_on_missing_key(
+        self, tmp_path, monkeypatch
+    ):
+        """clauditor_blind_compare factory raises AnthropicAuthMissingError
+        when ANTHROPIC_API_KEY is unset — before any SDK call happens.
+        """
+        from clauditor._anthropic import AnthropicAuthMissingError
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": 180,
+                "--clauditor-claude-bin": "claude",
+                "--clauditor-model": None,
+                "--clauditor-no-api-key": False,
+            }.get(opt)
+        )
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            raise AssertionError("spec factory called before auth guard")
+
+        factory = clauditor_blind_compare.__wrapped__(
+            request, fake_clauditor_spec
+        )
+        with pytest.raises(AnthropicAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md", "a", "b")
+        msg = str(excinfo.value)
+        assert "ANTHROPIC_API_KEY" in msg
+        assert "Claude Pro" in msg
+        assert "console.anthropic.com" in msg
+        assert "clauditor blind_compare" in msg
