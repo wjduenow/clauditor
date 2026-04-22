@@ -204,6 +204,29 @@ def _isolate_clauditor_history(tmp_path, monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _dummy_anthropic_api_key(monkeypatch):
+    """Set a dummy ``ANTHROPIC_API_KEY`` for every test.
+
+    #83 added a pre-flight ``check_anthropic_auth`` guard that fires exit
+    2 whenever the env var is absent. The vast majority of clauditor
+    tests mock the Anthropic seam (``call_anthropic``) and do not hit
+    the network — they never needed a real key, and historically ran
+    in CI with ``ANTHROPIC_API_KEY`` unset. This autouse fixture sets
+    a dummy value so the guard passes cleanly for those tests.
+
+    Tests that specifically exercise the guard (``TestAuthGuardMissingKey``
+    in ``tests/test_cli_auth_guard.py``, ``TestCheckAnthropicAuth`` and
+    ``TestCallAnthropicTypeError`` in ``tests/test_anthropic.py``,
+    ``TestClauditorFixturesAuthGuard`` in ``tests/test_pytest_plugin.py``,
+    and ``TestRegressionNoApiKey`` in ``tests/test_cli_auth_guard.py``)
+    call ``monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)``
+    inside the test body — same ``monkeypatch`` instance as this
+    fixture, so ``delenv`` cleanly removes what ``setenv`` just set.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-dummy-key-for-ci")
+
+
 @pytest.fixture
 def sample_eval_data() -> dict:
     """Return a dict matching eval.json format with all fields populated."""

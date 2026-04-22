@@ -38,6 +38,7 @@ disturbed and tests do not burn wallclock.
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 from dataclasses import dataclass, field
 from typing import Any
@@ -82,6 +83,73 @@ class AnthropicHelperError(RuntimeError):
     ``raise ... from exc`` so callers that want to introspect (e.g. for
     status code) still can.
     """
+
+
+class AnthropicAuthMissingError(Exception):
+    """Raised by :func:`check_anthropic_auth` when ``ANTHROPIC_API_KEY`` is missing.
+
+    Distinct from :class:`AnthropicHelperError` by design (DEC-010 of
+    ``plans/super/83-subscription-auth-gap.md``): the CLI layer routes
+    ``AnthropicAuthMissingError`` to exit 2 (pre-call input-validation
+    error per ``.claude/rules/llm-cli-exit-code-taxonomy.md``), while
+    ``AnthropicHelperError`` is routed to exit 3 (actual API failure).
+    Reusing the helper-error class would conflate those exit codes and
+    make the routing a string-match hack instead of a structural
+    ``except`` ladder.
+    """
+
+
+# Message template used by :func:`check_anthropic_auth`. DEC-011:
+# interpolates the command name into the second line so users see
+# ``clauditor grade`` (or ``propose-eval``, ``suggest``, ``triggers``,
+# ``extract``) and know exactly which invocation triggered the guard.
+# DEC-012: three durable substrings must appear in every raised message
+# — ``ANTHROPIC_API_KEY``, ``Claude Pro``, ``console.anthropic.com``.
+# The ``#86`` reference is deliberately NOT test-asserted so a
+# renumber/close does not churn tests.
+_AUTH_MISSING_TEMPLATE = (
+    "ERROR: ANTHROPIC_API_KEY is not set.\n"
+    "clauditor {cmd_name} calls the Anthropic API directly and needs an API\n"
+    "key — a Claude Pro/Max subscription alone does not grant API access.\n"
+    "Get a key at https://console.anthropic.com/, then export\n"
+    "ANTHROPIC_API_KEY=... and re-run. Subscription support via claude -p\n"
+    "is tracked in #86.\n"
+    "Commands that don't need a key: validate, capture, run, lint, init,\n"
+    "badge, audit, trend."
+)
+
+
+def check_anthropic_auth(cmd_name: str) -> None:
+    """Pre-flight guard: raise if ``ANTHROPIC_API_KEY`` is missing.
+
+    Pure function per ``.claude/rules/pure-compute-vs-io-split.md``:
+    reads ``os.environ`` only; does NOT print to stderr, does NOT call
+    ``sys.exit``, does NOT log. The CLI wrapper catches
+    :class:`AnthropicAuthMissingError` and maps it to ``return 2`` +
+    stderr surfacing.
+
+    Per DEC-001, only ``ANTHROPIC_API_KEY`` counts — ``ANTHROPIC_AUTH_TOKEN``
+    is ignored even though the underlying Anthropic SDK honors it. The
+    guard is deliberately stricter than the SDK's own fallback chain;
+    widening later is cheap if it bites.
+
+    Args:
+        cmd_name: Subcommand label (e.g. ``"grade"``, ``"propose-eval"``)
+            interpolated into the error message so users see
+            ``clauditor grade`` for immediately actionable UX.
+
+    Raises:
+        AnthropicAuthMissingError: when ``ANTHROPIC_API_KEY`` is absent,
+            an empty string, or whitespace-only. Message contains the
+            three DEC-012 durable substrings and the interpolated
+            command name.
+    """
+    value = os.environ.get("ANTHROPIC_API_KEY")
+    if value is None or value.strip() == "":
+        raise AnthropicAuthMissingError(
+            _AUTH_MISSING_TEMPLATE.format(cmd_name=cmd_name)
+        )
+    return None
 
 
 @dataclass
@@ -214,7 +282,20 @@ async def call_anthropic(
             "SDK. Install with: pip install clauditor[grader]"
         ) from exc
 
-    client = AsyncAnthropic()
+    # Defense-in-depth (DEC-008 of #83): wrap the
+    # ``AsyncAnthropic()`` construction site the same way we wrap
+    # ``messages.create`` below, so a future SDK that moves the
+    # ``TypeError: Could not resolve authentication method`` site to
+    # ``__init__`` still surfaces as a clean ``AnthropicHelperError``
+    # rather than a raw traceback. Fixed sanitized message; original
+    # ``TypeError`` preserved on ``__cause__`` via ``raise ... from``.
+    try:
+        client = AsyncAnthropic()
+    except TypeError as exc:
+        raise AnthropicHelperError(
+            "Anthropic SDK client initialization failed — "
+            "verify ANTHROPIC_API_KEY is set."
+        ) from exc
 
     rate_limit_retries = 0
     server_retries = 0
@@ -275,5 +356,26 @@ async def call_anthropic(
             conn_retries += 1
             await _sleep(delay)
             continue
+        except TypeError as exc:
+            # Defense-in-depth (DEC-008, DEC-015 of
+            # plans/super/83-subscription-auth-gap.md). Current
+            # Anthropic SDK raises ``TypeError: Could not resolve
+            # authentication method`` from ``messages.create`` when
+            # no API key is configured. The pre-flight guard
+            # (US-003, ``check_anthropic_auth``) catches the
+            # missing-key case at exit 2 before we reach here, but
+            # any future caller that bypasses the guard will hit
+            # this branch and see a crisp ``AnthropicHelperError``
+            # (exit 3) instead of a raw ``TypeError`` traceback.
+            #
+            # DEC-015: fixed sanitized message — no ``str(exc)``,
+            # no ``exc.args``, no SDK-sourced text. The original
+            # ``TypeError`` is preserved on ``__cause__`` for
+            # debugging via ``raise ... from exc``. Not retried:
+            # a ``TypeError`` is a config error, not transient.
+            raise AnthropicHelperError(
+                "Anthropic SDK client initialization failed — "
+                "verify ANTHROPIC_API_KEY is set."
+            ) from exc
 
         return _extract_result(response)

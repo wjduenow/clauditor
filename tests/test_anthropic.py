@@ -23,12 +23,14 @@ from anthropic import (
 )
 
 from clauditor._anthropic import (
+    AnthropicAuthMissingError,
     AnthropicHelperError,
     AnthropicResult,
     _body_excerpt,
     _compute_backoff,
     _extract_result,
     call_anthropic,
+    check_anthropic_auth,
 )
 
 
@@ -585,3 +587,144 @@ class TestCallAnthropicImportError:
             with pytest.raises(ImportError) as exc_info:
                 await call_anthropic("p", model="m")
         assert "clauditor[grader]" in str(exc_info.value)
+
+
+class TestCallAnthropicTypeError:
+    """Defense-in-depth wrap for SDK ``TypeError`` (US-002 / clauditor-2df.2).
+
+    Pins DEC-008 (wrap as ``AnthropicHelperError`` not
+    ``AnthropicAuthMissingError`` — the pre-flight guard in US-003
+    catches the missing-key case first at exit 2; the wrap exists
+    for the bypass case which is exit 3 territory), and DEC-015 (no
+    SDK exception text in the user-facing message; original
+    exception preserved via ``__cause__``).
+    """
+
+    @pytest.mark.asyncio
+    async def test_sdk_typeerror_wrapped_as_helper_error(self) -> None:
+        # Simulate the current SDK behavior when no key is set and
+        # ``messages.create`` is reached: the SDK raises
+        # ``TypeError: Could not resolve authentication method``.
+        sdk_text = "Could not resolve authentication method"
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(
+            side_effect=TypeError(sdk_text)
+        )
+        sleep_mock = AsyncMock()
+        with patch(
+            "anthropic.AsyncAnthropic", return_value=mock_client
+        ), patch(
+            "clauditor._anthropic._sleep", sleep_mock
+        ):
+            with pytest.raises(AnthropicHelperError) as exc_info:
+                await call_anthropic("p", model="m")
+        msg = str(exc_info.value)
+        # Fixed sanitized message contains the DEC-015 anchors.
+        assert "Anthropic SDK client initialization failed" in msg
+        assert "ANTHROPIC_API_KEY" in msg
+        # SDK-sourced text must NOT leak into the user-facing message.
+        assert sdk_text not in msg
+        # TypeError is a config error, not transient — no retry.
+        assert mock_client.messages.create.await_count == 1
+        assert sleep_mock.await_count == 0
+        # Original exception preserved via __cause__ for debugging.
+        assert isinstance(exc_info.value.__cause__, TypeError)
+        assert sdk_text in str(exc_info.value.__cause__)
+
+    @pytest.mark.asyncio
+    async def test_sdk_typeerror_at_construction_wrapped(self) -> None:
+        # Future-proofing: if a future Anthropic SDK moves the
+        # ``TypeError: Could not resolve authentication method`` site
+        # from ``messages.create`` to ``AsyncAnthropic.__init__``, the
+        # wrap should still fire. Patch ``AsyncAnthropic`` to raise
+        # ``TypeError`` at construction, assert the same sanitized
+        # ``AnthropicHelperError`` surface.
+        sdk_text = "Could not resolve authentication method"
+
+        def _raise_at_construct(*args: object, **kwargs: object) -> None:
+            raise TypeError(sdk_text)
+
+        sleep_mock = AsyncMock()
+        with patch(
+            "anthropic.AsyncAnthropic", side_effect=_raise_at_construct
+        ), patch(
+            "clauditor._anthropic._sleep", sleep_mock
+        ):
+            with pytest.raises(AnthropicHelperError) as exc_info:
+                await call_anthropic("p", model="m")
+        msg = str(exc_info.value)
+        assert "Anthropic SDK client initialization failed" in msg
+        assert "ANTHROPIC_API_KEY" in msg
+        assert sdk_text not in msg
+        # No retry; construction failure is not transient.
+        assert sleep_mock.await_count == 0
+        assert isinstance(exc_info.value.__cause__, TypeError)
+        assert sdk_text in str(exc_info.value.__cause__)
+
+
+class TestCheckAnthropicAuth:
+    """Unit tests for the pre-flight auth guard (clauditor-2df.1 / US-001).
+
+    Pins DEC-001 (only ``ANTHROPIC_API_KEY`` counts),
+    DEC-010 (new exception class distinct from ``AnthropicHelperError``),
+    DEC-011 (message template with ``{cmd_name}`` substitution), and
+    DEC-012 (three test-asserted substrings: ``ANTHROPIC_API_KEY``,
+    ``Claude Pro``, ``console.anthropic.com``).
+    """
+
+    def test_key_present_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        assert check_anthropic_auth("grade") is None
+
+    def test_key_absent_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with pytest.raises(AnthropicAuthMissingError) as exc_info:
+            check_anthropic_auth("grade")
+        message = str(exc_info.value)
+        # DEC-012 durable anchors.
+        assert "ANTHROPIC_API_KEY" in message
+        assert "Claude Pro" in message
+        assert "console.anthropic.com" in message
+        # DEC-011: command-name interpolation.
+        assert "clauditor grade" in message
+
+    def test_key_empty_string_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        with pytest.raises(AnthropicAuthMissingError):
+            check_anthropic_auth("grade")
+
+    def test_key_whitespace_only_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "   \t\n")
+        with pytest.raises(AnthropicAuthMissingError):
+            check_anthropic_auth("grade")
+
+    def test_auth_token_only_still_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DEC-001: only ANTHROPIC_API_KEY counts, not ANTHROPIC_AUTH_TOKEN."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "some-token")
+        with pytest.raises(AnthropicAuthMissingError):
+            check_anthropic_auth("grade")
+
+    def test_key_whitespace_surrounded_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-empty value with surrounding whitespace counts as present.
+
+        The guard is about *presence*, not normalization: if the user
+        exports a key with accidental surrounding whitespace, the SDK
+        will handle it (or surface its own 401 if malformed). Pinning
+        this intent keeps a future "tighten to require trimmed value"
+        edit from silently regressing behavior without a test churn.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "  sk-test  ")
+        assert check_anthropic_auth("grade") is None

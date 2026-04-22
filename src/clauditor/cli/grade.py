@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from clauditor import history
+from clauditor._anthropic import AnthropicAuthMissingError, check_anthropic_auth
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.benchmark import Benchmark, compute_benchmark
 from clauditor.paths import resolve_clauditor_dir
@@ -232,6 +233,17 @@ def cmd_grade(args: argparse.Namespace) -> int:
         print(f"Model: {model}")
         print(f"Prompt:\n{prompt}")
         return 0
+
+    # #83 DEC-002/DEC-011: fail fast if ANTHROPIC_API_KEY is missing.
+    # Guard lands AFTER --dry-run (dry-run is a cost-free preview — no
+    # API call, no key needed) and BEFORE allocate_iteration so we do
+    # not leave an abandoned iteration-N-tmp/ staging dir behind when
+    # the guard fires.
+    try:
+        check_anthropic_auth("grade")
+    except AnthropicAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     # Allocate the iteration workspace early so that a collision
     # (--iteration N already exists) fails before we make any LLM calls.

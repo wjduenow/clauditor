@@ -157,6 +157,8 @@ clauditor implements (and extends) the workflow at [agentskills.io/skill-creatio
 
 **Beyond the spec**: trigger precision testing, tiered extraction, pytest plugin, `input_files` staging, blind A/B judge, baseline pair runs, transcript capture, LLM-driven skill improvement proposer (`clauditor suggest`), LLM-assisted EvalSpec bootstrap (`clauditor propose-eval`), Pro/Max subscription-auth option (`--no-api-key`) for research-heavy skills that exceed the API-tier rate limit, static spec-conformance check (`clauditor lint`). **Out of scope**: human-in-the-loop feedback capture.
 
+Note: `--no-api-key` only affects the subprocess; several commands (`grade`, `propose-eval`, `suggest`, `triggers`, `extract`, `compare --blind`) still call the Anthropic API from the Python process and require `ANTHROPIC_API_KEY` — a Pro/Max subscription alone does not grant API access. See [Authentication and API Keys](docs/cli-reference.md#authentication-and-api-keys) for the full list and exit-2 behavior (follow-up #86).
+
 </details>
 
 ## Reference docs

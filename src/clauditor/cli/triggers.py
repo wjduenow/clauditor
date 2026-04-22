@@ -6,6 +6,8 @@ import argparse
 import json
 import sys
 
+from clauditor._anthropic import AnthropicAuthMissingError, check_anthropic_auth
+
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``triggers`` subparser."""
@@ -79,6 +81,15 @@ def cmd_triggers(args: argparse.Namespace) -> int:
             print(f"\n--- {label}: \"{query}\" ---")
             print(prompt)
         return 0
+
+    # #83 DEC-002/DEC-011: fail fast if ANTHROPIC_API_KEY is missing.
+    # Guard lands AFTER --dry-run (dry-run is a cost-free preview — no
+    # API call, no key needed) and BEFORE test_triggers.
+    try:
+        check_anthropic_auth("triggers")
+    except AnthropicAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     from clauditor.triggers import test_triggers
 

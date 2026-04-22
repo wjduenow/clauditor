@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from clauditor._anthropic import AnthropicAuthMissingError, check_anthropic_auth
 from clauditor.paths import resolve_clauditor_dir
 from clauditor.suggest import (
     NoPriorGradeError,
@@ -83,7 +84,11 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
     - exit 0 on zero failing signals (Sonnet NOT called) and on success.
     - exit 1 when no prior grading.json exists or the proposer returns
       unparseable JSON (no sidecar).
-    - exit 2 when any proposal anchor fails validation (no sidecar).
+    - exit 2 when any proposal anchor fails validation (no sidecar),
+      OR when ``ANTHROPIC_API_KEY`` is unset — the pre-flight
+      ``check_anthropic_auth("suggest")`` guard raises
+      ``AnthropicAuthMissingError`` before any API call per #83
+      DEC-002/DEC-011 (no sidecar).
     - exit 3 on Anthropic API errors (no sidecar).
     """
     skill_path = Path(args.skill)
@@ -157,6 +162,17 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 0
+
+    # #83 DEC-002/DEC-011: fail fast if ANTHROPIC_API_KEY is missing.
+    # ``suggest`` has no --dry-run; the guard lands AFTER the zero-
+    # failing-signals early-exit (so the "all passed" path still works
+    # without a key — it never calls Anthropic) and BEFORE the
+    # propose_edits orchestrator.
+    try:
+        check_anthropic_auth("suggest")
+    except AnthropicAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     if args.verbose:
         print(
