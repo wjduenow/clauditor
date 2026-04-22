@@ -77,6 +77,8 @@ Non-LLM 0/1/2 taxonomy per `.claude/rules/llm-cli-exit-code-taxonomy.md`:
 
 The agentskills.io spec defines the frontmatter keys `name`, `description`, `license`, `compatibility`, `metadata`, and `allowed-tools`. Unknown keys normally trigger `AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY` (warning). Two Claude Code extension keys are allowlisted and do NOT trigger the warning: `argument-hint` and `disable-model-invocation`. The allowlist is maintained by the maintainer-only `/review-agentskills-spec` skill, which periodically diffs Claude Code's published frontmatter documentation against the `KNOWN_CLAUDE_CODE_EXTENSION_KEYS` constant in `src/clauditor/conformance.py` (per DEC-009 and DEC-013 of `plans/super/71-agentskills-lint.md`).
 
+Unquoted `: ` (space-colon-space) inside a frontmatter scalar value triggers `AGENTSKILLS_FRONTMATTER_UNQUOTED_COLON_IN_SCALAR` (error, exit 2) — strict YAML parsers (PyYAML, GitHub's renderer) treat such values as nested mappings while clauditor's permissive reader accepts them silently. Wrap the value in double quotes to silence it (per DEC-003 and DEC-007 of `plans/super/80-strict-frontmatter-yaml.md`).
+
 ### Soft-warn hook on every skill load
 
 Beyond the standalone `lint` command, `SkillSpec.from_file` calls `check_conformance` on every skill load and emits **warnings only** to stderr with the `clauditor.conformance:` prefix. Errors are silent at that seam — they surface when the user runs `clauditor lint`. The hook never blocks `from_file`; a skill that would fail `lint` today still loads for `validate`, `grade`, and downstream commands (per DEC-003).
