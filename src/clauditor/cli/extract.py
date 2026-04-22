@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from clauditor import history
+from clauditor._anthropic import AnthropicAuthMissingError, check_anthropic_auth
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -72,6 +73,15 @@ def cmd_extract(args: argparse.Namespace) -> int:
         print(f"Model: {model}")
         print(f"Prompt:\n{prompt}")
         return 0
+
+    # #83 DEC-002/DEC-011: fail fast if ANTHROPIC_API_KEY is missing.
+    # Guard lands AFTER --dry-run (dry-run is a cost-free preview — no
+    # API call, no key needed) and BEFORE extract_and_grade.
+    try:
+        check_anthropic_auth("extract")
+    except AnthropicAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     # Get output
     skill_result = None
