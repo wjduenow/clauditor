@@ -984,3 +984,125 @@ class TestNestedMetadataScope:
         )
         issues = check_conformance(text, _modern_path())
         assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+
+class TestParserAcceptedEdgeCases:
+    """Edge cases that the permissive ``parse_frontmatter`` accepts:
+    leading blank lines before the opening ``---`` and quoted scalars
+    with trailing YAML inline comments. Surfaced by Copilot review on
+    PR #82."""
+
+    def test_leading_blank_lines_before_frontmatter_flagged(self):
+        # parse_frontmatter tolerates leading blank lines; the walker
+        # must too, or it silently skips the whole file. Line numbers
+        # are also offset accordingly.
+        text = (
+            "\n"
+            "\n"
+            "---\n"
+            "name: my-skill\n"
+            "description: Has bug: embedded here.\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        flagged = _by_code(issues, _UNQUOTED_COLON_CODE)
+        assert len(flagged) == 1
+        # Line 5 = 2 blanks + '---' + name line + description line.
+        assert "line 5" in flagged[0].message, flagged[0].message
+
+    def test_quoted_value_with_trailing_comment_passes(self):
+        # YAML allows an inline ``# ...`` comment after a closed
+        # quoted scalar. Strict parsers treat the ``: `` INSIDE the
+        # quoted portion as a literal part of the string, not a
+        # nested mapping indicator.
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            'description: "Note: example case" # trailing comment\n'
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+    def test_unquoted_value_with_trailing_comment_and_colon_space_flagged(
+        self,
+    ):
+        # Comment-stripping is a helper for the quote-awareness path;
+        # it must NOT suppress legitimate flagging of ``: `` in the
+        # unquoted portion of the value.
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: Has bug: embedded here # trailing comment\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        flagged = _by_code(issues, _UNQUOTED_COLON_CODE)
+        assert len(flagged) == 1
+
+    def test_unquoted_with_hash_no_colon_space_passes(self):
+        # An unquoted value that contains ``#`` but no ``: `` in the
+        # pre-comment portion should pass. Pins comment-stripping
+        # arithmetic: if the scanner's strip is too aggressive it
+        # might trim real content.
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: hello # world\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+
+class TestWalkerDefensiveGuards:
+    """Direct-call tests for defensive branches unreachable via the
+    normal ``check_conformance`` flow (where ``parse_frontmatter``
+    raises and ``AGENTSKILLS_FRONTMATTER_INVALID_YAML`` short-circuits
+    before the walker runs). These guards protect future direct
+    callers."""
+
+    def _call_walker(self, text: str) -> list:
+        """Invoke the walker directly, bypassing check_conformance."""
+        from clauditor.conformance import (  # noqa: PLC0415
+            _check_unquoted_colon_in_scalar,
+        )
+
+        issues: list = []
+        _check_unquoted_colon_in_scalar(text, issues)
+        return issues
+
+    def test_empty_input_noop(self):
+        assert self._call_walker("") == []
+
+    def test_no_frontmatter_delimiter_noop(self):
+        assert self._call_walker("just body, no frontmatter\n") == []
+
+    def test_only_blank_lines_noop(self):
+        assert self._call_walker("\n\n\n") == []
+
+    def test_missing_closing_delimiter_noop(self):
+        # Defensive guard: parse_frontmatter would have raised, but
+        # the walker tolerates this via StopIteration → return.
+        assert (
+            self._call_walker("---\nname: my-skill\ndescription: ok\n")
+            == []
+        )
+
+    def test_comment_line_inside_frontmatter_skipped(self):
+        # Comment-only lines are not scalars; the walker must skip
+        # them (covers the ``not stripped or startswith('#')`` guard).
+        issues = self._call_walker(
+            "---\nname: foo\n# a comment line\nbar: baz\n---\n"
+        )
+        # No ``: `` in scalar values — passes cleanly.
+        assert issues == []
+
+    def test_colonless_line_inside_frontmatter_skipped(self):
+        # Defensive guard: parse_frontmatter would reject this, but
+        # the walker's ``if ':' not in stripped: continue`` handles
+        # it gracefully if called directly.
+        issues = self._call_walker(
+            "---\nname: foo\ncolonless line\nbar: baz\n---\n"
+        )
+        assert issues == []

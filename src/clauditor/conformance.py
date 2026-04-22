@@ -698,20 +698,36 @@ def _check_unquoted_colon_in_scalar(
     ``plans/super/80-strict-frontmatter-yaml.md``.
     """
     # Extract the frontmatter block (between the two ``---`` markers).
-    # If no frontmatter, no-op.
+    # Match parse_frontmatter's tolerance: allow leading blank lines
+    # before the opening delimiter. If no frontmatter at all, no-op.
     lines = skill_md_text.splitlines()
-    if not lines or lines[0].strip() != "---":
+    if not lines:
         return
+    opening_index = next(
+        (i for i, line in enumerate(lines) if line.strip()),
+        None,
+    )
+    if opening_index is None or lines[opening_index].strip() != "---":
+        return
+
     try:
         end_idx = next(
-            i for i, line in enumerate(lines[1:], start=1)
+            i
+            for i, line in enumerate(
+                lines[opening_index + 1 :], start=opening_index + 1
+            )
             if line.strip() == "---"
         )
     except StopIteration:
-        # Malformed — already caught by INVALID_YAML.
+        # Malformed — already caught by INVALID_YAML when called via
+        # check_conformance, but we guard defensively here for direct
+        # callers.
         return
 
-    for lineno, line in enumerate(lines[1:end_idx], start=2):
+    for lineno, line in enumerate(
+        lines[opening_index + 1 : end_idx],
+        start=opening_index + 2,
+    ):
         # 1-based line numbers in error messages (YAML convention,
         # matches GitHub's "line 3 column 95" style).
         stripped = line.lstrip()
@@ -724,18 +740,30 @@ def _check_unquoted_colon_in_scalar(
         if not value:
             # ``metadata:`` block header — no scalar to check.
             continue
-        # Quote detection: first-and-last char match. The permissive
-        # parser already stripped matching quotes, but here we're
-        # inspecting raw text, so this is our own check. Trailing
-        # whitespace after the quote is tolerated; a stray quote
-        # mid-string falls through to the ``": "`` check (conservative).
-        trimmed = value.rstrip()
-        if len(trimmed) >= 2 and (
-            (trimmed[0] == '"' and trimmed[-1] == '"')
-            or (trimmed[0] == "'" and trimmed[-1] == "'")
-        ):
-            continue
-        if ": " in value:
+
+        # Quote detection: if the value starts with a quote and has a
+        # matching close quote before the end, treat it as a valid
+        # quoted scalar. YAML allows an inline ``# ...`` comment after
+        # a closed quoted scalar, so we ignore anything after the
+        # close quote (this is what strict parsers do).
+        if value[0] in ('"', "'"):
+            quote_char = value[0]
+            close_idx = value.find(quote_char, 1)
+            if close_idx > 0:
+                continue
+
+        # Not a closed quoted scalar. Strip a trailing YAML inline
+        # comment (``#`` preceded by whitespace, outside quotes — we
+        # already handled the quoted-scalar case above) before the
+        # ``": "`` check, so ``foo # note: here`` doesn't false-flag
+        # on the colon-space inside the comment.
+        scan = value
+        for i in range(1, len(scan)):
+            if scan[i] == "#" and scan[i - 1].isspace():
+                scan = scan[:i].rstrip()
+                break
+
+        if ": " in scan:
             issues.append(
                 ConformanceIssue(
                     code="AGENTSKILLS_FRONTMATTER_UNQUOTED_COLON_IN_SCALAR",
