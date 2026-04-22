@@ -91,6 +91,8 @@ Beyond the standalone `lint` command, `SkillSpec.from_file` calls `check_conform
 
 LLM-assisted EvalSpec bootstrap. `clauditor propose-eval <skill.md>` reads the SKILL.md file and (optionally) a captured skill run, asks Sonnet to propose a full three-layer EvalSpec (L1 assertions, L2 tiered extraction, L3 rubric), validates the proposal through `EvalSpec.from_dict`, and writes a sibling `<skill>.eval.json` next to the SKILL.md (the same path `SkillSpec.from_file` and `clauditor init` auto-discover). Use it to skip the blank-spec drudgery when onboarding a new skill.
 
+Requires `ANTHROPIC_API_KEY`. See [Authentication and API Keys](#authentication-and-api-keys).
+
 ### Required inputs
 
 - `<skill_md>` (positional) — path to the SKILL.md file. The generated spec is written to the sibling `<skill_stem>.eval.json` (e.g. `foo.md` → `foo.eval.json`, `SKILL.md` → `SKILL.eval.json`).
@@ -178,6 +180,55 @@ clauditor validate .claude/commands/my-skill.md --no-api-key --timeout 30
 ```
 
 Pytest integration: `--clauditor-no-api-key` is the plugin-option counterpart to `--no-api-key` on the CLI. It threads the same env scrub through the `clauditor_spec` fixture's `env_override`. The existing `--clauditor-timeout` pytest option continues to control the per-runner default (constructor `timeout=...`); per-invocation overrides flow through the fixture factory just like the CLI path. See [`docs/pytest-plugin.md`](pytest-plugin.md).
+
+## Authentication and API Keys
+
+Anthropic exposes two distinct auth modes, and clauditor commands split cleanly along that line:
+
+- **API key** — pay-per-token, set via the `ANTHROPIC_API_KEY` environment variable. Required by any clauditor command that calls the Anthropic API from the Python process.
+- **Claude Pro/Max subscription** — flat-rate plan, credentials cached under `~/.claude/` by the `claude` CLI. Works for commands that only spawn the `claude -p` skill subprocess.
+
+The Python `anthropic` SDK is API-only: it does not read subscription credentials from `~/.claude/`. That is why the five LLM-mediated commands below (`grade`, `propose-eval`, `suggest`, `triggers`, `extract`) require `ANTHROPIC_API_KEY` even when the user is signed in to Claude Pro/Max. Commands that only run the skill subprocess work under either auth mode.
+
+### Feature-impact matrix
+
+| Command | Works without API key? | Why |
+| ------- | :--------------------: | --- |
+| `clauditor validate` | ✓ | L1 deterministic assertions; no LLM call on the clauditor side. |
+| `clauditor capture` | ✓ | Runs the skill subprocess only. |
+| `clauditor run` | ✓ | Runs the skill subprocess only. |
+| `clauditor lint` | ✓ | Static conformance check, no LLM. |
+| `clauditor init` | ✓ | Eval-spec scaffold, no LLM. |
+| `clauditor badge` | ✓ | Reads persisted sidecars, no LLM. |
+| `clauditor audit` | ✓ | Reads persisted sidecars. |
+| `clauditor trend` | ✓ | Reads persisted sidecars. |
+| `clauditor grade` | ✗ | L3 grader is a direct `anthropic.AsyncAnthropic` call. |
+| `clauditor grade --variance N` (blind compare) | ✗ | Same — each variance rep calls the SDK directly. |
+| `clauditor propose-eval` | ✗ | Direct SDK call via `_anthropic.call_anthropic`. |
+| `clauditor suggest` | ✗ | Direct SDK call via `_anthropic.call_anthropic`. |
+| `clauditor triggers` | ✗ | Direct SDK call via `_anthropic.call_anthropic`. |
+| `clauditor extract` | ✗ | Direct SDK call via `_anthropic.call_anthropic`. |
+
+### Error behavior
+
+When `ANTHROPIC_API_KEY` is unset (or empty / whitespace-only) on one of the ✗-row commands, the CLI exits `2` with an actionable stderr message naming the offending subcommand:
+
+```
+ERROR: ANTHROPIC_API_KEY is not set.
+clauditor grade calls the Anthropic API directly and needs an API
+key — a Claude Pro/Max subscription alone does not grant API access.
+Get a key at https://console.anthropic.com/, then export
+ANTHROPIC_API_KEY=... and re-run. Subscription support via claude -p
+is tracked in #86.
+Commands that don't need a key: validate, capture, run, lint, init,
+badge, audit, trend.
+```
+
+The exit code (`2`) matches the pre-call input-validation category in the [four-exit-code taxonomy](#exit-codes) — the guard fires before any API call is made, so no tokens are spent and no sidecar is written.
+
+### Subscription support (follow-up)
+
+Routing L3 grading, `propose-eval`, `suggest`, `triggers`, and `extract` through the `claude -p` subprocess (so a Pro/Max subscription alone is enough) is tracked in [GitHub issue #86](https://github.com/wjduenow/clauditor/issues/86). Until that lands, the five LLM-mediated commands above need a direct API key.
 
 ## Persistent metric history
 
