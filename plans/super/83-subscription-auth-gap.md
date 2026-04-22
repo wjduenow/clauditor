@@ -4,7 +4,7 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/83
 - **Branch:** `feature/83-subscription-auth-gap`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/83-subscription-auth-gap`
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **PR:** https://github.com/wjduenow/clauditor/pull/87
 - **Follow-up issue:** https://github.com/wjduenow/clauditor/issues/86
 - **Sessions:** 1
@@ -563,7 +563,22 @@ Validation command (appears in every story's Done-when):
 
 ## Beads Manifest
 
-*(to be filled on devolve)*
+- **Epic:** `clauditor-2df` — `#83: Subscription-auth gap — pre-flight guard for LLM-mediated commands`
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/83-subscription-auth-gap`
+
+| Bead | Story | Deps |
+|---|---|---|
+| `clauditor-2df.1` | US-001 — Exception class + pure helper | — |
+| `clauditor-2df.2` | US-002 — TypeError wrap | `.1` |
+| `clauditor-2df.3` | US-003 — CLI wiring (5 commands) | `.1` |
+| `clauditor-2df.4` | US-004 — Pytest fixtures | `.1` |
+| `clauditor-2df.5` | US-005 — Regression tests (8 cmds) | `.3` |
+| `clauditor-2df.6` | US-006 — `docs/cli-reference.md` | `.1`, `.3` |
+| `clauditor-2df.7` | US-007 — README teaser | `.6` |
+| `clauditor-2df.8` | US-008 — Quality Gate | `.1`..`.7` |
+| `clauditor-2df.9` | US-009 — Patterns & Memory (P4) | `.8` |
+
+Ready work at time of devolve: `bd ready` should surface `clauditor-2df.1` first (no deps); `.2`/`.3`/`.4` unblock once `.1` closes.
 
 ---
 
@@ -579,4 +594,5 @@ Validation command (appears in every story's Done-when):
 - Filed GitHub issue #86 for the `claude -p` subprocess-transport follow-up.
 - Phase 4 detailing: 9 stories (US-001..US-009) with dependencies, TDD annotations, and rules-compliance notes.
 - Phase 5 publish: committed plan, pushed branch, opened draft PR #87 targeting `dev`.
-- **Next:** user reviews PR #87; on approval, run devolve to create beads from the 9 stories.
+- Phase 7 devolve: created epic `clauditor-2df` + 9 child beads with dependency edges; phase set to `devolved`.
+- **Next:** start Ralph against `bd ready`; `clauditor-2df.1` (US-001) is the entry point.
