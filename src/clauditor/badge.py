@@ -56,15 +56,23 @@ Decisions traced (see ``plans/super/77-clauditor-badge.md``):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+
+from clauditor.audit import _read_json, _scan_iteration_dirs
 
 __all__ = [
     "Badge",
     "ClauditorExtension",
+    "IterationSidecars",
     "L1Summary",
     "L3Summary",
     "VarianceSummary",
+    "build_markdown_image",
     "compute_badge",
+    "discover_iteration",
+    "load_iteration_sidecars",
 ]
 
 
@@ -573,3 +581,189 @@ def compute_badge(
         ),
         style_overrides=dict(style_overrides) if style_overrides else {},
     )
+
+
+# ---------------------------------------------------------------------------
+# Sidecar discovery + URL-builder pure helpers (US-003).
+#
+# These helpers extend ``clauditor.badge`` additively with the pure
+# pieces the CLI layer (``cli/badge.py``) composes in US-004:
+#
+# * :func:`discover_iteration` walks ``<project_dir>/.clauditor/
+#   iteration-*/`` via the existing ``audit._scan_iteration_dirs``
+#   helper and returns the latest iteration dir that contains a
+#   ``<skill_name>/`` subdir (or, when the caller supplies an
+#   explicit iteration number, resolves that specific dir).
+# * :func:`load_iteration_sidecars` reads the three per-layer sidecar
+#   files via ``audit._read_json`` (best-effort; returns ``None`` on
+#   absent / malformed) and packages them into an
+#   :class:`IterationSidecars` dataclass with the DEC-008
+#   ``assertions_missing`` flag.
+# * :func:`build_markdown_image` renders the ``--url-only`` shields.io
+#   endpoint Markdown image line with URL-encoded path components.
+#
+# All three are pure per ``.claude/rules/pure-compute-vs-io-split.md``:
+# no stderr, no subprocess, no mutation of inputs. The file reads in
+# :func:`load_iteration_sidecars` go through ``audit._read_json``,
+# which is a best-effort helper that swallows missing-file / parse-
+# error failures — the thinnest possible I/O seam and the only one
+# this module owns.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class IterationSidecars:
+    """Container for the three per-layer sidecar dicts.
+
+    All three sidecar fields are ``None`` when the corresponding file
+    is absent or fails to parse (via :func:`audit._read_json`).
+
+    ``assertions_missing`` distinguishes the DEC-008 "corrupt
+    iteration" branch from the DEC-001 "no data yet" branch:
+
+    * ``True`` — the iteration-skill dir exists on disk, but
+      ``assertions.json`` does not. The CLI treats this as a
+      corrupt iteration and exits 1 (DEC-008).
+    * ``False`` — either both the dir and ``assertions.json`` are
+      absent (the "no iteration found" DEC-001 case; the caller
+      uses :func:`discover_iteration`'s ``None`` return to detect
+      that upstream), or the iteration is present and
+      ``assertions.json`` is present too (the happy path).
+
+    The flag is a property of the sidecar-loading step rather than
+    of the returned dicts themselves — an empty-but-present
+    ``assertions.json`` loads as an (empty) dict, with
+    ``assertions_missing=False``.
+    """
+
+    assertions: dict | None
+    grading: dict | None
+    variance: dict | None
+    assertions_missing: bool
+
+
+def discover_iteration(
+    project_dir: Path,
+    skill_name: str,
+    explicit: int | None,
+) -> tuple[int, Path] | None:
+    """Locate the iteration dir whose sidecars feed the badge.
+
+    Two modes:
+
+    * ``explicit=None`` — walk
+      ``<project_dir>/.clauditor/iteration-*/`` via
+      :func:`audit._scan_iteration_dirs` (returns dirs sorted
+      descending by iteration number) and return the first
+      ``(N, iteration-N/<skill_name>)`` tuple whose skill-dir
+      exists. Returns ``None`` when no iteration contains a
+      ``<skill_name>/`` subdir. Missing ``.clauditor/`` is
+      handled by the scanner, which returns an empty list — no
+      raise.
+    * ``explicit=N`` — check
+      ``<project_dir>/.clauditor/iteration-N/<skill_name>/``
+      directly. Returns ``(N, that_path)`` if it exists, else
+      ``None``.
+
+    The caller distinguishes DEC-001 (no iteration at all, lightgrey
+    placeholder, exit 0) from DEC-016 (explicit ``--from-iteration
+    N`` that doesn't resolve, exit 1) by branching on
+    ``explicit is not None`` after this helper returns ``None``.
+
+    Pure: no stderr, no subprocess, no mutation of inputs. Only
+    filesystem reads (via the scanner and ``Path.is_dir``).
+    """
+    clauditor_dir = project_dir / ".clauditor"
+    if explicit is not None:
+        target = clauditor_dir / f"iteration-{explicit}" / skill_name
+        if target.is_dir():
+            return explicit, target
+        return None
+
+    for iter_num, iter_dir in _scan_iteration_dirs(clauditor_dir):
+        skill_dir = iter_dir / skill_name
+        if skill_dir.is_dir():
+            return iter_num, skill_dir
+    return None
+
+
+def load_iteration_sidecars(iteration_skill_dir: Path) -> IterationSidecars:
+    """Read the three per-layer sidecars from an iteration skill dir.
+
+    Reads ``assertions.json``, ``grading.json``, and ``variance.json``
+    under ``iteration_skill_dir`` via :func:`audit._read_json`. That
+    helper returns ``None`` on absent file or JSON parse error; we
+    propagate that signal into each dataclass field so the caller
+    can cleanly distinguish present-and-loaded from absent-or-
+    malformed.
+
+    ``assertions_missing`` is set per the DEC-008 contract — ``True``
+    when the iteration-skill dir exists but ``assertions.json`` does
+    not. When the dir itself does not exist, ``assertions_missing``
+    is ``False`` (the DEC-001 "no iteration" path, which the caller
+    should already have detected via
+    :func:`discover_iteration` returning ``None``).
+
+    Pure from the caller's perspective: the helper performs file
+    reads but never raises on the common error paths and never
+    mutates the input path.
+    """
+    dir_exists = iteration_skill_dir.is_dir()
+    assertions_path = iteration_skill_dir / "assertions.json"
+    assertions = _read_json(assertions_path)
+    grading = _read_json(iteration_skill_dir / "grading.json")
+    variance = _read_json(iteration_skill_dir / "variance.json")
+    assertions_missing = dir_exists and not assertions_path.is_file()
+    return IterationSidecars(
+        assertions=assertions,
+        grading=grading,
+        variance=variance,
+        assertions_missing=assertions_missing,
+    )
+
+
+def build_markdown_image(
+    *,
+    skill_name: str,
+    repo_slug: str,
+    branch: str,
+    output_relpath: str,
+    label: str,
+) -> str:
+    """Build the Markdown image line for ``clauditor badge --url-only``.
+
+    Constructs a shields.io endpoint URL that points at the raw
+    badge JSON hosted under ``<repo_slug>/<branch>/<output_relpath>``
+    on GitHub (``raw.githubusercontent.com``). Each URL path
+    component is percent-encoded via
+    ``urllib.parse.quote(..., safe="/")`` so path separators pass
+    through unchanged while spaces and other URL-unsafe characters
+    are escaped.
+
+    The label is preserved verbatim inside the Markdown
+    ``![label](...)`` syntax — shields.io does not consume the
+    Markdown alt-text, and keeping it human-readable makes the
+    rendered README more accessible.
+
+    ``skill_name`` is not directly interpolated into the URL — the
+    caller bakes it into ``output_relpath`` (e.g.
+    ``.clauditor/badges/<skill>.json``). Accepting it as a keyword
+    argument keeps the signature stable for future tweaks and gives
+    the caller a single entry point that carries all badge identity
+    on one call.
+
+    Pure: no stderr, no subprocess, no mutation of inputs.
+    """
+    # Path components can legitimately contain ``/`` (the repo_slug
+    # is ``USER/REPO``; output_relpath is ``.clauditor/badges/<n>.json``),
+    # so ``safe="/"`` preserves the separator while escaping spaces,
+    # ``?``, ``#``, ``&``, and other URL-reserved characters.
+    _ = skill_name  # intentionally unused; see docstring rationale.
+    encoded_slug = quote(repo_slug, safe="/")
+    encoded_branch = quote(branch, safe="/")
+    encoded_relpath = quote(output_relpath, safe="/")
+    inner_url = (
+        f"https://raw.githubusercontent.com/"
+        f"{encoded_slug}/{encoded_branch}/{encoded_relpath}"
+    )
+    return f"![{label}](https://img.shields.io/endpoint?url={inner_url})"

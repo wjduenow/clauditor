@@ -20,10 +20,14 @@ from clauditor.assertions import AssertionResult, AssertionSet
 from clauditor.badge import (
     Badge,
     ClauditorExtension,
+    IterationSidecars,
     L1Summary,
     L3Summary,
     VarianceSummary,
+    build_markdown_image,
     compute_badge,
+    discover_iteration,
+    load_iteration_sidecars,
 )
 from clauditor.quality_grader import GradingReport, GradingResult
 from clauditor.schemas import GradeThresholds
@@ -840,3 +844,272 @@ class TestDefensiveBranches:
         assert badge.clauditor.variance == VarianceSummary(
             n_runs=0, stability=0.9, passed=True
         )
+
+
+# ---------------------------------------------------------------------------
+# US-003 — Sidecar discovery + URL builder helpers.
+#
+# DEC-001 / DEC-002 / DEC-006 / DEC-008 / DEC-016 / DEC-026.
+# ---------------------------------------------------------------------------
+
+
+def _mk_iteration(project_dir, iter_num: int, skill_name: str | None) -> None:
+    """Create ``<project_dir>/.clauditor/iteration-N/[<skill>/]``.
+
+    ``skill_name=None`` creates the iteration dir but no skill
+    subdir — simulating an iteration that holds another skill's
+    sidecars but not the one we're looking up.
+    """
+    iter_dir = project_dir / ".clauditor" / f"iteration-{iter_num}"
+    iter_dir.mkdir(parents=True, exist_ok=True)
+    if skill_name is not None:
+        (iter_dir / skill_name).mkdir(parents=True, exist_ok=True)
+
+
+class TestDiscoverIteration:
+    """Tests for :func:`clauditor.badge.discover_iteration`."""
+
+    def test_returns_latest_when_explicit_none(self, tmp_path):
+        """Pick highest N where ``iteration-N/<skill>/`` exists."""
+        _mk_iteration(tmp_path, 1, "demo")
+        _mk_iteration(tmp_path, 3, "demo")
+        _mk_iteration(tmp_path, 2, "demo")
+        result = discover_iteration(tmp_path, "demo", None)
+        assert result is not None
+        n, path = result
+        assert n == 3
+        assert path == tmp_path / ".clauditor" / "iteration-3" / "demo"
+
+    def test_explicit_hit(self, tmp_path):
+        """``explicit=N`` returns that dir when it exists."""
+        _mk_iteration(tmp_path, 42, "demo")
+        result = discover_iteration(tmp_path, "demo", 42)
+        assert result is not None
+        n, path = result
+        assert n == 42
+        assert path == tmp_path / ".clauditor" / "iteration-42" / "demo"
+
+    def test_explicit_missing_returns_none(self, tmp_path):
+        """``explicit=N`` returns ``None`` when the iteration-skill dir is absent."""
+        # iteration exists but without the skill subdir
+        _mk_iteration(tmp_path, 7, skill_name=None)
+        assert discover_iteration(tmp_path, "demo", 7) is None
+
+    def test_explicit_iteration_dir_absent(self, tmp_path):
+        """``explicit=N`` returns ``None`` when iteration-N itself is absent."""
+        _mk_iteration(tmp_path, 1, "demo")
+        assert discover_iteration(tmp_path, "demo", 99) is None
+
+    def test_no_clauditor_dir_returns_none(self, tmp_path):
+        """Missing ``.clauditor/`` — scanner returns empty — helper returns None."""
+        # project_dir has no .clauditor/ at all
+        assert discover_iteration(tmp_path, "demo", None) is None
+
+    def test_no_iteration_has_skill_returns_none(self, tmp_path):
+        """Iterations exist but none contain ``<skill>/``."""
+        _mk_iteration(tmp_path, 1, "other")
+        _mk_iteration(tmp_path, 2, "other")
+        assert discover_iteration(tmp_path, "demo", None) is None
+
+    def test_skips_iterations_without_skill_dir(self, tmp_path):
+        """Latest iteration may lack the skill; walk down to the first hit."""
+        _mk_iteration(tmp_path, 5, skill_name=None)  # no demo/
+        _mk_iteration(tmp_path, 4, "demo")  # has demo/
+        _mk_iteration(tmp_path, 3, "demo")  # has demo/ (but older)
+        result = discover_iteration(tmp_path, "demo", None)
+        assert result is not None
+        n, path = result
+        assert n == 4
+        assert path == tmp_path / ".clauditor" / "iteration-4" / "demo"
+
+    def test_no_explicit_with_clauditor_dir_but_no_iterations(self, tmp_path):
+        """``.clauditor/`` exists but has no ``iteration-*/`` children."""
+        (tmp_path / ".clauditor").mkdir()
+        (tmp_path / ".clauditor" / "badges").mkdir()  # unrelated subdir
+        assert discover_iteration(tmp_path, "demo", None) is None
+
+
+class TestLoadIterationSidecars:
+    """Tests for :func:`clauditor.badge.load_iteration_sidecars`."""
+
+    def test_all_three_present(self, tmp_path):
+        """All three sidecars present → all three dicts returned."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        (skill_dir / "assertions.json").write_text(json.dumps({"results": []}))
+        (skill_dir / "grading.json").write_text(json.dumps({"results": []}))
+        (skill_dir / "variance.json").write_text(json.dumps({"n_runs": 3}))
+        sidecars = load_iteration_sidecars(skill_dir)
+        assert sidecars.assertions == {"results": []}
+        assert sidecars.grading == {"results": []}
+        assert sidecars.variance == {"n_runs": 3}
+        assert sidecars.assertions_missing is False
+
+    def test_only_assertions_present(self, tmp_path):
+        """Only ``assertions.json`` present → grading/variance are None."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        (skill_dir / "assertions.json").write_text(json.dumps({"results": []}))
+        sidecars = load_iteration_sidecars(skill_dir)
+        assert sidecars.assertions == {"results": []}
+        assert sidecars.grading is None
+        assert sidecars.variance is None
+        assert sidecars.assertions_missing is False
+
+    def test_only_grading_present(self, tmp_path):
+        """Only grading sidecar — assertions_missing True (DEC-008)."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        (skill_dir / "grading.json").write_text(json.dumps({"results": []}))
+        sidecars = load_iteration_sidecars(skill_dir)
+        assert sidecars.assertions is None
+        assert sidecars.grading == {"results": []}
+        assert sidecars.variance is None
+        assert sidecars.assertions_missing is True
+
+    def test_variance_optional(self, tmp_path):
+        """Assertions + grading present, variance absent → variance is None."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        (skill_dir / "assertions.json").write_text(json.dumps({"results": []}))
+        (skill_dir / "grading.json").write_text(json.dumps({"results": []}))
+        sidecars = load_iteration_sidecars(skill_dir)
+        assert sidecars.variance is None
+        assert sidecars.assertions_missing is False
+
+    def test_assertions_missing_true_when_dir_exists_without_assertions(
+        self, tmp_path
+    ):
+        """DEC-008: dir exists, ``assertions.json`` absent → flag True."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        # No assertions.json, no other sidecars either.
+        sidecars = load_iteration_sidecars(skill_dir)
+        assert sidecars.assertions is None
+        assert sidecars.assertions_missing is True
+
+    def test_assertions_missing_false_when_dir_absent(self, tmp_path):
+        """DEC-001: dir itself absent → flag False (not "corrupt")."""
+        skill_dir = tmp_path / "does-not-exist"
+        sidecars = load_iteration_sidecars(skill_dir)
+        assert sidecars.assertions is None
+        assert sidecars.grading is None
+        assert sidecars.variance is None
+        assert sidecars.assertions_missing is False
+
+    def test_all_absent_returns_all_none(self, tmp_path):
+        """Dir absent → all three sidecar dicts None, flag False."""
+        skill_dir = tmp_path / "missing"
+        sidecars = load_iteration_sidecars(skill_dir)
+        assert sidecars == IterationSidecars(
+            assertions=None,
+            grading=None,
+            variance=None,
+            assertions_missing=False,
+        )
+
+    def test_parse_error_returns_none_for_that_sidecar(self, tmp_path):
+        """Malformed JSON → ``_read_json`` returns None for that sidecar."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        (skill_dir / "assertions.json").write_text("{not valid json")
+        (skill_dir / "grading.json").write_text(json.dumps({"ok": True}))
+        sidecars = load_iteration_sidecars(skill_dir)
+        assert sidecars.assertions is None
+        assert sidecars.grading == {"ok": True}
+        # The file exists even though it's unparseable, so the flag
+        # reflects filesystem presence rather than parse success.
+        assert sidecars.assertions_missing is False
+
+
+class TestBuildMarkdownImage:
+    """Tests for :func:`clauditor.badge.build_markdown_image`."""
+
+    def test_basic_shape(self):
+        """Verbatim shape from the ticket example."""
+        md = build_markdown_image(
+            skill_name="review-pr",
+            repo_slug="USER/REPO",
+            branch="main",
+            output_relpath=".clauditor/badges/review-pr.json",
+            label="clauditor",
+        )
+        assert md == (
+            "![clauditor](https://img.shields.io/endpoint?"
+            "url=https://raw.githubusercontent.com/"
+            "USER/REPO/main/.clauditor/badges/review-pr.json)"
+        )
+
+    def test_url_encoding_on_branch_with_slash(self):
+        """Slashes in branch name are preserved (path-safe encoding)."""
+        md = build_markdown_image(
+            skill_name="demo",
+            repo_slug="acme/widget",
+            branch="feature/branch",
+            output_relpath=".clauditor/badges/demo.json",
+            label="clauditor",
+        )
+        # ``feature/branch`` stays as ``feature/branch`` (the ``/``
+        # is in the ``safe=`` set).
+        assert "/feature/branch/" in md
+
+    def test_url_encoding_on_output_relpath_with_space(self):
+        """Spaces in output_relpath get percent-encoded to ``%20``."""
+        md = build_markdown_image(
+            skill_name="demo",
+            repo_slug="acme/widget",
+            branch="main",
+            output_relpath=".clauditor/badges/my skill.json",
+            label="clauditor",
+        )
+        assert "my%20skill.json" in md
+        # And the raw space did NOT survive.
+        assert " " not in md.split("](")[1]
+
+    def test_label_preserved_verbatim(self):
+        """Label is interpolated into the ``![label](...)`` syntax as-is."""
+        md = build_markdown_image(
+            skill_name="demo",
+            repo_slug="acme/widget",
+            branch="main",
+            output_relpath=".clauditor/badges/demo.json",
+            label="My Cool Badge",
+        )
+        # Spaces in the alt-text are preserved for human readability.
+        assert md.startswith("![My Cool Badge](")
+
+    def test_repo_slug_preserved_with_slashes(self):
+        """``USER/REPO`` slug survives encoding."""
+        md = build_markdown_image(
+            skill_name="demo",
+            repo_slug="my-org/my-repo",
+            branch="main",
+            output_relpath=".clauditor/badges/demo.json",
+            label="clauditor",
+        )
+        assert "/my-org/my-repo/" in md
+
+    def test_special_chars_in_repo_slug_encoded(self):
+        """Unusual chars in the slug get percent-encoded."""
+        md = build_markdown_image(
+            skill_name="demo",
+            repo_slug="user/repo with space",
+            branch="main",
+            output_relpath=".clauditor/badges/demo.json",
+            label="clauditor",
+        )
+        assert "repo%20with%20space" in md
+
+    def test_returns_pure_string_no_mutation(self):
+        """Helper returns a string; no inputs are lists/dicts (no mutation risk
+        to assert, but verify return type)."""
+        md = build_markdown_image(
+            skill_name="demo",
+            repo_slug="u/r",
+            branch="main",
+            output_relpath="a.json",
+            label="x",
+        )
+        assert isinstance(md, str)
+        # Verify the double-layer URL structure.
+        assert md.count("https://") == 2
