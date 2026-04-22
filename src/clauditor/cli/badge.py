@@ -64,6 +64,17 @@ _ALLOWED_STYLE_KEYS: frozenset[str] = frozenset(
 # input with exit 2.
 _INT_STYLE_KEYS: frozenset[str] = frozenset({"cacheSeconds"})
 
+# Keys that are canonical top-level fields in the badge JSON and
+# MUST NOT be overwritten by ``--style`` passthroughs (Copilot PR
+# review, 2026-04-22). ``Badge.to_endpoint_json`` emits the
+# style_overrides dict AFTER the canonical fields, so a user passing
+# ``--style schemaVersion=2`` or ``--style label=hijacked`` would
+# silently clobber the shields.io-required fields and break the
+# badge. Reject at the CLI parse boundary with exit 2.
+_RESERVED_STYLE_KEYS: frozenset[str] = frozenset(
+    {"schemaVersion", "label", "message", "color", "clauditor"}
+)
+
 # Upper bound on a ``--style`` value (DEC-023). 512 chars is generous
 # for any reasonable shields.io field (even inline SVG data URLs stay
 # well under that when they show up in practice).
@@ -424,9 +435,18 @@ def _resolve_url_only_slug_and_branch(
     # default on GitHub), so the warning stays quiet unless the
     # slug itself had to be replaced.
     if slug_auto_failed:
+        # When BOTH auto-detects fell through, mention both flags so
+        # the user has the complete remediation in one line (Copilot
+        # PR review, 2026-04-22 — the prior message only named --repo
+        # even when --branch was also replaced with the placeholder).
+        override_hint = (
+            "pass --repo USER/REPO --branch NAME to override"
+            if branch_auto_failed
+            else "pass --repo USER/REPO to override"
+        )
         fallback_msg = (
             f"warning: git auto-detect failed; using placeholder "
-            f"{repo_slug}/{branch} — pass --repo USER/REPO to override"
+            f"{repo_slug}/{branch} — {override_hint}"
         )
         print(fallback_msg, file=sys.stderr)
     elif branch_auto_failed:
@@ -494,6 +514,21 @@ def cmd_badge(args: argparse.Namespace) -> int:
             _validate_style_value(key, value)
         except ValueError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        # Reserved-key collision guard: a passthrough key that
+        # matches a canonical shields.io / clauditor top-level
+        # field would silently clobber the real value inside
+        # ``Badge.to_endpoint_json`` (Copilot PR review,
+        # 2026-04-22).
+        if key in _RESERVED_STYLE_KEYS:
+            print(
+                f"ERROR: --style {key}=... would overwrite the "
+                f"canonical badge field {key!r}. Use --label for "
+                f"the label text; other reserved fields "
+                f"(schemaVersion, message, color, clauditor) are "
+                f"not user-overridable.",
+                file=sys.stderr,
+            )
             return 2
         if key not in _ALLOWED_STYLE_KEYS:
             print(

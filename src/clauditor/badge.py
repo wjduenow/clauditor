@@ -374,11 +374,17 @@ def _summarize_l3(grading: dict | None) -> tuple[L3Summary | None, bool]:
     # graded-but-all-failed run with real scores is just a failing
     # grade, not a parse failure. The strict ``isinstance(score,
     # (int, float))`` check tolerates integer and float scores while
-    # rejecting None / string.
+    # rejecting None / string. ``bool`` is a subclass of ``int`` in
+    # Python, so explicitly exclude it — a ``{"score": true}``
+    # malformed payload should NOT be treated as a 1.0 score
+    # (per-type bool-vs-int guard also applied in schemas.py via the
+    # ``constant-with-type-info`` rule).
     scored = [
         r
         for r in results
-        if isinstance(r, dict) and isinstance(r.get("score"), (int, float))
+        if isinstance(r, dict)
+        and isinstance(r.get("score"), (int, float))
+        and not isinstance(r.get("score"), bool)
     ]
     if not scored:
         return None, True

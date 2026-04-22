@@ -671,6 +671,41 @@ class TestCmdBadgeStyleValidation:
         assert "cacheSeconds" in err
         assert "integer" in err
 
+    @pytest.mark.parametrize(
+        "reserved_key",
+        ["schemaVersion", "label", "message", "color", "clauditor"],
+    )
+    def test_reserved_key_rejected_exit_2(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+        capsys,
+        reserved_key: str,
+    ) -> None:
+        """Copilot PR review, 2026-04-22: --style cannot overwrite the
+        canonical shields.io / clauditor top-level fields.
+
+        ``Badge.to_endpoint_json`` emits ``style_overrides`` AFTER the
+        canonical keys, so a user passing ``--style schemaVersion=2``
+        or ``--style clauditor=hijacked`` would silently clobber the
+        real value. The CLI now rejects reserved keys at parse time
+        with exit 2 naming the offending key.
+        """
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+        rc = main(
+            [
+                "badge",
+                str(skill_md),
+                "--style",
+                f"{reserved_key}=attacker",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert reserved_key in err
+        assert "canonical badge field" in err
+
 
 # ---------------------------------------------------------------------------
 # --label validation (review pass 1, B-3).
@@ -818,6 +853,43 @@ class TestCmdBadgeUrlOnly:
         assert "USER/REPO/main" in captured.out
         assert "git auto-detect failed" in captured.err
         assert "USER/REPO/main" in captured.err
+        # Copilot PR review, 2026-04-22: when BOTH auto-detects fell
+        # through, the warning must name --branch too (not just --repo)
+        # so the user has the complete remediation in one line.
+        assert "--repo" in captured.err
+        assert "--branch" in captured.err
+
+    def test_slug_missing_but_branch_detected_warns_only_about_repo(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """When the branch was detected but the slug was not, the
+        warning should mention only ``--repo`` (not ``--branch``).
+        Mirror to ``test_auto_detect_slug_missing_uses_placeholder``
+        where both fell through and the message names both flags.
+        """
+        skill_md = _write_skill(tmp_path)
+        _setup_iteration(tmp_path, 1)
+        monkeypatch.chdir(tmp_path)
+
+        with patch(
+            "clauditor.cli.badge._git.get_repo_slug",
+            return_value=None,
+        ), patch(
+            "clauditor.cli.badge._git.get_default_branch",
+            return_value="develop",
+        ):
+            rc = main(["badge", str(skill_md), "--url-only"])
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "USER/REPO/develop" in captured.out
+        assert "git auto-detect failed" in captured.err
+        assert "--repo" in captured.err
+        # Branch auto-detect succeeded — do NOT mention --branch in
+        # the remediation hint.
+        assert "--branch" not in captured.err.split(
+            "git auto-detect failed"
+        )[1].split("\n")[0]
 
     def test_auto_detect_branch_missing_falls_back_to_main(
         self, tmp_path: Path, monkeypatch, capsys
@@ -1109,6 +1181,34 @@ class TestCmdBadgeListAvailableIterations:
         err = capsys.readouterr().err
         # Only the valid iteration 2 should be listed.
         assert "Available iterations with this skill: 2" in err
+
+    def test_iteration_zero_filtered_from_available_list(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """Codecov PR review, 2026-04-22: ``_list_available_iterations``
+        filters ``n < 1`` (line 298 defensive branch).
+
+        A manually-placed ``iteration-0/<skill>/`` dir must not appear
+        in the DEC-016 "available iterations" stderr list — iteration
+        numbers start at 1 per the ``workspace.py`` invariant.
+        """
+        skill_md = _write_skill(tmp_path)
+        # Real valid iteration present for the skill.
+        _setup_iteration(tmp_path, 3)
+        # Plant an iteration-0/<skill>/ dir that should be filtered.
+        (tmp_path / ".clauditor" / "iteration-0" / "demo").mkdir(
+            parents=True
+        )
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(["badge", str(skill_md), "--from-iteration", "99"])
+        assert rc == 1
+
+        err = capsys.readouterr().err
+        # Only iteration 3 should be listed — no "0".
+        assert "Available iterations with this skill: 3" in err
+        assert ", 0" not in err
+        assert "0, " not in err
 
 
 # ---------------------------------------------------------------------------

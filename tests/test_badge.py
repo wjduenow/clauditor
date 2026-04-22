@@ -24,6 +24,8 @@ from clauditor.badge import (
     L1Summary,
     L3Summary,
     VarianceSummary,
+    _compute_grading_mean_score,
+    _compute_grading_pass_rate,
     build_markdown_image,
     compute_badge,
     discover_iteration,
@@ -276,6 +278,35 @@ class TestComputeBadge:
         )
         assert badge.color == "red"
         assert badge.message == "8/8"
+
+    def test_l3_bool_scores_treated_as_parse_failed(self):
+        """Copilot PR review, 2026-04-22: ``bool`` is a subclass of ``int``
+        in Python. ``isinstance(True, (int, float))`` returns True, which
+        without an explicit bool guard would treat a malformed
+        ``{"score": true}`` grading entry as a valid 1.0 score and
+        bypass the DEC-009 parse-failed path. The guard excludes bool
+        explicitly so the DEC-009 branch fires.
+        """
+        grading = {
+            "schema_version": 1,
+            "results": [
+                {"id": "a", "passed": True, "score": True},
+                {"id": "b", "passed": False, "score": False},
+            ],
+        }
+        badge = compute_badge(
+            _make_assertions_dict(passed=8, total=8),
+            grading,
+            None,
+            skill_name="demo",
+            iteration=1,
+            generated_at=_GEN_AT,
+        )
+        assert badge.color == "red"
+        assert badge.message == "8/8"
+        # L3 block omitted — parse-failed path.
+        layers = badge.clauditor.l3
+        assert layers is None
 
     def test_l1_pass_l3_pass_variance_present_full_message(self):
         """DEC-024: L1 + L3 + variance → full three-fragment message."""
@@ -1129,3 +1160,68 @@ class TestBuildMarkdownImage:
         assert isinstance(md, str)
         # Verify the double-layer URL structure.
         assert md.count("https://") == 2
+
+
+# ---------------------------------------------------------------------------
+# Defensive-guard coverage (Codecov PR review, 2026-04-22).
+#
+# The branches below are unreachable from the public ``compute_badge``
+# entry point because upstream filters already short-circuit before
+# these helpers receive an empty list. They exist to protect direct
+# callers and to be audit-clear when a future refactor removes the
+# upstream guard. Cover them directly so the coverage report does not
+# ship with them pink.
+# ---------------------------------------------------------------------------
+
+
+class TestComputeGradingPassRateDefensive:
+    def test_non_dict_only_results_returns_zero(self):
+        """``_compute_grading_pass_rate`` returns 0.0 when every entry
+        is filtered out as non-dict (line 418 defensive branch)."""
+        # Pass a list where every entry is rejected by
+        # ``isinstance(r, dict)``. Upstream flow in ``_summarize_l3``
+        # would short-circuit at ``if not results`` before reaching
+        # here, so this branch is only reachable via direct call.
+        assert _compute_grading_pass_rate(["not-a-dict", 42, None]) == 0.0
+
+    def test_empty_list_returns_zero(self):
+        assert _compute_grading_pass_rate([]) == 0.0
+
+
+class TestComputeGradingMeanScoreDefensive:
+    def test_empty_list_returns_zero(self):
+        """``_compute_grading_mean_score`` returns 0.0 on empty input
+        (line 425 defensive branch)."""
+        # Upstream ``_summarize_l3`` returns ``(None, True)`` before
+        # reaching this helper with an empty list, so the guard is
+        # only reachable via direct call.
+        assert _compute_grading_mean_score([]) == 0.0
+
+
+class TestDiscoverIterationSkipsIterationZero:
+    def test_iteration_zero_dir_skipped_in_scan(self, tmp_path):
+        """Line 704: the latest-scan branch of ``discover_iteration``
+        mirrors the ``explicit < 1`` defensive guard by skipping
+        ``iteration-0/`` dirs during the walk.
+
+        A manually placed ``iteration-0/<skill>/`` must not resolve as
+        the latest iteration even if it is the only dir present (per
+        the ``workspace.py`` invariant that iteration numbers start
+        at 1).
+        """
+        clauditor = tmp_path / ".clauditor"
+        iter_zero_skill = clauditor / "iteration-0" / "demo"
+        iter_zero_skill.mkdir(parents=True)
+        # No other iterations present — with iteration-0 skipped, the
+        # helper returns None (DEC-001 path).
+        assert discover_iteration(tmp_path, "demo", None) is None
+
+    def test_iteration_zero_skipped_alongside_valid_iteration(self, tmp_path):
+        """Iteration-0 is skipped; iteration-1 is returned."""
+        clauditor = tmp_path / ".clauditor"
+        (clauditor / "iteration-0" / "demo").mkdir(parents=True)
+        (clauditor / "iteration-1" / "demo").mkdir(parents=True)
+        result = discover_iteration(tmp_path, "demo", None)
+        assert result is not None
+        n, _path = result
+        assert n == 1
