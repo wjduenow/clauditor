@@ -631,6 +631,36 @@ class TestCallAnthropicTypeError:
         assert isinstance(exc_info.value.__cause__, TypeError)
         assert sdk_text in str(exc_info.value.__cause__)
 
+    @pytest.mark.asyncio
+    async def test_sdk_typeerror_at_construction_wrapped(self) -> None:
+        # Future-proofing: if a future Anthropic SDK moves the
+        # ``TypeError: Could not resolve authentication method`` site
+        # from ``messages.create`` to ``AsyncAnthropic.__init__``, the
+        # wrap should still fire. Patch ``AsyncAnthropic`` to raise
+        # ``TypeError`` at construction, assert the same sanitized
+        # ``AnthropicHelperError`` surface.
+        sdk_text = "Could not resolve authentication method"
+
+        def _raise_at_construct(*args: object, **kwargs: object) -> None:
+            raise TypeError(sdk_text)
+
+        sleep_mock = AsyncMock()
+        with patch(
+            "anthropic.AsyncAnthropic", side_effect=_raise_at_construct
+        ), patch(
+            "clauditor._anthropic._sleep", sleep_mock
+        ):
+            with pytest.raises(AnthropicHelperError) as exc_info:
+                await call_anthropic("p", model="m")
+        msg = str(exc_info.value)
+        assert "Anthropic SDK client initialization failed" in msg
+        assert "ANTHROPIC_API_KEY" in msg
+        assert sdk_text not in msg
+        # No retry; construction failure is not transient.
+        assert sleep_mock.await_count == 0
+        assert isinstance(exc_info.value.__cause__, TypeError)
+        assert sdk_text in str(exc_info.value.__cause__)
+
 
 class TestCheckAnthropicAuth:
     """Unit tests for the pre-flight auth guard (clauditor-2df.1 / US-001).

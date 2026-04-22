@@ -282,7 +282,20 @@ async def call_anthropic(
             "SDK. Install with: pip install clauditor[grader]"
         ) from exc
 
-    client = AsyncAnthropic()
+    # Defense-in-depth (DEC-008 of #83): wrap the
+    # ``AsyncAnthropic()`` construction site the same way we wrap
+    # ``messages.create`` below, so a future SDK that moves the
+    # ``TypeError: Could not resolve authentication method`` site to
+    # ``__init__`` still surfaces as a clean ``AnthropicHelperError``
+    # rather than a raw traceback. Fixed sanitized message; original
+    # ``TypeError`` preserved on ``__cause__`` via ``raise ... from``.
+    try:
+        client = AsyncAnthropic()
+    except TypeError as exc:
+        raise AnthropicHelperError(
+            "Anthropic SDK client initialization failed — "
+            "verify ANTHROPIC_API_KEY is set."
+        ) from exc
 
     rate_limit_retries = 0
     server_retries = 0
