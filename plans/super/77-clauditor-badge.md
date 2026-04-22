@@ -4,7 +4,9 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/77
 - **Branch:** `feature/77-clauditor-badge`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/77-clauditor-badge`
-- **Phase:** `detailing`
+- **Phase:** `devolved`
+- **PR:** https://github.com/wjduenow/clauditor/pull/81
+- **Epic:** `clauditor-wnv`
 - **Sessions:** 1
 - **Last session:** 2026-04-21
 
@@ -1205,4 +1207,25 @@ blocks on US-004 for flag stability.
 
 ## Beads Manifest
 
-_(To be completed in Phase 7.)_
+- **Epic:** `clauditor-wnv` — #77: clauditor badge command (shields.io endpoint JSON)
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/77-clauditor-badge`
+- **PR:** https://github.com/wjduenow/clauditor/pull/81
+
+### Tasks
+
+| Bead | Title | Deps |
+|---|---|---|
+| `clauditor-wnv.1` | US-001 — Pure compute_badge + Badge dataclass family | none |
+| `clauditor-wnv.2` | US-002 — Git wrapper (_git.py) for repo-slug + default-branch | none |
+| `clauditor-wnv.3` | US-003 — Sidecar discovery + URL builder (pure helpers) | wnv.1 |
+| `clauditor-wnv.4` | US-004 — CLI command cli/badge.py + dispatcher wiring | wnv.1, wnv.2, wnv.3 |
+| `clauditor-wnv.5` | US-005 — Docs: cli-reference.md#badge + new docs/badges.md | wnv.4 |
+| `clauditor-wnv.6` | US-006 — Quality Gate: code-review x4 + CodeRabbit | wnv.1, wnv.2, wnv.3, wnv.4, wnv.5 |
+| `clauditor-wnv.7` | US-007 — Patterns & Memory: update conventions + docs | wnv.6 |
+
+### Ready-to-work (no blockers)
+
+- `clauditor-wnv.1` — US-001 pure compute_badge
+- `clauditor-wnv.2` — US-002 git wrapper
+
+Run `bd ready` in the worktree to confirm.
