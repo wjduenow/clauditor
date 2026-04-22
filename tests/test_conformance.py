@@ -778,3 +778,331 @@ class TestConformanceIssueInvariants:
                 assert "\r" not in issue.message, (
                     f"CR in message from {issue.code}: {issue.message!r}"
                 )
+
+
+# ---------------------------------------------------------------------------
+# AGENTSKILLS_FRONTMATTER_UNQUOTED_COLON_IN_SCALAR — #80 US-001
+# ---------------------------------------------------------------------------
+
+
+_UNQUOTED_COLON_CODE = "AGENTSKILLS_FRONTMATTER_UNQUOTED_COLON_IN_SCALAR"
+
+
+class TestUnquotedColonInScalarDetection:
+    """Regression + negative cases for the #80 strict-YAML check.
+
+    Tests per DEC-006 of ``plans/super/80-strict-frontmatter-yaml.md``.
+    The pre-#79 fixture is the exact content that caused GitHub's YAML
+    renderer to reject ``.claude/skills/review-agentskills-spec/SKILL.md``
+    with ``mapping values are not allowed in this context``.
+    """
+
+    def test_pre_79_fixture_flagged(self):
+        # Verbatim pre-#79 frontmatter (see plan Discovery section).
+        # The bug is the unquoted ``Optional: `` on the compatibility:
+        # line.
+        text = (
+            "---\n"
+            "name: review-agentskills-spec\n"
+            "description: Review the current agentskills.io specification "
+            "and open follow-up issues.\n"
+            "compatibility: Requires network access to fetch "
+            "https://agentskills.io/specification. Optional: the gh CLI "
+            "for issue creation.\n"
+            "metadata:\n"
+            '  clauditor-version: "0.0.0-dev"\n'
+            "disable-model-invocation: true\n"
+            "allowed-tools: WebFetch, Read, Grep, Glob, "
+            "Bash(gh issue create:*)\n"
+            "---\n"
+            "\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path("review-agentskills-spec"))
+        flagged = _by_code(issues, _UNQUOTED_COLON_CODE)
+        assert len(flagged) >= 1, (
+            f"expected at least one {_UNQUOTED_COLON_CODE} issue, got "
+            f"codes={_codes(issues)}"
+        )
+        assert all(i.severity == "error" for i in flagged)
+
+    def test_post_79_fixture_passes(self):
+        # Same content, with compatibility value wrapped in double quotes.
+        text = (
+            "---\n"
+            "name: review-agentskills-spec\n"
+            "description: Review the current agentskills.io specification "
+            "and open follow-up issues.\n"
+            'compatibility: "Requires network access to fetch '
+            "https://agentskills.io/specification. Optional: the gh CLI "
+            'for issue creation."\n'
+            "metadata:\n"
+            '  clauditor-version: "0.0.0-dev"\n'
+            "disable-model-invocation: true\n"
+            "allowed-tools: WebFetch, Read, Grep, Glob, "
+            "Bash(gh issue create:*)\n"
+            "---\n"
+            "\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path("review-agentskills-spec"))
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+    def test_clauditor_bundled_skill_passes(self):
+        # Read the bundled SKILL.md via the clauditor package path — the
+        # one exception to "no file I/O in tests" is that the bundled
+        # skill path is stable and this is the canonical regression guard
+        # that the new check does not break shipped skills.
+        import clauditor  # noqa: PLC0415
+
+        skill_path = (
+            Path(clauditor.__file__).parent / "skills" / "clauditor" / "SKILL.md"
+        )
+        text = skill_path.read_text(encoding="utf-8")
+        issues = check_conformance(text, skill_path)
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == [], (
+            "bundled clauditor SKILL.md must not trigger the new check; "
+            f"got issues={[(i.code, i.message) for i in issues]}"
+        )
+
+    def test_two_offending_lines_emit_two_issues(self):
+        # Pin the "one issue per offending line" contract. Two unquoted
+        # space-colon-space sequences on distinct lines should both be
+        # flagged; a single emit with a multi-line summary would hide the
+        # second offense from a user fixing them one at a time.
+        text = (
+            "---\n"
+            "name: skill\n"
+            "description: First bug: embedded here.\n"
+            "compatibility: Second bug: also embedded.\n"
+            "---\n"
+            "\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path("skill"))
+        flagged = _by_code(issues, _UNQUOTED_COLON_CODE)
+        assert len(flagged) == 2, (
+            f"expected 2 {_UNQUOTED_COLON_CODE} issues (one per offending "
+            f"line), got {len(flagged)}: {[i.message for i in flagged]}"
+        )
+
+
+class TestQuoteAwareness:
+    """Quote-detection edges: values wrapped in ``"..."`` / ``'...'``
+    bypass the check; unquoted values containing ``: `` trigger it.
+
+    Also pins the URL and ``Bash(... create:*)`` patterns as non-triggers
+    because the colon is NOT followed by a space.
+    """
+
+    def test_double_quoted_value_with_colon_space_passes(self):
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            'description: "Note: when X happens, do Y"\n'
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+    def test_single_quoted_value_with_colon_space_passes(self):
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: 'Note: when X happens, do Y'\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+    def test_unquoted_value_with_colon_space_flagged(self):
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: Note: when X happens, do Y\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        flagged = _by_code(issues, _UNQUOTED_COLON_CODE)
+        assert len(flagged) == 1
+        assert flagged[0].severity == "error"
+        # Message should name the offending key so the author can find it.
+        assert "description" in flagged[0].message
+
+    def test_url_in_unquoted_value_passes(self):
+        # Colon-slash, no space after colon → not ambiguous YAML.
+        # ``description`` is used so we're testing a known spec key.
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: See https://example.com/page for details\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+    def test_allowed_tools_colon_star_passes(self):
+        # Colon-star glob in a Bash tool spec is a legitimate value; the
+        # colon is NOT followed by a space, so no ambiguity.
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: A skill\n"
+            "allowed-tools: Bash(gh issue create:*)\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+
+class TestNestedMetadataScope:
+    """The walker visits nested ``metadata:`` child lines too (DEC-005).
+
+    Same rule applies at any indent: unquoted ``: `` inside a child
+    scalar is a bug even when the parent is the ``metadata`` block.
+    """
+
+    def test_nested_unquoted_value_with_colon_space_flagged(self):
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: A skill\n"
+            "metadata:\n"
+            "  note: foo: bar baz\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        flagged = _by_code(issues, _UNQUOTED_COLON_CODE)
+        assert len(flagged) == 1
+        assert flagged[0].severity == "error"
+
+    def test_nested_quoted_value_with_colon_space_passes(self):
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: A skill\n"
+            "metadata:\n"
+            '  note: "foo: bar baz"\n'
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+
+class TestParserAcceptedEdgeCases:
+    """Edge cases that the permissive ``parse_frontmatter`` accepts:
+    leading blank lines before the opening ``---`` and quoted scalars
+    with trailing YAML inline comments. Surfaced by Copilot review on
+    PR #82."""
+
+    def test_leading_blank_lines_before_frontmatter_flagged(self):
+        # parse_frontmatter tolerates leading blank lines; the walker
+        # must too, or it silently skips the whole file. Line numbers
+        # are also offset accordingly.
+        text = (
+            "\n"
+            "\n"
+            "---\n"
+            "name: my-skill\n"
+            "description: Has bug: embedded here.\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        flagged = _by_code(issues, _UNQUOTED_COLON_CODE)
+        assert len(flagged) == 1
+        # Line 5 = 2 blanks + '---' + name line + description line.
+        assert "line 5" in flagged[0].message, flagged[0].message
+
+    def test_quoted_value_with_trailing_comment_passes(self):
+        # YAML allows an inline ``# ...`` comment after a closed
+        # quoted scalar. Strict parsers treat the ``: `` INSIDE the
+        # quoted portion as a literal part of the string, not a
+        # nested mapping indicator.
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            'description: "Note: example case" # trailing comment\n'
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+    def test_unquoted_value_with_trailing_comment_and_colon_space_flagged(
+        self,
+    ):
+        # Comment-stripping is a helper for the quote-awareness path;
+        # it must NOT suppress legitimate flagging of ``: `` in the
+        # unquoted portion of the value.
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: Has bug: embedded here # trailing comment\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        flagged = _by_code(issues, _UNQUOTED_COLON_CODE)
+        assert len(flagged) == 1
+
+    def test_unquoted_with_hash_no_colon_space_passes(self):
+        # An unquoted value that contains ``#`` but no ``: `` in the
+        # pre-comment portion should pass. Pins comment-stripping
+        # arithmetic: if the scanner's strip is too aggressive it
+        # might trim real content.
+        text = (
+            "---\n"
+            "name: my-skill\n"
+            "description: hello # world\n"
+            "---\n\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path())
+        assert _by_code(issues, _UNQUOTED_COLON_CODE) == []
+
+
+class TestWalkerDefensiveGuards:
+    """Direct-call tests for defensive branches unreachable via the
+    normal ``check_conformance`` flow (where ``parse_frontmatter``
+    raises and ``AGENTSKILLS_FRONTMATTER_INVALID_YAML`` short-circuits
+    before the walker runs). These guards protect future direct
+    callers."""
+
+    def _call_walker(self, text: str) -> list:
+        """Invoke the walker directly, bypassing check_conformance."""
+        from clauditor.conformance import (  # noqa: PLC0415
+            _check_unquoted_colon_in_scalar,
+        )
+
+        issues: list = []
+        _check_unquoted_colon_in_scalar(text, issues)
+        return issues
+
+    def test_empty_input_noop(self):
+        assert self._call_walker("") == []
+
+    def test_no_frontmatter_delimiter_noop(self):
+        assert self._call_walker("just body, no frontmatter\n") == []
+
+    def test_only_blank_lines_noop(self):
+        assert self._call_walker("\n\n\n") == []
+
+    def test_missing_closing_delimiter_noop(self):
+        # Defensive guard: parse_frontmatter would have raised, but
+        # the walker tolerates this via StopIteration → return.
+        assert (
+            self._call_walker("---\nname: my-skill\ndescription: ok\n")
+            == []
+        )
+
+    def test_comment_line_inside_frontmatter_skipped(self):
+        # Comment-only lines are not scalars; the walker must skip
+        # them (covers the ``not stripped or startswith('#')`` guard).
+        issues = self._call_walker(
+            "---\nname: foo\n# a comment line\nbar: baz\n---\n"
+        )
+        # No ``: `` in scalar values — passes cleanly.
+        assert issues == []
+
+    def test_colonless_line_inside_frontmatter_skipped(self):
+        # Defensive guard: parse_frontmatter would reject this, but
+        # the walker's ``if ':' not in stripped: continue`` handles
+        # it gracefully if called directly.
+        issues = self._call_walker(
+            "---\nname: foo\ncolonless line\nbar: baz\n---\n"
+        )
+        assert issues == []

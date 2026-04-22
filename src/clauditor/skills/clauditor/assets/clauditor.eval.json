@@ -5,9 +5,9 @@
   "user_prompt": "Validate the skill at .claude/commands/chunk.md — report which clauditor layers you would run (L1 assertions, L3 grading) and the concrete commands involved.",
   "assertions": [
     {
-      "id": "mentions-assertions",
-      "type": "contains",
-      "needle": "assertion"
+      "id": "mentions-layer-vocabulary",
+      "type": "regex",
+      "pattern": "(?i)(assert|\\bL1\\b|\\bL3\\b|layer|rubric)"
     },
     {
       "id": "no-error-trace",
@@ -22,8 +22,8 @@
   ],
   "grading_criteria": [
     {
-      "id": "identifies-layer-correctly",
-      "criterion": "The response correctly distinguishes between L1 deterministic assertions and L3 LLM-graded rubric criteria, naming at least one layer accurately."
+      "id": "routes-by-eval-presence",
+      "criterion": "The response correctly identifies whether a sibling eval spec exists for the target skill and routes accordingly — proposing one via 'clauditor propose-eval' (or acknowledging a bootstrap step is needed) when no eval exists, or proceeding to 'clauditor validate' / 'clauditor grade' when an eval is already present. This is the Step-3 workflow branch of the /clauditor skill."
     },
     {
       "id": "provides-concrete-guidance",
