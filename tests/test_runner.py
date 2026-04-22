@@ -15,10 +15,12 @@ from clauditor.asserters import SkillAsserter  # noqa: E402
 from clauditor.runner import (  # noqa: E402
     _INTERACTIVE_HANG_WARNING_PREFIX,
     _RESULT_TEXT_MAX_CHARS,
+    InvokeResult,
     SkillResult,
     SkillRunner,
     _classify_result_message,
     _detect_interactive_hang,
+    _invoke_claude_cli,
     env_without_api_key,
 )
 from tests.conftest import (  # noqa: E402
@@ -2579,3 +2581,376 @@ class TestEnvWithoutApiKey:
         result = env_without_api_key(base)
         assert result == base
         assert result is not base
+
+
+# ---------------------------------------------------------------------------
+# US-001 (#86): Regression smoke + fixture-replay for the extraction
+# ---------------------------------------------------------------------------
+
+
+class TestSkillRunnerInvokeRegressionSmoke:
+    """Smoke tests for ``SkillRunner.run`` invariants preserved by
+    the US-001 extraction of ``_invoke_claude_cli``.
+
+    These tests were authored BEFORE the extraction to lock in the
+    current field-population shape of ``SkillResult``. Every existing
+    field is asserted populated (or defaulted correctly) so the
+    projection from :class:`InvokeResult` back onto :class:`SkillResult`
+    is exhaustive.
+    """
+
+    def test_skillresult_every_field_populated_on_success(self):
+        """Full-field smoke: all observable SkillResult fields reflect
+        the stream-json input, with ``skill_name``/``args`` threaded
+        from the caller and ``duration_seconds`` populated by the
+        try/finally measurement."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=make_fake_skill_stream(
+                "canonical success",
+                input_tokens=123,
+                output_tokens=45,
+                init_message={
+                    "type": "system",
+                    "subtype": "init",
+                    "apiKeySource": "ANTHROPIC_API_KEY",
+                },
+            ),
+        ):
+            result = runner.run("canonical-skill", "some-args")
+        assert result.output == "canonical success"
+        assert result.exit_code == 0
+        assert result.skill_name == "canonical-skill"
+        assert result.args == "some-args"
+        assert result.duration_seconds >= 0.0
+        assert result.error is None
+        assert result.error_category is None
+        assert result.outputs == {}
+        assert result.input_tokens == 123
+        assert result.output_tokens == 45
+        # Init (+ apiKeySource) + assistant + result = 3 events.
+        assert len(result.raw_messages) == 3
+        assert len(result.stream_events) == 3
+        assert result.warnings == []
+        assert result.api_key_source == "ANTHROPIC_API_KEY"
+
+    def test_fixture_replay_output_matches_pinned_value(self):
+        """Canonical success stream-json → pinned ``output`` text."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=make_fake_skill_stream(
+                "pinned-output-text-abc123",
+                input_tokens=10,
+                output_tokens=20,
+            ),
+        ):
+            result = runner.run("skill", "")
+        assert result.output == "pinned-output-text-abc123"
+        assert result.exit_code == 0
+        assert result.input_tokens == 10
+        assert result.output_tokens == 20
+
+    def test_fixture_replay_rate_limit_category(self):
+        """429-style stream-json result → ``error_category=="rate_limit"``."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=make_fake_skill_stream(
+                "partial",
+                error_text="429 Too Many Requests: rate limit exceeded",
+            ),
+        ):
+            result = runner.run("skill", "")
+        assert result.error_category == "rate_limit"
+        assert "429" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# US-001 (#86): _invoke_claude_cli direct tests
+# ---------------------------------------------------------------------------
+
+
+class TestInvokeClaudeCli:
+    """Direct tests for the module-private ``_invoke_claude_cli`` helper
+    extracted in US-001 of ``plans/super/86-claude-cli-transport.md``.
+
+    The helper is the transport-level primitive: it takes a pre-built
+    prompt plus explicit ``cwd`` / ``env`` / ``timeout`` / ``claude_bin``
+    and returns a lean :class:`InvokeResult` with no skill-name / args
+    context. US-003 will wire a second caller (``call_anthropic``'s CLI
+    transport branch) that needs exactly this raw-prompt shape.
+    """
+
+    def _call(self, fake, **overrides):
+        """Run ``_invoke_claude_cli`` with the fake Popen + sane defaults."""
+        kwargs = dict(
+            cwd=None,
+            env=None,
+            timeout=180,
+            claude_bin="claude",
+            allow_hang_heuristic=True,
+        )
+        kwargs.update(overrides)
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            return _invoke_claude_cli("hi there prompt", **kwargs)
+
+    # --------------------------------------------------------------- #
+    # Success + field-population                                       #
+    # --------------------------------------------------------------- #
+
+    def test_success_returns_invokeresult_with_every_field(self):
+        """InvokeResult is populated identically to SkillResult minus
+        skill_name / args (which live only on the higher-level dataclass)."""
+        result = self._call(
+            make_fake_skill_stream(
+                "the quick brown fox",
+                input_tokens=7,
+                output_tokens=11,
+                init_message={
+                    "type": "system",
+                    "subtype": "init",
+                    "apiKeySource": "ANTHROPIC_API_KEY",
+                },
+            )
+        )
+        assert isinstance(result, InvokeResult)
+        assert result.output == "the quick brown fox"
+        assert result.exit_code == 0
+        assert result.duration_seconds >= 0.0
+        assert result.error is None
+        assert result.error_category is None
+        assert result.input_tokens == 7
+        assert result.output_tokens == 11
+        # init + assistant + result = 3 entries.
+        assert len(result.raw_messages) == 3
+        assert len(result.stream_events) == 3
+        assert result.warnings == []
+        assert result.api_key_source == "ANTHROPIC_API_KEY"
+
+    def test_success_no_skill_name_or_args_on_invokeresult(self):
+        """InvokeResult is the transport primitive — no slash-command
+        context. SkillResult adds those on top."""
+        result = self._call(make_fake_skill_stream("ok"))
+        # InvokeResult does NOT carry skill_name / args — those belong
+        # to the SkillResult projection. Guard the dataclass surface.
+        assert not hasattr(result, "skill_name")
+        assert not hasattr(result, "args")
+
+    # --------------------------------------------------------------- #
+    # Error-category classification (US-002 branches reused verbatim)  #
+    # --------------------------------------------------------------- #
+
+    def test_rate_limit_category(self):
+        """``429`` in the result text → ``error_category == "rate_limit"``."""
+        result = self._call(
+            make_fake_skill_stream(
+                "partial",
+                error_text="429 Too Many Requests: rate limit exceeded",
+            )
+        )
+        assert result.error_category == "rate_limit"
+        assert "429" in (result.error or "")
+
+    def test_auth_category(self):
+        """``401`` / ``unauthorized`` → ``error_category == "auth"``."""
+        result = self._call(
+            make_fake_skill_stream(
+                "partial",
+                error_text="401 Unauthorized: check your ANTHROPIC_API_KEY",
+            )
+        )
+        assert result.error_category == "auth"
+
+    def test_api_5xx_category_fallback(self):
+        """A 5xx result text with no rate-limit / auth keyword falls
+        through to the ``api`` category (the default per DEC-010)."""
+        result = self._call(
+            make_fake_skill_stream(
+                "partial",
+                error_text="500 Internal Server Error: upstream timeout",
+            )
+        )
+        assert result.error_category == "api"
+
+    # --------------------------------------------------------------- #
+    # Defensive parsing + observability                                #
+    # --------------------------------------------------------------- #
+
+    def test_malformed_ndjson_line_skipped_and_warned(self, capsys):
+        """A malformed JSON line is skipped, a stderr warning is
+        printed, and ``InvokeResult.warnings`` records the skip."""
+        lines = [
+            "this is not json at all",
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "survived"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 2, "output_tokens": 3}}
+            ),
+        ]
+        result = self._call(_FakePopen(lines))
+        assert result.output == "survived"
+        assert result.input_tokens == 2
+        assert result.output_tokens == 3
+        assert any("malformed stream-json" in w for w in result.warnings)
+        captured = capsys.readouterr()
+        assert "malformed" in captured.err
+
+    def test_missing_result_message_warning(self, capsys):
+        """Stream without a ``result`` message: warnings records the
+        EOF condition and tokens default to 0."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "no result"}],
+                    },
+                }
+            ),
+        ]
+        result = self._call(_FakePopen(lines))
+        assert result.output == "no result"
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+        assert any(
+            "without a 'result' message" in w for w in result.warnings
+        )
+        captured = capsys.readouterr()
+        assert "without a 'result'" in captured.err
+
+    # --------------------------------------------------------------- #
+    # Timeout + binary-missing terminal paths                          #
+    # --------------------------------------------------------------- #
+
+    def test_timeout_kills_process_and_reports_timeout_category(self):
+        """Watchdog firing → exit_code=-1, error="timeout",
+        error_category="timeout", and the child is killed."""
+        fake = make_fake_skill_stream("partial")
+
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
+            result = _invoke_claude_cli(
+                "hi",
+                cwd=None,
+                env=None,
+                timeout=1,
+                claude_bin="claude",
+                allow_hang_heuristic=True,
+            )
+        assert result.exit_code == -1
+        assert result.error == "timeout"
+        assert result.error_category == "timeout"
+        assert result.duration_seconds >= 0.0
+        assert fake.kill_called is True
+
+    def test_filenotfounderror_on_missing_binary(self):
+        """Popen raising FileNotFoundError produces a clean InvokeResult
+        with a descriptive error and no leaked stream state."""
+        with patch(
+            "clauditor.runner.subprocess.Popen", side_effect=FileNotFoundError
+        ):
+            result = _invoke_claude_cli(
+                "hi",
+                cwd=None,
+                env=None,
+                timeout=180,
+                claude_bin="nonexistent-claude-binary",
+                allow_hang_heuristic=True,
+            )
+        assert isinstance(result, InvokeResult)
+        assert result.exit_code == -1
+        assert result.output == ""
+        assert "not found" in (result.error or "")
+        assert "nonexistent-claude-binary" in (result.error or "")
+        assert result.duration_seconds >= 0.0
+        assert result.raw_messages == []
+        assert result.stream_events == []
+
+    # --------------------------------------------------------------- #
+    # Env + cwd thread-through (transport primitive has no defaults)   #
+    # --------------------------------------------------------------- #
+
+    def test_env_none_passes_through_to_popen_verbatim(self):
+        """``env=None`` reaches Popen unchanged (Popen's own default:
+        inherit ``os.environ``)."""
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("ok")
+            _invoke_claude_cli(
+                "hi",
+                cwd=None,
+                env=None,
+                timeout=180,
+                claude_bin="claude",
+                allow_hang_heuristic=True,
+            )
+            assert mock_popen.call_args.kwargs["env"] is None
+            # cwd=None → Popen.cwd=None (helper has no self.project_dir
+            # fallback — that lives on SkillRunner._invoke).
+            assert mock_popen.call_args.kwargs["cwd"] is None
+
+    def test_env_dict_and_cwd_threaded_to_popen(self, tmp_path):
+        """A non-None ``env`` / ``cwd`` reaches Popen verbatim. The
+        CLI-transport caller (US-003) uses this path with
+        ``env=env_without_api_key(os.environ)``."""
+        env = {"PATH": "/usr/bin", "MARKER": "x"}
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("ok")
+            _invoke_claude_cli(
+                "hi",
+                cwd=tmp_path,
+                env=env,
+                timeout=180,
+                claude_bin="claude",
+                allow_hang_heuristic=True,
+            )
+            assert mock_popen.call_args.kwargs["env"] == env
+            assert mock_popen.call_args.kwargs["cwd"] == str(tmp_path)
+
+    # --------------------------------------------------------------- #
+    # Single-caller invariant (US-001 done-when criterion)             #
+    # --------------------------------------------------------------- #
+
+    def test_single_caller_runner_py_only(self):
+        """US-001 done-when: ``_invoke_claude_cli`` is called only
+        from ``runner.py``. US-003 will add the second caller."""
+        import pathlib
+
+        import clauditor
+
+        src_root = pathlib.Path(clauditor.__file__).parent
+        hits: list[pathlib.Path] = []
+        for py_file in src_root.rglob("*.py"):
+            text = py_file.read_text(encoding="utf-8")
+            # Skip the definition site itself (runner.py) and any import
+            # line that simply re-exports the name for testing.
+            if py_file.name == "runner.py":
+                continue
+            if "_invoke_claude_cli" in text:
+                hits.append(py_file)
+        assert hits == [], (
+            f"Unexpected caller of _invoke_claude_cli (US-003 will add "
+            f"the second caller): {hits!r}"
+        )
