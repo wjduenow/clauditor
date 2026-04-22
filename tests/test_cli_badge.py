@@ -297,6 +297,62 @@ class TestCmdBadgeNoIteration:
         data = json.loads(target.read_text())
         assert data["color"] == "lightgrey"
 
+    def test_extension_only_exists_rejects_without_force(
+        self, tmp_path: Path, monkeypatch, capsys
+    ) -> None:
+        """Regression guard for the sidecar-pair ``--force`` policy.
+
+        If a prior run (or a manual git operation) left only the
+        extension file on disk without the shields.io file, re-running
+        ``clauditor badge`` without ``--force`` must still reject:
+        silently overwriting a stale ``<skill>.clauditor.json``
+        alongside a fresh ``<skill>.json`` would ship a mismatched
+        pair to downstream consumers. Exit 1 names the extension file.
+        """
+        skill_md = _write_skill(tmp_path)
+        ext_target = (
+            tmp_path / ".clauditor" / "badges" / "demo.clauditor.json"
+        )
+        ext_target.parent.mkdir(parents=True)
+        ext_target.write_text('{"stale-extension": true}\n')
+        monkeypatch.chdir(tmp_path)
+
+        # Main target absent → first guard passes, then second fires.
+        rc = main(["badge", str(skill_md)])
+        assert rc == 1
+
+        err = capsys.readouterr().err
+        assert "demo.clauditor.json" in err
+        assert "already exists" in err
+        # Stale extension untouched.
+        assert ext_target.read_text() == '{"stale-extension": true}\n'
+
+    def test_extension_only_exists_force_overwrites_pair(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """``--force`` lets the pair write proceed even when only the
+        extension file pre-existed. Both files land with the fresh
+        lightgrey placeholder content.
+        """
+        skill_md = _write_skill(tmp_path)
+        target = tmp_path / ".clauditor" / "badges" / "demo.json"
+        ext_target = (
+            tmp_path / ".clauditor" / "badges" / "demo.clauditor.json"
+        )
+        ext_target.parent.mkdir(parents=True)
+        ext_target.write_text('{"stale-extension": true}\n')
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(["badge", str(skill_md), "--force"])
+        assert rc == 0
+
+        # Main file now exists with fresh content.
+        assert json.loads(target.read_text())["color"] == "lightgrey"
+        # Extension file was overwritten with fresh content.
+        ext = json.loads(ext_target.read_text())
+        assert ext["schema_version"] == 1
+        assert ext["skill_name"] == "demo"
+
 
 # ---------------------------------------------------------------------------
 # DEC-016 — explicit --from-iteration N that is missing.
