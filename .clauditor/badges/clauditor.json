@@ -1,13 +1,29 @@
 {
   "schemaVersion": 1,
   "label": "clauditor",
-  "message": "no data",
-  "color": "lightgrey",
+  "message": "2/3 · L3 50%",
+  "color": "red",
   "clauditor": {
     "schema_version": 1,
     "skill_name": "clauditor",
-    "generated_at": "2026-04-22T04:58:56Z",
-    "iteration": null,
-    "layers": {}
+    "generated_at": "2026-04-22T05:09:52Z",
+    "iteration": 2,
+    "layers": {
+      "l1": {
+        "count": 2,
+        "total": 3,
+        "pass_rate": 0.6666666666666666,
+        "passed": false
+      },
+      "l3": {
+        "pass_rate": 0.5,
+        "mean_score": 0.5,
+        "passed": false,
+        "thresholds": {
+          "min_pass_rate": 0.7,
+          "min_mean_score": 0.5
+        }
+      }
+    }
   }
 }

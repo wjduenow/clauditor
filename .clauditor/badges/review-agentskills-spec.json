@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "label": "clauditor",
+  "message": "no data",
+  "color": "lightgrey",
+  "clauditor": {
+    "schema_version": 1,
+    "skill_name": "review-agentskills-spec",
+    "generated_at": "2026-04-22T05:06:04Z",
+    "iteration": null,
+    "layers": {}
+  }
+}

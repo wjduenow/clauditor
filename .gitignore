@@ -17,6 +17,7 @@ coverage.xml
 *.so
 
 # Local-only symlinked skills and agents (not part of this repo)
+.claude/skills/
 .claude/commands/super-plan.md
 .claude/commands/super-plan-team.md
 .claude/commands/chunk.md

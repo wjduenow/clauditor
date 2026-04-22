@@ -30,7 +30,7 @@ Adding a new skill? Run `clauditor badge src/clauditor/skills/<new>/
 SKILL.md --url-only --repo wjduenow/clauditor --branch dev` to get
 a ready-to-paste image line, then add a row below.
 
-## Skills
+## User-facing skills
 
 ### `/clauditor`
 
@@ -51,6 +51,33 @@ rather than from a user's project. The badge currently shows
 `lightgrey · no data` because no iteration exists on the
 `dev` branch yet; the first CI run of `clauditor grade` on the
 bundled skill will populate real L1/L3 scores.
+
+## Internal skills (maintainer-only)
+
+> These skills are bundled with the repo but are **not** exposed via
+> `clauditor setup` and are **not** intended for end-user invocation.
+> They exist for clauditor's own release workflow and development
+> dogfooding. Listed here so maintainers have a one-glance quality
+> view alongside the user-facing catalog above.
+
+### `/review-agentskills-spec`
+
+![review-agentskills-spec](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/wjduenow/clauditor/dev/.clauditor/badges/review-agentskills-spec.json)
+
+Live audit of the [agentskills.io specification](https://agentskills.io/specification)
+— fetches the current spec text, diffs it against clauditor's
+internal conformance assumptions (encoded in
+`src/clauditor/conformance.py`), and reports deltas. Run this when
+the spec is suspected to have shifted so `clauditor lint` can be
+updated in lockstep.
+
+Source: [`src/clauditor/skills/review-agentskills-spec/SKILL.md`](../src/clauditor/skills/review-agentskills-spec/SKILL.md) · Eval: [`review-agentskills-spec.eval.json`](../src/clauditor/skills/review-agentskills-spec/assets/review-agentskills-spec.eval.json)
+
+Excluded from `clauditor setup`'s install symlinks so it does not
+appear in a user's `/` slash-command menu. Maintainers invoke it
+via the direct-path live-runner pattern — see
+[`.claude/rules/internal-skill-live-test-tmp-symlink.md`](../.claude/rules/internal-skill-live-test-tmp-symlink.md)
+for the testing contract.
 
 ## Interpreting a badge
 
