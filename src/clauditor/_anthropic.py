@@ -343,5 +343,26 @@ async def call_anthropic(
             conn_retries += 1
             await _sleep(delay)
             continue
+        except TypeError as exc:
+            # Defense-in-depth (DEC-008, DEC-015 of
+            # plans/super/83-subscription-auth-gap.md). Current
+            # Anthropic SDK raises ``TypeError: Could not resolve
+            # authentication method`` from ``messages.create`` when
+            # no API key is configured. The pre-flight guard
+            # (US-003, ``check_anthropic_auth``) catches the
+            # missing-key case at exit 2 before we reach here, but
+            # any future caller that bypasses the guard will hit
+            # this branch and see a crisp ``AnthropicHelperError``
+            # (exit 3) instead of a raw ``TypeError`` traceback.
+            #
+            # DEC-015: fixed sanitized message — no ``str(exc)``,
+            # no ``exc.args``, no SDK-sourced text. The original
+            # ``TypeError`` is preserved on ``__cause__`` for
+            # debugging via ``raise ... from exc``. Not retried:
+            # a ``TypeError`` is a config error, not transient.
+            raise AnthropicHelperError(
+                "Anthropic SDK client initialization failed — "
+                "verify ANTHROPIC_API_KEY is set."
+            ) from exc
 
         return _extract_result(response)

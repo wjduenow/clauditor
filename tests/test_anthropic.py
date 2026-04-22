@@ -589,6 +589,49 @@ class TestCallAnthropicImportError:
         assert "clauditor[grader]" in str(exc_info.value)
 
 
+class TestCallAnthropicTypeError:
+    """Defense-in-depth wrap for SDK ``TypeError`` (US-002 / clauditor-2df.2).
+
+    Pins DEC-008 (wrap as ``AnthropicHelperError`` not
+    ``AnthropicAuthMissingError`` — the pre-flight guard in US-003
+    catches the missing-key case first at exit 2; the wrap exists
+    for the bypass case which is exit 3 territory), and DEC-015 (no
+    SDK exception text in the user-facing message; original
+    exception preserved via ``__cause__``).
+    """
+
+    @pytest.mark.asyncio
+    async def test_sdk_typeerror_wrapped_as_helper_error(self) -> None:
+        # Simulate the current SDK behavior when no key is set and
+        # ``messages.create`` is reached: the SDK raises
+        # ``TypeError: Could not resolve authentication method``.
+        sdk_text = "Could not resolve authentication method"
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(
+            side_effect=TypeError(sdk_text)
+        )
+        sleep_mock = AsyncMock()
+        with patch(
+            "anthropic.AsyncAnthropic", return_value=mock_client
+        ), patch(
+            "clauditor._anthropic._sleep", sleep_mock
+        ):
+            with pytest.raises(AnthropicHelperError) as exc_info:
+                await call_anthropic("p", model="m")
+        msg = str(exc_info.value)
+        # Fixed sanitized message contains the DEC-015 anchors.
+        assert "Anthropic SDK client initialization failed" in msg
+        assert "ANTHROPIC_API_KEY" in msg
+        # SDK-sourced text must NOT leak into the user-facing message.
+        assert sdk_text not in msg
+        # TypeError is a config error, not transient — no retry.
+        assert mock_client.messages.create.await_count == 1
+        assert sleep_mock.await_count == 0
+        # Original exception preserved via __cause__ for debugging.
+        assert isinstance(exc_info.value.__cause__, TypeError)
+        assert sdk_text in str(exc_info.value.__cause__)
+
+
 class TestCheckAnthropicAuth:
     """Unit tests for the pre-flight auth guard (clauditor-2df.1 / US-001).
 
