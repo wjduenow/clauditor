@@ -1,10 +1,10 @@
-"""Integration tests for the auth guard wired into five LLM-mediated CLI commands.
+"""Integration tests for the auth guard wired into the LLM-mediated CLI commands.
 
-Traces to US-003 / DEC-002, DEC-003, DEC-004, DEC-009, DEC-011 of
-``plans/super/83-subscription-auth-gap.md``.
+Traces to US-003 / DEC-002, DEC-003, DEC-004, DEC-009, DEC-011, DEC-017
+of ``plans/super/83-subscription-auth-gap.md``.
 
 Each LLM-mediated CLI command (``grade``, ``propose-eval``, ``suggest``,
-``triggers``, ``extract``) must:
+``triggers``, ``extract``, ``compare --blind``) must:
 
 - Exit 2 with a stderr message containing the three DEC-012 durable
   substrings (``ANTHROPIC_API_KEY``, ``Claude Pro``,
@@ -12,8 +12,12 @@ Each LLM-mediated CLI command (``grade``, ``propose-eval``, ``suggest``,
   (``clauditor <cmd>``) when ``ANTHROPIC_API_KEY`` is absent.
 - Honor ``--dry-run`` — with the env var unset, ``--dry-run`` must
   still exit 0 and produce no guard message on stderr (DEC-002).
-  Only four of the five commands have ``--dry-run``; ``suggest`` does
-  not.
+  Four of the six commands have ``--dry-run``; ``suggest`` and
+  ``compare --blind`` do not.
+
+``compare --blind`` was added to the guarded set in QG pass 2 after
+code review noticed it also routes through ``blind_compare_from_spec``
+→ ``call_anthropic``; see DEC-017.
 
 Per ``.claude/rules/pytester-inprocess-coverage-hazard.md`` these tests
 invoke ``main([...])`` directly with ``monkeypatch`` — no pytester
