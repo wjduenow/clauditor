@@ -31,6 +31,7 @@ clauditor capture <skill> -- "args"    # Run skill, save stdout to tests/eval/ca
 clauditor audit <skill>                # Aggregate per-assertion pass rates across iterations
 clauditor suggest <skill.md>           # Propose SKILL.md edits from prior failing iterations
 clauditor propose-eval <skill.md>      # LLM-assisted EvalSpec bootstrap (SKILL.md + optional capture)
+clauditor badge <skill.md>             # Shields.io endpoint JSON from latest iteration sidecars
 clauditor setup                        # Install the bundled /clauditor slash command symlink
 clauditor doctor                       # Report environment diagnostics
 ```
@@ -155,6 +156,60 @@ Captured skill output is scrubbed through `clauditor.transcripts.redact` before 
 - `clauditor init` writes a **skill stub** (`SKILL.md` + starter `eval.json`) for a brand-new skill. Use it first when the skill itself does not yet exist.
 - `clauditor propose-eval` fills in an `eval.json` for a skill whose **SKILL.md already exists**. It does not write a skill stub and does not regenerate SKILL.md.
 - `clauditor capture <skill> -- "args"` produces the captured run that `propose-eval` reads as grounding context. Capturing before `propose-eval` typically lifts the quality of the generated spec (the proposer sees what real output looks like).
+
+## badge
+
+Generate a [shields.io](https://shields.io)-compatible endpoint JSON from a skill's latest iteration sidecars. `clauditor badge <skill.md>` reads the most recent `.clauditor/iteration-N/<skill>/assertions.json` (L1) and, when present, `grading.json` (L3) / `variance.json`, classifies color and message per the project's rules, and writes the result to `.clauditor/badges/<skill>.json` (or a path passed to `--output`). Point any shields.io endpoint URL at the raw JSON and the rendered SVG updates whenever the JSON changes.
+
+The command is a **read-only aggregator** — it does NOT run the skill and does NOT call Anthropic. Run `clauditor validate` (for L1 coverage) and `clauditor grade` (for L3 coverage) first; the badge surfaces whatever those iterations already produced. When no iteration exists, the command writes a `lightgrey` "no data" placeholder and exits 0 (DEC-001), so CI pipelines that always run `clauditor badge` keep a persistent placeholder even before the first grade.
+
+### Required inputs
+
+- `<skill_md>` (positional) — path to the SKILL.md file. The skill name is derived via the same `skill-identity-from-frontmatter` helper `clauditor validate` and `clauditor grade` use, so the iteration lookup matches what those commands wrote.
+
+### Flags
+
+| Flag | Default | Description |
+| ---- | ------- | ----------- |
+| `--from-iteration N` | latest | Read sidecars from `.clauditor/iteration-N/<skill>/` instead of the latest. N must be a positive integer. A missing N exits 1 with the available-iterations list on stderr (DEC-016). |
+| `--output PATH` | `.clauditor/badges/<skill>.json` | Write the badge JSON to PATH. Absolute paths are accepted (DEC-005 — common for GitHub Pages dirs outside the repo). Parent directory must already exist (DEC-022). Mutually exclusive with `--url-only`. |
+| `--url-only` | off | Print the Markdown image line to stdout instead of writing JSON. Mutually exclusive with `--output`. |
+| `--force` | off | Overwrite an existing badge JSON file. Without it, a collision exits 1 (DEC-011). The DEC-001 lightgrey placeholder write honors `--force` too — it does not silently clobber a "real" badge. |
+| `--repo USER/REPO` | git auto-detect | Override the origin-slug auto-detect used by `--url-only` (DEC-002). Falls back to the literal placeholder `USER/REPO` with a stderr warning when auto-detect fails and no override is supplied. |
+| `--branch NAME` | git auto-detect | Override the default-branch auto-detect used by `--url-only` (DEC-002). Falls back to `main` with a stderr warning when auto-detect fails. |
+| `--label TEXT` | `"clauditor"` | Shields.io badge label text (the left side of the rendered SVG). |
+| `--style KEY=VALUE` | none | Shields.io style passthrough; repeatable. Whitelist: `style`, `logoSvg`, `logoColor`, `labelColor`, `cacheSeconds`, `link` (DEC-015). Unknown keys emit a stderr warning but still land in the JSON (shields.io silently ignores what it does not know). Values are rejected on control characters or length >512 (DEC-023). |
+| `-v, --verbose` | off | On success, print a stderr info line naming the written path and iteration (`clauditor.badge: wrote <path> (iteration N)`) per DEC-018. |
+
+### Examples
+
+```bash
+# Basic: populate an iteration first, then generate the badge JSON.
+clauditor grade .claude/skills/my-skill/SKILL.md
+clauditor badge .claude/skills/my-skill/SKILL.md
+# → writes .clauditor/badges/my-skill.json (brightgreen "8/8 · L3 92%")
+
+# --url-only: get a Markdown image line for pasting into a README.
+clauditor badge .claude/skills/my-skill/SKILL.md --url-only
+# → ![clauditor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/USER/REPO/main/.clauditor/badges/my-skill.json)
+
+# Advanced: shields.io style passthrough, custom label, force-overwrite.
+clauditor badge .claude/skills/my-skill/SKILL.md \
+  --style cacheSeconds=300 --style style=flat-square \
+  --label "my skill" --force
+```
+
+### Exit codes
+
+Non-LLM 0/1/2 taxonomy per `.claude/rules/llm-cli-exit-code-taxonomy.md` (the "does not apply" clause — no Anthropic call, so no exit 3):
+
+| Code | Meaning |
+| ---- | ------- |
+| `0` | Success. Badge JSON written or `--url-only` Markdown image line printed. The DEC-001 / DEC-007 lightgrey placeholder writes (no iteration found, or iteration present but spec declares zero L1 assertions) also return 0. |
+| `1` | Runtime failure. Corrupt iteration — iteration dir exists but `assertions.json` is missing (DEC-008). Existing badge JSON without `--force` (DEC-011). `--from-iteration N` referring to a missing iteration (DEC-016). OS-level disk I/O error on write. |
+| `2` | Input-validation failure. Mutually exclusive `--url-only` + `--output` both passed (DEC-014). `--output` parent dir does not exist (DEC-022). `--style` malformed (missing `=`, empty key) or value rejected (control characters / length >512) (DEC-015, DEC-023). Skill path missing, not a regular file, or `SkillSpec.from_file` fails to load. |
+
+See also [docs/badges.md](./badges.md) for placement guidance (README vs SKILL.md vs catalog page), the full color-logic table, and a CI integration stub.
 
 ## Shared runner flags (`validate`, `grade`, `capture`, `run`)
 
