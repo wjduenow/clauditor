@@ -140,7 +140,7 @@ class TestCmdBadgeHappyPath:
     def test_writes_badge_json_default_path(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """Default output lands at ``.clauditor/badges/<skill>.json``."""
+        """Default output writes BOTH sidecars at ``.clauditor/badges/``."""
         skill_md = _write_skill(tmp_path)
         _setup_iteration(tmp_path, 1)
         monkeypatch.chdir(tmp_path)
@@ -149,15 +149,24 @@ class TestCmdBadgeHappyPath:
         assert rc == 0
 
         target = tmp_path / ".clauditor" / "badges" / "demo.json"
+        ext_target = tmp_path / ".clauditor" / "badges" / "demo.clauditor.json"
         assert target.exists()
-        data = json.loads(target.read_text())
-        # Shields.io contract keys + our nested extension.
-        assert data["schemaVersion"] == 1
-        assert data["label"] == "clauditor"
-        assert data["color"] == "brightgreen"
-        assert data["message"] == "3/3"
-        assert data["clauditor"]["skill_name"] == "demo"
-        assert data["clauditor"]["iteration"] == 1
+        assert ext_target.exists()
+
+        # Shields.io payload: minimal, no ``clauditor`` key (shields.io
+        # rejects unknown top-level fields with "invalid properties").
+        shields = json.loads(target.read_text())
+        assert shields["schemaVersion"] == 1
+        assert shields["label"] == "clauditor"
+        assert shields["color"] == "brightgreen"
+        assert shields["message"] == "3/3"
+        assert "clauditor" not in shields
+
+        # Extension sidecar: carries iteration + layer detail.
+        ext = json.loads(ext_target.read_text())
+        assert ext["skill_name"] == "demo"
+        assert ext["iteration"] == 1
+        assert "l1" in ext["layers"]
 
     def test_writes_badge_json_custom_output(
         self, tmp_path: Path, monkeypatch
@@ -227,11 +236,19 @@ class TestCmdBadgeNoIteration:
         assert rc == 0
 
         target = tmp_path / ".clauditor" / "badges" / "demo.json"
+        ext_target = tmp_path / ".clauditor" / "badges" / "demo.clauditor.json"
         assert target.exists()
-        data = json.loads(target.read_text())
-        assert data["color"] == "lightgrey"
-        assert data["message"] == "no data"
-        assert data["clauditor"]["iteration"] is None
+        assert ext_target.exists()
+        # Shields.io payload: minimal, no clauditor key (it rejects
+        # unknown top-level fields with "invalid properties" SVG).
+        shields = json.loads(target.read_text())
+        assert shields["color"] == "lightgrey"
+        assert shields["message"] == "no data"
+        assert "clauditor" not in shields
+        # Extension sidecar: full telemetry.
+        ext = json.loads(ext_target.read_text())
+        assert ext["schema_version"] == 1
+        assert ext["iteration"] is None
 
     def test_emits_dec021_warning(
         self, tmp_path: Path, monkeypatch, capsys

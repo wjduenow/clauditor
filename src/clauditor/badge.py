@@ -203,14 +203,16 @@ class Badge:
     schema_version: int = _SHIELDS_SCHEMA_VERSION
 
     def to_endpoint_json(self) -> dict[str, Any]:
-        """Return the shields.io-compatible dict with canonical key order.
+        """Return the shields.io-compatible dict — shields.io only.
 
-        Top-level keys in order: ``schemaVersion``, ``label``,
-        ``message``, ``color``, then ``style_overrides`` sorted
-        alphabetically, then ``clauditor``. Inside ``clauditor``,
-        first key is ``schema_version`` (per
-        ``.claude/rules/json-schema-version.md``), followed by
-        ``skill_name``, ``generated_at``, ``iteration``, ``layers``.
+        Key order: ``schemaVersion``, ``label``, ``message``,
+        ``color``, then ``style_overrides`` sorted alphabetically.
+
+        No ``clauditor`` extension block: shields.io strictly
+        validates its endpoint schema and rejects unknown top-level
+        keys with an ``invalid properties: <key>`` SVG response.
+        The extension lives in a SIBLING file (``.clauditor.json``
+        suffix); see :meth:`to_clauditor_extension_json` below.
 
         Python 3.7+ preserves dict insertion order, so building the
         dict literal-by-literal in the desired order is the entire
@@ -224,8 +226,22 @@ class Badge:
         }
         for key in sorted(self.style_overrides):
             payload[key] = self.style_overrides[key]
-        payload["clauditor"] = _extension_to_dict(self.clauditor)
         return payload
+
+    def to_clauditor_extension_json(self) -> dict[str, Any]:
+        """Return the clauditor extension block as a standalone dict.
+
+        Written to a sibling file ``<skill>.clauditor.json`` alongside
+        the shields.io badge JSON. Carries the per-layer breakdown,
+        thresholds, iteration number, and ``generated_at`` timestamp
+        for trend-audit / forensic consumers.
+
+        First key is ``schema_version: 1`` per
+        ``.claude/rules/json-schema-version.md``. Shape unchanged
+        from the pre-split ``clauditor`` sub-dict so existing
+        docstrings / tests of the nested shape still apply.
+        """
+        return _extension_to_dict(self.clauditor)
 
 
 def _extension_to_dict(ext: ClauditorExtension) -> dict[str, Any]:

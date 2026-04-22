@@ -98,39 +98,51 @@ A first-class `clauditor-action@v1` GitHub Action that wires this up end-to-end 
 
 ## Schema reference
 
-The badge JSON carries **two** independent schema versions (DEC-027):
+`clauditor badge` writes **two sidecar files** per invocation (a shields.io-valid payload plus a clauditor extension). Shields.io strictly validates its endpoint schema and rejects unknown top-level keys with an `invalid properties: <key>` SVG response, so the extension cannot be embedded — it lives in a sibling file. See [`.claude/rules/dual-version-external-schema-embed.md`](../.claude/rules/dual-version-external-schema-embed.md) for the full rationale.
 
-- **Top-level `schemaVersion`** — shields.io's own endpoint contract (camelCase, per their docs). Currently `1`. First top-level key.
-- **Nested `clauditor.schema_version`** — our extension-block contract (snake_case, per `.claude/rules/json-schema-version.md`). Currently `1`. First key of the `clauditor` block.
+### File 1 — `<skill>.json` (shields.io only)
 
-They bump independently — a future shields.io schema revision does not force a clauditor bump and vice versa.
-
-Sample output (no variance sidecar present; the `layers.variance` block is omitted entirely per DEC-003):
+Exactly the fields the shields.io `endpoint` contract requires, plus any whitelisted `--style` passthroughs (`style`, `logoSvg`, `logoColor`, `labelColor`, `cacheSeconds`, `link`). No clauditor metadata.
 
 ```json
 {
   "schemaVersion": 1,
   "label": "clauditor",
   "message": "8/8 · L3 92%",
-  "color": "brightgreen",
-  "clauditor": {
-    "schema_version": 1,
-    "skill_name": "my-skill",
-    "generated_at": "2026-04-21T14:00:00Z",
-    "iteration": 4,
-    "layers": {
-      "l1": {"count": 8, "total": 8, "pass_rate": 1.0, "passed": true},
-      "l3": {
-        "pass_rate": 0.92,
-        "mean_score": 0.85,
-        "passed": true,
-        "thresholds": {"min_pass_rate": 0.7, "min_mean_score": 0.5}
-      }
+  "color": "brightgreen"
+}
+```
+
+This is the file the shields.io `endpoint?url=...` fetcher reads from `raw.githubusercontent.com`.
+
+### File 2 — `<skill>.clauditor.json` (extension)
+
+Standalone clauditor telemetry. First key is `schema_version` per `.claude/rules/json-schema-version.md`; bumps independently of the shields.io schema (DEC-027).
+
+```json
+{
+  "schema_version": 1,
+  "skill_name": "my-skill",
+  "generated_at": "2026-04-21T14:00:00Z",
+  "iteration": 4,
+  "layers": {
+    "l1": {"count": 8, "total": 8, "pass_rate": 1.0, "passed": true},
+    "l3": {
+      "pass_rate": 0.92,
+      "mean_score": 0.85,
+      "passed": true,
+      "thresholds": {"min_pass_rate": 0.7, "min_mean_score": 0.5}
     }
   }
 }
 ```
 
+Read by trend-audit and other forensic consumers; shields.io does not fetch this file.
+
 L1 and L3 both carry a `passed: bool` field with **different semantics** (DEC-010): L1 `passed = true` means "every declared assertion passed"; L3 `passed = true` means "pass rate ≥ `min_pass_rate` AND mean score ≥ `min_mean_score`" (the grade met the thresholds the grading run used). The dataclass docstrings in `src/clauditor/badge.py` are the authoritative reference for each field.
+
+### `--force` semantics for the pair
+
+The DEC-011 overwrite policy applies to BOTH files as a set. Either file existing without `--force` fails the write. Commit both files together.
 
 For the complete list of pure helpers that compose this payload, see [`src/clauditor/badge.py`](../src/clauditor/badge.py) (`compute_badge`, `Badge`, `ClauditorExtension`, `L1Summary`, `L3Summary`, `VarianceSummary`).
