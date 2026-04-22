@@ -23,12 +23,14 @@ from anthropic import (
 )
 
 from clauditor._anthropic import (
+    AnthropicAuthMissingError,
     AnthropicHelperError,
     AnthropicResult,
     _body_excerpt,
     _compute_backoff,
     _extract_result,
     call_anthropic,
+    check_anthropic_auth,
 )
 
 
@@ -585,3 +587,57 @@ class TestCallAnthropicImportError:
             with pytest.raises(ImportError) as exc_info:
                 await call_anthropic("p", model="m")
         assert "clauditor[grader]" in str(exc_info.value)
+
+
+class TestCheckAnthropicAuth:
+    """Unit tests for the pre-flight auth guard (clauditor-2df.1 / US-001).
+
+    Pins DEC-001 (only ``ANTHROPIC_API_KEY`` counts),
+    DEC-010 (new exception class distinct from ``AnthropicHelperError``),
+    DEC-011 (message template with ``{cmd_name}`` substitution), and
+    DEC-012 (three test-asserted substrings: ``ANTHROPIC_API_KEY``,
+    ``Claude Pro``, ``console.anthropic.com``).
+    """
+
+    def test_key_present_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        assert check_anthropic_auth("grade") is None
+
+    def test_key_absent_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        with pytest.raises(AnthropicAuthMissingError) as exc_info:
+            check_anthropic_auth("grade")
+        message = str(exc_info.value)
+        # DEC-012 durable anchors.
+        assert "ANTHROPIC_API_KEY" in message
+        assert "Claude Pro" in message
+        assert "console.anthropic.com" in message
+        # DEC-011: command-name interpolation.
+        assert "clauditor grade" in message
+
+    def test_key_empty_string_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        with pytest.raises(AnthropicAuthMissingError):
+            check_anthropic_auth("grade")
+
+    def test_key_whitespace_only_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "   \t\n")
+        with pytest.raises(AnthropicAuthMissingError):
+            check_anthropic_auth("grade")
+
+    def test_auth_token_only_still_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DEC-001: only ANTHROPIC_API_KEY counts, not ANTHROPIC_AUTH_TOKEN."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "some-token")
+        with pytest.raises(AnthropicAuthMissingError):
+            check_anthropic_auth("grade")
