@@ -4,7 +4,7 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/86
 - **Branch:** `feature/86-claude-cli-transport`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/86-claude-cli-transport`
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **Predecessor PR (Option A, shipped):** https://github.com/wjduenow/clauditor/pull/87 (merged into `dev`)
 - **Predecessor plan:** `plans/super/83-subscription-auth-gap.md`
 - **Sessions:** 1
@@ -701,4 +701,24 @@ US-001 and US-002 run in parallel (different files). US-003 blocks on both. US-0
 
 ## Beads Manifest
 
-*(to be populated during Devolve)*
+- **Epic:** `clauditor-9a4` — `#86: claude CLI subprocess transport (epic)`
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/86-claude-cli-transport`
+- **Branch:** `feature/86-claude-cli-transport`
+- **Plan PR:** https://github.com/wjduenow/clauditor/pull/89
+
+### Task graph
+
+| Bead ID | Title | Depends on |
+|---|---|---|
+| `clauditor-9a4.1` | US-001 — Extract shared `_invoke_claude_cli` | — |
+| `clauditor-9a4.2` | US-002 — `raw_message` caller audit + None-tolerance | — |
+| `clauditor-9a4.3` | US-003 — CLI transport in `call_anthropic` + fields + `ClaudeCLIError` | 9a4.1, 9a4.2 |
+| `clauditor-9a4.4` | US-004 — `EvalSpec.transport` + four-layer precedence | 9a4.3 |
+| `clauditor-9a4.5` | US-005 — Relax guard → `check_any_auth_available` | 9a4.4 |
+| `clauditor-9a4.6` | US-006 — Sidecar schema bumps | 9a4.3 |
+| `clauditor-9a4.7` | US-007 — Stderr announce + `doctor` checks | 9a4.5 |
+| `clauditor-9a4.8` | US-008 — Docs + matrix + benchmark | 9a4.3, 9a4.4, 9a4.5, 9a4.6, 9a4.7 |
+| `clauditor-9a4.9` | US-009 — Quality Gate (4× reviewer + CodeRabbit + validation) | 9a4.1–9a4.8 |
+| `clauditor-9a4.10` | US-010 — Patterns & Memory | 9a4.9 |
+
+Initial `bd ready`: `clauditor-9a4.1` + `clauditor-9a4.2` (both have no upstream deps and can run in parallel).
