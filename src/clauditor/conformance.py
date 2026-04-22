@@ -742,7 +742,7 @@ def _check_unquoted_colon_in_scalar(
                     severity="error",
                     message=(
                         f"Frontmatter line {lineno} has ': ' inside "
-                        f"an unquoted value for key {key.strip()!r}: "
+                        f"an unquoted value for key `{key.strip()}`: "
                         f"strict YAML parsers (including GitHub's) "
                         f"treat this as a nested mapping. Wrap the "
                         f"value in double quotes."

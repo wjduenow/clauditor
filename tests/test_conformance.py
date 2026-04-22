@@ -863,6 +863,26 @@ class TestUnquotedColonInScalarDetection:
             f"got issues={[(i.code, i.message) for i in issues]}"
         )
 
+    def test_two_offending_lines_emit_two_issues(self):
+        # Pin the "one issue per offending line" contract. Two unquoted
+        # space-colon-space sequences on distinct lines should both be
+        # flagged; a single emit with a multi-line summary would hide the
+        # second offense from a user fixing them one at a time.
+        text = (
+            "---\n"
+            "name: skill\n"
+            "description: First bug: embedded here.\n"
+            "compatibility: Second bug: also embedded.\n"
+            "---\n"
+            "\nbody\n"
+        )
+        issues = check_conformance(text, _modern_path("skill"))
+        flagged = _by_code(issues, _UNQUOTED_COLON_CODE)
+        assert len(flagged) == 2, (
+            f"expected 2 {_UNQUOTED_COLON_CODE} issues (one per offending "
+            f"line), got {len(flagged)}: {[i.message for i in flagged]}"
+        )
+
 
 class TestQuoteAwareness:
     """Quote-detection edges: values wrapped in ``"..."`` / ``'...'``
