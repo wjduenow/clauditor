@@ -352,6 +352,7 @@ def _relative_to_repo(clauditor_dir: Path, final_skill_dir: Path) -> str:
 # per-command modules that lazily import shared helpers from ``clauditor.cli``
 # see them already defined when their ``cmd_<name>`` function runs.
 from clauditor.cli import audit as audit_mod  # noqa: E402
+from clauditor.cli import badge as badge_mod  # noqa: E402
 from clauditor.cli import capture as capture_mod  # noqa: E402
 from clauditor.cli import compare as compare_mod  # noqa: E402
 from clauditor.cli import doctor as doctor_mod  # noqa: E402
@@ -367,6 +368,7 @@ from clauditor.cli import trend as trend_mod  # noqa: E402
 from clauditor.cli import triggers as triggers_mod  # noqa: E402
 from clauditor.cli import validate as validate_mod  # noqa: E402
 from clauditor.cli.audit import cmd_audit  # noqa: E402,F401
+from clauditor.cli.badge import cmd_badge  # noqa: E402,F401
 from clauditor.cli.capture import cmd_capture  # noqa: E402,F401
 from clauditor.cli.compare import cmd_compare  # noqa: E402,F401
 from clauditor.cli.doctor import cmd_doctor  # noqa: E402,F401
@@ -438,6 +440,9 @@ def main(argv: list[str] | None = None) -> int:
     # lint
     lint_mod.add_parser(subparsers)
 
+    # badge
+    badge_mod.add_parser(subparsers)
+
     # Split argv on a literal `--` *only* when the capture subcommand is in
     # play, so other subcommands (validate/grade/...) keep argparse's native
     # `--` handling instead of having their trailing args silently stripped.
@@ -484,6 +489,8 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_propose_eval(parsed)
     elif parsed.command == "lint":
         return cmd_lint(parsed)
+    elif parsed.command == "badge":
+        return cmd_badge(parsed)
 
     return 1
 
