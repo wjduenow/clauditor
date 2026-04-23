@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "clauditor-eval"
-version = "0.1.0.dev1"
+version = "0.1.0.dev2"
 description = "Auditor for Claude Code skills and slash commands. Validates structured output against schemas using layered evaluation."
 readme = "README.md"
 license = "Apache-2.0"
