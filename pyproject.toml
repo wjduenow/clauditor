@@ -44,6 +44,7 @@ clauditor = "clauditor.pytest_plugin"
 
 [project.urls]
 Homepage = "https://github.com/wjduenow/clauditor"
+Documentation = "https://wjduenow.github.io/clauditor/"
 Repository = "https://github.com/wjduenow/clauditor"
 Issues = "https://github.com/wjduenow/clauditor/issues"
 
@@ -92,4 +93,5 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.4.0",
     "anthropic>=0.40.0",
+    "mkdocs-material>=9.0",
 ]

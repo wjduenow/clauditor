@@ -1,0 +1,39 @@
+site_name: clauditor
+site_description: Auditor for AgentSkills.io skills and Claude Integrations
+site_url: https://wjduenow.github.io/clauditor/
+repo_url: https://github.com/wjduenow/clauditor
+repo_name: wjduenow/clauditor
+edit_uri: edit/dev/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+
+exclude_docs: |
+  temp/
+
+nav:
+  - Home: index.md
+  - Quick Start: quick-start.md
+  - Three Layers: layers.md
+  - CLI Reference: cli-reference.md
+  - Eval Spec: eval-spec-reference.md
+  - Pytest Plugin: pytest-plugin.md
+  - Using /clauditor: skill-usage.md
+  - Skills: skills.md
+  - Badges: badges.md
+  - Architecture: architecture.md
+  - Stream JSON: stream-json-schema.md
