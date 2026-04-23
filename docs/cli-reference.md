@@ -110,6 +110,7 @@ Requires `ANTHROPIC_API_KEY`. See [Authentication and API Keys](#authentication-
 | `--json` | Emit the full `ProposeEvalReport` JSON envelope on stdout (includes `schema_version`, tokens, duration, validation errors). |
 | `-v, --verbose` | Log capture source, redaction count, model, and token estimates to stderr. |
 | `--project-dir PATH` | Override project root (default: cwd). Used for capture discovery and relative-path reporting. |
+| `--transport {api,cli,auto}` | Route the Anthropic call through the HTTP SDK (`api`), the `claude -p` subprocess (`cli`), or the default auto-resolution (`auto` — picks CLI when available). Precedence: this flag > `CLAUDITOR_TRANSPORT` env > `EvalSpec.transport` > default `auto`. Full reference: [docs/transport-architecture.md](transport-architecture.md). Same flag on `grade`, `extract`, `suggest`, `triggers`, `compare --blind`. |
 
 ### Examples
 
@@ -257,34 +258,47 @@ The Python `anthropic` SDK is API-only: it does not read subscription credential
 | `clauditor badge` | ✓ | Reads persisted sidecars, no LLM. |
 | `clauditor audit` | ✓ | Reads persisted sidecars. |
 | `clauditor trend` | ✓ | Reads persisted sidecars. |
-| `clauditor grade` | ✗ | L3 grader is a direct `anthropic.AsyncAnthropic` call. |
-| `clauditor grade --variance N` | ✗ | Each variance rep re-runs the L3 grader. |
-| `clauditor propose-eval` | ✗ | Direct SDK call via `_anthropic.call_anthropic`. |
-| `clauditor suggest` | ✗ | Direct SDK call via `_anthropic.call_anthropic`. |
-| `clauditor triggers` | ✗ | Direct SDK call via `_anthropic.call_anthropic`. |
-| `clauditor extract` | ✗ | Direct SDK call via `_anthropic.call_anthropic`. |
-| `clauditor compare --blind` | ✗ | Runs the blind A/B judge via `_anthropic.call_anthropic`. |
+| `clauditor grade` | ✓ (with caveat) | Routes through the `claude -p` CLI transport when available. Requires `claude` on PATH + subscription auth; else `ANTHROPIC_API_KEY`. |
+| `clauditor grade --variance N` | ✓ (with caveat) | Same as `grade` — each variance rep routes through the selected transport. |
+| `clauditor propose-eval` | ✓ (with caveat) | Routes through the CLI transport when available (subscription auth); else `ANTHROPIC_API_KEY`. |
+| `clauditor suggest` | ✓ (with caveat) | Routes through the CLI transport when available (subscription auth); else `ANTHROPIC_API_KEY`. |
+| `clauditor triggers` | ✓ (with caveat) | Routes through the CLI transport when available (subscription auth); else `ANTHROPIC_API_KEY`. |
+| `clauditor extract` | ✓ (with caveat) | Routes through the CLI transport when available (subscription auth); else `ANTHROPIC_API_KEY`. |
+| `clauditor compare --blind` | ✓ (with caveat) | Routes the blind A/B judge through the CLI transport when available; else `ANTHROPIC_API_KEY`. |
+
+The "with caveat" rows resolve through the four-layer precedence (CLI flag > env > spec > default `auto`). The `auto` default picks CLI when `claude` is on PATH, else API. Pytest fixtures keep the strict API-key guard unless `CLAUDITOR_FIXTURE_ALLOW_CLI=1` is set. Full details: [docs/transport-architecture.md](transport-architecture.md).
 
 ### Error behavior
 
-When `ANTHROPIC_API_KEY` is unset (or empty / whitespace-only) on one of the ✗-row commands, the CLI exits `2` with an actionable stderr message naming the offending subcommand:
+When neither `ANTHROPIC_API_KEY` is set nor the `claude` CLI is on PATH, the relaxed pre-flight guard (`check_any_auth_available`) fires at exit `2` with an actionable stderr message naming the offending subcommand and both auth paths:
 
 ```
-ERROR: ANTHROPIC_API_KEY is not set.
-clauditor grade calls the Anthropic API directly and needs an API
-key — a Claude Pro/Max subscription alone does not grant API access.
-Get a key at https://console.anthropic.com/, then export
-ANTHROPIC_API_KEY=... and re-run. Subscription support via claude -p
-is tracked in #86.
-Commands that don't need a key: validate, capture, run, lint, init,
+ERROR: No usable authentication found.
+clauditor grade needs either:
+  1. ANTHROPIC_API_KEY exported (API key from https://console.anthropic.com/), OR
+  2. claude CLI installed and authenticated (Claude Pro/Max subscription)
+Commands that don't need authentication: validate, capture, run, lint, init,
 badge, audit, trend.
 ```
 
-The exit code (`2`) matches the pre-call input-validation category in the [four-exit-code taxonomy](#exit-codes) — the guard fires before any API call is made, so no tokens are spent and no sidecar is written.
+The exit code (`2`) matches the pre-call input-validation category in the [four-exit-code taxonomy](#exit-codes) — the guard fires before any API call is made, so no tokens are spent and no sidecar is written. Pytest fixtures use a strict variant of the guard (`check_api_key_only`) that still requires `ANTHROPIC_API_KEY` unless `CLAUDITOR_FIXTURE_ALLOW_CLI=1` is set — see [docs/transport-architecture.md](transport-architecture.md#auth-state-matrix) for the full matrix.
 
-### Subscription support (follow-up)
+## Transport architecture
 
-Routing L3 grading, `propose-eval`, `suggest`, `triggers`, `extract`, and `compare --blind` through the `claude -p` subprocess (so a Pro/Max subscription alone is enough) is tracked in [GitHub issue #86](https://github.com/wjduenow/clauditor/issues/86). Until that lands, the LLM-mediated commands above need a direct API key.
+The six LLM-mediated commands above route their Anthropic call through one of two transports: an HTTP SDK path (the `anthropic` Python SDK) or a subprocess path that shells out to the `claude` CLI. The default `auto` resolution picks CLI when `claude` is on PATH (so a Pro/Max subscription alone suffices); operators can force a specific path per-invocation, per-shell, or per-skill.
+
+```bash
+# Per-invocation: force API path for this one grade (e.g. CI consistency).
+clauditor grade .claude/skills/my-skill/SKILL.md --transport api
+
+# Per-shell / per-CI-job: export CLAUDITOR_TRANSPORT=cli for this session.
+export CLAUDITOR_TRANSPORT=cli
+clauditor propose-eval .claude/skills/my-skill/SKILL.md
+
+# Per-skill: add "transport": "api" to eval.json for every invocation.
+```
+
+**Covered in the full reference:** the two-axis auth-state matrix (API-key × CLI-on-PATH), the four-layer precedence resolution (CLI > env > spec > default), per-category retry ladders and error templates (`rate_limit`, `auth`, `api`, `transport`), the spawn-overhead benchmark (cold vs warm), migration notes for operators who had both transports, and the known limitations (`raw_message=None` under CLI, no cache-token accounting under CLI, `api_key_source` only populated under CLI). Full reference: [docs/transport-architecture.md](transport-architecture.md).
 
 ## Persistent metric history
 

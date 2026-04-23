@@ -15,7 +15,7 @@ Auditor for AgentSkills.io skills and Claude Integrations. Catches when your ski
 <details>
 <summary>Contents</summary>
 
-[Install](#install) · [Why clauditor?](#why-clauditor) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Eval Spec Format](#eval-spec-format) · [Reference docs](#reference-docs)
+[Install](#install) · [Why clauditor?](#why-clauditor) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Eval Spec Format](#eval-spec-format) · [Authentication](#authentication-and-api-keys) · [Reference docs](#reference-docs)
 
 </details>
 
@@ -157,9 +157,13 @@ clauditor implements (and extends) the workflow at [agentskills.io/skill-creatio
 
 **Beyond the spec**: trigger precision testing, tiered extraction, pytest plugin, `input_files` staging, blind A/B judge, baseline pair runs, transcript capture, LLM-driven skill improvement proposer (`clauditor suggest`), LLM-assisted EvalSpec bootstrap (`clauditor propose-eval`), Pro/Max subscription-auth option (`--no-api-key`) for research-heavy skills that exceed the API-tier rate limit, static spec-conformance check (`clauditor lint`). **Out of scope**: human-in-the-loop feedback capture.
 
-Note: `--no-api-key` only affects the subprocess; several commands (`grade`, `propose-eval`, `suggest`, `triggers`, `extract`, `compare --blind`) still call the Anthropic API from the Python process and require `ANTHROPIC_API_KEY` — a Pro/Max subscription alone does not grant API access. See [Authentication and API Keys](docs/cli-reference.md#authentication-and-api-keys) for the full list and exit-2 behavior (follow-up #86).
+Note: `--no-api-key` only affects the subprocess; the six LLM-mediated commands (`grade`, `propose-eval`, `suggest`, `triggers`, `extract`, `compare --blind`) route their own Anthropic call through a pluggable transport that accepts either `ANTHROPIC_API_KEY` or a `claude` CLI subscription by default. See [Authentication and API Keys](#authentication-and-api-keys).
 
 </details>
+
+## Authentication and API Keys
+
+The six LLM-mediated commands (`grade`, `extract`, `propose-eval`, `suggest`, `triggers`, `compare --blind`) work under either `ANTHROPIC_API_KEY` or a `claude` CLI subscription — the default `auto` transport picks CLI when the binary is on PATH, else falls back to the API. Full reference: [docs/transport-architecture.md](docs/transport-architecture.md).
 
 ## Reference docs
 
@@ -172,6 +176,7 @@ Note: `--no-api-key` only affects the subprocess; several commands (`grade`, `pr
 - [`docs/skill-usage.md`](docs/skill-usage.md) — using `/clauditor` in Claude Code
 - [`docs/badges.md`](docs/badges.md) — shields.io badges from iteration sidecars (`clauditor badge`)
 - [`docs/stream-json-schema.md`](docs/stream-json-schema.md) — `claude` stream-json parser contract
+- [`docs/transport-architecture.md`](docs/transport-architecture.md) — CLI vs SDK transport, auth-state matrix, precedence, migration
 - [`CONTRIBUTING.md`](CONTRIBUTING.md#pre-release-dogfood) — maintainer pre-release dogfood gate + contribution workflow
 
 ## License
