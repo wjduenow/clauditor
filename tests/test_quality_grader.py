@@ -334,6 +334,123 @@ class TestGradingReportSerialization:
         assert restored.thresholds.min_mean_score == pytest.approx(0.5)
 
 
+class TestGradingReportTransport:
+    """US-006 (#86): GradingReport carries ``transport_source`` and
+    ``schema_version=2``. Legacy v1 sidecars without ``transport_source``
+    load with ``transport_source="api"`` defaulted."""
+
+    def _report(self, **overrides) -> GradingReport:
+        defaults = dict(
+            skill_name="transport-test",
+            results=_make_results([True]),
+            model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
+        )
+        defaults.update(overrides)
+        return GradingReport(**defaults)
+
+    def test_default_transport_source_is_api(self):
+        report = self._report()
+        assert report.transport_source == "api"
+
+    def test_to_json_schema_version_bumped_to_2(self):
+        report = self._report(transport_source="cli")
+        data = json.loads(report.to_json())
+        assert data["schema_version"] == 2
+
+    def test_schema_version_is_first_key(self):
+        """Per ``.claude/rules/json-schema-version.md``, schema_version
+        must be the first key in the serialized payload."""
+        report = self._report(transport_source="cli")
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert next(iter(data)) == "schema_version"
+
+    def test_to_json_includes_transport_source_cli(self):
+        report = self._report(transport_source="cli")
+        data = json.loads(report.to_json())
+        assert data["transport_source"] == "cli"
+
+    def test_to_json_includes_transport_source_api(self):
+        report = self._report(transport_source="api")
+        data = json.loads(report.to_json())
+        assert data["transport_source"] == "api"
+
+    def test_from_json_v1_defaults_transport_source_to_api(self):
+        """Legacy v1 sidecars (no ``transport_source``) default to
+        ``"api"`` so pre-#86 iterations load cleanly."""
+        legacy_payload = json.dumps({
+            "schema_version": 1,
+            "skill_name": "legacy",
+            "model": "claude-sonnet-4-6",
+            "results": [],
+        })
+        restored = GradingReport.from_json(legacy_payload)
+        assert restored.transport_source == "api"
+
+    def test_from_json_v2_preserves_transport_source_cli(self):
+        original = self._report(transport_source="cli")
+        restored = GradingReport.from_json(original.to_json())
+        assert restored.transport_source == "cli"
+
+    def test_transport_source_roundtrip(self):
+        """Round-trip preserves transport_source=cli."""
+        original = self._report(transport_source="cli")
+        restored = GradingReport.from_json(original.to_json())
+        assert restored.transport_source == "cli"
+        # v2 round-trip still emits v2.
+        data = json.loads(restored.to_json())
+        assert data["schema_version"] == 2
+
+
+class TestBlindReportSchema:
+    """US-006 (#86): BlindReport gains ``schema_version=1`` (inaugural)
+    and ``transport_source`` per DEC-018. Legacy payloads (no
+    ``schema_version``, no ``transport_source``) remain loadable via
+    the in-memory constructor path; the new on-disk shape always
+    writes ``schema_version=1`` as the first key."""
+
+    def _report(self, **overrides) -> BlindReport:
+        defaults = dict(
+            preference="a",
+            confidence=0.8,
+            score_a=0.9,
+            score_b=0.6,
+            reasoning="A is better",
+            model="claude-sonnet-4-6",
+        )
+        defaults.update(overrides)
+        return BlindReport(**defaults)
+
+    def test_default_transport_source_is_api(self):
+        report = self._report()
+        assert report.transport_source == "api"
+
+    def test_to_json_includes_schema_version_1(self):
+        report = self._report(transport_source="cli")
+        data = json.loads(report.to_json())
+        assert data["schema_version"] == 1
+
+    def test_schema_version_is_first_key(self):
+        """Per ``.claude/rules/json-schema-version.md``, schema_version
+        must be the first key in the serialized payload."""
+        report = self._report(transport_source="cli")
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert next(iter(data)) == "schema_version"
+
+    def test_to_json_includes_transport_source_cli(self):
+        report = self._report(transport_source="cli")
+        data = json.loads(report.to_json())
+        assert data["transport_source"] == "cli"
+
+    def test_to_json_includes_transport_source_api(self):
+        report = self._report(transport_source="api")
+        data = json.loads(report.to_json())
+        assert data["transport_source"] == "api"
+
+
 class TestParseGradingResponse:
     def test_valid_json(self):
         data = [
