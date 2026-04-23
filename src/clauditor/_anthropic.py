@@ -576,10 +576,14 @@ def _resolve_transport(
         return "api", False
     if transport == "cli":
         return "cli", False
-    # "auto" per DEC-001.
-    if shutil.which("claude") is not None:
-        return "cli", True
-    return "api", True
+    if transport == "auto":
+        # "auto" per DEC-001.
+        if shutil.which("claude") is not None:
+            return "cli", True
+        return "api", True
+    raise ValueError(
+        f"Unknown transport {transport!r}; expected 'api', 'cli', or 'auto'"
+    )
 
 
 async def call_anthropic(

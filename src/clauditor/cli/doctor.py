@@ -92,7 +92,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         checks.append(("claude-cli", "ok", claude_path))
     else:
         checks.append(
-            ("claude-cli", "fail", "`claude` not found on PATH")
+            ("claude-cli", "info", "`claude` not found on PATH (CLI transport unavailable)")  # noqa: E501
         )
 
     # DEC-021 of plans/super/86-claude-cli-transport.md: two presence

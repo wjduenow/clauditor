@@ -4078,9 +4078,9 @@ class TestCmdDoctor:
         assert rc == 0
         out = capsys.readouterr().out
         assert "claude-cli" in out
-        # Expect fail marker for missing claude CLI
+        # Expect info marker for missing claude CLI (not fail — absence is a valid config)
         lines = [line for line in out.splitlines() if "claude-cli" in line]
-        assert any("[fail]" in line for line in lines)
+        assert any("[info]" in line for line in lines)
 
     # --- DEC-013 clauditor-skill-symlink check (5 states) ---------------
 

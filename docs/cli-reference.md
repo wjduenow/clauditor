@@ -92,7 +92,7 @@ Beyond the standalone `lint` command, `SkillSpec.from_file` calls `check_conform
 
 LLM-assisted EvalSpec bootstrap. `clauditor propose-eval <skill.md>` reads the SKILL.md file and (optionally) a captured skill run, asks Sonnet to propose a full three-layer EvalSpec (L1 assertions, L2 tiered extraction, L3 rubric), validates the proposal through `EvalSpec.from_dict`, and writes a sibling `<skill>.eval.json` next to the SKILL.md (the same path `SkillSpec.from_file` and `clauditor init` auto-discover). Use it to skip the blank-spec drudgery when onboarding a new skill.
 
-Requires `ANTHROPIC_API_KEY`. See [Authentication and API Keys](#authentication-and-api-keys).
+Requires authentication: `ANTHROPIC_API_KEY` for API transport, or an authenticated `claude` CLI for CLI transport. See [Authentication and API Keys](#authentication-and-api-keys).
 
 ### Required inputs
 
