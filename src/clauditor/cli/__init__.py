@@ -65,6 +65,11 @@ def _resolve_grader_transport(args: argparse.Namespace, eval_spec=None) -> str:
 
     ``eval_spec`` is the loaded ``EvalSpec`` (or ``None`` when the calling
     command has no eval spec — e.g. ``suggest``, ``propose-eval``).
+
+    Raises ``SystemExit(2)`` on invalid ``CLAUDITOR_TRANSPORT`` values (e.g.
+    ``CLAUDITOR_TRANSPORT=foo``). Printing the error to stderr before exit
+    centralizes the routing so all six LLM-mediated commands share one
+    error surface.
     """
     import os
 
@@ -74,9 +79,13 @@ def _resolve_grader_transport(args: argparse.Namespace, eval_spec=None) -> str:
     if env_transport is not None and env_transport.strip() == "":
         env_transport = None
     spec_transport = eval_spec.transport if eval_spec is not None else None
-    return resolve_transport(
-        getattr(args, "transport", None), env_transport, spec_transport
-    )
+    try:
+        return resolve_transport(
+            getattr(args, "transport", None), env_transport, spec_transport
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
 
 
 def _append_validate_history(

@@ -6363,3 +6363,15 @@ class TestResolveGraderTransport:
         args = argparse.Namespace(transport=None)
         result = _resolve_grader_transport(args, None)
         assert result == "auto"
+
+    def test_invalid_env_exits_2(self, monkeypatch, capsys):
+        """Invalid ``CLAUDITOR_TRANSPORT`` value → SystemExit(2) + ERROR line."""
+        monkeypatch.setenv("CLAUDITOR_TRANSPORT", "sdk")
+        from clauditor.cli import _resolve_grader_transport
+        args = argparse.Namespace(transport=None)
+        with pytest.raises(SystemExit) as exc_info:
+            _resolve_grader_transport(args, None)
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "ERROR:" in captured.err
+        assert "sdk" in captured.err

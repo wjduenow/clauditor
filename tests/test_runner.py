@@ -2929,6 +2929,41 @@ class TestInvokeClaudeCli:
             assert mock_popen.call_args.kwargs["env"] == env
             assert mock_popen.call_args.kwargs["cwd"] == str(tmp_path)
 
+    def test_model_kwarg_added_to_argv(self):
+        """``model=`` kwarg is inserted into the subprocess argv as
+        ``["--model", model]`` so CLI transport honours the requested model.
+        """
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("ok")
+            _invoke_claude_cli(
+                "hi",
+                cwd=None,
+                env=None,
+                timeout=180,
+                claude_bin="claude",
+                model="claude-haiku-4-5-20251001",
+                allow_hang_heuristic=True,
+            )
+            argv = mock_popen.call_args.args[0]
+            assert "--model" in argv
+            idx = argv.index("--model")
+            assert argv[idx + 1] == "claude-haiku-4-5-20251001"
+
+    def test_model_none_omits_flag(self):
+        """When ``model=None`` (the default), ``--model`` is not added to argv."""
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("ok")
+            _invoke_claude_cli(
+                "hi",
+                cwd=None,
+                env=None,
+                timeout=180,
+                claude_bin="claude",
+                allow_hang_heuristic=True,
+            )
+            argv = mock_popen.call_args.args[0]
+            assert "--model" not in argv
+
     # --------------------------------------------------------------- #
     # Single-caller invariant (US-001 done-when criterion)             #
     # --------------------------------------------------------------- #

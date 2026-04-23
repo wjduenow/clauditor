@@ -124,9 +124,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
             return 2
     else:
         print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
-        skill_result = spec.run(
-            transport_override=getattr(args, "transport", None)
-        )
+        skill_result = spec.run()
         if not skill_result.succeeded_cleanly:
             print(
                 f"ERROR: Skill failed: {_render_skill_error(skill_result)}",

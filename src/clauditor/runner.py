@@ -325,6 +325,7 @@ def _invoke_claude_cli(
     env: dict[str, str] | None,
     timeout: int,
     claude_bin: str,
+    model: str | None = None,
     allow_hang_heuristic: bool = True,
 ) -> InvokeResult:
     """Run ``claude -p <prompt>`` with stream-json output and parse the NDJSON.
@@ -388,15 +389,12 @@ def _invoke_claude_cli(
     stderr_warnings: list[str] = []
     try:
         try:
+            argv = [claude_bin, "-p", prompt]
+            if model is not None:
+                argv += ["--model", model]
+            argv += ["--output-format", "stream-json", "--verbose"]
             proc = subprocess.Popen(
-                [
-                    claude_bin,
-                    "-p",
-                    prompt,
-                    "--output-format",
-                    "stream-json",
-                    "--verbose",
-                ],
+                argv,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

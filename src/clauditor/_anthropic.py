@@ -773,9 +773,8 @@ _CLI_TRANSPORT_TIMEOUT = 180
 async def _call_via_claude_cli(
     prompt: str,
     *,
-    model: str,  # noqa: ARG001 — accepted for signature parity; CLI
-    #                has its own model resolution via `claude -p`.
-    max_tokens: int,  # noqa: ARG001 — same; CLI does not take max_tokens.
+    model: str,
+    max_tokens: int,  # noqa: ARG001 — CLI does not take max_tokens.
 ) -> AnthropicResult:
     """CLI (subprocess) transport branch.
 
@@ -827,6 +826,7 @@ async def _call_via_claude_cli(
             env=env_without_api_key(os.environ),
             timeout=_CLI_TRANSPORT_TIMEOUT,
             claude_bin="claude",
+            model=model,
             allow_hang_heuristic=False,
         )
         duration = _monotonic() - start

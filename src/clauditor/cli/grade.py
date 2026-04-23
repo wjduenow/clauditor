@@ -397,7 +397,6 @@ def _run_skill_variants(
         else None
     )
     timeout_override = getattr(args, "timeout", None)
-    transport_override = getattr(args, "transport", None)
 
     run_outputs: list[tuple[str, list[dict]]] = []
     # Parallel list of SkillResult objects — None entries correspond to
@@ -427,7 +426,6 @@ def _run_skill_variants(
             run_dir=workspace.tmp_path / "run-0",
             timeout_override=timeout_override,
             env_override=env_override,
-            transport_override=transport_override,
         )
         if not primary_skill_result.succeeded_cleanly:
             print(
@@ -459,7 +457,6 @@ def _run_skill_variants(
             run_dir=variance_run_dir,
             timeout_override=timeout_override,
             env_override=env_override,
-            transport_override=transport_override,
         )
         if not variance_result.succeeded_cleanly:
             print(
