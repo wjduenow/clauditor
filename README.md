@@ -167,6 +167,8 @@ Note: `--no-api-key` only affects the subprocess; the six LLM-mediated commands 
 
 The six LLM-mediated commands (`grade`, `extract`, `propose-eval`, `suggest`, `triggers`, `compare --blind`) work under either `ANTHROPIC_API_KEY` or a `claude` CLI subscription — the default `auto` transport picks CLI when the binary is on PATH, else falls back to the API. Full reference: [docs/transport-architecture.md](docs/transport-architecture.md).
 
+Running `clauditor grade <skill> --transport cli` is the one-liner for subscription auth end-to-end: `--transport cli` implicitly strips `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the skill subprocess env, so both the grader and the skill use subscription auth. Pass `--transport api` to keep the keys.
+
 ## Reference docs
 
 - [`docs/architecture.md`](docs/architecture.md) — how clauditor works under the hood (mermaid diagrams of the grade flow)
