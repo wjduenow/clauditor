@@ -52,3 +52,6 @@ work-*/
 # Local untracked artifacts
 .claude/scheduled_tasks.lock
 docs/temp/
+site/
+.envrc
+docs/medium-article-draft.md
