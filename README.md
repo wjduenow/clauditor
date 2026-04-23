@@ -22,9 +22,10 @@ Auditor for AgentSkills.io skills and Claude Integrations. Catches when your ski
 ## Install
 
 ```bash
-pip install clauditor-eval           # CLI only (Layer 1)
-pip install clauditor-eval[grader]   # + LLM grading (Layers 2 & 3) and `propose-eval`
+pip install clauditor-eval
 ```
+
+Layer 1 (deterministic assertions) works without an `ANTHROPIC_API_KEY`. Layers 2 & 3 and `propose-eval` require one.
 
 Source install: `git clone https://github.com/wjduenow/clauditor.git && cd clauditor && uv sync --dev`.
 
