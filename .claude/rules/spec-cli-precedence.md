@@ -300,6 +300,41 @@ bool-guard validation for the spec field),
 `.claude/rules/llm-cli-exit-code-taxonomy.md` (CLI input-error
 exit-code routing for the argparse-type validator).
 
+### Four-layer precedence — grader transport (#86)
+
+`transport` for the LLM-grader calls (Layer 2/3 Anthropic calls),
+introduced in #86:
+
+- **CLI flag**: `--transport {api,cli,auto}` on all six LLM-mediated
+  commands (`grade`, `extract`, `propose-eval`, `suggest`,
+  `triggers`, `compare --blind`). Validated by the shared
+  `_transport_choice` argparse type helper in
+  `src/clauditor/cli/__init__.py`.
+- **Env var**: `CLAUDITOR_TRANSPORT={api,cli,auto}`. Whitespace-only
+  values are normalized to `None` (treated as unset) so an accidental
+  `export CLAUDITOR_TRANSPORT=" "` does not override everything.
+- **Spec field**: `EvalSpec.transport` — per-skill preference set by the
+  skill author in `eval.json`. Validated at load time (must be one of
+  `"api"`, `"cli"`, `"auto"`).
+- **Default**: `"auto"` — prefers CLI when `shutil.which("claude")` is
+  non-None, falls back to SDK otherwise.
+
+Resolution lives in `src/clauditor/cli/__init__.py::_resolve_grader_transport`.
+Unlike the runner-config knobs above (resolved inside `SkillSpec.run`),
+transport resolution for grader calls is centralized at the CLI layer
+because the LLM grader calls are not routed through `SkillSpec.run` —
+they are direct `await call_anthropic(...)` invocations from the six
+grader orchestrators. The centralized helper keeps whitespace
+normalization and env stripping consistent across all six commands.
+
+`EvalSpec.transport` and `EvalSpec.skill_runner_transport` are both
+spec-field knobs: the former controls Anthropic grader calls; the latter
+controls the `claude` CLI subprocess used to *run* the skill. They share
+the same `{api,cli,auto}` vocabulary but thread to different seams.
+
+Traces to DEC-003, DEC-008, DEC-012, DEC-017 of
+`plans/super/86-claude-cli-transport.md`.
+
 ## When this rule applies
 
 Any future runner-adjacent knob that an operator may want to

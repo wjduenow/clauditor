@@ -71,6 +71,19 @@ Loaders: `src/clauditor/audit.py::_check_schema_version` and its call sites
 in `_records_from_assertions`, `_records_from_extraction`,
 `_records_from_grading`.
 
+### Schema version bumps for #86 (`transport_source` field)
+
+#86 added `transport_source` to `GradingReport` and `ExtractionReport` to
+record which Anthropic backend (`"api"` or `"cli"`) handled each grader call.
+Rather than creating a new sidecar format, the existing `grading.json` and
+`extraction.json` sidecars were bumped to `schema_version: 2`. The audit
+loader (`_check_schema_version`) was updated to accept `{1, 2}` and defaults
+`transport_source` to `"api"` when reading v1 sidecars so pre-#86 history
+stays readable without reprocessing.
+
+`assertions.json` sidecars were NOT bumped — L1 assertions make no Anthropic
+call and have no transport to record.
+
 ## When this rule applies
 
 Any new persisted JSON file whose shape may evolve. Internal-only debug

@@ -126,6 +126,32 @@ hand the resulting `text_blocks[0]` to a pure parser/builder. See
 anchor) for how the pure layer that surrounds this seam is
 structured.
 
+### Multi-transport routing (CLI + SDK, #86)
+
+`call_anthropic` accepts a `transport: str = "auto"` keyword argument
+(DEC-003 of `plans/super/86-claude-cli-transport.md`). The centralized
+seam owns transport selection; every future caller inherits both the
+SDK and CLI backends for free.
+
+- **`"api"`** — HTTP SDK path via `AsyncAnthropic()`. Default before #86.
+- **`"cli"`** — subprocess path via `_invoke_claude_cli` (reuses the same
+  `InvokeResult` projection that `SkillRunner` uses).
+- **`"auto"`** — prefers CLI when `shutil.which("claude")` is non-None;
+  falls back to SDK otherwise. Emits a one-time stderr announcement on
+  first auto→CLI resolution per process so operators are not surprised.
+
+Transport resolution follows a four-layer precedence (see
+`.claude/rules/spec-cli-precedence.md`): CLI flag > `CLAUDITOR_TRANSPORT`
+env var > `EvalSpec.transport` > default `"auto"`. The shared helper
+`clauditor.cli._resolve_grader_transport(args, eval_spec)` centralizes
+the precedence logic for all six LLM-mediated CLI commands so whitespace
+normalization and env stripping are applied uniformly.
+
+`AnthropicResult.source` (`"api"` or `"cli"`) records which backend
+handled each call. `BlindReport.transport_source` propagates this through
+blind-compare; when the two parallel calls disagree (unlikely in practice),
+the report stamps `"mixed"` (DEC-018).
+
 ## When this rule applies
 
 Any new clauditor feature that needs to call Anthropic — a new

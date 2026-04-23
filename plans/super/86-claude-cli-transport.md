@@ -7,8 +7,10 @@
 - **Phase:** `devolved`
 - **Predecessor PR (Option A, shipped):** https://github.com/wjduenow/clauditor/pull/87 (merged into `dev`)
 - **Predecessor plan:** `plans/super/83-subscription-auth-gap.md`
-- **Sessions:** 1
+- **Sessions:** 2
 - **Last session:** 2026-04-22
+- **Total decisions:** 21 (DEC-001 through DEC-021)
+- **PR URL:** (pending push)
 
 ---
 
