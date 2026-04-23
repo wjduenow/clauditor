@@ -34,7 +34,7 @@ def built_wheel(tmp_path_factory) -> Path:
             f"uv build failed (rc={result.returncode}):\n"
             f"stdout={result.stdout}\nstderr={result.stderr}"
         )
-    wheels = list(out_dir.glob("clauditor-*.whl"))
+    wheels = list(out_dir.glob("clauditor_eval-*.whl"))
     if not wheels:
         pytest.fail(f"uv build succeeded but no wheel produced in {out_dir}")
     return wheels[0]
