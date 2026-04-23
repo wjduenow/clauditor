@@ -22,7 +22,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``suggest`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int
+    from clauditor.cli import _positive_int, _transport_choice
 
     p_suggest = subparsers.add_parser(
         "suggest",
@@ -62,6 +62,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--verbose",
         action="store_true",
         help="Log extra bundle/token details to stderr",
+    )
+    p_suggest.add_argument(
+        "--transport",
+        type=_transport_choice,
+        default=None,
+        choices=("api", "cli", "auto"),
+        help=(
+            "Override the Anthropic call transport: 'api' (HTTP SDK), "
+            "'cli' (subprocess via claude binary), or 'auto' (prefer "
+            "CLI when available). Four-layer precedence: this flag > "
+            "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
+            "'auto'."
+        ),
     )
 
 

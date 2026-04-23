@@ -109,6 +109,23 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Project directory (default: cwd)",
     )
+    # Shared argparse type helpers live in the package __init__; import
+    # lazily to avoid a circular import at module load time.
+    from clauditor.cli import _transport_choice
+
+    p.add_argument(
+        "--transport",
+        type=_transport_choice,
+        default=None,
+        choices=("api", "cli", "auto"),
+        help=(
+            "Override the Anthropic call transport: 'api' (HTTP SDK), "
+            "'cli' (subprocess via claude binary), or 'auto' (prefer "
+            "CLI when available). Four-layer precedence: this flag > "
+            "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
+            "'auto'."
+        ),
+    )
 
 
 def cmd_propose_eval(args: argparse.Namespace) -> int:

@@ -40,6 +40,21 @@ def _positive_int(value: str) -> int:
     return ivalue
 
 
+def _transport_choice(value: str) -> str:
+    """argparse type: accept one of ``"api"``, ``"cli"``, ``"auto"``.
+
+    DEC-012 of ``plans/super/86-claude-cli-transport.md``. Shared
+    across the six LLM-mediated commands (``grade``, ``extract``,
+    ``propose-eval``, ``suggest``, ``triggers``, ``compare``) so
+    help text + error messages stay consistent.
+    """
+    if value not in ("api", "cli", "auto"):
+        raise argparse.ArgumentTypeError(
+            f"must be one of 'api', 'cli', 'auto', got {value!r}"
+        )
+    return value
+
+
 def _append_validate_history(
     skill_name: str,
     *,

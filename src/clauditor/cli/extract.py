@@ -13,6 +13,10 @@ from clauditor._anthropic import AnthropicAuthMissingError, check_anthropic_auth
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``extract`` subparser."""
+    # Shared argparse type helpers live in the package __init__; import
+    # lazily to avoid a circular import at module load time.
+    from clauditor.cli import _transport_choice
+
     p_extract = subparsers.add_parser(
         "extract", help="Layer 2: LLM schema extraction"
     )
@@ -35,6 +39,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--verbose",
         action="store_true",
         help="Print raw Haiku JSON under failing assertions when available",
+    )
+    p_extract.add_argument(
+        "--transport",
+        type=_transport_choice,
+        default=None,
+        choices=("api", "cli", "auto"),
+        help=(
+            "Override the Anthropic call transport: 'api' (HTTP SDK), "
+            "'cli' (subprocess via claude binary), or 'auto' (prefer "
+            "CLI when available). Four-layer precedence: this flag > "
+            "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
+            "'auto'."
+        ),
     )
 
 

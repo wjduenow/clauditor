@@ -20,7 +20,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``compare`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int
+    from clauditor.cli import _positive_int, _transport_choice
 
     p_compare = subparsers.add_parser(
         "compare",
@@ -76,6 +76,20 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "Run a blind A/B LLM judge over two .txt outputs "
             "(requires --spec). Prints a preference verdict."
+        ),
+    )
+    p_compare.add_argument(
+        "--transport",
+        type=_transport_choice,
+        default=None,
+        choices=("api", "cli", "auto"),
+        help=(
+            "Override the Anthropic call transport: 'api' (HTTP SDK), "
+            "'cli' (subprocess via claude binary), or 'auto' (prefer "
+            "CLI when available). Only used with --blind; ignored for "
+            "plain assertion diffs. Four-layer precedence: this flag > "
+            "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
+            "'auto'."
         ),
     )
 
