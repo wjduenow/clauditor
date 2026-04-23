@@ -88,6 +88,54 @@ def _resolve_grader_transport(args: argparse.Namespace, eval_spec=None) -> str:
         raise SystemExit(2) from exc
 
 
+def should_strip_api_key_for_skill_subprocess(
+    args: argparse.Namespace,
+) -> bool:
+    """Return True iff operator-intent selected CLI grader transport.
+
+    Used by ``cmd_grade`` to decide whether ``--transport cli`` should
+    implicitly strip ``ANTHROPIC_API_KEY`` (and ``ANTHROPIC_AUTH_TOKEN``)
+    from the skill subprocess env, so a subscription-auth-end-to-end
+    run does not re-hit the 429 inside the skill subprocess.
+
+    Returns True when **either** operator-intent layer named CLI:
+
+    - ``args.transport == "cli"`` (explicit ``--transport cli`` flag), OR
+    - ``os.environ["CLAUDITOR_TRANSPORT"].strip() == "cli"`` (env var).
+
+    Returns False otherwise, including:
+
+    - ``args.transport`` is missing, ``None``, ``"api"``, or ``"auto"``.
+    - ``CLAUDITOR_TRANSPORT`` is unset, empty, whitespace-only, or any
+      value other than ``"cli"`` (after ``.strip()``).
+    - ``EvalSpec.transport == "cli"`` — **NOT** consulted here.
+      Author-intent does not know the operator's env and must not
+      trigger the strip (DEC-002 of
+      ``plans/super/95-subscription-auth-flag.md``).
+    - ``--transport auto`` resolving to CLI at runtime — this helper
+      does NOT resolve auto (DEC-002). Stripping keys on any machine
+      with ``claude`` on PATH would surprise users who maintain an
+      API key for production purposes.
+
+    Pure function — reads ``os.environ`` only; no stderr, no side
+    effects. Matches ``.claude/rules/pure-compute-vs-io-split.md``.
+    Sibling to :func:`_resolve_grader_transport` so the transport
+    resolver stays purely about transport, and this helper owns the
+    coupling decision (DEC-006).
+
+    Whitespace normalization on the env var matches the discipline
+    used by :func:`_resolve_grader_transport` per
+    ``.claude/rules/spec-cli-precedence.md``.
+    """
+    import os
+
+    flag = getattr(args, "transport", None)
+    if flag == "cli":
+        return True
+    env = os.environ.get("CLAUDITOR_TRANSPORT", "")
+    return env.strip() == "cli"
+
+
 def _append_validate_history(
     skill_name: str,
     *,
