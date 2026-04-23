@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from importlib.resources import as_file, files
 from pathlib import Path
@@ -94,6 +95,48 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             ("claude-cli", "fail", "`claude` not found on PATH")
         )
 
+    # DEC-021 of plans/super/86-claude-cli-transport.md: two presence
+    # checks, no probe. ``info`` status (not ``fail``) when a transport
+    # is unavailable — having only one of the two is a valid config,
+    # not an error. No ``claude -p --help`` probe: stale-auth scenarios
+    # (exactly what doctor is meant to diagnose) can make a probe hang
+    # or fail unpredictably, producing worse UX than "binary present,
+    # auth state unknown".
+    api_key_value = os.environ.get("ANTHROPIC_API_KEY")
+    api_key_available = (
+        api_key_value is not None and api_key_value.strip() != ""
+    )
+    if api_key_available:
+        checks.append(
+            ("api-key-available", "ok", "ANTHROPIC_API_KEY is set")
+        )
+    else:
+        checks.append(
+            (
+                "api-key-available",
+                "info",
+                "ANTHROPIC_API_KEY not set (CLI transport still usable)",
+            )
+        )
+
+    cli_transport_available = claude_path is not None
+    if cli_transport_available:
+        checks.append(
+            (
+                "claude-transport-available",
+                "ok",
+                f"`claude` on PATH at {claude_path}",
+            )
+        )
+    else:
+        checks.append(
+            (
+                "claude-transport-available",
+                "info",
+                "`claude` not on PATH (API transport still usable)",
+            )
+        )
+
     try:
         # Version-agnostic lookup: `entry_points(group=...)` is 3.10+, but
         # `doctor` must keep working even when the Python-version check
@@ -166,5 +209,40 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     for name, status, detail in checks:
         tag = f"[{status}]"
         print(f"{tag:<7} {name:<{width}}  {detail}")
+
+    # DEC-021: summary line — the effective default transport under a
+    # "no CLI flag, no spec field" invocation. Honors the
+    # ``CLAUDITOR_TRANSPORT`` env layer because that is the only
+    # remaining non-default input an operator might have set; the CLI
+    # flag and spec field are intentionally excluded because they are
+    # per-command, not environmental. A final ``"auto"`` is resolved
+    # via ``claude`` binary presence per DEC-001 subscription-first.
+    # Reports ``"none"`` when the chosen transport's prerequisite is
+    # missing (``"api"`` without a key, or ``"cli"`` without the
+    # binary on PATH).
+    from clauditor._anthropic import resolve_transport
+
+    env_transport = os.environ.get("CLAUDITOR_TRANSPORT")
+    if env_transport is not None and env_transport.strip() == "":
+        env_transport = None
+    try:
+        resolved = resolve_transport(None, env_transport, None)
+    except ValueError:
+        # Invalid ``CLAUDITOR_TRANSPORT`` value; the resolution would
+        # raise at any real call site. Report ``"none"`` here so the
+        # summary is always printable.
+        resolved = "auto"
+        effective = "none"
+    else:
+        if resolved == "auto":
+            resolved = "cli" if cli_transport_available else "api"
+        if resolved == "cli":
+            effective = "cli" if cli_transport_available else "none"
+        elif resolved == "api":
+            effective = "api" if api_key_available else "none"
+        else:  # pragma: no cover - defensive
+            effective = "none"
+
+    print(f"Effective default transport: {effective}")
 
     return 0
