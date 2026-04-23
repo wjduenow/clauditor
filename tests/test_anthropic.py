@@ -33,6 +33,7 @@ from clauditor._anthropic import (
     _extract_result,
     call_anthropic,
     check_anthropic_auth,
+    resolve_transport,
 )
 
 
@@ -1388,3 +1389,75 @@ class TestStderrAnnouncement:
             "clauditor: using Claude CLI transport"
             not in captured.err
         )
+
+
+class TestResolveTransport:
+    """DEC-012 / DEC-017 of #86: four-layer precedence resolution.
+
+    Pure helper: CLI override > env override > spec value > default
+    ``"auto"``. Invalid values at any layer raise ``ValueError`` with
+    a message that names the layer so the CLI can route to exit 2.
+    """
+
+    def test_cli_wins_over_env(self) -> None:
+        """CLI override beats env var, regardless of env content."""
+        assert resolve_transport("api", "cli", "auto") == "api"
+
+    def test_env_wins_over_spec(self) -> None:
+        """Env var beats spec field when CLI override is None."""
+        assert resolve_transport(None, "cli", "auto") == "cli"
+
+    def test_spec_wins_over_default(self) -> None:
+        """Spec field beats default when CLI + env are both None."""
+        assert resolve_transport(None, None, "cli") == "cli"
+
+    def test_all_none_returns_default_auto(self) -> None:
+        """All three ``None`` → default ``"auto"``."""
+        assert resolve_transport(None, None, None) == "auto"
+
+    def test_cli_wins_over_all_layers(self) -> None:
+        """CLI is the supreme winner, even when env AND spec are set."""
+        assert resolve_transport("api", "cli", "cli") == "api"
+
+    def test_cli_auto_does_not_short_circuit_to_env(self) -> None:
+        """A CLI override of ``"auto"`` is still a set value — env and
+        spec layers must not override it."""
+        assert resolve_transport("auto", "cli", "api") == "auto"
+
+    def test_invalid_cli_raises(self) -> None:
+        """Invalid CLI value raises with the layer name in the message."""
+        with pytest.raises(
+            ValueError,
+            match=r"CLI --transport must be one of 'api', 'cli', 'auto', got 'sdk'",
+        ):
+            resolve_transport("sdk", None, None)
+
+    def test_invalid_env_raises(self) -> None:
+        """Invalid env var value raises with the layer name in the message."""
+        with pytest.raises(
+            ValueError,
+            match=r"CLAUDITOR_TRANSPORT must be one of 'api', 'cli', 'auto', got 'sdk'",
+        ):
+            resolve_transport(None, "sdk", None)
+
+    def test_invalid_spec_raises(self) -> None:
+        """Invalid spec value raises with the layer name in the message.
+
+        Normally :meth:`EvalSpec.from_dict` rejects these at load time,
+        but the helper is defensive — a caller that builds an
+        ``EvalSpec`` via the direct constructor without validation
+        could still reach this branch.
+        """
+        with pytest.raises(
+            ValueError,
+            match=r"EvalSpec.transport must be one of 'api', 'cli', 'auto', got 'sdk'",
+        ):
+            resolve_transport(None, None, "sdk")
+
+    def test_all_api_returns_api(self) -> None:
+        """Every layer set to ``"api"`` → returns ``"api"``."""
+        assert resolve_transport("api", "api", "api") == "api"
+
+    def test_env_auto_overrides_spec_cli(self) -> None:
+        """Env override of ``"auto"`` wins over spec even though spec is set."""
+        assert resolve_transport(None, "auto", "cli") == "auto"

@@ -274,6 +274,16 @@ class EvalSpec:
     # explicitly rejected at load time per
     # ``.claude/rules/constant-with-type-info.md``.
     timeout: int | None = None
+    # DEC-012 / DEC-017 of #86: per-spec transport selector for the
+    # Anthropic call. One of ``"api"``, ``"cli"``, ``"auto"``. The
+    # default ``"auto"`` preserves DEC-001's subscription-first
+    # behavior (picks CLI when the ``claude`` binary is on PATH).
+    # Four-layer precedence per ``.claude/rules/spec-cli-precedence.md``:
+    # CLI ``--transport`` > ``CLAUDITOR_TRANSPORT`` env > this field >
+    # default. Validated at load time against the literal set; non-
+    # string / bool values rejected per
+    # ``.claude/rules/constant-with-type-info.md``.
+    transport: str = "auto"
 
     @classmethod
     def from_file(cls, path: str | Path) -> EvalSpec:
@@ -635,6 +645,37 @@ class EvalSpec:
                 )
             timeout = raw_timeout
 
+        # DEC-012 of #86: optional per-spec transport selector.
+        # Missing → default ``"auto"`` (back-compat). Must be a
+        # non-bool string in the literal set ``{"api", "cli", "auto"}``.
+        # Explicit ``null`` is rejected (use omission for default).
+        # Bool guard first per ``.claude/rules/constant-with-type-info.md``.
+        transport: str = "auto"
+        if "transport" in data:
+            raw_transport = data["transport"]
+            if raw_transport is None:
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'transport' must be one of "
+                    "'api', 'cli', 'auto', got null "
+                    "(omit the key to use the default 'auto')"
+                )
+            if isinstance(raw_transport, bool) or not isinstance(
+                raw_transport, str
+            ):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"'transport' must be a string, got "
+                    f"{type(raw_transport).__name__} {raw_transport!r}"
+                )
+            if raw_transport not in ("api", "cli", "auto"):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"'transport' must be one of 'api', 'cli', 'auto', "
+                    f"got {raw_transport!r}"
+                )
+            transport = raw_transport
+
         trigger_tests = None
         if "trigger_tests" in data:
             tt = data["trigger_tests"]
@@ -676,6 +717,7 @@ class EvalSpec:
             grade_thresholds=grade_thresholds,
             allow_hang_heuristic=allow_hang_heuristic,
             timeout=timeout,
+            transport=transport,
         )
 
     def to_dict(self) -> dict:
@@ -734,6 +776,10 @@ class EvalSpec:
             # Emit only on non-default to keep diffs minimal; omission
             # at load time means "default True" per from_dict.
             result["allow_hang_heuristic"] = False
+        if self.transport != "auto":
+            # DEC-012 of #86: emit only on non-default. Omission at
+            # load time means default "auto" per from_dict.
+            result["transport"] = self.transport
         if self.output_file is not None:
             result["output_file"] = self.output_file
         if self.output_files:

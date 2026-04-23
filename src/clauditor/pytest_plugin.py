@@ -165,6 +165,7 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
                 run_dir: Path | None = None,
                 env_override: dict[str, str] | None = None,
                 timeout_override: int | None = None,
+                transport_override: str | None = None,
             ):
                 effective_run_dir = run_dir
                 if has_input_files and effective_run_dir is None:
@@ -181,12 +182,17 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
                     if env_override is not None
                     else fixture_env_override
                 )
-                if effective_env is not None or timeout_override is not None:
+                if (
+                    effective_env is not None
+                    or timeout_override is not None
+                    or transport_override is not None
+                ):
                     return original_run(
                         args,
                         run_dir=effective_run_dir,
                         env_override=effective_env,
                         timeout_override=timeout_override,
+                        transport_override=transport_override,
                     )
                 return original_run(args, run_dir=effective_run_dir)
 

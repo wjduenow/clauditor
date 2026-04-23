@@ -6,9 +6,11 @@ Combines the skill file, eval spec, and runner into a single interface.
 from __future__ import annotations
 
 import glob
+import os
 import sys
 from pathlib import Path
 
+from clauditor._anthropic import resolve_transport
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.conformance import check_conformance, format_issue_line
 from clauditor.paths import derive_project_dir, derive_skill_name
@@ -60,6 +62,13 @@ class SkillSpec:
         # 3-deep ascent, which landed inside `.claude/` for modern
         # skills. See DEC-003.
         self.runner = runner or SkillRunner(project_dir=derive_project_dir(skill_path))
+        # DEC-012 / DEC-017 of #86: last resolved transport from the
+        # most recent ``run()`` call. Populated by ``run()`` via
+        # :func:`clauditor._anthropic.resolve_transport` so downstream
+        # grader calls (``grade_quality``, ``extract_and_grade``, etc.)
+        # can pick up the four-layer precedence-resolved value.
+        # ``None`` until the first ``run()`` invocation.
+        self.resolved_transport: str | None = None
 
     @classmethod
     def from_file(
@@ -128,6 +137,7 @@ class SkillSpec:
         run_dir: Path | None = None,
         timeout_override: int | None = None,
         env_override: dict[str, str] | None = None,
+        transport_override: str | None = None,
     ) -> SkillResult:
         """Run the skill and return captured output.
 
@@ -136,7 +146,33 @@ class SkillSpec:
         If ``run_dir`` is provided and the eval spec declares non-empty
         ``input_files``, those files are staged into ``run_dir / "inputs"``
         and the subprocess runs with that directory as its CWD.
+
+        ``transport_override`` is resolved through
+        :func:`clauditor._anthropic.resolve_transport` at call time
+        (CLI > ``CLAUDITOR_TRANSPORT`` env > ``eval_spec.transport`` >
+        default ``"auto"`` per DEC-012 / DEC-017 of #86). The winning
+        value is stored on ``self.resolved_transport`` so grader
+        callers (``grade_quality``, ``extract_and_grade``, etc.) can
+        thread the same resolved transport to ``call_anthropic``
+        without re-running the precedence chain.
         """
+        # DEC-012 / DEC-017 of #86: resolve the four-layer transport
+        # precedence at every ``run()`` call. Stored on ``self`` so
+        # callers that need to thread the resolved value to
+        # ``call_anthropic`` (grade / extract / etc) can read it
+        # without re-running resolution. ``ValueError`` from the
+        # helper propagates out — the CLI catches it and routes to
+        # exit 2 per ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+        env_transport = os.environ.get("CLAUDITOR_TRANSPORT")
+        if env_transport is not None and env_transport.strip() == "":
+            env_transport = None
+        spec_transport = (
+            self.eval_spec.transport if self.eval_spec is not None else None
+        )
+        self.resolved_transport = resolve_transport(
+            transport_override, env_transport, spec_transport
+        )
+
         run_args = (
             args
             if args is not None

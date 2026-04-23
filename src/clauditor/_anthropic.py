@@ -389,6 +389,74 @@ def _extract_result(response: Any) -> AnthropicResult:
     )
 
 
+_VALID_TRANSPORT_VALUES: tuple[str, ...] = ("api", "cli", "auto")
+
+
+def resolve_transport(
+    cli_override: str | None,
+    env_override: str | None,
+    spec_value: str | None,
+) -> str:
+    """Pick the winning transport from the four-layer precedence.
+
+    DEC-012 / DEC-017 of ``plans/super/86-claude-cli-transport.md``.
+    Pure helper per ``.claude/rules/pure-compute-vs-io-split.md``:
+    reads no env / filesystem / SDK state — all three inputs are
+    passed in. The caller (``SkillSpec.run``) is responsible for
+    reading ``os.environ["CLAUDITOR_TRANSPORT"]`` and passing the
+    result as ``env_override``.
+
+    Precedence (highest → lowest): CLI override > env override >
+    spec value > default ``"auto"``. A layer is "set" when its
+    value is non-``None``; any set value short-circuits the chain
+    (the *first* non-``None`` wins). If all three are ``None``,
+    returns the default ``"auto"``.
+
+    Every non-``None`` input is validated against
+    ``{"api", "cli", "auto"}``; an invalid value raises
+    ``ValueError`` with a message that names the layer (``CLI
+    --transport``, ``CLAUDITOR_TRANSPORT``, or ``EvalSpec.transport``)
+    so the CLI can route the failure to exit 2 per
+    ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+
+    Args:
+        cli_override: Value from the ``--transport`` argparse flag;
+            ``None`` when the flag was not passed.
+        env_override: Value of ``os.environ["CLAUDITOR_TRANSPORT"]``
+            as a string (or ``None`` when unset / empty).
+        spec_value: Value of ``EvalSpec.transport`` (or ``None`` when
+            no eval spec is attached to the ``SkillSpec``).
+
+    Returns:
+        One of ``"api"``, ``"cli"``, ``"auto"``.
+
+    Raises:
+        ValueError: when a non-``None`` layer holds an invalid value.
+    """
+    if cli_override is not None:
+        if cli_override not in _VALID_TRANSPORT_VALUES:
+            raise ValueError(
+                f"CLI --transport must be one of "
+                f"'api', 'cli', 'auto', got {cli_override!r}"
+            )
+        return cli_override
+    if env_override is not None:
+        if env_override not in _VALID_TRANSPORT_VALUES:
+            raise ValueError(
+                f"CLAUDITOR_TRANSPORT must be one of "
+                f"'api', 'cli', 'auto', got {env_override!r}"
+            )
+        return env_override
+    if spec_value is not None:
+        if spec_value not in _VALID_TRANSPORT_VALUES:
+            raise ValueError(
+                f"EvalSpec.transport must be one of "
+                f"'api', 'cli', 'auto', got {spec_value!r}"
+            )
+        return spec_value
+    return "auto"
+
+
 def _resolve_transport(
     transport: Literal["api", "cli", "auto"],
 ) -> tuple[Literal["api", "cli"], bool]:

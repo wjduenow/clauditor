@@ -30,7 +30,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``grade`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int, _unit_float
+    from clauditor.cli import _positive_int, _transport_choice, _unit_float
 
     p_grade = subparsers.add_parser(
         "grade", help="Run Layer 3 quality grading against a skill's output"
@@ -144,6 +144,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "Override the runner timeout (seconds); must be > 0. "
             "Defaults to EvalSpec.timeout or 180s."
+        ),
+    )
+    p_grade.add_argument(
+        "--transport",
+        type=_transport_choice,
+        default=None,
+        choices=("api", "cli", "auto"),
+        help=(
+            "Override the Anthropic call transport: 'api' (HTTP SDK), "
+            "'cli' (subprocess via claude binary), or 'auto' (prefer "
+            "CLI when available). Four-layer precedence: this flag > "
+            "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
+            "'auto'."
         ),
     )
 
