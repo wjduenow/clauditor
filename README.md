@@ -1,7 +1,7 @@
 # clauditor
 
 <p align="center">
-  <img src="docs/assets/clauditor-social-preview.png" alt="clauditor" width="600">
+  <img src="https://raw.githubusercontent.com/wjduenow/clauditor/dev/docs/assets/clauditor-social-preview.png" alt="clauditor" width="600">
 </p>
 
 [![CI](https://github.com/wjduenow/clauditor/actions/workflows/ci.yml/badge.svg)](https://github.com/wjduenow/clauditor/actions/workflows/ci.yml)
@@ -22,9 +22,10 @@ Auditor for AgentSkills.io skills and Claude Integrations. Catches when your ski
 ## Install
 
 ```bash
-pip install clauditor           # CLI only (Layer 1)
-pip install clauditor[grader]   # + LLM grading (Layers 2 & 3) and `propose-eval`
+pip install clauditor-eval
 ```
+
+Layer 1 (deterministic assertions) works without an `ANTHROPIC_API_KEY`. Layers 2 & 3 and `propose-eval` require one.
 
 Source install: `git clone https://github.com/wjduenow/clauditor.git && cd clauditor && uv sync --dev`.
 
@@ -75,7 +76,7 @@ Invoke the slash command with a skill path — Claude locates the eval spec, run
 /clauditor .claude/commands/my-skill.md
 ```
 
-Full reference: [docs/skill-usage.md](docs/skill-usage.md).
+Full reference: [docs/skill-usage.md](https://github.com/wjduenow/clauditor/blob/dev/docs/skill-usage.md).
 
 ## Quick Start
 
@@ -87,7 +88,7 @@ clauditor validate .claude/commands/my-skill.md
 clauditor validate .claude/commands/my-skill.md --json  # CI mode
 ```
 
-**Covered in the full reference:** authoring `.eval.json`, captured-output mode (`--output captured.txt`), pytest fixtures (`clauditor_runner`, `clauditor_asserter`, `clauditor_spec`). Full reference: [docs/quick-start.md](docs/quick-start.md).
+**Covered in the full reference:** authoring `.eval.json`, captured-output mode (`--output captured.txt`), pytest fixtures (`clauditor_runner`, `clauditor_asserter`, `clauditor_spec`). Full reference: [docs/quick-start.md](https://github.com/wjduenow/clauditor/blob/dev/docs/quick-start.md).
 
 ## Three Layers of Validation
 
@@ -97,7 +98,7 @@ L1 catches shape regressions for free, L2 uses Haiku to validate structured fiel
 {"assertions": [...], "sections": [...], "grading_criteria": [...]}
 ```
 
-Full reference: [docs/layers.md](docs/layers.md).
+Full reference: [docs/layers.md](https://github.com/wjduenow/clauditor/blob/dev/docs/layers.md).
 
 ## CLI Reference
 
@@ -114,7 +115,7 @@ clauditor trend <skill> --metric total.total   # History + sparkline
 clauditor badge <skill.md>            # Shields.io endpoint JSON for README embed
 ```
 
-**Covered in the full reference:** every subcommand flag (`--variance`, `--iteration`, `--diff`, …), exit codes, `history.jsonl` shape, `clauditor trend` metric paths. Full reference: [docs/cli-reference.md](docs/cli-reference.md).
+**Covered in the full reference:** every subcommand flag (`--variance`, `--iteration`, `--diff`, …), exit codes, `history.jsonl` shape, `clauditor trend` metric paths. Full reference: [docs/cli-reference.md](https://github.com/wjduenow/clauditor/blob/dev/docs/cli-reference.md).
 
 ## Pytest Integration
 
@@ -124,7 +125,7 @@ def test_my_skill(clauditor_runner, clauditor_asserter):
     clauditor_asserter(result).assert_contains("Results")
 ```
 
-Full reference: [docs/pytest-plugin.md](docs/pytest-plugin.md).
+Full reference: [docs/pytest-plugin.md](https://github.com/wjduenow/clauditor/blob/dev/docs/pytest-plugin.md).
 
 ## Eval Spec Format
 
@@ -140,7 +141,7 @@ An `<skill-name>.eval.json` lives next to the skill's `.md` file and drives all 
 }
 ```
 
-**Covered in the full reference:** the full eval-spec JSON shape, `input_files` staging rules, `output_file` / `output_files` capture, and the `format` validation DSL (`phone_us`, `url`, `domain`, … or inline regex). Full reference: [docs/eval-spec-reference.md](docs/eval-spec-reference.md).
+**Covered in the full reference:** the full eval-spec JSON shape, `input_files` staging rules, `output_file` / `output_files` capture, and the `format` validation DSL (`phone_us`, `url`, `domain`, … or inline regex). Full reference: [docs/eval-spec-reference.md](https://github.com/wjduenow/clauditor/blob/dev/docs/eval-spec-reference.md).
 
 <details><summary>Alignment with agentskills.io</summary>
 

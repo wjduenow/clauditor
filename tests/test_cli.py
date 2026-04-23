@@ -4078,7 +4078,7 @@ class TestCmdDoctor:
         assert rc == 0
         out = capsys.readouterr().out
         assert "claude-cli" in out
-        # Expect info marker for missing claude CLI (not fail — absence is a valid config)
+        # Expect info marker for missing claude CLI (not fail — absence is valid)
         lines = [line for line in out.splitlines() if "claude-cli" in line]
         assert any("[info]" in line for line in lines)
 
