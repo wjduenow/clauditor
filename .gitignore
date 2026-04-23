@@ -16,8 +16,10 @@ coverage.xml
 .mypy_cache/
 *.so
 
-# Local-only symlinked skills and agents (not part of this repo)
-.claude/skills/
+# Local-only symlinked skills — ignore all except maintainer-owned skills
+.claude/skills/*
+!.claude/skills/release-manager
+!.claude/skills/review-agentskills-spec
 .claude/commands/super-plan.md
 .claude/commands/super-plan-team.md
 .claude/commands/chunk.md
