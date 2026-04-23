@@ -15,8 +15,11 @@ YELLOW=$'\033[33m'
 GRAY=$'\033[90m'
 RESET=$'\033[0m'
 
-# Logo
+# Logo. Leading newline so chafa's first row starts at column 0 — without
+# it, chafa emits on the same line where the cursor already sits (after
+# Claude Code's prompt marker), indenting only the first row of the image.
 if command -v chafa &>/dev/null && [[ -f "$LOGO" ]]; then
+    echo ""
     chafa --size 60x30 "$LOGO"
 fi
 
