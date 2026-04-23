@@ -17,6 +17,10 @@
           {
             "command": "bd prime",
             "type": "command"
+          },
+          {
+            "command": "echo '\\n## Maintainer skills\\n' && for f in .claude/skills/*/SKILL.md; do name=$(grep -m1 '^name:' \"$f\" | sed 's/^name: *//'); desc=$(grep -m1 '^description:' \"$f\" | sed 's/^description: *//' | awk '{if(length>90){s=substr($0,1,90); sub(/ [^ ]*$/,\"\",s); print s\"…\"}else print}'); echo \"  /$name  —  $desc\"; done && echo ''",
+            "type": "command"
           }
         ],
         "matcher": ""
