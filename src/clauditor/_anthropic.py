@@ -55,7 +55,7 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 # Module-level alias per .claude/rules/monotonic-time-indirection.md.
 # ``_sleep`` is patched in retry-branch tests to avoid real wallclock.
@@ -69,6 +69,14 @@ _monotonic = time.monotonic
 # resolves to CLI. Flipped to ``True`` after the first emission per
 # Python process; explicit ``transport="cli"`` never flips it.
 _announced_cli_transport = False
+
+# DEC-003 / DEC-009 / DEC-011 (#95 US-002): one-shot stderr announcement
+# when ``--transport cli`` implicitly strips ``ANTHROPIC_API_KEY`` /
+# ``ANTHROPIC_AUTH_TOKEN`` from the skill subprocess env. Flipped to
+# ``True`` after the first emission per Python process. Co-located with
+# ``_announced_cli_transport`` because the announcement flags form an
+# emerging family (DEC-009).
+_announced_implicit_no_api_key: bool = False
 
 
 def _rand_uniform(lo: float, hi: float) -> float:
@@ -185,6 +193,42 @@ _CLI_AUTO_ANNOUNCEMENT = (
     "clauditor: using Claude CLI transport (subscription auth); "
     "pass --transport api to opt out"
 )
+
+
+# DEC-011 (#95 US-002): one-shot stderr line emitted when
+# ``--transport cli`` implicitly strips ``ANTHROPIC_API_KEY`` /
+# ``ANTHROPIC_AUTH_TOKEN`` from the skill subprocess env so the
+# subscription-auth guarantee extends end-to-end (SDK grader call AND
+# skill subprocess). Committed verbatim; tests assert substring presence
+# for ``ANTHROPIC_API_KEY``, ``ANTHROPIC_AUTH_TOKEN``, and
+# ``--transport api`` (the escape hatch).
+_IMPLICIT_NO_API_KEY_ANNOUNCEMENT: Final[str] = (
+    "clauditor: --transport cli stripped ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN "
+    "from the skill subprocess env (subscription auth end-to-end); "
+    "pass --transport api to keep the keys."
+)
+
+
+def announce_implicit_no_api_key() -> None:
+    """Emit the implicit-no-api-key notice to stderr once per process.
+
+    DEC-003 / DEC-009 / DEC-011 (#95 US-002). Called by CLI commands
+    (wired in US-003) when ``--transport cli`` resolves and the skill
+    subprocess env has ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_AUTH_TOKEN``
+    stripped. The one-shot module flag :data:`_announced_implicit_no_api_key`
+    ensures a single announcement per Python process regardless of how
+    many subsequent CLI commands resolve under the same conditions.
+
+    Parallel to the ``auto → CLI`` announcement gating inside
+    :func:`call_anthropic` — kept as a standalone helper (not inlined)
+    so non-SDK call sites (``cli/grade.py`` etc.) can invoke it
+    directly without routing through :func:`call_anthropic`.
+    """
+    global _announced_implicit_no_api_key
+    if _announced_implicit_no_api_key:
+        return
+    print(_IMPLICIT_NO_API_KEY_ANNOUNCEMENT, file=sys.stderr)
+    _announced_implicit_no_api_key = True
 
 
 # DEC-015 / #86 US-005: message template for :func:`check_any_auth_available`
