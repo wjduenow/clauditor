@@ -349,7 +349,9 @@ class TestAuthGuardDryRunExempt:
 
         assert rc == 0
         err = capsys.readouterr().err
-        assert "ANTHROPIC_API_KEY is not set" not in err
+        # Post-#86 DEC-015: guard headline is "No usable authentication
+        # found"; --dry-run must not trip the guard.
+        assert "No usable authentication found" not in err
 
     def test_propose_eval_dry_run_no_key_exits_0(
         self, tmp_path, monkeypatch, capsys
@@ -374,7 +376,9 @@ class TestAuthGuardDryRunExempt:
 
         assert rc == 0
         err = capsys.readouterr().err
-        assert "ANTHROPIC_API_KEY is not set" not in err
+        # Post-#86 DEC-015: guard headline is "No usable authentication
+        # found"; --dry-run must not trip the guard.
+        assert "No usable authentication found" not in err
         assert fail_mock.await_count == 0
 
     def test_triggers_dry_run_no_key_exits_0(
@@ -389,7 +393,9 @@ class TestAuthGuardDryRunExempt:
 
         assert rc == 0
         err = capsys.readouterr().err
-        assert "ANTHROPIC_API_KEY is not set" not in err
+        # Post-#86 DEC-015: guard headline is "No usable authentication
+        # found"; --dry-run must not trip the guard.
+        assert "No usable authentication found" not in err
 
     def test_extract_dry_run_no_key_exits_0(
         self, tmp_path, monkeypatch, capsys
@@ -403,7 +409,9 @@ class TestAuthGuardDryRunExempt:
 
         assert rc == 0
         err = capsys.readouterr().err
-        assert "ANTHROPIC_API_KEY is not set" not in err
+        # Post-#86 DEC-015: guard headline is "No usable authentication
+        # found"; --dry-run must not trip the guard.
+        assert "No usable authentication found" not in err
 
 
 # ---------------------------------------------------------------------------
@@ -415,15 +423,21 @@ class TestAuthGuardDryRunExempt:
 # Per AC#3 of the ticket body — each command may exit non-zero for
 # unrelated input reasons (missing fixture, invalid input, unknown
 # subcommand); the only invariant this class asserts is that the
-# US-001 headline substring ``"ANTHROPIC_API_KEY is not set"`` is
-# NEVER present in stderr. A false positive here means US-003 wired
-# the guard into a command that should not need a key.
+# guard headline substring ``"No usable authentication found"`` is
+# NEVER present in stderr (post-#86 DEC-015; was
+# ``"ANTHROPIC_API_KEY is not set"`` pre-#86). A false positive here
+# means US-003 wired the guard into a command that should not need
+# auth.
 # ---------------------------------------------------------------------------
 
 
-# Headline anchor from the US-001 error template — the single
-# substring the regression guard must confirm is absent.
-_AUTH_GUARD_HEADLINE = "ANTHROPIC_API_KEY is not set"
+# Headline anchor from the error template — the single substring the
+# regression guard must confirm is absent. Post-#86 US-005 the guard
+# headline is "No usable authentication found" (DEC-015); pre-#86 it
+# was "ANTHROPIC_API_KEY is not set". The regression invariant is
+# "non-LLM commands must not fire this message"; any future template
+# change should update this constant to match the new headline.
+_AUTH_GUARD_HEADLINE = "No usable authentication found"
 
 
 class TestRegressionNoApiKey:
@@ -443,7 +457,8 @@ class TestRegressionNoApiKey:
         We pass a non-existent path so the command errors out early on
         input validation — well before any Anthropic-SDK code path. The
         assertion is narrow: whatever error surfaces, it must not
-        contain the US-001 headline ``"ANTHROPIC_API_KEY is not set"``.
+        contain the guard headline ``"No usable authentication found"``
+        (post-#86 DEC-015).
         """
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)

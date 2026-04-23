@@ -29,7 +29,10 @@ import json
 import sys
 from pathlib import Path
 
-from clauditor._anthropic import AnthropicAuthMissingError, check_anthropic_auth
+from clauditor._anthropic import (
+    AnthropicAuthMissingError,
+    check_any_auth_available,
+)
 from clauditor.propose_eval import (
     DEFAULT_PROPOSE_EVAL_MODEL,
     build_propose_eval_prompt,
@@ -315,11 +318,12 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
         print(prompt, end="" if prompt.endswith("\n") else "\n")
         return 0
 
-    # #83 DEC-002/DEC-011: fail fast if ANTHROPIC_API_KEY is missing.
-    # Guard lands AFTER --dry-run (dry-run is a cost-free preview — no
-    # API call, no key needed) and BEFORE the propose_eval orchestrator.
+    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
+    # ANTHROPIC_API_KEY nor the claude CLI binary is available. Guard
+    # lands AFTER --dry-run (dry-run is a cost-free preview — no API
+    # call, no key needed) and BEFORE the propose_eval orchestrator.
     try:
-        check_anthropic_auth("propose-eval")
+        check_any_auth_available("propose-eval")
     except AnthropicAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2

@@ -981,3 +981,208 @@ class TestClauditorFixturesAuthGuard:
         assert "Claude Pro" in msg
         assert "console.anthropic.com" in msg
         assert "clauditor blind_compare" in msg
+
+
+class TestPytestFixturesStrictMode:
+    """US-005 / DEC-009 (#86): fixtures stay strict unless opt-in env set.
+
+    The three grading fixtures default to :func:`check_api_key_only`
+    (strict: only ``ANTHROPIC_API_KEY`` passes). Users who deliberately
+    want the CLI transport to participate in fixture tests set
+    ``CLAUDITOR_FIXTURE_ALLOW_CLI=1``, which routes the guard through
+    :func:`check_any_auth_available` (relaxed: CLI-on-PATH also passes).
+
+    Each fixture is verified across three auth scenarios:
+
+    - **Default strict mode, CLI on PATH, no key**: raises — CLI
+      availability does NOT rescue a missing key without the opt-in.
+    - **Opt-in mode, CLI on PATH, no key**: passes the guard — the
+      relaxed check treats CLI presence as sufficient.
+    - **Opt-in mode, no key, no CLI**: still raises — both paths absent.
+    """
+
+    def _request(self, model: str = "claude-sonnet-4-6"):
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {"--clauditor-model": model}.get(opt)
+        )
+        return request
+
+    def _blind_compare_request(self):
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": 180,
+                "--clauditor-claude-bin": "claude",
+                "--clauditor-model": None,
+                "--clauditor-no-api-key": False,
+            }.get(opt)
+        )
+        return request
+
+    def _patch_which(self, monkeypatch, path):
+        import clauditor._anthropic as _anthropic
+
+        monkeypatch.setattr(
+            _anthropic.shutil, "which", lambda name: path
+        )
+
+    def test_grader_strict_default_cli_on_path_still_raises(
+        self, tmp_path, monkeypatch
+    ):
+        """DEC-009: strict-by-default — CLI presence alone does NOT pass."""
+        from clauditor._anthropic import AnthropicAuthMissingError
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        # CLAUDITOR_FIXTURE_ALLOW_CLI auto-cleared by conftest.
+        self._patch_which(monkeypatch, "/usr/local/bin/claude")
+        request = self._request()
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            raise AssertionError("spec factory called before auth guard")
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(AnthropicAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md")
+        assert "ANTHROPIC_API_KEY" in str(excinfo.value)
+
+    def test_triggers_strict_default_cli_on_path_still_raises(
+        self, tmp_path, monkeypatch
+    ):
+        from clauditor._anthropic import AnthropicAuthMissingError
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        self._patch_which(monkeypatch, "/usr/local/bin/claude")
+        request = self._request()
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            raise AssertionError("spec factory called before auth guard")
+
+        factory = clauditor_triggers.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(AnthropicAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md")
+        assert "ANTHROPIC_API_KEY" in str(excinfo.value)
+
+    def test_blind_compare_strict_default_cli_on_path_still_raises(
+        self, tmp_path, monkeypatch
+    ):
+        from clauditor._anthropic import AnthropicAuthMissingError
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        self._patch_which(monkeypatch, "/usr/local/bin/claude")
+        request = self._blind_compare_request()
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            raise AssertionError("spec factory called before auth guard")
+
+        factory = clauditor_blind_compare.__wrapped__(
+            request, fake_clauditor_spec
+        )
+        with pytest.raises(AnthropicAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md", "a", "b")
+        assert "ANTHROPIC_API_KEY" in str(excinfo.value)
+
+    def test_grader_allow_cli_opt_in_cli_on_path_passes_guard(
+        self, tmp_path, monkeypatch
+    ):
+        """DEC-009 opt-in: CLAUDITOR_FIXTURE_ALLOW_CLI=1 lets CLI presence pass."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "1")
+        self._patch_which(monkeypatch, "/usr/local/bin/claude")
+        request = self._request()
+
+        # If the guard passes, the factory proceeds to call
+        # clauditor_spec. We raise a sentinel from the spec factory so
+        # the test proves "guard did NOT raise" without invoking a real
+        # grading call.
+        _sentinel = RuntimeError("guard passed; spec factory reached")
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            raise _sentinel
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(RuntimeError) as excinfo:
+            factory(tmp_path / "skill.md")
+        assert excinfo.value is _sentinel
+
+    def test_triggers_allow_cli_opt_in_cli_on_path_passes_guard(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "1")
+        self._patch_which(monkeypatch, "/usr/local/bin/claude")
+        request = self._request()
+        _sentinel = RuntimeError("guard passed; spec factory reached")
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            raise _sentinel
+
+        factory = clauditor_triggers.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(RuntimeError) as excinfo:
+            factory(tmp_path / "skill.md")
+        assert excinfo.value is _sentinel
+
+    def test_blind_compare_allow_cli_opt_in_cli_on_path_passes_guard(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "1")
+        self._patch_which(monkeypatch, "/usr/local/bin/claude")
+        request = self._blind_compare_request()
+        _sentinel = RuntimeError("guard passed; spec factory reached")
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            raise _sentinel
+
+        factory = clauditor_blind_compare.__wrapped__(
+            request, fake_clauditor_spec
+        )
+        with pytest.raises(RuntimeError) as excinfo:
+            factory(tmp_path / "skill.md", "a", "b")
+        assert excinfo.value is _sentinel
+
+    def test_grader_allow_cli_opt_in_no_cli_still_raises(
+        self, tmp_path, monkeypatch
+    ):
+        """Opt-in + no key + no CLI → relaxed guard still raises (both absent)."""
+        from clauditor._anthropic import AnthropicAuthMissingError
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "1")
+        self._patch_which(monkeypatch, None)
+        request = self._request()
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            raise AssertionError("spec factory called before auth guard")
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(AnthropicAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md")
+        msg = str(excinfo.value)
+        # Relaxed-guard message — DEC-015 four anchors.
+        assert "claude CLI" in msg
+        assert "ANTHROPIC_API_KEY" in msg
+
+    def test_grader_allow_cli_false_value_stays_strict(
+        self, tmp_path, monkeypatch
+    ):
+        """CLAUDITOR_FIXTURE_ALLOW_CLI=0 does NOT opt in — strict still applies."""
+        from clauditor._anthropic import AnthropicAuthMissingError
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "0")
+        self._patch_which(monkeypatch, "/usr/local/bin/claude")
+        request = self._request()
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            raise AssertionError("spec factory called before auth guard")
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(AnthropicAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md")
+        msg = str(excinfo.value)
+        # Strict-guard message — preserves #83 DEC-012 three anchors.
+        assert "ANTHROPIC_API_KEY" in msg
+        assert "Claude Pro" in msg
+        assert "console.anthropic.com" in msg

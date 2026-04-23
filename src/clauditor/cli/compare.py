@@ -8,7 +8,7 @@ from pathlib import Path
 
 from clauditor._anthropic import (
     AnthropicAuthMissingError,
-    check_anthropic_auth,
+    check_any_auth_available,
 )
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.paths import resolve_clauditor_dir
@@ -219,13 +219,15 @@ def _run_blind_compare(
         return 2
 
     # Pre-flight auth guard (QG pass 2 of #83 — plans/super/
-    # 83-subscription-auth-gap.md). ``compare --blind`` routes through
-    # ``blind_compare_from_spec`` → ``call_anthropic``, so subscription-
-    # only users need the same actionable exit-2 message the other five
-    # LLM-mediated commands already produce. Lands after spec validation
-    # (which has its own exit-2 surface) and before file I/O / SDK call.
+    # 83-subscription-auth-gap.md; relaxed per #86 DEC-008 —
+    # plans/super/86-claude-cli-transport.md). ``compare --blind`` routes
+    # through ``blind_compare_from_spec`` → ``call_anthropic``, so
+    # subscription-only users need the same actionable exit-2 message the
+    # other five LLM-mediated commands already produce. Lands after spec
+    # validation (which has its own exit-2 surface) and before file I/O
+    # / SDK call.
     try:
-        check_anthropic_auth("compare --blind")
+        check_any_auth_available("compare --blind")
     except AnthropicAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
