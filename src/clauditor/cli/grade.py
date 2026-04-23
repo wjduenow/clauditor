@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING
 from clauditor import history
 from clauditor._anthropic import (
     AnthropicAuthMissingError,
+    announce_implicit_no_api_key,
     check_any_auth_available,
 )
 from clauditor.assertions import AssertionSet, run_assertions
@@ -159,7 +161,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "'cli' (subprocess via claude binary), or 'auto' (prefer "
             "CLI when available). Four-layer precedence: this flag > "
             "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
-            "'auto'."
+            "'auto'. (on grade, --transport cli or "
+            "CLAUDITOR_TRANSPORT=cli implies --no-api-key when an auth "
+            "key is present — pass --transport api to keep the key.)"
         ),
     )
 
@@ -384,18 +388,47 @@ def _run_skill_variants(
     non-``None`` when the caller should return that exit code (skill
     subprocess failure).
     """
-    # Shared helper lives in ``clauditor.cli`` (package __init__). Import
+    # Shared helpers live in ``clauditor.cli`` (package __init__). Import
     # lazily to avoid a circular import at module load.
-    from clauditor.cli import _render_skill_error
+    from clauditor.cli import (
+        _render_skill_error,
+        should_strip_api_key_for_skill_subprocess,
+    )
 
     # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout/transport flags
     # through to every ``spec.run`` invocation (primary + variance).
     # Defaults are all None (today's behavior).
+    #
+    # #95 US-003: --transport cli (or CLAUDITOR_TRANSPORT=cli) implicitly
+    # strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN from the skill
+    # subprocess env so the subscription-auth guarantee extends end-to-end
+    # (grader AND skill subprocess). Traces to DEC-001, DEC-003, DEC-006,
+    # DEC-007, DEC-008, DEC-009 of plans/super/95-subscription-auth-flag.md.
+    #
+    # DEC-007: explicit --no-api-key does NOT fire the implicit notice —
+    # the user typed the flag themselves, so the strip is not a surprise.
+    # DEC-003: the notice fires only when the implicit path triggered AND
+    # at least one auth key was actually present; otherwise the strip is
+    # a no-op and surfacing it would be noise.
+    # DEC-008: emit the notice from this call site (co-located with the
+    # decision). announce_implicit_no_api_key() owns the once-per-process
+    # idempotence via its module-level flag.
+    explicit_strip = bool(getattr(args, "no_api_key", False))
+    implicit_strip = (
+        not explicit_strip
+        and should_strip_api_key_for_skill_subprocess(args)
+    )
+    key_was_present = bool(
+        os.environ.get("ANTHROPIC_API_KEY")
+        or os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    )
     env_override = (
         env_without_api_key()
-        if getattr(args, "no_api_key", False)
+        if (explicit_strip or implicit_strip)
         else None
     )
+    if implicit_strip and key_was_present:
+        announce_implicit_no_api_key()
     timeout_override = getattr(args, "timeout", None)
 
     run_outputs: list[tuple[str, list[dict]]] = []
@@ -582,8 +615,24 @@ def _write_workspace_sidecars(
     if getattr(args, "baseline", False):
         # Mirror the primary arm's env/timeout wiring so --no-api-key
         # and --timeout apply to both halves of the baseline delta.
-        no_api_key = bool(getattr(args, "no_api_key", False))
-        env_override = env_without_api_key() if no_api_key else None
+        # #95 US-003: also mirror the implicit --transport cli coupling
+        # so both arms of the baseline delta share the same auth posture;
+        # otherwise the baseline would bypass the strip that the primary
+        # arm just applied. No notice emission here — the primary arm
+        # already called announce_implicit_no_api_key() upstream (which
+        # is idempotent per US-002).
+        from clauditor.cli import should_strip_api_key_for_skill_subprocess
+
+        explicit_strip = bool(getattr(args, "no_api_key", False))
+        implicit_strip = (
+            not explicit_strip
+            and should_strip_api_key_for_skill_subprocess(args)
+        )
+        env_override = (
+            env_without_api_key()
+            if (explicit_strip or implicit_strip)
+            else None
+        )
         timeout_override = getattr(args, "timeout", None)
         return _write_baseline_and_benchmark(
             spec=spec,
