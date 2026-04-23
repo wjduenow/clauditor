@@ -5,7 +5,7 @@
 - **Ticket:** [#95](https://github.com/wjduenow/clauditor/issues/95) — "Add combined flag for subscription auth end-to-end"
 - **Branch:** `feature/95-subscription-auth-flag`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/95-subscription-auth-flag`
-- **Phase:** detailing
+- **Phase:** devolved (PR [#96](https://github.com/wjduenow/clauditor/pull/96))
 - **Sessions:** 1 (2026-04-23)
 - **Base:** dev @ eb1a75d
 
@@ -412,7 +412,20 @@ Applied to this breakdown, each applicable rule from Phase 1:
 
 ## Beads Manifest
 
-_(Phase 7 — pending)_
+- **Worktree:** `/home/wesd/Projects/worktrees/clauditor/95-subscription-auth-flag`
+- **Branch:** `feature/95-subscription-auth-flag` (PR #96)
+
+| ID | Story | Depends on | Status |
+|----|-------|------------|--------|
+| `clauditor-zo9` | Epic — #95 Subscription auth combined flag | — | open |
+| `clauditor-ops` | US-001 — Pure helper `should_strip_api_key_for_skill_subprocess` | — | **ready** |
+| `clauditor-aoo` | US-002 — Announcement flag + constant + helper in `_anthropic.py` | — | **ready** |
+| `clauditor-e9h` | US-003 — Wire implicit coupling into `cmd_grade` | US-001, US-002 | blocked |
+| `clauditor-1dl` | US-004 — Docs sync (cli-reference + README + SKILL.md triangle) | US-003 | blocked |
+| `clauditor-865` | US-005 — Rule refresh (spec-cli-precedence + centralized-sdk-call) | US-003 | blocked |
+| `clauditor-2w4` | Quality Gate — code-reviewer x4 + CodeRabbit | US-001..US-005 | blocked |
+| `clauditor-60r` | Patterns & Memory | Quality Gate | blocked |
+
 
 ## Session Notes
 
