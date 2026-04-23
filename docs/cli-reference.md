@@ -76,7 +76,7 @@ Non-LLM 0/1/2 taxonomy per `.claude/rules/llm-cli-exit-code-taxonomy.md`:
 
 ### Claude Code extension allowlist
 
-The agentskills.io spec defines the frontmatter keys `name`, `description`, `license`, `compatibility`, `metadata`, and `allowed-tools`. Unknown keys normally trigger `AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY` (warning). Two Claude Code extension keys are allowlisted and do NOT trigger the warning: `argument-hint` and `disable-model-invocation`. The allowlist is maintained by the maintainer-only `/review-agentskills-spec` skill, which periodically diffs Claude Code's published frontmatter documentation against the `KNOWN_CLAUDE_CODE_EXTENSION_KEYS` constant in `src/clauditor/conformance.py` (per DEC-009 and DEC-013 of `plans/super/71-agentskills-lint.md`).
+The agentskills.io spec defines the frontmatter keys `name`, `description`, `license`, `compatibility`, `metadata`, and `allowed-tools`. Unknown keys normally trigger `AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY` (warning). Two Claude Code extension keys are allowlisted and do NOT trigger the warning: `argument-hint` and `disable-model-invocation`. `argument-hint` is a Claude Code UI hint (shows in slash-command autocomplete, e.g. `argument-hint: "[skill-path]"`) but is **not part of the agentskills.io spec** — there is currently no spec-level standard for declaring skill arguments. The allowlist is maintained by the maintainer-only `/review-agentskills-spec` skill, which periodically diffs Claude Code's published frontmatter documentation against the `KNOWN_CLAUDE_CODE_EXTENSION_KEYS` constant in `src/clauditor/conformance.py` (per DEC-009 and DEC-013 of `plans/super/71-agentskills-lint.md`).
 
 Unquoted `: ` (space-colon-space) inside a frontmatter scalar value triggers `AGENTSKILLS_FRONTMATTER_UNQUOTED_COLON_IN_SCALAR` (error, exit 2) — strict YAML parsers (PyYAML, GitHub's renderer) treat such values as nested mappings while clauditor's permissive reader accepts them silently. Wrap the value in double quotes to silence it (per DEC-003 and DEC-007 of `plans/super/80-strict-frontmatter-yaml.md`).
 
@@ -129,6 +129,8 @@ WARNING: interactive-hang: skill may have asked for input
 The output file is still written with whatever the skill produced before the hang.
 
 **For eval-friendly skills:** put all decision context in `-- args` (passed upfront) rather than in mid-run prompts. In the eval spec, mirror this via the `test_args` field — `clauditor validate` and `clauditor grade` use `test_args` as the same initial argument string.
+
+**No spec-level args standard exists yet.** Claude Code adds an `argument-hint` frontmatter key (e.g. `argument-hint: "[test|full]"`) that displays a hint in the slash-command autocomplete UI, but this is a Claude Code extension — it is not in the [agentskills.io specification](https://agentskills.io/specification), carries no validation, and does not distinguish required from optional args. clauditor allowlists it to suppress a spurious lint warning (see [`lint`](#lint)). A proper `arguments` declaration in the agentskills.io spec — covering name, required/optional, type, and default — is tracked in [issue #93](https://github.com/wjduenow/clauditor/issues/93).
 
 ### Relationship to `propose-eval` and `validate`
 
