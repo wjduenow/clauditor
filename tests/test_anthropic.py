@@ -32,7 +32,8 @@ from clauditor._anthropic import (
     _compute_retry_decision,
     _extract_result,
     call_anthropic,
-    check_anthropic_auth,
+    check_any_auth_available,
+    check_api_key_only,
     resolve_transport,
 )
 
@@ -671,72 +672,187 @@ class TestCallAnthropicTypeError:
         assert sdk_text in str(exc_info.value.__cause__)
 
 
-class TestCheckAnthropicAuth:
-    """Unit tests for the pre-flight auth guard (clauditor-2df.1 / US-001).
+def _patch_which(monkeypatch: pytest.MonkeyPatch, path: str | None) -> None:
+    """Pin ``shutil.which("claude")`` to a deterministic value.
 
-    Pins DEC-001 (only ``ANTHROPIC_API_KEY`` counts),
-    DEC-010 (new exception class distinct from ``AnthropicHelperError``),
-    DEC-011 (message template with ``{cmd_name}`` substitution), and
-    DEC-012 (three test-asserted substrings: ``ANTHROPIC_API_KEY``,
-    ``Claude Pro``, ``console.anthropic.com``).
+    The autouse ``_force_api_transport_in_tests`` fixture in
+    ``tests/conftest.py`` patches ``shutil.which`` on
+    ``clauditor._anthropic`` to return ``None``. Tests that exercise
+    the CLI-available branch of :func:`check_any_auth_available`
+    override that with an explicit path.
+    """
+    import clauditor._anthropic as _anthropic
+
+    monkeypatch.setattr(
+        _anthropic.shutil, "which", lambda name: path
+    )
+
+
+class TestCheckAnyAuthAvailable:
+    """Unit tests for the relaxed pre-flight auth guard (US-005 / DEC-008).
+
+    Pins DEC-008 of ``plans/super/86-claude-cli-transport.md`` (relax
+    the pre-flight guard to accept either ``ANTHROPIC_API_KEY`` or a
+    ``claude`` CLI binary on PATH) and DEC-015 (error-message copy
+    committed with four test-asserted durable substrings:
+    ``ANTHROPIC_API_KEY``, ``Claude Pro``, ``console.anthropic.com``,
+    ``claude CLI``).
     """
 
-    def test_key_present_returns_none(
+    def test_key_present_cli_absent_passes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-        assert check_anthropic_auth("grade") is None
+        _patch_which(monkeypatch, None)
+        assert check_any_auth_available("grade") is None
 
-    def test_key_absent_raises(
+    def test_key_absent_cli_present_passes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _patch_which(monkeypatch, "/usr/local/bin/claude")
+        assert check_any_auth_available("grade") is None
+
+    def test_both_present_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        _patch_which(monkeypatch, "/usr/local/bin/claude")
+        assert check_any_auth_available("grade") is None
+
+    def test_both_absent_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _patch_which(monkeypatch, None)
         with pytest.raises(AnthropicAuthMissingError) as exc_info:
-            check_anthropic_auth("grade")
+            check_any_auth_available("grade")
         message = str(exc_info.value)
-        # DEC-012 durable anchors.
+        # DEC-015 four durable anchors.
         assert "ANTHROPIC_API_KEY" in message
         assert "Claude Pro" in message
         assert "console.anthropic.com" in message
-        # DEC-011: command-name interpolation.
+        assert "claude CLI" in message
+        # DEC-011 command-name interpolation preserved.
         assert "clauditor grade" in message
+
+    def test_empty_string_key_no_cli_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        _patch_which(monkeypatch, None)
+        with pytest.raises(AnthropicAuthMissingError):
+            check_any_auth_available("grade")
+
+    def test_whitespace_only_key_no_cli_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "   \t\n")
+        _patch_which(monkeypatch, None)
+        with pytest.raises(AnthropicAuthMissingError):
+            check_any_auth_available("grade")
+
+    def test_empty_string_key_cli_present_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CLI presence overrides an empty-string API key."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        _patch_which(monkeypatch, "/usr/local/bin/claude")
+        assert check_any_auth_available("grade") is None
+
+    def test_whitespace_only_key_cli_present_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CLI presence overrides a whitespace-only API key."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "   ")
+        _patch_which(monkeypatch, "/usr/local/bin/claude")
+        assert check_any_auth_available("grade") is None
+
+    def test_auth_token_only_no_cli_still_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DEC-001 (#83) preserved: only ANTHROPIC_API_KEY counts for the key branch."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "some-token")
+        _patch_which(monkeypatch, None)
+        with pytest.raises(AnthropicAuthMissingError):
+            check_any_auth_available("grade")
+
+    def test_key_whitespace_surrounded_no_cli_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-empty value with surrounding whitespace counts as present."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "  sk-test  ")
+        _patch_which(monkeypatch, None)
+        assert check_any_auth_available("grade") is None
+
+    def test_cmd_name_interpolation_compare_blind(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``compare --blind`` is the only multi-word cmd_name; interpolation works."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _patch_which(monkeypatch, None)
+        with pytest.raises(AnthropicAuthMissingError) as exc_info:
+            check_any_auth_available("compare --blind")
+        assert "clauditor compare --blind" in str(exc_info.value)
+
+    def test_cmd_name_interpolation_propose_eval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _patch_which(monkeypatch, None)
+        with pytest.raises(AnthropicAuthMissingError) as exc_info:
+            check_any_auth_available("propose-eval")
+        assert "clauditor propose-eval" in str(exc_info.value)
+
+
+class TestCheckApiKeyOnly:
+    """Unit tests for the strict API-key-only pre-flight guard (US-005 / DEC-009).
+
+    Pins DEC-009 of ``plans/super/86-claude-cli-transport.md``: pytest
+    fixtures stay stricter than the CLI by default. The strict variant
+    only accepts ``ANTHROPIC_API_KEY``; CLI presence does not help.
+    """
+
+    def test_key_present_passes_regardless_of_cli(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        _patch_which(monkeypatch, None)
+        assert check_api_key_only("grader") is None
+
+    def test_key_present_cli_also_present_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        _patch_which(monkeypatch, "/usr/local/bin/claude")
+        assert check_api_key_only("grader") is None
+
+    def test_key_absent_cli_present_still_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DEC-009: strict variant does NOT accept CLI as a fallback."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _patch_which(monkeypatch, "/usr/local/bin/claude")
+        with pytest.raises(AnthropicAuthMissingError) as exc_info:
+            check_api_key_only("grader")
+        message = str(exc_info.value)
+        # Preserves #83 DEC-012's three durable anchors.
+        assert "ANTHROPIC_API_KEY" in message
+        assert "Claude Pro" in message
+        assert "console.anthropic.com" in message
+        # Mentions the opt-in escape hatch so users know how to enable
+        # CLI transport in fixture mode.
+        assert "CLAUDITOR_FIXTURE_ALLOW_CLI" in message
+        # Command-name interpolation.
+        assert "clauditor grader" in message
 
     def test_key_empty_string_raises(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "")
         with pytest.raises(AnthropicAuthMissingError):
-            check_anthropic_auth("grade")
-
-    def test_key_whitespace_only_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "   \t\n")
-        with pytest.raises(AnthropicAuthMissingError):
-            check_anthropic_auth("grade")
-
-    def test_auth_token_only_still_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """DEC-001: only ANTHROPIC_API_KEY counts, not ANTHROPIC_AUTH_TOKEN."""
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "some-token")
-        with pytest.raises(AnthropicAuthMissingError):
-            check_anthropic_auth("grade")
-
-    def test_key_whitespace_surrounded_accepted(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Non-empty value with surrounding whitespace counts as present.
-
-        The guard is about *presence*, not normalization: if the user
-        exports a key with accidental surrounding whitespace, the SDK
-        will handle it (or surface its own 401 if malformed). Pinning
-        this intent keeps a future "tighten to require trimmed value"
-        edit from silently regressing behavior without a test churn.
-        """
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "  sk-test  ")
-        assert check_anthropic_auth("grade") is None
+            check_api_key_only("grader")
 
 
 # ---------------------------------------------------------------------------
