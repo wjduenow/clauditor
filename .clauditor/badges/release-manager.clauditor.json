@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "skill_name": "release-manager",
+  "generated_at": "2026-04-23T06:20:44Z",
+  "iteration": 1,
+  "layers": {
+    "l1": {
+      "count": 5,
+      "total": 5,
+      "pass_rate": 1.0,
+      "passed": true
+    }
+  }
+}

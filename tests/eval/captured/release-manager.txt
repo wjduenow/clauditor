@@ -1,0 +1,17 @@
+Running pre-flight checks for a **test release**.
+Branch is `dev` and working tree is clean. Checking remote sync and reading the version.
+All pre-flight checks pass. Now running the test suite.
+All pre-flight checks pass. Here's the version summary:
+
+```
+Current version : 0.1.0.dev4
+Release version : 0.1.0.dev4  (already a pre-release — used as-is)
+```
+
+No version change needed. Ready to proceed with:
+1. Build the package and verify with twine
+2. Tag `v0.1.0.dev4` and create a GitHub pre-release
+3. Monitor the TestPyPI publish workflow
+4. Verify the package appears on TestPyPI
+
+**Confirm to proceed?** (yes/no)

@@ -60,6 +60,25 @@ bundled skill will populate real L1/L3 scores.
 > dogfooding. Listed here so maintainers have a one-glance quality
 > view alongside the user-facing catalog above.
 
+### `/release-manager`
+
+![release-manager](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/wjduenow/clauditor/dev/.clauditor/badges/release-manager.json)
+
+Cuts a clauditor-eval release to TestPyPI (from `dev`) or PyPI (from `main`).
+Runs pre-flight checks (branch, clean working tree, remote sync, test suite),
+determines the release version, builds with `uv build`, verifies with `twine`,
+tags, creates a GitHub release, monitors the publish workflow, and confirms the
+package appears on the target index. Stops and asks for confirmation before any
+side-effectful step.
+
+Source: [`.claude/skills/release-manager/SKILL.md`](../.claude/skills/release-manager/SKILL.md) · Eval: [`.claude/skills/release-manager/SKILL.eval.json`](../.claude/skills/release-manager/SKILL.eval.json)
+
+> **Eval note:** the eval runs with `test_args: "test"` and `allow_hang_heuristic: false`.
+> The skill stops at the confirmation prompt in non-interactive mode — assertions
+> cover the pre-flight summary and version output only. L3 grading is declared but
+> excluded from the badge until the CLI-transport truncation issue is resolved
+> (see issue #93 context on interactive-skill limitations).
+
 ### `/review-agentskills-spec`
 
 ![review-agentskills-spec](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/wjduenow/clauditor/dev/.clauditor/badges/review-agentskills-spec.json)
