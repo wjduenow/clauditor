@@ -54,7 +54,7 @@ Or define in `eval.json`:
 
 ## Layer 2: LLM Schema Extraction (cheap, ~1 sec)
 
-Uses Haiku to extract structured fields, then validates against your schema. Requires `pip install clauditor[grader]`.
+Uses Haiku to extract structured fields, then validates against your schema. Requires `pip install clauditor-eval[grader]`.
 
 ```python
 import asyncio
@@ -113,7 +113,7 @@ See [`FORMAT_REGISTRY` in `src/clauditor/formats.py`](../src/clauditor/formats.p
 
 ## Layer 3: Quality Grading (expensive, release-only)
 
-Uses Sonnet to grade skill output against a rubric you define. Requires `ANTHROPIC_API_KEY` and `pip install clauditor[grader]`.
+Uses Sonnet to grade skill output against a rubric you define. Requires `ANTHROPIC_API_KEY` and `pip install clauditor-eval[grader]`.
 
 ### Quality Grading
 
