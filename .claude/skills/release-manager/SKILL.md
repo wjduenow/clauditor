@@ -1,7 +1,7 @@
 ---
 name: release-manager
-description: Cut a clauditor-eval release from main. Supports full releases (→ PyPI) and test releases (→ TestPyPI). Run after merging dev → main.
-compatibility: "Requires: uv, gh CLI, git. Must be run from the clauditor repo root on the main branch."
+description: Cut a clauditor-eval release. Test releases run from dev (→ TestPyPI); full releases run from main (→ PyPI).
+compatibility: "Requires: uv, gh CLI, git. Must be run from the clauditor repo root."
 metadata:
   clauditor-version: "0.0.0-dev"
 disable-model-invocation: true
@@ -10,8 +10,9 @@ allowed-tools: Bash(git *), Bash(gh *), Bash(uv *), Bash(uvx *), Bash(grep *), B
 
 # /release-manager — Cut a clauditor-eval release
 
-You help the maintainer cut a release of `clauditor-eval` from the `main`
-branch. The merge from `dev` → `main` is already done before this skill runs.
+You help the maintainer cut a release of `clauditor-eval`.
+- **Test releases** run from the `dev` branch and publish to TestPyPI.
+- **Full releases** run from the `main` branch and publish to PyPI. The merge from `dev` → `main` is already done before a full release.
 
 ## Step 0 — Choose release type
 
@@ -24,14 +25,20 @@ Record the choice and follow the matching workflow below.
 
 ---
 
-## Pre-flight (both modes)
+## Pre-flight
 
-Run these checks and STOP if any fail — report the problem clearly and do not proceed:
+Run these checks and STOP if any fail — report the problem clearly and do not proceed.
 
-1. **On main**: `git branch --show-current` must return `main`
-2. **Clean working tree**: `git status --porcelain` must be empty
-3. **Up to date with origin**: `git fetch origin main && git status` must show "up to date"
-4. **Tests pass**: `uv run pytest --cov=clauditor --cov-report=term-missing -q`
+**Branch check (differs by release type):**
+- **Test release**: `git branch --show-current` must return `dev`
+- **Full release**: `git branch --show-current` must return `main`
+
+**Checks for both modes:**
+1. **Clean working tree**: `git status --porcelain` must be empty
+2. **Up to date with origin**:
+   - Test: `git fetch origin dev && git status` must show "up to date"
+   - Full: `git fetch origin main && git status` must show "up to date"
+3. **Tests pass**: `uv run pytest --cov=clauditor --cov-report=term-missing -q`
 
 ## Determine version
 
@@ -71,7 +78,7 @@ Otherwise:
 ```bash
 git add pyproject.toml
 git commit -m "chore: bump to {release_version} for test release"
-git push origin main
+git push origin dev
 ```
 
 ### Step 3 — Tag and create GitHub pre-release
@@ -162,4 +169,4 @@ git push origin main
 Report a summary including:
 - Release type and version
 - PyPI or TestPyPI URL
-- For full releases: remind the user to merge `main` back into `dev` to pick up the version bump
+- For full releases: remind the user to merge `main` back into `dev` to pick up the version bump commit
