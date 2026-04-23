@@ -88,6 +88,66 @@ Beyond the standalone `lint` command, `SkillSpec.from_file` calls `check_conform
 
 - **`/review-agentskills-spec`** — the maintainer-only sibling skill (lives at repo-root `.claude/skills/`, not shipped in the wheel, not installed by `clauditor setup`). **`clauditor lint`** checks a user's skill against the spec; **`/review-agentskills-spec`** audits the upstream spec itself (and Claude Code's frontmatter documentation) for drift against clauditor's enforcement. Two sides of the same check: one catches user skills that drift from the spec, the other catches clauditor's enforcement drifting from the spec.
 
+## capture
+
+Run a skill via `claude -p` and save its output to a file. The primary use case is grounding `clauditor propose-eval` in real skill output before bootstrapping the eval spec — a proposer that sees what the skill actually emits writes much tighter assertions than one working from the SKILL.md alone.
+
+```bash
+clauditor capture <skill>           # save to tests/eval/captured/<skill>.txt
+clauditor capture <skill> -- args   # pass initial context to the skill
+clauditor capture <skill> --no-api-key --timeout 300  # subscription auth, 5-min watchdog
+```
+
+### Required inputs
+
+- `<skill>` (positional) — skill name (leading slash optional, e.g. `review-agentskills-spec` or `/review-agentskills-spec`). Resolved against the project's `.claude/skills/` and `.claude/commands/` directories the same way `clauditor validate` does.
+
+### Flags
+
+| Flag | Purpose |
+| ---- | ------- |
+| `-- <args>` | Arguments passed to the skill command as initial context, appended to the `-p` prompt: `claude -p "/<skill> <args>"`. The only injection point before the skill runs — see [Interactive skills](#interactive-skills) below. |
+| `--out PATH` | Write captured output to a custom path instead of the default `tests/eval/captured/<skill>.txt`. |
+| `--versioned` | Append `-YYYY-MM-DD` to the output file stem (e.g. `my-skill-2026-04-22.txt`). Useful when keeping a dated history of captures. |
+| `--no-api-key` | Strip `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the subprocess environment. Falls back to subscription auth cached in `~/.claude/`. Useful for skills that exhaust the API-tier rate limit. |
+| `--timeout SECONDS` | Override the default 180-second watchdog. Long-running skills (research, multi-step workflows) frequently need 300–600 s. |
+| `--claude-bin PATH` | Path to the `claude` CLI (default: `claude` on PATH). |
+
+### Default output path
+
+`tests/eval/captured/<skill>.txt` — the same directory `clauditor propose-eval` checks first during [capture discovery](cli-reference.md#capture-discovery-dec-001). Running `capture` before `propose-eval` is all it takes; the proposer picks up the file automatically.
+
+### Interactive skills
+
+`clauditor capture` runs `claude -p "/<skill> <args>"` — a **strictly single-turn, non-interactive** invocation. There is no stdin, no multi-turn conversation, and no way to inject answers to mid-run questions. If the skill asks the user a question mid-run (e.g. "Confirm? yes/no"), Claude emits the question and exits. The runner detects this via the **interactive-hang heuristic** (trailing `?` on the output, or an `AskUserQuestion` tool-use block in the stream-json) and surfaces:
+
+```
+WARNING: interactive-hang: skill may have asked for input
+         — ensure all parameters are in test_args (heuristic)
+```
+
+The output file is still written with whatever the skill produced before the hang.
+
+**For eval-friendly skills:** put all decision context in `-- args` (passed upfront) rather than in mid-run prompts. In the eval spec, mirror this via the `test_args` field — `clauditor validate` and `clauditor grade` use `test_args` as the same initial argument string.
+
+### Relationship to `propose-eval` and `validate`
+
+```
+clauditor capture my-skill -- "initial context"    # 1. capture real output
+clauditor propose-eval my-skill.md                 # 2. bootstrap eval from SKILL.md + capture
+clauditor validate my-skill.md                     # 3. tighten and verify L1 assertions
+```
+
+`propose-eval` reads the capture automatically from `tests/eval/captured/`; no flag needed. See [Capture discovery](#capture-discovery-dec-001).
+
+### Exit codes
+
+| Code | Meaning |
+| ---- | ------- |
+| `0` | Skill ran and output was written (even if the skill itself reported an error — the capture records whatever the skill emitted). |
+| `1` | Skill subprocess failed to start, timed out, or the runner encountered a fatal stream-json error. Output file is not written. |
+| `2` | Input-validation failure — skill name not found, `--out` parent directory does not exist. |
+
 ## propose-eval
 
 LLM-assisted EvalSpec bootstrap. `clauditor propose-eval <skill.md>` reads the SKILL.md file and (optionally) a captured skill run, asks Sonnet to propose a full three-layer EvalSpec (L1 assertions, L2 tiered extraction, L3 rubric), validates the proposal through `EvalSpec.from_dict`, and writes a sibling `<skill>.eval.json` next to the SKILL.md (the same path `SkillSpec.from_file` and `clauditor init` auto-discover). Use it to skip the blank-spec drudgery when onboarding a new skill.

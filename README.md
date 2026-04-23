@@ -80,15 +80,16 @@ Full reference: [docs/skill-usage.md](https://github.com/wjduenow/clauditor/blob
 
 ## Quick Start
 
-A new skill goes from "untested" to "covered" in three steps: `clauditor init` generates an eval spec, `clauditor validate` tightens L1 assertions against a real capture, then the same spec wires into pytest for regression coverage. If the SKILL.md already exists, substitute `clauditor propose-eval` for `init` to have Sonnet bootstrap a full three-layer spec from the skill (plus any captured run).
+A new skill goes from "untested" to "covered" in four steps: `clauditor capture` records a real run, `clauditor propose-eval` bootstraps a full three-layer spec from the SKILL.md plus that capture, `clauditor validate` tightens L1 assertions, then the spec wires into pytest for regression coverage.
 
 ```bash
-clauditor init .claude/commands/my-skill.md
+clauditor capture my-skill -- "initial context"   # save real output → tests/eval/captured/
+clauditor propose-eval .claude/commands/my-skill.md  # LLM writes the spec from SKILL.md + capture
 clauditor validate .claude/commands/my-skill.md
 clauditor validate .claude/commands/my-skill.md --json  # CI mode
 ```
 
-**Covered in the full reference:** authoring `.eval.json`, captured-output mode (`--output captured.txt`), pytest fixtures (`clauditor_runner`, `clauditor_asserter`, `clauditor_spec`). Full reference: [docs/quick-start.md](https://github.com/wjduenow/clauditor/blob/dev/docs/quick-start.md).
+**Covered in the full reference:** the `capture` command and interactive-skill limitations, `propose-eval` options, pytest fixtures (`clauditor_runner`, `clauditor_asserter`, `clauditor_spec`). Full reference: [docs/quick-start.md](https://github.com/wjduenow/clauditor/blob/dev/docs/quick-start.md).
 
 ## Three Layers of Validation
 

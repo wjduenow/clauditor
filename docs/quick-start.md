@@ -54,22 +54,45 @@ This creates `my-skill.eval.json` alongside your skill file:
 }
 ```
 
-Fill in `test_args` and customize assertions, sections, and grading criteria for your skill.
+Fill in `test_args` and customize assertions, sections, and grading criteria for your skill. Or skip straight to step 2 — `propose-eval` can bootstrap a full three-layer spec from the SKILL.md plus a capture.
 
-## 2. Validate against captured output
+## 2. Capture a real run (recommended before propose-eval)
+
+```bash
+# Run the skill and save output to tests/eval/captured/my-skill.txt
+clauditor capture my-skill
+
+# Pass initial context if the skill needs it upfront
+clauditor capture my-skill -- "San Jose, CA"
+
+# Subscription auth + longer watchdog for research-heavy skills
+clauditor capture my-skill --no-api-key --timeout 300
+```
+
+The captured output becomes the grounding context for `propose-eval` (auto-discovered from `tests/eval/captured/`) and a replayable fixture for tightening assertions in `validate`.
+
+**Interactive skills:** `capture` runs `claude -p` — strictly single-turn, no stdin. If the skill asks a question mid-run it will hang at that point. Put all decision context in `-- args` (and mirror it in `test_args` in your eval spec) so the skill gets everything upfront.
+
+## 3. Bootstrap a full eval spec with propose-eval
+
+```bash
+# Reads SKILL.md + the capture from step 2, writes my-skill.eval.json
+clauditor propose-eval .claude/commands/my-skill.md
+```
+
+Requires `ANTHROPIC_API_KEY` or an authenticated `claude` CLI.
+
+## 4. Validate against captured output
 
 ```bash
 # Run skill and validate in one step:
 clauditor validate .claude/commands/my-skill.md
 
-# Or validate against pre-captured output:
-clauditor validate .claude/commands/my-skill.md --output captured.txt
-
 # JSON output for CI:
 clauditor validate .claude/commands/my-skill.md --json
 ```
 
-## 3. Use in pytest
+## 5. Use in pytest
 
 ```python
 def test_my_skill(clauditor_runner, clauditor_asserter):
