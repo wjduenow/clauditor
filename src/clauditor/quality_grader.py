@@ -547,6 +547,7 @@ async def blind_compare(
     *,
     model: str = DEFAULT_GRADING_MODEL,
     rng: random.Random | None = None,
+    transport: str = "auto",
 ) -> BlindReport:
     """Blind A/B judge: call Anthropic twice with swapped positions.
 
@@ -569,8 +570,8 @@ async def blind_compare(
     p2 = _build_blind_prompt_for_mapping(m2, *args)
     start = _monotonic()
     r1, r2 = await _asyncio.gather(
-        call_anthropic(p1, model=model, max_tokens=2048),
-        call_anthropic(p2, model=model, max_tokens=2048),
+        call_anthropic(p1, model=model, max_tokens=2048, transport=transport),
+        call_anthropic(p2, model=model, max_tokens=2048, transport=transport),
     )
     duration = _monotonic() - start
     # Pre-refactor semantics: take the FIRST text block only so downstream
@@ -630,6 +631,7 @@ async def blind_compare_from_spec(
     *,
     model: str | None = None,
     rng: random.Random | None = None,
+    transport: str = "auto",
 ) -> BlindReport:
     """Composition helper that resolves judge inputs from a :class:`SkillSpec`.
 
@@ -672,6 +674,7 @@ async def blind_compare_from_spec(
         rubric_hint,
         model=effective_model,
         rng=rng,
+        transport=transport,
     )
 
 
@@ -938,6 +941,7 @@ async def grade_quality(
     eval_spec: EvalSpec,
     model: str = DEFAULT_GRADING_MODEL,
     thresholds: GradeThresholds | None = None,
+    transport: str = "auto",
 ) -> GradingReport:
     """Layer 3: Grade skill output against rubric criteria using an LLM.
 
@@ -954,7 +958,9 @@ async def grade_quality(
     prompt = build_grading_prompt(eval_spec, output)
 
     start = _monotonic()
-    api_result = await call_anthropic(prompt, model=model, max_tokens=4096)
+    api_result = await call_anthropic(
+        prompt, model=model, max_tokens=4096, transport=transport
+    )
     duration = _monotonic() - start
 
     response_text = (

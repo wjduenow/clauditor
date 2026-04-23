@@ -742,6 +742,7 @@ async def extract_and_grade(
     output: str,
     eval_spec: EvalSpec,
     model: str = "claude-haiku-4-5-20251001",
+    transport: str = "auto",
 ) -> AssertionSet:
     """Layer 2: Extract structured data with Haiku, then validate against schema.
 
@@ -756,7 +757,9 @@ async def extract_and_grade(
     from clauditor._anthropic import call_anthropic
 
     prompt = build_extraction_prompt(eval_spec, output)
-    api_result = await call_anthropic(prompt, model=model, max_tokens=4096)
+    api_result = await call_anthropic(
+        prompt, model=model, max_tokens=4096, transport=transport
+    )
     response_text = (
         api_result.text_blocks[0] if api_result.text_blocks else ""
     )
@@ -778,6 +781,7 @@ async def extract_and_report(
     model: str = "claude-haiku-4-5-20251001",
     *,
     skill_name: str = "",
+    transport: str = "auto",
 ) -> ExtractionReport:
     """Layer 2 wrapper that returns a field-id-keyed :class:`ExtractionReport`.
 
@@ -793,7 +797,9 @@ async def extract_and_report(
     from clauditor._anthropic import call_anthropic
 
     prompt = build_extraction_prompt(eval_spec, output)
-    api_result = await call_anthropic(prompt, model=model, max_tokens=4096)
+    api_result = await call_anthropic(
+        prompt, model=model, max_tokens=4096, transport=transport
+    )
     response_text = (
         api_result.text_blocks[0] if api_result.text_blocks else ""
     )

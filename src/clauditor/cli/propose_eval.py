@@ -332,6 +332,7 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
         propose_input,
         model=model,
         spec_dir=skill_md_path.parent,
+        transport=getattr(args, "transport", "auto") or "auto",
     )
 
     # DEC-006 row: Anthropic API failure → exit 3.

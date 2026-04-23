@@ -5473,7 +5473,7 @@ class TestCmdSuggest:
 
         captured = {}
 
-        async def _fake_propose(suggest_input, *, model=None):
+        async def _fake_propose(suggest_input, *, model=None, transport="auto"):
             captured["source_iteration"] = suggest_input.source_iteration
             return self._fake_report(source_iteration=suggest_input.source_iteration)
 
@@ -5493,7 +5493,7 @@ class TestCmdSuggest:
 
         captured = {}
 
-        async def _fake_propose(suggest_input, *, model=None):
+        async def _fake_propose(suggest_input, *, model=None, transport="auto"):
             captured["transcripts"] = suggest_input.transcript_events
             return self._fake_report()
 

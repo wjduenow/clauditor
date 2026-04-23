@@ -124,7 +124,9 @@ def cmd_extract(args: argparse.Namespace) -> int:
             return 2
     else:
         print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
-        skill_result = spec.run()
+        skill_result = spec.run(
+            transport_override=getattr(args, "transport", None)
+        )
         if not skill_result.succeeded_cleanly:
             print(
                 f"ERROR: Skill failed: {_render_skill_error(skill_result)}",
@@ -133,10 +135,22 @@ def cmd_extract(args: argparse.Namespace) -> int:
             return 1
         output = skill_result.output
 
+    # Resolve transport for the grader call using the four-layer precedence.
+    import os
+
+    from clauditor._anthropic import resolve_transport as _resolve_transport
+    _env_transport = os.environ.get("CLAUDITOR_TRANSPORT") or None
+    _spec_transport = spec.eval_spec.transport if spec.eval_spec else None
+    grader_transport = _resolve_transport(
+        getattr(args, "transport", None), _env_transport, _spec_transport
+    )
+
     # Extract and grade
     from clauditor.grader import extract_and_grade
 
-    results = asyncio.run(extract_and_grade(output, spec.eval_spec, model))
+    results = asyncio.run(
+        extract_and_grade(output, spec.eval_spec, model, transport=grader_transport)
+    )
 
     # Record history (US-005). Extract does not compute Layer 3
     # pass_rate/mean_score, so those are None (DEC-013).

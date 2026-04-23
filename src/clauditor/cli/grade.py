@@ -388,15 +388,16 @@ def _run_skill_variants(
     # lazily to avoid a circular import at module load.
     from clauditor.cli import _render_skill_error
 
-    # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags through
-    # to every ``spec.run`` invocation (primary + variance). Defaults
-    # are both None (today's behavior).
+    # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout/transport flags
+    # through to every ``spec.run`` invocation (primary + variance).
+    # Defaults are all None (today's behavior).
     env_override = (
         env_without_api_key()
         if getattr(args, "no_api_key", False)
         else None
     )
     timeout_override = getattr(args, "timeout", None)
+    transport_override = getattr(args, "transport", None)
 
     run_outputs: list[tuple[str, list[dict]]] = []
     # Parallel list of SkillResult objects — None entries correspond to
@@ -426,6 +427,7 @@ def _run_skill_variants(
             run_dir=workspace.tmp_path / "run-0",
             timeout_override=timeout_override,
             env_override=env_override,
+            transport_override=transport_override,
         )
         if not primary_skill_result.succeeded_cleanly:
             print(
@@ -457,6 +459,7 @@ def _run_skill_variants(
             run_dir=variance_run_dir,
             timeout_override=timeout_override,
             env_override=env_override,
+            transport_override=transport_override,
         )
         if not variance_result.succeeded_cleanly:
             print(
@@ -541,6 +544,7 @@ def _write_workspace_sidecars(
     primary_report: GradingReport,
     reports: list[GradingReport],
     model: str,
+    transport: str = "auto",
 ) -> Benchmark | None:
     """Write grading/assertions/extraction/baseline/benchmark sidecars.
 
@@ -576,7 +580,7 @@ def _write_workspace_sidecars(
     )
 
     if spec.eval_spec.sections:
-        _write_extraction_sidecar(skill_dir, primary_text, spec)
+        _write_extraction_sidecar(skill_dir, primary_text, spec, transport=transport)
 
     if getattr(args, "baseline", False):
         # Mirror the primary arm's env/timeout wiring so --no-api-key
@@ -695,7 +699,7 @@ def _write_assertions_sidecar(
 
 
 def _write_extraction_sidecar(
-    skill_dir: Path, primary_text: str, spec: SkillSpec
+    skill_dir: Path, primary_text: str, spec: SkillSpec, transport: str = "auto"
 ) -> None:
     """Run Layer 2 schema extraction and persist ``extraction.json``."""
     import asyncio
@@ -707,6 +711,7 @@ def _write_extraction_sidecar(
             primary_text,
             spec.eval_spec,
             skill_name=spec.skill_name,
+            transport=transport,
         )
     )
     (skill_dir / "extraction.json").write_text(
@@ -879,6 +884,7 @@ def _grade_all_runs(
     run_outputs: list[tuple[str, list[dict]]],
     spec: SkillSpec,
     model: str,
+    transport: str = "auto",
 ) -> list[GradingReport]:
     """Grade every run's output concurrently and return the per-run reports."""
     import asyncio
@@ -894,6 +900,7 @@ def _grade_all_runs(
                         spec.eval_spec,
                         model,
                         thresholds=spec.eval_spec.grade_thresholds,
+                        transport=transport,
                     )
                     for text, _ev in run_outputs
                 ]
@@ -912,6 +919,8 @@ def _cmd_grade_with_workspace(
     workspace: IterationWorkspace,
 ) -> int:
     """Body of cmd_grade that runs inside an allocated iteration workspace."""
+    import os
+
     n_variance = int(args.variance) if args.variance else 0
     total_runs = 1 + n_variance
 
@@ -927,8 +936,21 @@ def _cmd_grade_with_workspace(
     if error_rc is not None:
         return error_rc
 
+    # Resolve transport for grader calls using the four-layer precedence
+    # (CLI > env > spec > default "auto"). Uses the same logic as
+    # spec.run() so the grader transport always matches the runner
+    # transport when the skill subprocess was also invoked.
+    from clauditor._anthropic import resolve_transport as _resolve_transport
+    _env_transport = os.environ.get("CLAUDITOR_TRANSPORT") or None
+    _spec_transport = (
+        spec.eval_spec.transport if spec.eval_spec is not None else None
+    )
+    grader_transport = _resolve_transport(
+        getattr(args, "transport", None), _env_transport, _spec_transport
+    )
+
     primary_text = run_outputs[0][0]
-    reports = _grade_all_runs(run_outputs, spec, model)
+    reports = _grade_all_runs(run_outputs, spec, model, transport=grader_transport)
     primary_report = reports[0]
 
     variance_report: VarianceReport | None = None
@@ -973,6 +995,7 @@ def _cmd_grade_with_workspace(
             primary_report=primary_report,
             reports=reports,
             model=model,
+            transport=grader_transport,
         )
         _write_timing_and_finalize(
             workspace=workspace,

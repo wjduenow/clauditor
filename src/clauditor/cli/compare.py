@@ -189,7 +189,11 @@ def _print_blind_report(report, before_path: Path, after_path: Path) -> None:
 
 
 def _run_blind_compare(
-    before_path: Path, after_path: Path, spec_path: str, eval_path: str | None
+    before_path: Path,
+    after_path: Path,
+    spec_path: str,
+    eval_path: str | None,
+    transport: str = "auto",
 ) -> int:
     """Dispatch blind A/B comparison for a pair of ``.txt`` outputs.
 
@@ -276,6 +280,7 @@ def _run_blind_compare(
             skill_spec,
             output_a,
             output_b,
+            transport=transport,
         )
     )
     _print_blind_report(report, before_path, after_path)
@@ -333,7 +338,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
             )
             return 2
         return _run_blind_compare(
-            before_path, after_path, args.spec, args.eval
+            before_path,
+            after_path,
+            args.spec,
+            args.eval,
+            transport=getattr(args, "transport", "auto") or "auto",
         )
 
     if numeric_form and positional_form:

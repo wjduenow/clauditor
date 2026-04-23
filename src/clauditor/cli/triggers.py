@@ -114,7 +114,13 @@ def cmd_triggers(args: argparse.Namespace) -> int:
 
     from clauditor.triggers import test_triggers
 
-    report = asyncio.run(test_triggers(spec.eval_spec, model))
+    report = asyncio.run(
+        test_triggers(
+            spec.eval_spec,
+            model,
+            transport=getattr(args, "transport", "auto") or "auto",
+        )
+    )
 
     if args.json:
         data = {

@@ -214,7 +214,11 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
     # SuggestReport.api_error; response-parse errors via parse_error;
     # anchor errors via validation_errors. Distinct fields avoid the
     # brittle substring-match routing an earlier reviewer flagged.
-    report = await propose_edits(suggest_input, model=args.model)
+    report = await propose_edits(
+        suggest_input,
+        model=args.model,
+        transport=getattr(args, "transport", "auto") or "auto",
+    )
 
     # DEC-008 row 3: API / prompt-build failure.
     if report.api_error is not None:
