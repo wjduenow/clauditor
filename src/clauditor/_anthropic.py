@@ -29,10 +29,21 @@ uniform ``±25%`` jitter band.
 
 Per ``.claude/rules/monotonic-time-indirection.md`` the helper is
 async, so ``time.monotonic`` and ``asyncio.sleep`` are aliased at
-module load. Tests patch ``clauditor._anthropic._sleep`` and
-``clauditor._anthropic._rand_uniform`` rather than the stdlib
-originals so the asyncio event loop's own scheduler calls are not
-disturbed and tests do not burn wallclock.
+module load. Tests patch ``clauditor._anthropic._sleep``,
+``clauditor._anthropic._rand_uniform``, and
+``clauditor._anthropic._monotonic`` rather than the stdlib originals
+so the asyncio event loop's own scheduler calls are not disturbed and
+tests do not burn wallclock.
+
+CLI transport (US-003 of ``plans/super/86-claude-cli-transport.md``):
+``call_anthropic(prompt, model=..., transport="auto")`` accepts a
+``transport`` kwarg resolving to ``"api"`` (SDK path) or ``"cli"``
+(subprocess path via :func:`clauditor.runner._invoke_claude_cli`).
+The ``"auto"`` default picks CLI when ``shutil.which("claude")`` is
+set (DEC-001 subscription-first). CLI failures surface as
+:class:`ClaudeCLIError`, a subclass of :class:`AnthropicHelperError`
+so every existing ``except AnthropicHelperError:`` caller stays
+transport-blind.
 """
 
 from __future__ import annotations
@@ -40,13 +51,24 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import shutil
+import sys
+import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 # Module-level alias per .claude/rules/monotonic-time-indirection.md.
 # ``_sleep`` is patched in retry-branch tests to avoid real wallclock.
 # ``_rand_uniform`` lets tests pin jitter to deterministic values.
+# ``_monotonic`` lets tests pin duration measurements deterministically
+# without clobbering the asyncio event loop's own scheduler ticks.
 _sleep = asyncio.sleep
+_monotonic = time.monotonic
+
+# DEC-019: one-shot stderr announcement when ``transport="auto"``
+# resolves to CLI. Flipped to ``True`` after the first emission per
+# Python process; explicit ``transport="cli"`` never flips it.
+_announced_cli_transport = False
 
 
 def _rand_uniform(lo: float, hi: float) -> float:
@@ -97,6 +119,66 @@ class AnthropicAuthMissingError(Exception):
     make the routing a string-match hack instead of a structural
     ``except`` ladder.
     """
+
+
+class ClaudeCLIError(AnthropicHelperError):
+    """Raised by the CLI-transport branch of :func:`call_anthropic`.
+
+    Subclass of :class:`AnthropicHelperError` per DEC-006 of
+    ``plans/super/86-claude-cli-transport.md``: every existing
+    ``except AnthropicHelperError:`` call site stays transport-blind,
+    while future callers that want to branch on transport can
+    ``except ClaudeCLIError:``. Exit 3 mapping is inherited (no new
+    exit code per ``.claude/rules/llm-cli-exit-code-taxonomy.md``).
+
+    Attributes:
+        category: One of ``"rate_limit"``, ``"auth"``, ``"api"``, or
+            ``"transport"``. The first three mirror
+            :func:`clauditor.runner._classify_result_message`'s
+            output; ``"transport"`` covers subprocess-level failures
+            (binary missing, timeout, malformed output) that surface
+            before any stream-json ``result`` message classification.
+    """
+
+    def __init__(self, message: str, *, category: str) -> None:
+        super().__init__(message)
+        self.category = category
+
+
+# DEC-014: fixed per-category templates committed verbatim. Tests
+# assert substrings; any phrasing drift surfaces as a red test. The
+# machine-readable suffix ``(transport=cli, category=<cat>)`` is
+# parseable by log scrapers and future ``clauditor audit
+# --by-category`` segmentation without substring-matching exception
+# text. No stream-json ``result`` text is ever echoed into the
+# message (sanitization per #83 DEC-015).
+_CLI_ERROR_TEMPLATES: dict[str, str] = {
+    "rate_limit": (
+        "Anthropic rate limit exceeded (after retries). Try again "
+        "later. (transport=cli, category=rate_limit)"
+    ),
+    "auth": (
+        "Claude CLI authentication failed. Run `claude` interactively "
+        "to refresh credentials, or export ANTHROPIC_API_KEY and pass "
+        "--transport api. (transport=cli, category=auth)"
+    ),
+    "api": (
+        "Claude CLI returned an error (category=api). See `clauditor "
+        "doctor` for diagnostics. (transport=cli, category=api)"
+    ),
+    "transport": (
+        "Claude CLI subprocess failed (binary missing, timeout, or "
+        "malformed output). (transport=cli, category=transport)"
+    ),
+}
+
+
+# DEC-019: one-shot stderr line emitted when ``transport="auto"``
+# resolves to CLI. Committed verbatim so tests assert equality.
+_CLI_AUTO_ANNOUNCEMENT = (
+    "clauditor: using Claude CLI transport (subscription auth); "
+    "pass --transport api to opt out"
+)
 
 
 # Message template used by :func:`check_anthropic_auth`. DEC-011:
@@ -169,7 +251,19 @@ class AnthropicResult:
         output_tokens: See ``input_tokens``.
         raw_message: The underlying SDK response object, for callers
             that need content-list inspection beyond text blocks
-            (refusal handling, tool-use blocks, etc).
+            (refusal handling, tool-use blocks, etc). ``None`` under
+            CLI transport (DEC-007 of
+            ``plans/super/86-claude-cli-transport.md``) — the
+            subprocess output carries no SDK ``Message`` object.
+            Callers must tolerate ``None`` (US-002 regression guard).
+        source: Which transport produced this result. ``"api"`` for
+            the SDK path; ``"cli"`` for the subprocess path. DEC-007.
+        duration_seconds: Wall-clock time the successful attempt
+            took, measured via the :data:`_monotonic` alias so tests
+            can pin it deterministically. EXCLUDES retry sleeps — a
+            single-attempt 5 s call and a successful-after-retry
+            12 s call both report the successful attempt's own
+            duration (DEC-020).
     """
 
     response_text: str
@@ -177,6 +271,8 @@ class AnthropicResult:
     input_tokens: int = 0
     output_tokens: int = 0
     raw_message: Any = None
+    source: Literal["api", "cli"] = "api"
+    duration_seconds: float = 0.0
 
 
 def _compute_backoff(retry_index: int) -> float:
@@ -194,6 +290,46 @@ def _compute_backoff(retry_index: int) -> float:
     # bottom out near 0.75 — still positive, but we keep the guard in
     # case future formula changes flip the sign.
     return max(delay, 0.0)
+
+
+def _compute_retry_decision(
+    category: str, retry_index: int
+) -> Literal["retry", "raise"]:
+    """Return whether to retry a failure given its category + retry index.
+
+    Pure helper per ``.claude/rules/pure-compute-vs-io-split.md``.
+    Shared by the SDK and CLI transport branches so a failure with
+    the same category retries the same number of times regardless
+    of which transport produced it (DEC-005 retry parity).
+
+    Ladder (retry indices are 0-based — index ``i`` is "the decision
+    made before the ``i+1``-th attempt's delay"):
+
+    - ``"rate_limit"``: retry at indices 0, 1, 2; raise at 3 (matches
+      :data:`_RATE_LIMIT_MAX_RETRIES` = 3 — up to 3 retries ≡ 4
+      total attempts).
+    - ``"auth"``: always raise (no retry at any index).
+    - ``"api"``: retry at index 0; raise at 1 (one retry, matches
+      :data:`_SERVER_MAX_RETRIES` = 1 — used for 5xx SDK errors and
+      the analogous CLI ``api`` category).
+    - ``"connection"``: retry at index 0; raise at 1 (matches
+      :data:`_CONN_MAX_RETRIES` = 1 — SDK ``APIConnectionError``).
+    - ``"transport"``: retry at index 0; raise at 1 (CLI-only;
+      covers subprocess binary-missing, timeout, malformed output).
+    - Any other category: always raise (defensive default — an
+      unknown category is not something we should retry blindly).
+    """
+    if category == "rate_limit":
+        return "retry" if retry_index < _RATE_LIMIT_MAX_RETRIES else "raise"
+    if category == "auth":
+        return "raise"
+    if category == "api":
+        return "retry" if retry_index < _SERVER_MAX_RETRIES else "raise"
+    if category == "connection":
+        return "retry" if retry_index < _CONN_MAX_RETRIES else "raise"
+    if category == "transport":
+        return "retry" if retry_index < _CONN_MAX_RETRIES else "raise"
+    return "raise"
 
 
 def _body_excerpt(exc: Any) -> str:
@@ -249,7 +385,34 @@ def _extract_result(response: Any) -> AnthropicResult:
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         raw_message=response,
+        source="api",
     )
+
+
+def _resolve_transport(
+    transport: Literal["api", "cli", "auto"],
+) -> tuple[Literal["api", "cli"], bool]:
+    """Resolve an explicit or auto transport choice to ``"api"`` / ``"cli"``.
+
+    Returns ``(resolved, from_auto)`` where ``from_auto`` signals the
+    caller should consider emitting the DEC-019 announcement (the
+    announcement itself is additionally gated by the one-shot module
+    flag, handled in :func:`call_anthropic`).
+
+    - ``transport="api"`` → ``("api", False)``.
+    - ``transport="cli"`` → ``("cli", False)``.
+    - ``transport="auto"`` → picks CLI when ``shutil.which("claude")``
+      returns a path (DEC-001 subscription-first), else API.
+      ``from_auto`` is ``True`` so the caller can announce.
+    """
+    if transport == "api":
+        return "api", False
+    if transport == "cli":
+        return "cli", False
+    # "auto" per DEC-001.
+    if shutil.which("claude") is not None:
+        return "cli", True
+    return "api", True
 
 
 async def call_anthropic(
@@ -257,16 +420,57 @@ async def call_anthropic(
     *,
     model: str,
     max_tokens: int = 4096,
+    transport: Literal["api", "cli", "auto"] = "auto",
 ) -> AnthropicResult:
     """Issue a single-turn user prompt against ``model`` with retries.
 
     See module docstring for the retry policy. On success returns an
     :class:`AnthropicResult`; on any non-retriable or retry-exhausted
-    failure raises :class:`AnthropicHelperError` with a user-facing
-    message. ``ImportError`` is raised (not wrapped) when the
-    ``anthropic`` SDK is not installed so callers can surface the
-    existing "install with: pip install clauditor[grader]" hint.
+    failure raises :class:`AnthropicHelperError` (or its
+    :class:`ClaudeCLIError` subclass) with a user-facing message.
+    ``ImportError`` is raised (not wrapped) when the ``anthropic``
+    SDK is not installed so callers can surface the existing "install
+    with: pip install clauditor[grader]" hint.
+
+    Args:
+        prompt: Single-turn user prompt body.
+        model: Anthropic model name (e.g. ``"claude-sonnet-4-6"``).
+        max_tokens: Upper bound on response tokens. Defaults to 4096.
+        transport: Which transport to route through.
+
+            - ``"api"``: force the SDK (HTTP) path.
+            - ``"cli"``: force the subprocess path via
+              :func:`clauditor.runner._invoke_claude_cli`.
+            - ``"auto"`` (default): pick CLI when the ``claude``
+              binary is on PATH, else API (DEC-001 subscription-first).
+              The first ``auto → cli`` resolution per Python process
+              emits a one-shot stderr announcement (DEC-019).
     """
+    resolved, from_auto = _resolve_transport(transport)
+
+    # DEC-019: one-shot stderr announcement on ``auto → cli`` only.
+    # Explicit ``transport="cli"`` never announces (no surprise;
+    # caller chose it). Explicit ``transport="api"`` never announces.
+    if resolved == "cli" and from_auto:
+        global _announced_cli_transport
+        if not _announced_cli_transport:
+            print(_CLI_AUTO_ANNOUNCEMENT, file=sys.stderr)
+            _announced_cli_transport = True
+
+    if resolved == "cli":
+        return await _call_via_claude_cli(
+            prompt, model=model, max_tokens=max_tokens
+        )
+    return await _call_via_sdk(prompt, model=model, max_tokens=max_tokens)
+
+
+async def _call_via_sdk(
+    prompt: str,
+    *,
+    model: str,
+    max_tokens: int,
+) -> AnthropicResult:
+    """SDK (HTTP) transport branch. See :func:`call_anthropic` for policy."""
     try:
         from anthropic import (
             APIConnectionError,
@@ -302,6 +506,12 @@ async def call_anthropic(
     conn_retries = 0
 
     while True:
+        # DEC-020: duration measures the successful attempt's wall
+        # clock only, excluding retry sleeps. Reset ``start`` on
+        # every ``continue`` so a successful-after-retry call reports
+        # the final attempt's own duration, not the end-to-end wall
+        # clock.
+        start = _monotonic()
         try:
             response = await client.messages.create(
                 model=model,
@@ -378,4 +588,159 @@ async def call_anthropic(
                 "verify ANTHROPIC_API_KEY is set."
             ) from exc
 
-        return _extract_result(response)
+        duration = _monotonic() - start
+        result = _extract_result(response)
+        result.duration_seconds = duration
+        return result
+
+
+# CLI-transport default timeout. Matches :class:`SkillRunner`'s own
+# default and is ample for a grading call (per the bead's "If you
+# identify a better cwd choice ..." guidance — 180 s aligns with the
+# rest of the codebase).
+_CLI_TRANSPORT_TIMEOUT = 180
+
+
+async def _call_via_claude_cli(
+    prompt: str,
+    *,
+    model: str,  # noqa: ARG001 — accepted for signature parity; CLI
+    #                has its own model resolution via `claude -p`.
+    max_tokens: int,  # noqa: ARG001 — same; CLI does not take max_tokens.
+) -> AnthropicResult:
+    """CLI (subprocess) transport branch.
+
+    Routes the prompt through :func:`clauditor.runner._invoke_claude_cli`
+    in a thread (the helper is synchronous) and projects its
+    :class:`clauditor.runner.InvokeResult` onto :class:`AnthropicResult`.
+
+    Retry parity with the SDK branch per DEC-005: rate-limit up to 3
+    retries; auth no retry; api / 5xx one retry; transport-level
+    failures (binary missing, timeout, malformed output) one retry
+    then raise. All retry decisions go through
+    :func:`_compute_retry_decision` so SDK and CLI ladders stay
+    lockstep.
+
+    DEC-013: ``env=env_without_api_key(os.environ)`` — the parent's
+    ``ANTHROPIC_API_KEY`` is never inherited by the child
+    ``claude -p`` subprocess, preserving DEC-001's subscription-first
+    guarantee.
+
+    DEC-020: ``duration_seconds`` measures the successful attempt's
+    wall clock only, via the :data:`_monotonic` alias.
+
+    DEC-007: ``raw_message = None`` — the subprocess output carries
+    no SDK ``Message`` object. Callers audited in US-002 tolerate
+    ``None``.
+    """
+    # Imports deferred to call time so a module whose ``call_anthropic``
+    # users only ever hit the SDK branch does not pay the
+    # ``clauditor.runner`` import cost up-front. Mirrors the SDK
+    # branch's deferred ``anthropic`` import.
+    from clauditor.runner import _invoke_claude_cli, env_without_api_key
+
+    retry_counts: dict[str, int] = {
+        "rate_limit": 0,
+        "api": 0,
+        "transport": 0,
+    }
+
+    while True:
+        start = _monotonic()
+        # ``_invoke_claude_cli`` is synchronous (subprocess + blocking
+        # stdout read). Run it in a thread so the asyncio event loop
+        # stays responsive (important for ``asyncio.gather`` fan-outs
+        # like ``blind_compare``'s two parallel judges — DEC-010).
+        invoke = await asyncio.to_thread(
+            _invoke_claude_cli,
+            prompt,
+            cwd=None,
+            env=env_without_api_key(os.environ),
+            timeout=_CLI_TRANSPORT_TIMEOUT,
+            claude_bin="claude",
+            allow_hang_heuristic=False,
+        )
+        duration = _monotonic() - start
+
+        category = _classify_invoke_result(invoke)
+        if category is None:
+            # Success path.
+            return AnthropicResult(
+                response_text=invoke.output,
+                text_blocks=[invoke.output] if invoke.output else [],
+                input_tokens=invoke.input_tokens,
+                output_tokens=invoke.output_tokens,
+                raw_message=None,
+                source="cli",
+                duration_seconds=duration,
+            )
+
+        # Decide retry vs raise using the shared ladder.
+        retry_index = retry_counts.get(category, 0)
+        decision = _compute_retry_decision(category, retry_index)
+        if decision == "raise":
+            template = _CLI_ERROR_TEMPLATES.get(
+                category, _CLI_ERROR_TEMPLATES["transport"]
+            )
+            # DEC-014: preserve ``__cause__`` via an inner
+            # ``RuntimeError`` so debugging tools can still find
+            # the original invoke result (as a plain RuntimeError
+            # wrapping the sanitized invoke.error). The
+            # user-facing message is the fixed template; no
+            # stream-json ``result`` text leaks.
+            cause = RuntimeError(
+                f"CLI transport failure: category={category}, "
+                f"exit_code={invoke.exit_code}, "
+                f"error={invoke.error!r}"
+            )
+            raise ClaudeCLIError(template, category=category) from cause
+
+        if category in retry_counts:
+            retry_counts[category] += 1
+        delay = _compute_backoff(retry_index)
+        await _sleep(delay)
+        continue
+
+
+def _classify_invoke_result(invoke: Any) -> str | None:
+    """Classify a :class:`clauditor.runner.InvokeResult` into a retry category.
+
+    Returns ``None`` when the invocation succeeded; otherwise returns
+    one of ``"rate_limit"``, ``"auth"``, ``"api"``, or ``"transport"``.
+
+    Success vs failure: follows :attr:`SkillResult.succeeded`'s spirit
+    — a run with zero exit code, no error text, no error category, and
+    non-empty stripped output is a success. Any other shape is a
+    failure, and the category is derived from:
+
+    - ``invoke.error_category == "rate_limit"`` → ``"rate_limit"``.
+    - ``invoke.error_category == "auth"`` → ``"auth"``.
+    - ``invoke.error_category == "api"`` → ``"api"``.
+    - Any transport-level failure (timeout, subprocess, empty output
+      with no classification) → ``"transport"``.
+    """
+    # Transport-level "no output, no classification" (FileNotFoundError
+    # on the binary, empty stream, or a timeout kill that hit before any
+    # result message) → transport.
+    if invoke.exit_code == -1:
+        return "transport"
+    if invoke.error_category == "timeout":
+        return "transport"
+    if invoke.error_category == "rate_limit":
+        return "rate_limit"
+    if invoke.error_category == "auth":
+        return "auth"
+    if invoke.error_category == "api":
+        return "api"
+    if invoke.error_category == "subprocess":
+        return "transport"
+    # A non-zero exit with no classification is a transport-level
+    # failure (the subprocess died but the stream-json parser never
+    # classified an error).
+    if invoke.exit_code != 0:
+        return "transport"
+    # Zero exit, no classification, but empty output → transport
+    # (malformed stream, or the CLI emitted no assistant text).
+    if not (invoke.output or "").strip():
+        return "transport"
+    return None

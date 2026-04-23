@@ -227,6 +227,33 @@ def _dummy_anthropic_api_key(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-dummy-key-for-ci")
 
 
+@pytest.fixture(autouse=True)
+def _force_api_transport_in_tests(monkeypatch):
+    """Force ``call_anthropic(transport="auto")`` to resolve to API in tests.
+
+    #86 US-003 added a CLI transport branch to ``call_anthropic`` that
+    routes through ``claude -p`` when ``shutil.which("claude")``
+    returns a path (DEC-001 subscription-first). On developer machines
+    where ``claude`` is installed, the ``auto`` default would otherwise
+    spawn a real subprocess during tests that mock only the SDK seam
+    (``anthropic.AsyncAnthropic``), producing wildly different results
+    and hanging the suite.
+
+    This autouse fixture patches ``clauditor._anthropic.shutil.which``
+    to return ``None`` so the ``auto`` branch deterministically resolves
+    to API. Tests that exercise the CLI transport specifically
+    (``TestCallViaClaudeCli``, ``TestAutoTransportResolution``,
+    ``TestStderrAnnouncement`` in ``tests/test_anthropic.py``)
+    re-patch ``shutil.which`` inside the test body to override this
+    default.
+    """
+    import clauditor._anthropic as _anthropic
+
+    monkeypatch.setattr(
+        _anthropic.shutil, "which", lambda name: None
+    )
+
+
 @pytest.fixture
 def sample_eval_data() -> dict:
     """Return a dict matching eval.json format with all fields populated."""
