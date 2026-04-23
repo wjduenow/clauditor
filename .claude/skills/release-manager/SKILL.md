@@ -40,6 +40,18 @@ Run these checks and STOP if any fail — report the problem clearly and do not 
    - Full: `git fetch origin main && git status` must show "up to date"
 3. **Tests pass**: `uv run pytest --cov=clauditor --cov-report=term-missing -q`
 
+**Report a pre-flight summary** — always, even when every check passes. Render it as:
+
+```
+Pre-flight checks:
+- Branch (dev|main): PASS|FAIL
+- Clean working tree: PASS|FAIL
+- Up to date with origin: PASS|FAIL
+- Tests pass: PASS|FAIL
+```
+
+Then continue to "Determine version" (on all-PASS) or STOP with the failing check highlighted.
+
 ## Determine version
 
 Read `pyproject.toml` and extract the current version.
