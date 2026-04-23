@@ -40,6 +40,54 @@ def _positive_int(value: str) -> int:
     return ivalue
 
 
+def _transport_choice(value: str) -> str:
+    """argparse type: accept one of ``"api"``, ``"cli"``, ``"auto"``.
+
+    DEC-012 of ``plans/super/86-claude-cli-transport.md``. Shared
+    across the six LLM-mediated commands (``grade``, ``extract``,
+    ``propose-eval``, ``suggest``, ``triggers``, ``compare``) so
+    help text + error messages stay consistent.
+    """
+    if value not in ("api", "cli", "auto"):
+        raise argparse.ArgumentTypeError(
+            f"must be one of 'api', 'cli', 'auto', got {value!r}"
+        )
+    return value
+
+
+def _resolve_grader_transport(args: argparse.Namespace, eval_spec=None) -> str:
+    """Resolve grader transport using four-layer precedence.
+
+    CLI flag > ``CLAUDITOR_TRANSPORT`` env > ``EvalSpec.transport`` > default
+    ``"auto"``. Normalizes whitespace-only env values to ``None`` so they are
+    treated as unset, matching the ``spec.run`` seam in
+    ``src/clauditor/spec.py``.
+
+    ``eval_spec`` is the loaded ``EvalSpec`` (or ``None`` when the calling
+    command has no eval spec — e.g. ``suggest``, ``propose-eval``).
+
+    Raises ``SystemExit(2)`` on invalid ``CLAUDITOR_TRANSPORT`` values (e.g.
+    ``CLAUDITOR_TRANSPORT=foo``). Printing the error to stderr before exit
+    centralizes the routing so all six LLM-mediated commands share one
+    error surface.
+    """
+    import os
+
+    from clauditor._anthropic import resolve_transport
+
+    env_transport = os.environ.get("CLAUDITOR_TRANSPORT")
+    if env_transport is not None and env_transport.strip() == "":
+        env_transport = None
+    spec_transport = eval_spec.transport if eval_spec is not None else None
+    try:
+        return resolve_transport(
+            getattr(args, "transport", None), env_transport, spec_transport
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
 def _append_validate_history(
     skill_name: str,
     *,

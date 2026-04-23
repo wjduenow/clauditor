@@ -697,6 +697,7 @@ async def _single_propose_attempt(
     model: str,
     max_tokens: int,
     spec_dir: Path,
+    transport: str = "auto",
 ) -> _AttemptResult:
     """Execute one ``call_anthropic`` + parse + validate pass.
 
@@ -730,7 +731,7 @@ async def _single_propose_attempt(
 
     try:
         result = await call_anthropic(
-            prompt, model=model, max_tokens=max_tokens
+            prompt, model=model, max_tokens=max_tokens, transport=transport
         )
     except Exception as exc:  # noqa: BLE001 — never raise out of propose_eval
         return _AttemptResult(
@@ -783,6 +784,7 @@ async def propose_eval(
     model: str = DEFAULT_PROPOSE_EVAL_MODEL,
     max_tokens: int = 4096,
     spec_dir: Path | None = None,
+    transport: str = "auto",
 ) -> ProposeEvalReport:
     """Call Sonnet, parse the response, validate the spec, return a report.
 
@@ -864,6 +866,7 @@ async def propose_eval(
         model=model,
         max_tokens=max_tokens,
         spec_dir=effective_spec_dir,
+        transport=transport,
     )
 
     # DEC-004: repair fires on validation errors only. An API error on
@@ -927,6 +930,7 @@ async def propose_eval(
         model=model,
         max_tokens=max_tokens,
         spec_dir=effective_spec_dir,
+        transport=transport,
     )
 
     attempts = [first.metrics, second.metrics]

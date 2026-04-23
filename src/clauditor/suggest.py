@@ -922,6 +922,7 @@ async def propose_edits(
     *,
     model: str = DEFAULT_SUGGEST_MODEL,
     max_tokens: int = 4096,
+    transport: str = "auto",
 ) -> SuggestReport:
     """Call Sonnet, parse the response, validate anchors, return a report.
 
@@ -984,7 +985,7 @@ async def propose_edits(
 
     try:
         result = await call_anthropic(
-            prompt, model=model, max_tokens=max_tokens
+            prompt, model=model, max_tokens=max_tokens, transport=transport
         )
     except Exception as exc:  # noqa: BLE001 — never raise out of propose_edits
         return _empty_report(api_error=f"anthropic API error: {exc!r}")

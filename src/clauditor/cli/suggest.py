@@ -6,7 +6,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from clauditor._anthropic import AnthropicAuthMissingError, check_anthropic_auth
+from clauditor._anthropic import (
+    AnthropicAuthMissingError,
+    check_any_auth_available,
+)
 from clauditor.paths import resolve_clauditor_dir
 from clauditor.suggest import (
     NoPriorGradeError,
@@ -22,7 +25,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``suggest`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int
+    from clauditor.cli import _positive_int, _transport_choice
 
     p_suggest = subparsers.add_parser(
         "suggest",
@@ -63,6 +66,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Log extra bundle/token details to stderr",
     )
+    p_suggest.add_argument(
+        "--transport",
+        type=_transport_choice,
+        default=None,
+        choices=("api", "cli", "auto"),
+        help=(
+            "Override the Anthropic call transport: 'api' (HTTP SDK), "
+            "'cli' (subprocess via claude binary), or 'auto' (prefer "
+            "CLI when available). Four-layer precedence: this flag > "
+            "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
+            "'auto'."
+        ),
+    )
 
 
 def cmd_suggest(args: argparse.Namespace) -> int:
@@ -85,10 +101,10 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
     - exit 1 when no prior grading.json exists or the proposer returns
       unparseable JSON (no sidecar).
     - exit 2 when any proposal anchor fails validation (no sidecar),
-      OR when ``ANTHROPIC_API_KEY`` is unset — the pre-flight
-      ``check_anthropic_auth("suggest")`` guard raises
+      OR when no usable authentication is available — the pre-flight
+      ``check_any_auth_available("suggest")`` guard raises
       ``AnthropicAuthMissingError`` before any API call per #83
-      DEC-002/DEC-011 (no sidecar).
+      DEC-002/DEC-011 and #86 DEC-008 (no sidecar).
     - exit 3 on Anthropic API errors (no sidecar).
     """
     skill_path = Path(args.skill)
@@ -163,13 +179,14 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
         )
         return 0
 
-    # #83 DEC-002/DEC-011: fail fast if ANTHROPIC_API_KEY is missing.
+    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
+    # ANTHROPIC_API_KEY nor the claude CLI binary is available.
     # ``suggest`` has no --dry-run; the guard lands AFTER the zero-
     # failing-signals early-exit (so the "all passed" path still works
-    # without a key — it never calls Anthropic) and BEFORE the
+    # without auth — it never calls Anthropic) and BEFORE the
     # propose_edits orchestrator.
     try:
-        check_anthropic_auth("suggest")
+        check_any_auth_available("suggest")
     except AnthropicAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -197,7 +214,13 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
     # SuggestReport.api_error; response-parse errors via parse_error;
     # anchor errors via validation_errors. Distinct fields avoid the
     # brittle substring-match routing an earlier reviewer flagged.
-    report = await propose_edits(suggest_input, model=args.model)
+    from clauditor.cli import _resolve_grader_transport
+
+    report = await propose_edits(
+        suggest_input,
+        model=args.model,
+        transport=_resolve_grader_transport(args),
+    )
 
     # DEC-008 row 3: API / prompt-build failure.
     if report.api_error is not None:

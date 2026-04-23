@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from clauditor import history
-from clauditor._anthropic import AnthropicAuthMissingError, check_anthropic_auth
+from clauditor._anthropic import (
+    AnthropicAuthMissingError,
+    check_any_auth_available,
+)
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.benchmark import Benchmark, compute_benchmark
 from clauditor.paths import resolve_clauditor_dir
@@ -30,7 +33,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``grade`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int, _unit_float
+    from clauditor.cli import _positive_int, _transport_choice, _unit_float
 
     p_grade = subparsers.add_parser(
         "grade", help="Run Layer 3 quality grading against a skill's output"
@@ -146,6 +149,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "Defaults to EvalSpec.timeout or 180s."
         ),
     )
+    p_grade.add_argument(
+        "--transport",
+        type=_transport_choice,
+        default=None,
+        choices=("api", "cli", "auto"),
+        help=(
+            "Override the Anthropic call transport: 'api' (HTTP SDK), "
+            "'cli' (subprocess via claude binary), or 'auto' (prefer "
+            "CLI when available). Four-layer precedence: this flag > "
+            "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
+            "'auto'."
+        ),
+    )
 
 
 def _load_and_validate_grade_args(
@@ -234,13 +250,14 @@ def cmd_grade(args: argparse.Namespace) -> int:
         print(f"Prompt:\n{prompt}")
         return 0
 
-    # #83 DEC-002/DEC-011: fail fast if ANTHROPIC_API_KEY is missing.
-    # Guard lands AFTER --dry-run (dry-run is a cost-free preview — no
-    # API call, no key needed) and BEFORE allocate_iteration so we do
-    # not leave an abandoned iteration-N-tmp/ staging dir behind when
-    # the guard fires.
+    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
+    # ANTHROPIC_API_KEY nor the claude CLI binary is available. Guard
+    # lands AFTER --dry-run (dry-run is a cost-free preview — no API
+    # call, no key needed) and BEFORE allocate_iteration so we do not
+    # leave an abandoned iteration-N-tmp/ staging dir behind when the
+    # guard fires.
     try:
-        check_anthropic_auth("grade")
+        check_any_auth_available("grade")
     except AnthropicAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -371,9 +388,9 @@ def _run_skill_variants(
     # lazily to avoid a circular import at module load.
     from clauditor.cli import _render_skill_error
 
-    # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags through
-    # to every ``spec.run`` invocation (primary + variance). Defaults
-    # are both None (today's behavior).
+    # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout/transport flags
+    # through to every ``spec.run`` invocation (primary + variance).
+    # Defaults are all None (today's behavior).
     env_override = (
         env_without_api_key()
         if getattr(args, "no_api_key", False)
@@ -524,6 +541,7 @@ def _write_workspace_sidecars(
     primary_report: GradingReport,
     reports: list[GradingReport],
     model: str,
+    transport: str = "auto",
 ) -> Benchmark | None:
     """Write grading/assertions/extraction/baseline/benchmark sidecars.
 
@@ -559,7 +577,7 @@ def _write_workspace_sidecars(
     )
 
     if spec.eval_spec.sections:
-        _write_extraction_sidecar(skill_dir, primary_text, spec)
+        _write_extraction_sidecar(skill_dir, primary_text, spec, transport=transport)
 
     if getattr(args, "baseline", False):
         # Mirror the primary arm's env/timeout wiring so --no-api-key
@@ -678,7 +696,7 @@ def _write_assertions_sidecar(
 
 
 def _write_extraction_sidecar(
-    skill_dir: Path, primary_text: str, spec: SkillSpec
+    skill_dir: Path, primary_text: str, spec: SkillSpec, transport: str = "auto"
 ) -> None:
     """Run Layer 2 schema extraction and persist ``extraction.json``."""
     import asyncio
@@ -690,6 +708,7 @@ def _write_extraction_sidecar(
             primary_text,
             spec.eval_spec,
             skill_name=spec.skill_name,
+            transport=transport,
         )
     )
     (skill_dir / "extraction.json").write_text(
@@ -862,6 +881,7 @@ def _grade_all_runs(
     run_outputs: list[tuple[str, list[dict]]],
     spec: SkillSpec,
     model: str,
+    transport: str = "auto",
 ) -> list[GradingReport]:
     """Grade every run's output concurrently and return the per-run reports."""
     import asyncio
@@ -877,6 +897,7 @@ def _grade_all_runs(
                         spec.eval_spec,
                         model,
                         thresholds=spec.eval_spec.grade_thresholds,
+                        transport=transport,
                     )
                     for text, _ev in run_outputs
                 ]
@@ -910,8 +931,12 @@ def _cmd_grade_with_workspace(
     if error_rc is not None:
         return error_rc
 
+    from clauditor.cli import _resolve_grader_transport
+
+    grader_transport = _resolve_grader_transport(args, spec.eval_spec)
+
     primary_text = run_outputs[0][0]
-    reports = _grade_all_runs(run_outputs, spec, model)
+    reports = _grade_all_runs(run_outputs, spec, model, transport=grader_transport)
     primary_report = reports[0]
 
     variance_report: VarianceReport | None = None
@@ -956,6 +981,7 @@ def _cmd_grade_with_workspace(
             primary_report=primary_report,
             reports=reports,
             model=model,
+            transport=grader_transport,
         )
         _write_timing_and_finalize(
             workspace=workspace,

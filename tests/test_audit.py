@@ -723,6 +723,202 @@ class TestSchemaVersion:
         assert payload["schema_version"] == 1
 
 
+class TestAuditLegacyCompat:
+    """US-006 (#86): the audit loader accepts both schema_version=1 and
+    schema_version=2 for grading.json and extraction.json sidecars. A
+    v1 sidecar (no ``transport_source``) loads cleanly; a v2 sidecar
+    (with ``transport_source``) also loads cleanly. Pre-#86 iterations
+    produce identical audit reports (backward compat)."""
+
+    def _write_grading_sidecar(
+        self, skill_dir: Path, *, version: int,
+        transport_source: str | None,
+    ) -> None:
+        payload: dict = {
+            "schema_version": version,
+            "skill_name": "s",
+            "model": "claude-sonnet-4-6",
+            "results": [
+                {
+                    "id": "quality",
+                    "criterion": "is good",
+                    "passed": True,
+                    "score": 0.9,
+                    "evidence": "e",
+                    "reasoning": "r",
+                },
+            ],
+        }
+        if transport_source is not None:
+            payload["transport_source"] = transport_source
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "grading.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+
+    def _write_extraction_sidecar(
+        self, skill_dir: Path, *, version: int,
+        transport_source: str | None,
+    ) -> None:
+        payload: dict = {
+            "schema_version": version,
+            "skill_name": "s",
+            "model": "haiku",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {
+                "v1": [
+                    {
+                        "field_name": "a",
+                        "section": "Venues",
+                        "tier": "primary",
+                        "entry_index": 0,
+                        "required": True,
+                        "passed": True,
+                        "presence_passed": True,
+                        "format_passed": None,
+                        "evidence": "v",
+                    },
+                ],
+            },
+        }
+        if transport_source is not None:
+            payload["transport_source"] = transport_source
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "extraction.json").write_text(
+            json.dumps(payload, indent=2)
+        )
+
+    def test_loads_v1_grading_no_transport_source(
+        self, tmp_path: Path
+    ) -> None:
+        """A legacy v1 grading.json (no ``transport_source``) loads
+        cleanly. The record shows up in the audit aggregate as
+        ``(L3, quality)``."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        self._write_grading_sidecar(
+            skill_dir, version=1, transport_source=None
+        )
+        records, skipped = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L3"
+        assert records[0].id == "quality"
+        assert records[0].passed is True
+
+    def test_loads_v1_extraction_no_transport_source(
+        self, tmp_path: Path
+    ) -> None:
+        """A legacy v1 extraction.json (no ``transport_source``) loads
+        cleanly."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        self._write_extraction_sidecar(
+            skill_dir, version=1, transport_source=None
+        )
+        records, skipped = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L2"
+        assert records[0].id == "v1"
+        assert records[0].passed is True
+
+    def test_loads_v2_grading_with_transport_source_cli(
+        self, tmp_path: Path
+    ) -> None:
+        """A v2 grading.json with ``transport_source="cli"`` loads
+        cleanly."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        self._write_grading_sidecar(
+            skill_dir, version=2, transport_source="cli"
+        )
+        records, skipped = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L3"
+        assert records[0].id == "quality"
+
+    def test_loads_v2_extraction_with_transport_source_cli(
+        self, tmp_path: Path
+    ) -> None:
+        """A v2 extraction.json with ``transport_source="cli"`` loads
+        cleanly."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        self._write_extraction_sidecar(
+            skill_dir, version=2, transport_source="cli"
+        )
+        records, skipped = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L2"
+
+    def test_loads_v2_grading_with_transport_source_api(
+        self, tmp_path: Path
+    ) -> None:
+        """A v2 grading.json with ``transport_source="api"`` loads
+        cleanly (the common case post-#86)."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        self._write_grading_sidecar(
+            skill_dir, version=2, transport_source="api"
+        )
+        records, skipped = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+
+    def test_grading_unknown_schema_version_still_skipped(
+        self, tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """A grading.json with ``schema_version=3`` (unknown) must be
+        skipped with a stderr warning."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        self._write_grading_sidecar(
+            skill_dir, version=3, transport_source="api"
+        )
+        records, skipped = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert records == []
+        assert skipped == 1
+        err = capsys.readouterr().err
+        assert "schema_version=3" in err
+
+    def test_extraction_unknown_schema_version_still_skipped(
+        self, tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """An extraction.json with ``schema_version=3`` (unknown) must
+        be skipped with a stderr warning."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        self._write_extraction_sidecar(
+            skill_dir, version=3, transport_source="api"
+        )
+        records, skipped = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert records == []
+        assert skipped == 1
+        err = capsys.readouterr().err
+        assert "schema_version=3" in err
+
+
 class TestCmdAuditInvalidSkillName:
     def test_rejects_traversal_skill_name(
         self,

@@ -208,23 +208,70 @@ def _isolate_clauditor_history(tmp_path, monkeypatch):
 def _dummy_anthropic_api_key(monkeypatch):
     """Set a dummy ``ANTHROPIC_API_KEY`` for every test.
 
-    #83 added a pre-flight ``check_anthropic_auth`` guard that fires exit
-    2 whenever the env var is absent. The vast majority of clauditor
-    tests mock the Anthropic seam (``call_anthropic``) and do not hit
-    the network — they never needed a real key, and historically ran
-    in CI with ``ANTHROPIC_API_KEY`` unset. This autouse fixture sets
-    a dummy value so the guard passes cleanly for those tests.
+    #83 added a pre-flight ``check_anthropic_auth`` guard (relaxed in #86
+    to ``check_any_auth_available``) that fires exit 2 whenever no usable
+    auth is available. The vast majority of clauditor tests mock the
+    Anthropic seam (``call_anthropic``) and do not hit the network —
+    they never needed a real key, and historically ran in CI with
+    ``ANTHROPIC_API_KEY`` unset. This autouse fixture sets a dummy value
+    so the guard passes cleanly for those tests.
 
     Tests that specifically exercise the guard (``TestAuthGuardMissingKey``
-    in ``tests/test_cli_auth_guard.py``, ``TestCheckAnthropicAuth`` and
-    ``TestCallAnthropicTypeError`` in ``tests/test_anthropic.py``,
-    ``TestClauditorFixturesAuthGuard`` in ``tests/test_pytest_plugin.py``,
-    and ``TestRegressionNoApiKey`` in ``tests/test_cli_auth_guard.py``)
-    call ``monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)``
-    inside the test body — same ``monkeypatch`` instance as this
-    fixture, so ``delenv`` cleanly removes what ``setenv`` just set.
+    in ``tests/test_cli_auth_guard.py``, ``TestCheckAnyAuthAvailable``,
+    ``TestCheckApiKeyOnly``, and ``TestCallAnthropicTypeError`` in
+    ``tests/test_anthropic.py``, ``TestClauditorFixturesAuthGuard`` in
+    ``tests/test_pytest_plugin.py``, and ``TestRegressionNoApiKey`` in
+    ``tests/test_cli_auth_guard.py``) call
+    ``monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)`` inside
+    the test body — same ``monkeypatch`` instance as this fixture, so
+    ``delenv`` cleanly removes what ``setenv`` just set.
     """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-dummy-key-for-ci")
+
+
+@pytest.fixture(autouse=True)
+def _clear_fixture_allow_cli(monkeypatch):
+    """Ensure ``CLAUDITOR_FIXTURE_ALLOW_CLI`` is unset for every test.
+
+    #86 DEC-009 / US-005: the three grading fixtures
+    (``clauditor_grader``, ``clauditor_triggers``,
+    ``clauditor_blind_compare``) default to the strict API-key-only
+    guard unless ``CLAUDITOR_FIXTURE_ALLOW_CLI`` is set in the env. If
+    a user has it exported in their shell, every fixture test would
+    silently switch to the relaxed guard and mask a CI-config
+    regression. This autouse fixture deletes it so every test starts
+    from a deterministic baseline; tests that exercise the opt-in
+    branch set it explicitly via ``monkeypatch.setenv`` inside the
+    test body.
+    """
+    monkeypatch.delenv("CLAUDITOR_FIXTURE_ALLOW_CLI", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _force_api_transport_in_tests(monkeypatch):
+    """Force ``call_anthropic(transport="auto")`` to resolve to API in tests.
+
+    #86 US-003 added a CLI transport branch to ``call_anthropic`` that
+    routes through ``claude -p`` when ``shutil.which("claude")``
+    returns a path (DEC-001 subscription-first). On developer machines
+    where ``claude`` is installed, the ``auto`` default would otherwise
+    spawn a real subprocess during tests that mock only the SDK seam
+    (``anthropic.AsyncAnthropic``), producing wildly different results
+    and hanging the suite.
+
+    This autouse fixture patches ``clauditor._anthropic.shutil.which``
+    to return ``None`` so the ``auto`` branch deterministically resolves
+    to API. Tests that exercise the CLI transport specifically
+    (``TestCallViaClaudeCli``, ``TestAutoTransportResolution``,
+    ``TestStderrAnnouncement`` in ``tests/test_anthropic.py``)
+    re-patch ``shutil.which`` inside the test body to override this
+    default.
+    """
+    import clauditor._anthropic as _anthropic
+
+    monkeypatch.setattr(
+        _anthropic.shutil, "which", lambda name: None
+    )
 
 
 @pytest.fixture

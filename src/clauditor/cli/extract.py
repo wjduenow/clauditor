@@ -8,11 +8,18 @@ import sys
 from pathlib import Path
 
 from clauditor import history
-from clauditor._anthropic import AnthropicAuthMissingError, check_anthropic_auth
+from clauditor._anthropic import (
+    AnthropicAuthMissingError,
+    check_any_auth_available,
+)
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``extract`` subparser."""
+    # Shared argparse type helpers live in the package __init__; import
+    # lazily to avoid a circular import at module load time.
+    from clauditor.cli import _transport_choice
+
     p_extract = subparsers.add_parser(
         "extract", help="Layer 2: LLM schema extraction"
     )
@@ -35,6 +42,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--verbose",
         action="store_true",
         help="Print raw Haiku JSON under failing assertions when available",
+    )
+    p_extract.add_argument(
+        "--transport",
+        type=_transport_choice,
+        default=None,
+        choices=("api", "cli", "auto"),
+        help=(
+            "Override the Anthropic call transport: 'api' (HTTP SDK), "
+            "'cli' (subprocess via claude binary), or 'auto' (prefer "
+            "CLI when available). Four-layer precedence: this flag > "
+            "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
+            "'auto'."
+        ),
     )
 
 
@@ -74,11 +94,12 @@ def cmd_extract(args: argparse.Namespace) -> int:
         print(f"Prompt:\n{prompt}")
         return 0
 
-    # #83 DEC-002/DEC-011: fail fast if ANTHROPIC_API_KEY is missing.
-    # Guard lands AFTER --dry-run (dry-run is a cost-free preview — no
-    # API call, no key needed) and BEFORE extract_and_grade.
+    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
+    # ANTHROPIC_API_KEY nor the claude CLI binary is available. Guard
+    # lands AFTER --dry-run (dry-run is a cost-free preview — no API
+    # call, no key needed) and BEFORE extract_and_grade.
     try:
-        check_anthropic_auth("extract")
+        check_any_auth_available("extract")
     except AnthropicAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -112,10 +133,17 @@ def cmd_extract(args: argparse.Namespace) -> int:
             return 1
         output = skill_result.output
 
+    # Resolve transport for the grader call using the four-layer precedence.
+    from clauditor.cli import _resolve_grader_transport
+
+    grader_transport = _resolve_grader_transport(args, spec.eval_spec)
+
     # Extract and grade
     from clauditor.grader import extract_and_grade
 
-    results = asyncio.run(extract_and_grade(output, spec.eval_spec, model))
+    results = asyncio.run(
+        extract_and_grade(output, spec.eval_spec, model, transport=grader_transport)
+    )
 
     # Record history (US-005). Extract does not compute Layer 3
     # pass_rate/mean_score, so those are None (DEC-013).
