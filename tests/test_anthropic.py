@@ -28,6 +28,7 @@ from clauditor._anthropic import (
     AnthropicResult,
     ClaudeCLIError,
     _body_excerpt,
+    _classify_invoke_result,
     _compute_backoff,
     _compute_retry_decision,
     _extract_result,
@@ -1577,3 +1578,58 @@ class TestResolveTransport:
     def test_env_auto_overrides_spec_cli(self) -> None:
         """Env override of ``"auto"`` wins over spec even though spec is set."""
         assert resolve_transport(None, "auto", "cli") == "auto"
+
+
+class TestClassifyInvokeResult:
+    """Pure-function unit tests for ``_classify_invoke_result``.
+
+    Covers the three branches that live-runner tests don't reach:
+    - ``error_category == "timeout"``  → ``"transport"``
+    - ``error_category == "subprocess"`` → ``"transport"``
+    - non-zero ``exit_code`` with no classification → ``"transport"``
+    """
+
+    def _make_invoke(self, **kwargs):
+        from types import SimpleNamespace
+
+        defaults = dict(exit_code=0, error_category=None, output="some output")
+        defaults.update(kwargs)
+        return SimpleNamespace(**defaults)
+
+    def test_timeout_category_returns_transport(self) -> None:
+        invoke = self._make_invoke(exit_code=1, error_category="timeout")
+        assert _classify_invoke_result(invoke) == "transport"
+
+    def test_subprocess_category_returns_transport(self) -> None:
+        invoke = self._make_invoke(exit_code=1, error_category="subprocess")
+        assert _classify_invoke_result(invoke) == "transport"
+
+    def test_nonzero_exit_no_category_returns_transport(self) -> None:
+        invoke = self._make_invoke(exit_code=1, error_category=None)
+        assert _classify_invoke_result(invoke) == "transport"
+
+    def test_rate_limit_category_returns_rate_limit(self) -> None:
+        invoke = self._make_invoke(exit_code=1, error_category="rate_limit")
+        assert _classify_invoke_result(invoke) == "rate_limit"
+
+    def test_auth_category_returns_auth(self) -> None:
+        invoke = self._make_invoke(exit_code=1, error_category="auth")
+        assert _classify_invoke_result(invoke) == "auth"
+
+    def test_api_category_returns_api(self) -> None:
+        invoke = self._make_invoke(exit_code=1, error_category="api")
+        assert _classify_invoke_result(invoke) == "api"
+
+    def test_exit_minus_one_returns_transport(self) -> None:
+        invoke = self._make_invoke(exit_code=-1, error_category=None, output="")
+        assert _classify_invoke_result(invoke) == "transport"
+
+    def test_success_returns_none(self) -> None:
+        invoke = self._make_invoke(
+            exit_code=0, error_category=None, output="result text"
+        )
+        assert _classify_invoke_result(invoke) is None
+
+    def test_empty_output_zero_exit_returns_transport(self) -> None:
+        invoke = self._make_invoke(exit_code=0, error_category=None, output="   ")
+        assert _classify_invoke_result(invoke) == "transport"

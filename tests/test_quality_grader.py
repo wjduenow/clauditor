@@ -2656,4 +2656,54 @@ class TestCombineBlindResults:
         assert report.duration_seconds == pytest.approx(3.14)
         assert report.model == "claude-sonnet-4-6"
 
+    def test_transport_source_default_api(self):
+        """Default ``transport_source`` is ``"api"``."""
+        report = combine_blind_results(
+            parsed1=self._parsed(),
+            parsed2=self._parsed(),
+            text1="t1",
+            text2="t2",
+            run1_mapping="ab->12",
+            run2_mapping="ab->21",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+        )
+        assert report.transport_source == "api"
+
+    def test_transport_source_mixed_is_propagated(self):
+        """``transport_source="mixed"`` stamps the BlindReport (DEC-018)."""
+        report = combine_blind_results(
+            parsed1=self._parsed(),
+            parsed2=self._parsed(),
+            text1="t1",
+            text2="t2",
+            run1_mapping="ab->12",
+            run2_mapping="ab->21",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+            transport_source="mixed",
+        )
+        assert report.transport_source == "mixed"
+
+    def test_transport_source_cli_is_propagated(self):
+        """``transport_source="cli"`` stamps the BlindReport."""
+        report = combine_blind_results(
+            parsed1=self._parsed(),
+            parsed2=self._parsed(),
+            text1="t1",
+            text2="t2",
+            run1_mapping="ab->12",
+            run2_mapping="ab->21",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+            transport_source="cli",
+        )
+        assert report.transport_source == "cli"
+
 

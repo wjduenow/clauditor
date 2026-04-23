@@ -55,6 +55,30 @@ def _transport_choice(value: str) -> str:
     return value
 
 
+def _resolve_grader_transport(args: argparse.Namespace, eval_spec=None) -> str:
+    """Resolve grader transport using four-layer precedence.
+
+    CLI flag > ``CLAUDITOR_TRANSPORT`` env > ``EvalSpec.transport`` > default
+    ``"auto"``. Normalizes whitespace-only env values to ``None`` so they are
+    treated as unset, matching the ``spec.run`` seam in
+    ``src/clauditor/spec.py``.
+
+    ``eval_spec`` is the loaded ``EvalSpec`` (or ``None`` when the calling
+    command has no eval spec — e.g. ``suggest``, ``propose-eval``).
+    """
+    import os
+
+    from clauditor._anthropic import resolve_transport
+
+    env_transport = os.environ.get("CLAUDITOR_TRANSPORT")
+    if env_transport is not None and env_transport.strip() == "":
+        env_transport = None
+    spec_transport = eval_spec.transport if eval_spec is not None else None
+    return resolve_transport(
+        getattr(args, "transport", None), env_transport, spec_transport
+    )
+
+
 def _append_validate_history(
     skill_name: str,
     *,

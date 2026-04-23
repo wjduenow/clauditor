@@ -193,7 +193,7 @@ def _run_blind_compare(
     after_path: Path,
     spec_path: str,
     eval_path: str | None,
-    transport: str = "auto",
+    args: argparse.Namespace | None = None,
 ) -> int:
     """Dispatch blind A/B comparison for a pair of ``.txt`` outputs.
 
@@ -270,6 +270,13 @@ def _run_blind_compare(
     # above (fail-fast), so the progress message now reliably means
     # "actual API calls are about to happen".
     assert skill_spec.eval_spec is not None  # validate_blind_compare_spec enforced
+    import argparse as _argparse
+
+    from clauditor.cli import _resolve_grader_transport
+
+    effective_transport = _resolve_grader_transport(
+        args if args is not None else _argparse.Namespace(), skill_spec.eval_spec
+    )
     print(
         f"Running blind A/B judge ({skill_spec.eval_spec.grading_model}) "
         "— 2 API calls...",
@@ -280,7 +287,7 @@ def _run_blind_compare(
             skill_spec,
             output_a,
             output_b,
-            transport=transport,
+            transport=effective_transport,
         )
     )
     _print_blind_report(report, before_path, after_path)
@@ -342,7 +349,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
             after_path,
             args.spec,
             args.eval,
-            transport=getattr(args, "transport", "auto") or "auto",
+            args=args,
         )
 
     if numeric_form and positional_form:

@@ -32,7 +32,6 @@ from pathlib import Path
 
 from clauditor.paths import resolve_clauditor_dir
 
-_AUDIT_SCHEMA_VERSION = 1
 # US-006 / #86: per-sidecar accepted schema versions. Grading and
 # extraction sidecars bumped to v2 to carry the ``transport_source``
 # field added by the CLI-transport feature; the loader accepts both

@@ -328,11 +328,13 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
+    from clauditor.cli import _resolve_grader_transport
+
     report = await propose_eval(
         propose_input,
         model=model,
         spec_dir=skill_md_path.parent,
-        transport=getattr(args, "transport", "auto") or "auto",
+        transport=_resolve_grader_transport(args),
     )
 
     # DEC-006 row: Anthropic API failure → exit 3.

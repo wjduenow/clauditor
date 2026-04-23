@@ -136,14 +136,9 @@ def cmd_extract(args: argparse.Namespace) -> int:
         output = skill_result.output
 
     # Resolve transport for the grader call using the four-layer precedence.
-    import os
+    from clauditor.cli import _resolve_grader_transport
 
-    from clauditor._anthropic import resolve_transport as _resolve_transport
-    _env_transport = os.environ.get("CLAUDITOR_TRANSPORT") or None
-    _spec_transport = spec.eval_spec.transport if spec.eval_spec else None
-    grader_transport = _resolve_transport(
-        getattr(args, "transport", None), _env_transport, _spec_transport
-    )
+    grader_transport = _resolve_grader_transport(args, spec.eval_spec)
 
     # Extract and grade
     from clauditor.grader import extract_and_grade

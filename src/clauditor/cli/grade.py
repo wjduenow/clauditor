@@ -919,8 +919,6 @@ def _cmd_grade_with_workspace(
     workspace: IterationWorkspace,
 ) -> int:
     """Body of cmd_grade that runs inside an allocated iteration workspace."""
-    import os
-
     n_variance = int(args.variance) if args.variance else 0
     total_runs = 1 + n_variance
 
@@ -936,18 +934,9 @@ def _cmd_grade_with_workspace(
     if error_rc is not None:
         return error_rc
 
-    # Resolve transport for grader calls using the four-layer precedence
-    # (CLI > env > spec > default "auto"). Uses the same logic as
-    # spec.run() so the grader transport always matches the runner
-    # transport when the skill subprocess was also invoked.
-    from clauditor._anthropic import resolve_transport as _resolve_transport
-    _env_transport = os.environ.get("CLAUDITOR_TRANSPORT") or None
-    _spec_transport = (
-        spec.eval_spec.transport if spec.eval_spec is not None else None
-    )
-    grader_transport = _resolve_transport(
-        getattr(args, "transport", None), _env_transport, _spec_transport
-    )
+    from clauditor.cli import _resolve_grader_transport
+
+    grader_transport = _resolve_grader_transport(args, spec.eval_spec)
 
     primary_text = run_outputs[0][0]
     reports = _grade_all_runs(run_outputs, spec, model, transport=grader_transport)

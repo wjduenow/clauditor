@@ -112,13 +112,14 @@ def cmd_triggers(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
+    from clauditor.cli import _resolve_grader_transport
     from clauditor.triggers import test_triggers
 
     report = asyncio.run(
         test_triggers(
             spec.eval_spec,
             model,
-            transport=getattr(args, "transport", "auto") or "auto",
+            transport=_resolve_grader_transport(args, spec.eval_spec),
         )
     )
 

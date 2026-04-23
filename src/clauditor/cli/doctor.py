@@ -111,11 +111,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             ("api-key-available", "ok", "ANTHROPIC_API_KEY is set")
         )
     else:
+        cli_suffix = " (CLI transport still usable)" if claude_path else ""
         checks.append(
             (
                 "api-key-available",
                 "info",
-                "ANTHROPIC_API_KEY not set (CLI transport still usable)",
+                f"ANTHROPIC_API_KEY not set{cli_suffix}",
             )
         )
 
@@ -129,11 +130,12 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             )
         )
     else:
+        api_suffix = " (API transport still usable)" if api_key_available else ""
         checks.append(
             (
                 "claude-transport-available",
                 "info",
-                "`claude` not on PATH (API transport still usable)",
+                f"`claude` not on PATH{api_suffix}",
             )
         )
 

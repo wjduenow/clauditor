@@ -6305,3 +6305,61 @@ class TestCmdExtractErrorSurfacingRegression:
         assert "Hint: retry in ~60s (rate limit)" in err
         assert ": None" not in err
         assert "Unknown error" not in err
+
+
+class TestResolveGraderTransport:
+    """Regression tests for the four-layer transport precedence in grader commands.
+
+    ``_resolve_grader_transport`` is a shared helper used by all six LLM-mediated
+    CLI commands.  These tests verify the precedence chain (CLI > env > spec >
+    default) and that whitespace-only env values are treated as unset.
+    """
+
+    def test_default_is_auto(self, monkeypatch):
+        monkeypatch.delenv("CLAUDITOR_TRANSPORT", raising=False)
+        from clauditor.cli import _resolve_grader_transport
+        args = argparse.Namespace(transport=None)
+        result = _resolve_grader_transport(args, None)
+        assert result == "auto"
+
+    def test_cli_flag_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("CLAUDITOR_TRANSPORT", "cli")
+        from clauditor.cli import _resolve_grader_transport
+        args = argparse.Namespace(transport="api")
+        result = _resolve_grader_transport(args, None)
+        assert result == "api"
+
+    def test_env_wins_over_spec(self, monkeypatch):
+        monkeypatch.setenv("CLAUDITOR_TRANSPORT", "api")
+        from clauditor.cli import _resolve_grader_transport
+        eval_spec = MagicMock()
+        eval_spec.transport = "cli"
+        args = argparse.Namespace(transport=None)
+        result = _resolve_grader_transport(args, eval_spec)
+        assert result == "api"
+
+    def test_spec_wins_over_default(self, monkeypatch):
+        monkeypatch.delenv("CLAUDITOR_TRANSPORT", raising=False)
+        from clauditor.cli import _resolve_grader_transport
+        eval_spec = MagicMock()
+        eval_spec.transport = "cli"
+        args = argparse.Namespace(transport=None)
+        result = _resolve_grader_transport(args, eval_spec)
+        assert result == "cli"
+
+    def test_whitespace_only_env_treated_as_unset(self, monkeypatch):
+        monkeypatch.setenv("CLAUDITOR_TRANSPORT", "   ")
+        from clauditor.cli import _resolve_grader_transport
+        eval_spec = MagicMock()
+        eval_spec.transport = "cli"
+        args = argparse.Namespace(transport=None)
+        result = _resolve_grader_transport(args, eval_spec)
+        # whitespace-only env → treated as None → spec wins
+        assert result == "cli"
+
+    def test_no_eval_spec_falls_through_to_default(self, monkeypatch):
+        monkeypatch.delenv("CLAUDITOR_TRANSPORT", raising=False)
+        from clauditor.cli import _resolve_grader_transport
+        args = argparse.Namespace(transport=None)
+        result = _resolve_grader_transport(args, None)
+        assert result == "auto"
