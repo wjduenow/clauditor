@@ -2934,23 +2934,31 @@ class TestInvokeClaudeCli:
     # --------------------------------------------------------------- #
 
     def test_single_caller_runner_py_only(self):
-        """US-001 done-when: ``_invoke_claude_cli`` is called only
-        from ``runner.py``. US-003 will add the second caller."""
+        """Drift guard: ``_invoke_claude_cli`` is only called from the
+        whitelisted modules.
+
+        US-001 restricted callers to ``runner.py`` alone. US-003 added
+        the CLI transport branch in ``_anthropic.py`` as the second
+        (and only other) legitimate caller. Any third caller is a
+        layering smell — the transport primitive should not be reached
+        directly from CLI commands, pytest fixtures, or grader modules.
+        """
         import pathlib
 
         import clauditor
 
         src_root = pathlib.Path(clauditor.__file__).parent
+        allowed_callers = {"runner.py", "_anthropic.py"}
         hits: list[pathlib.Path] = []
         for py_file in src_root.rglob("*.py"):
             text = py_file.read_text(encoding="utf-8")
-            # Skip the definition site itself (runner.py) and any import
-            # line that simply re-exports the name for testing.
-            if py_file.name == "runner.py":
+            # Skip the definition site + the US-003 CLI transport
+            # caller. Any other hit is a layering violation.
+            if py_file.name in allowed_callers:
                 continue
             if "_invoke_claude_cli" in text:
                 hits.append(py_file)
         assert hits == [], (
-            f"Unexpected caller of _invoke_claude_cli (US-003 will add "
-            f"the second caller): {hits!r}"
+            f"Unexpected caller of _invoke_claude_cli — allowed callers "
+            f"are {sorted(allowed_callers)!r}, got extras: {hits!r}"
         )
