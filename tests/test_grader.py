@@ -1475,6 +1475,153 @@ class TestExtractAndReportHappyPath:
         assert any("flat list" in e for e in report.parse_errors)
 
 
+class TestExtractionReportTransport:
+    """US-006 (#86): ExtractionReport carries ``transport_source`` and
+    ``schema_version=2``. Legacy v1 sidecars without ``transport_source``
+    load with ``transport_source="api"`` defaulted."""
+
+    def _report(self, **overrides) -> ExtractionReport:
+        defaults = dict(
+            skill_name="transport-test",
+            model="claude-haiku-4-5",
+            results=[],
+            declared_field_ids=["v1"],
+        )
+        defaults.update(overrides)
+        return ExtractionReport(**defaults)
+
+    def test_default_transport_source_is_api(self):
+        report = self._report()
+        assert report.transport_source == "api"
+
+    def test_to_json_schema_version_bumped_to_2(self):
+        report = self._report(transport_source="cli")
+        data = json.loads(report.to_json())
+        assert data["schema_version"] == 2
+
+    def test_schema_version_is_first_key(self):
+        report = self._report(transport_source="cli")
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert next(iter(data)) == "schema_version"
+
+    def test_to_json_includes_transport_source_cli(self):
+        report = self._report(transport_source="cli")
+        data = json.loads(report.to_json())
+        assert data["transport_source"] == "cli"
+
+    def test_to_json_includes_transport_source_api(self):
+        report = self._report(transport_source="api")
+        data = json.loads(report.to_json())
+        assert data["transport_source"] == "api"
+
+    def test_from_json_v1_defaults_transport_source_to_api(self):
+        """Legacy v1 sidecars (no ``transport_source``) default to
+        ``"api"`` so pre-#86 iterations load cleanly."""
+        legacy_payload = json.dumps({
+            "schema_version": 1,
+            "skill_name": "legacy",
+            "model": "haiku",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {},
+        })
+        restored = ExtractionReport.from_json(legacy_payload)
+        assert restored.transport_source == "api"
+
+    def test_from_json_v2_preserves_transport_source_cli(self):
+        original = self._report(transport_source="cli")
+        restored = ExtractionReport.from_json(original.to_json())
+        assert restored.transport_source == "cli"
+
+    def test_build_extraction_report_forwards_transport_source(self):
+        """``build_extraction_report`` propagates ``transport_source``
+        into the returned :class:`ExtractionReport`."""
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[
+                                FieldRequirement(name="a", id="v1"),
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+        report = build_extraction_report(
+            ExtractedOutput(raw_json={}, sections={}),
+            spec,
+            transport_source="cli",
+        )
+        assert report.transport_source == "cli"
+
+    def test_build_extraction_report_from_text_forwards_transport_source(
+        self,
+    ):
+        """``build_extraction_report_from_text`` propagates
+        ``transport_source`` into the returned report (all three
+        branches: empty text, JSON error, success)."""
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[
+                                FieldRequirement(name="a", id="v1"),
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        # Empty text branch.
+        empty_report = build_extraction_report_from_text(
+            "",
+            spec,
+            skill_name="s",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            transport_source="cli",
+        )
+        assert empty_report.transport_source == "cli"
+
+        # JSON-failure branch.
+        bad_report = build_extraction_report_from_text(
+            "not json at all",
+            spec,
+            skill_name="s",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            transport_source="cli",
+        )
+        assert bad_report.transport_source == "cli"
+
+        # Success branch.
+        good_text = json.dumps({"Venues": {"primary": [{"a": "v"}]}})
+        good_report = build_extraction_report_from_text(
+            good_text,
+            spec,
+            skill_name="s",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            transport_source="cli",
+        )
+        assert good_report.transport_source == "cli"
+
+
 class TestExtractionReportDeclaredFieldIds:
     """Copilot fix (PR #34): ``ExtractionReport.to_json`` pre-populates
     every declared field id with an empty list, so the on-disk contract

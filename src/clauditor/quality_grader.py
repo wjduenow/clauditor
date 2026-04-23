@@ -50,7 +50,17 @@ class GradingResult:
 
 @dataclass
 class GradingReport:
-    """Aggregated results from grading against a full rubric."""
+    """Aggregated results from grading against a full rubric.
+
+    ``transport_source`` records which :class:`AnthropicResult` transport
+    produced the Anthropic response this report was built from — either
+    ``"api"`` (SDK / HTTP path) or ``"cli"`` (subprocess via
+    ``claude -p``). Persisted into ``grading.json`` at
+    ``schema_version=2`` per DEC-007 of
+    ``plans/super/86-claude-cli-transport.md``. Defaults to ``"api"``
+    to preserve backward compat for in-memory fixtures that construct
+    a :class:`GradingReport` without going through the async wrappers.
+    """
 
     skill_name: str
     results: list[GradingResult]
@@ -60,6 +70,7 @@ class GradingReport:
     duration_seconds: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
+    transport_source: str = "api"
 
     @property
     def passed(self) -> bool:
@@ -85,11 +96,19 @@ class GradingReport:
         return sum(r.score for r in self.results) / len(self.results)
 
     def to_json(self) -> str:
-        """Serialize the report to a JSON string."""
+        """Serialize the report to a JSON string.
+
+        Emits ``schema_version: 2`` as the first key per
+        ``.claude/rules/json-schema-version.md``. Version 2 adds the
+        ``transport_source`` field; the audit loader accepts both
+        ``{1, 2}`` and defaults missing ``transport_source`` to
+        ``"api"`` when reading v1 sidecars.
+        """
         data = {
-            "schema_version": 1,
+            "schema_version": 2,
             "skill_name": self.skill_name,
             "model": self.model,
+            "transport_source": self.transport_source,
             "duration_seconds": self.duration_seconds,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
@@ -116,7 +135,12 @@ class GradingReport:
 
     @classmethod
     def from_json(cls, data: str) -> GradingReport:
-        """Deserialize a GradingReport from a JSON string."""
+        """Deserialize a GradingReport from a JSON string.
+
+        Tolerates both schema versions (``1`` and ``2``); a missing
+        ``transport_source`` defaults to ``"api"`` so pre-#86 sidecars
+        load cleanly.
+        """
         parsed = json.loads(data)
         results = [
             GradingResult(
@@ -143,6 +167,7 @@ class GradingReport:
             duration_seconds=float(parsed.get("duration_seconds", 0.0)),
             input_tokens=int(parsed.get("input_tokens", 0)),
             output_tokens=int(parsed.get("output_tokens", 0)),
+            transport_source=str(parsed.get("transport_source") or "api"),
         )
 
     def summary(self) -> str:
@@ -166,6 +191,16 @@ class BlindReport:
     The judge sees outputs labeled 1 and 2 (to avoid training-data
     anchoring on a/b), but results are reported against the canonical
     a/b labels of the caller.
+
+    ``transport_source`` records which :class:`AnthropicResult`
+    transport produced the underlying Anthropic response(s) — either
+    ``"api"`` or ``"cli"``. DEC-018 of
+    ``plans/super/86-claude-cli-transport.md`` introduces
+    ``schema_version=1`` as the inaugural version for the on-disk
+    shape emitted by :meth:`to_json`; readers accept either a v1
+    payload or a legacy (no ``schema_version``, no
+    ``transport_source``) payload which defaults to
+    ``transport_source="api"``.
     """
 
     preference: Literal["a", "b", "tie"]
@@ -178,10 +213,17 @@ class BlindReport:
     input_tokens: int = 0
     output_tokens: int = 0
     duration_seconds: float = 0.0
+    transport_source: str = "api"
 
     def to_json(self) -> str:
-        """Serialize the report to a JSON string."""
+        """Serialize the report to a JSON string.
+
+        Emits ``schema_version: 1`` as the first key (DEC-018 — the
+        inaugural version for this report type) per
+        ``.claude/rules/json-schema-version.md``.
+        """
         data = {
+            "schema_version": 1,
             "preference": self.preference,
             "confidence": self.confidence,
             "score_a": self.score_a,
@@ -189,6 +231,7 @@ class BlindReport:
             "reasoning": self.reasoning,
             "position_agreement": self.position_agreement,
             "model": self.model,
+            "transport_source": self.transport_source,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "duration_seconds": self.duration_seconds,
@@ -341,6 +384,7 @@ def combine_blind_results(
     input_tokens: int,
     output_tokens: int,
     duration_seconds: float,
+    transport_source: str = "api",
 ) -> BlindReport:
     """Combine two parsed judge verdicts into a canonical :class:`BlindReport`.
 
@@ -354,6 +398,9 @@ def combine_blind_results(
     The async :func:`blind_compare` wrapper is reduced to "issue two calls
     in parallel, call :func:`parse_blind_response` on each, forward to this
     helper" — keeping all the verdict math testable without SDK mocks.
+
+    ``transport_source`` is propagated into the returned :class:`BlindReport`
+    unchanged (DEC-018 of ``plans/super/86-claude-cli-transport.md``).
     """
     if parsed1 is None and parsed2 is None:
         return BlindReport(
@@ -370,6 +417,7 @@ def combine_blind_results(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             duration_seconds=duration_seconds,
+            transport_source=transport_source,
         )
 
     if parsed1 is None or parsed2 is None:
@@ -401,6 +449,7 @@ def combine_blind_results(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             duration_seconds=duration_seconds,
+            transport_source=transport_source,
         )
 
     winner1, conf1, sa1, sb1, reason1 = _translate_blind_result(
@@ -439,6 +488,7 @@ def combine_blind_results(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         duration_seconds=duration_seconds,
+        transport_source=transport_source,
     )
 
 
@@ -528,6 +578,13 @@ async def blind_compare(
     # started joining blocks.
     t1 = r1.text_blocks[0] if r1.text_blocks else ""
     t2 = r2.text_blocks[0] if r2.text_blocks else ""
+    # DEC-018: transport_source reflects the underlying Anthropic call(s).
+    # When the two parallel judges disagree (API + CLI — unlikely but
+    # possible in an ``auto`` fallback race), stamp ``"mixed"`` so the
+    # audit trail surfaces that the report isn't purely one transport.
+    transport_source = (
+        r1.source if r1.source == r2.source else "mixed"
+    )
     return combine_blind_results(
         parsed1=parse_blind_response(t1), parsed2=parse_blind_response(t2),
         text1=t1, text2=t2,
@@ -535,6 +592,7 @@ async def blind_compare(
         input_tokens=r1.input_tokens + r2.input_tokens,
         output_tokens=r1.output_tokens + r2.output_tokens,
         duration_seconds=duration,
+        transport_source=transport_source,
     )
 
 
@@ -775,6 +833,7 @@ def _grading_failure_report(
     output_tokens: int,
     evidence: str,
     reasoning: str,
+    transport_source: str = "api",
 ) -> GradingReport:
     """Build a failed :class:`GradingReport` for a parse/alignment failure.
 
@@ -798,6 +857,7 @@ def _grading_failure_report(
         duration_seconds=duration,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        transport_source=transport_source,
     )
 
 
@@ -810,6 +870,7 @@ def build_grading_report(
     duration: float,
     input_tokens: int,
     output_tokens: int,
+    transport_source: str = "api",
 ) -> GradingReport:
     """Parse ``response_text`` into a :class:`GradingReport`.
 
@@ -821,6 +882,10 @@ def build_grading_report(
 
     Callers wrap the I/O (Anthropic call, token/duration capture) and
     forward here for the verdict logic.
+
+    ``transport_source`` is propagated into the returned
+    :class:`GradingReport` unchanged (DEC-007 of
+    ``plans/super/86-claude-cli-transport.md``).
     """
     common = {
         "model": model,
@@ -828,6 +893,7 @@ def build_grading_report(
         "duration": duration,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "transport_source": transport_source,
     }
     if not response_text:
         return _grading_failure_report(
@@ -863,6 +929,7 @@ def build_grading_report(
         duration_seconds=duration,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        transport_source=transport_source,
     )
 
 
@@ -901,6 +968,7 @@ async def grade_quality(
         duration=duration,
         input_tokens=api_result.input_tokens,
         output_tokens=api_result.output_tokens,
+        transport_source=api_result.source,
     )
 
 

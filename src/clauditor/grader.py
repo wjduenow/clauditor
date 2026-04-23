@@ -86,8 +86,10 @@ class ExtractionReport:
     .. code-block:: json
 
         {
+          "schema_version": 2,
           "skill_name": "...",
           "model": "...",
+          "transport_source": "api",
           "input_tokens": 0,
           "output_tokens": 0,
           "parse_errors": [],
@@ -105,6 +107,13 @@ class ExtractionReport:
     entries within a tier. Fields whose enclosing section had zero extracted
     entries show up with an empty list — downstream auditors can still see
     that the field was *declared* in the spec.
+
+    ``transport_source`` records which :class:`AnthropicResult`
+    transport produced the Haiku response — ``"api"`` or ``"cli"``.
+    Persisted at ``schema_version=2`` per DEC-007 of
+    ``plans/super/86-claude-cli-transport.md``. The audit loader
+    accepts both ``{1, 2}`` and defaults missing ``transport_source``
+    to ``"api"`` when reading v1 sidecars.
     """
 
     skill_name: str
@@ -114,6 +123,7 @@ class ExtractionReport:
     output_tokens: int = 0
     parse_errors: list[str] = field(default_factory=list)
     declared_field_ids: list[str] = field(default_factory=list)
+    transport_source: str = "api"
 
     @property
     def passed(self) -> bool:
@@ -122,6 +132,14 @@ class ExtractionReport:
         )
 
     def to_json(self) -> str:
+        """Serialize the report to a JSON string.
+
+        Emits ``schema_version: 2`` as the first key per
+        ``.claude/rules/json-schema-version.md``. Version 2 adds the
+        ``transport_source`` field; the audit loader accepts both
+        ``{1, 2}`` and defaults missing ``transport_source`` to
+        ``"api"`` when reading v1 sidecars.
+        """
         by_id: dict[str, list[dict]] = {}
         # Pre-populate every declared field id with an empty list so the
         # on-disk contract (every declared field present) holds even on
@@ -133,9 +151,10 @@ class ExtractionReport:
                 {k: v for k, v in r.to_dict().items() if k != "field_id"}
             )
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "skill_name": self.skill_name,
             "model": self.model,
+            "transport_source": self.transport_source,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "parse_errors": list(self.parse_errors),
@@ -145,6 +164,12 @@ class ExtractionReport:
 
     @classmethod
     def from_json(cls, text: str) -> ExtractionReport:
+        """Deserialize an ExtractionReport from a JSON string.
+
+        Tolerates both schema versions (``1`` and ``2``); a missing
+        ``transport_source`` defaults to ``"api"`` so pre-#86 sidecars
+        load cleanly.
+        """
         data = json.loads(text)
         results: list[FieldExtractionResult] = []
         for field_id, entries in (data.get("fields") or {}).items():
@@ -172,6 +197,7 @@ class ExtractionReport:
             output_tokens=int(data.get("output_tokens", 0)),
             parse_errors=list(data.get("parse_errors") or []),
             declared_field_ids=list((data.get("fields") or {}).keys()),
+            transport_source=str(data.get("transport_source") or "api"),
         )
 
 
@@ -184,6 +210,7 @@ def build_extraction_report(
     input_tokens: int = 0,
     output_tokens: int = 0,
     parse_errors: list[str] | None = None,
+    transport_source: str = "api",
 ) -> ExtractionReport:
     """Build a field-id-keyed ``ExtractionReport`` from extracted output.
 
@@ -192,6 +219,10 @@ def build_extraction_report(
     fields produce zero records — the caller's downstream auditor still
     discovers the field via the spec itself). Uses the stable
     ``FieldRequirement.id`` (DEC-001) as the primary key.
+
+    ``transport_source`` is propagated into the returned
+    :class:`ExtractionReport` unchanged (DEC-007 of
+    ``plans/super/86-claude-cli-transport.md``).
     """
     results: list[FieldExtractionResult] = []
 
@@ -265,6 +296,7 @@ def build_extraction_report(
         output_tokens=output_tokens,
         parse_errors=list(parse_errors or []),
         declared_field_ids=declared_field_ids,
+        transport_source=transport_source,
     )
 
 
@@ -659,6 +691,7 @@ def build_extraction_report_from_text(
     model: str,
     input_tokens: int,
     output_tokens: int,
+    transport_source: str = "api",
 ) -> ExtractionReport:
     """Parse ``response_text`` into an :class:`ExtractionReport`.
 
@@ -666,6 +699,10 @@ def build_extraction_report_from_text(
     JSON failures short-circuit to an empty-results report. Flat-list
     failures are merged into ``parse_errors`` while the rest of the
     extraction proceeds.
+
+    ``transport_source`` is propagated into the returned
+    :class:`ExtractionReport` unchanged (DEC-007 of
+    ``plans/super/86-claude-cli-transport.md``).
     """
     if not response_text:
         return ExtractionReport(
@@ -675,6 +712,7 @@ def build_extraction_report_from_text(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             parse_errors=["grader returned no text blocks"],
+            transport_source=transport_source,
         )
 
     parse = parse_extraction_response(response_text, eval_spec)
@@ -686,6 +724,7 @@ def build_extraction_report_from_text(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             parse_errors=[err.message for err in parse.parse_errors],
+            transport_source=transport_source,
         )
     return build_extraction_report(
         parse.extracted,
@@ -695,6 +734,7 @@ def build_extraction_report_from_text(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         parse_errors=[err.message for err in parse.parse_errors],
+        transport_source=transport_source,
     )
 
 
@@ -720,6 +760,10 @@ async def extract_and_grade(
     response_text = (
         api_result.text_blocks[0] if api_result.text_blocks else ""
     )
+    # Note: AssertionSet does not carry transport_source — extract_and_grade's
+    # sidecar (``assertions.json``) is unaffected by US-006. The transport
+    # source for the Layer 2 Haiku call is only persisted through
+    # ``extract_and_report`` → ``ExtractionReport``.
     return build_extraction_assertion_set(
         response_text,
         eval_spec,
@@ -760,4 +804,5 @@ async def extract_and_report(
         model=model,
         input_tokens=api_result.input_tokens,
         output_tokens=api_result.output_tokens,
+        transport_source=api_result.source,
     )
