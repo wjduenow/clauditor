@@ -487,6 +487,24 @@ def build_propose_eval_prompt(propose_input: ProposeEvalInput) -> str:
         "If no registry key fits, author the check as an L1 "
         "`type: regex` assertion instead."
     )
+    # URL-vs-domain selection rule (#105). The `url` format requires
+    # an `https?://` scheme; `domain` matches bare `<host>.<tld>`.
+    # Inspect how URL-shaped values actually appear in the skill
+    # output (or how SKILL.md describes them) and pick accordingly.
+    # Picking `url` when the skill's primary rendering omits the
+    # scheme causes a deterministic L2 cascade: Haiku extracts the
+    # bare values, which the `url` format then rejects wholesale.
+    parts.append("")
+    parts.append(
+        "Choosing between `url` and `domain` for URL-shaped fields: "
+        "pick `domain` if the skill's primary rendering of URL values "
+        "omits the `https?://` scheme (e.g. `marineroom.com`). Pick "
+        "`url` only when every URL-shaped value the skill emits "
+        "includes a scheme (e.g. `https://marineroom.com/`). If the "
+        "rendering is mixed, prefer `domain` — it accepts both shapes "
+        "when paired with an L1 `has_urls` or `type: regex` check for "
+        "scheme presence where that matters."
+    )
 
     prompt = "\n".join(parts) + "\n"
 

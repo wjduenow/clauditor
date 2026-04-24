@@ -522,6 +522,29 @@ class TestBuildProposeEvalPrompt:
         assert "regex" in prompt.lower()
         assert "registry-only" in prompt.lower()
 
+    def test_prompt_contains_url_vs_domain_guidance(self) -> None:
+        """#105: the prompt tells the LLM how to choose between the
+        ``url`` and ``domain`` format keys so it does not pick
+        ``url`` for skills whose primary rendering is bare-domain.
+
+        Issue #105 observed ``propose-eval`` emitting
+        ``format: "url"`` for the ``find-restaurants`` skill whose
+        inline URL rendering is ``marineroom.com`` (scheme-free).
+        Haiku then extracted the bare-domain values, which the
+        ``url`` format rejects, cascading into 9/9 L2 fails. The
+        guidance below is the prompt-side fix (the cheapest leverage
+        per Option A of the issue).
+        """
+        pi = _make_propose_input()
+        prompt = build_propose_eval_prompt(pi)
+
+        # Load-bearing phrases — downstream behavior change only fires
+        # if the LLM actually sees this guidance.
+        assert "`url` and `domain`" in prompt
+        assert "`domain`" in prompt
+        assert "`url`" in prompt
+        assert "`https?://`" in prompt or "https?://" in prompt
+
     def test_prompt_table_is_rendered_from_constant(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
