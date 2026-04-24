@@ -1705,3 +1705,24 @@ class TestClassifyInvokeResult:
     def test_empty_output_zero_exit_returns_transport(self) -> None:
         invoke = self._make_invoke(exit_code=0, error_category=None, output="   ")
         assert _classify_invoke_result(invoke) == "transport"
+
+
+class TestResolveTransportInternal:
+    """Defensive-branch coverage for ``_resolve_transport`` (the pure
+    internal helper called by ``call_anthropic``). The public
+    ``resolve_transport`` validates its inputs against the
+    ``{"api", "cli", "auto"}`` set before reaching this helper, so
+    the terminal ``raise ValueError`` is unreachable via type-safe
+    callers — but we pin it to guard against a future caller that
+    bypasses the outer validator.
+    """
+
+    def test_unknown_transport_raises_value_error(self) -> None:
+        from typing import cast
+
+        from clauditor._anthropic import _resolve_transport
+
+        with pytest.raises(
+            ValueError, match=r"Unknown transport 'sdk'"
+        ):
+            _resolve_transport(cast("str", "sdk"))  # type: ignore[arg-type]

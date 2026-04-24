@@ -25,7 +25,7 @@ Auditor for AgentSkills.io skills and Claude Integrations. Catches when your ski
 pip install clauditor-eval
 ```
 
-Layer 1 (deterministic assertions) works without an `ANTHROPIC_API_KEY`. Layers 2 & 3 and `propose-eval` require one.
+Layer 1 (deterministic assertions) works without LLM credentials. Layers 2 & 3 and `propose-eval` require either an `ANTHROPIC_API_KEY` or the `claude` CLI transport (with the CLI installed and authenticated).
 
 Source install: `git clone https://github.com/wjduenow/clauditor.git && cd clauditor && uv sync --dev`.
 

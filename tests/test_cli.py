@@ -3995,29 +3995,30 @@ class TestCLITransportFlag:
         assert "--transport" in out
 
     @pytest.mark.parametrize("value", ["api", "cli", "auto"])
-    def test_valid_transport_values_accepted_grade_help(
-        self, value, capsys
-    ):
-        """The argparse type validator accepts every literal value.
-
-        Uses ``--help`` so we exercise the validator without having to
-        mock out the grade orchestrator. The success signal is that
-        ``main`` exits 0 without an ``invalid`` / ``must be one of``
-        error printed by argparse.
+    def test_transport_choice_validator_accepts_each_literal(self, value):
+        """The shared argparse type validator accepts every literal
+        value and returns it unchanged. Pure unit test — no main
+        round-trip, no help-text sniffing.
         """
-        # Build a sub-main call that exercises the validator by
-        # passing --transport <value> directly alongside --help. We
-        # use a non-existent skill.md so propose-eval's --help still
-        # prints the help text. (help action short-circuits arg
-        # validation for positional, so we use extract which has
-        # simple positional args.)
-        with pytest.raises(SystemExit) as exc_info:
-            main(["extract", "--help"])
-        # --help always exits 0 regardless of other arg state.
-        assert exc_info.value.code == 0
-        out = capsys.readouterr().out
-        # The help text advertises api/cli/auto as choices.
-        assert value in out
+        from clauditor.cli import _transport_choice
+
+        assert _transport_choice(value) == value
+
+    @pytest.mark.parametrize("value", ["sdk", "", "API", "CLI", " api"])
+    def test_transport_choice_validator_rejects_invalid(self, value):
+        """Anything outside ``{"api", "cli", "auto"}`` raises
+        ``ArgumentTypeError``, which argparse translates into a clean
+        exit 2 at CLI parse time (covered separately by
+        ``test_invalid_transport_exits_2``).
+        """
+        import argparse
+
+        from clauditor.cli import _transport_choice
+
+        with pytest.raises(
+            argparse.ArgumentTypeError, match="must be one of"
+        ):
+            _transport_choice(value)
 
 
 class TestCmdDoctor:

@@ -1486,6 +1486,19 @@ class TestSkillResultErrorCategory:
         assert result.error_category is None
         assert result.succeeded_cleanly is False
 
+    def test_succeeded_cleanly_false_on_background_task_warning(self):
+        """A ``warnings`` entry starting with the ``background-task:``
+        prefix disqualifies the result even with error=None and
+        error_category=None. Mirrors the interactive-hang check added
+        in US-003. GitHub #97.
+        """
+        result = self._make(
+            warnings=["background-task: skill launched Task(run_in_background=true)"]
+        )
+        assert result.error is None
+        assert result.error_category is None
+        assert result.succeeded_cleanly is False
+
     def test_succeeded_cleanly_tolerates_other_warnings(self):
         """Warnings that do NOT start with the interactive-hang prefix
         do not disqualify a clean success — only the prefixed tag does."""
@@ -3268,6 +3281,24 @@ class TestDetectBackgroundTaskNoncompletion:
             _detect_background_task_noncompletion(events, "Waiting") is False
         )
 
+    def test_non_dict_event_during_num_turns_scan_is_skipped(self):
+        """Covers the ``if not isinstance(event, dict): continue`` guard
+        in the num_turns scanner when launches > 0 forces the scan to
+        run. Non-dict event must be skipped without raising, and the
+        detector still decides correctly based on real events.
+        """
+        events: list = [
+            _bg_assistant_event(text="All done.", launches=1),
+            "not-a-dict-event-during-result-scan",
+            42,  # numeric event
+            {"type": "result", "num_turns": 10},  # enough turns → no trigger
+        ]
+        # launches=1, num_turns=10 >= 1+2, no waiting regex → False,
+        # but we had to walk past the non-dict events to get num_turns.
+        assert (
+            _detect_background_task_noncompletion(events, "All done.") is False
+        )
+
 
 class TestBackgroundTaskNoncompletionIntegration:
     """End-to-end: feed a background-task stream through ``SkillRunner``
@@ -3366,4 +3397,26 @@ class TestBackgroundTaskNoncompletionIntegration:
         assert not any(
             w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
             for w in result.warnings
+        ), result.warnings
+
+    def test_stderr_moved_to_warnings_when_bg_task_fires(self):
+        """Parallel to the interactive-hang branch: when the bg-task
+        heuristic sets ``error_category`` without an error text, any
+        captured stderr is preserved in ``warnings`` (not silently
+        dropped). Covers the shared
+        ``("interactive", "background-task")`` branch in
+        ``_invoke_claude_cli`` that moves stderr to warnings so the
+        caller can still observe subprocess diagnostics.
+        """
+        fake = make_fake_background_task_stream(
+            text="Waiting on editorial agent.",
+            launches=3,
+            num_turns=3,
+        )
+        fake.stderr = iter(["retry notice from subprocess\n"])
+        result = self._run_with_stream(fake)
+        assert result.error_category == "background-task"
+        assert result.error is None
+        assert any(
+            "retry notice from subprocess" in w for w in result.warnings
         ), result.warnings

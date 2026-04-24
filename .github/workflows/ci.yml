@@ -10,8 +10,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Default: read-only. Individual jobs opt in to write permissions
+# when they actually need them (only ``docs`` pushes to gh-pages).
 permissions:
-  contents: write  # required for mkdocs gh-deploy to push gh-pages branch
+  contents: read
 
 jobs:
   lint:
@@ -61,6 +63,10 @@ jobs:
   docs:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/dev' && github.event_name == 'push'
+    # Only the docs job needs write access (to push ``gh-pages``).
+    # Every other job stays read-only via the workflow default above.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v4

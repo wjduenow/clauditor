@@ -222,6 +222,27 @@ class TestDoctorTransportChecks:
         # fallback) — the key invariant is doctor stays green.
         assert "Effective default transport:" in out
 
+    def test_summary_whitespace_only_env_treated_as_unset(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """``CLAUDITOR_TRANSPORT="   "`` should be normalized to unset
+        so the auto resolution uses the same rules as an absent env
+        var (mirrors the public ``_resolve_grader_transport`` helper's
+        whitespace normalization). Covers the
+        ``env_transport.strip() == ""`` normalization branch.
+        """
+        monkeypatch.setenv("CLAUDITOR_TRANSPORT", "   ")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        with patch("shutil.which", return_value=None):
+            rc = main(["doctor"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        # Empty env var → falls back to default "auto" → resolves to
+        # "api" since claude binary is absent but API key is set.
+        assert "Effective default transport: api" in out
+
     def test_doctor_never_spawns_probe_subprocess(
         self,
         monkeypatch: pytest.MonkeyPatch,
