@@ -5837,6 +5837,12 @@ class TestRenderSkillError:
                 "Hint: ensure all parameters are in test_args; "
                 "/clauditor cannot drive interactive skills",
             ),
+            (
+                "background-task",
+                "Hint: skill launched Task(run_in_background=true) and "
+                "exited before polling — claude -p does not poll "
+                "background tasks, so output is likely truncated",
+            ),
             ("timeout", "Hint: skill exceeded the run timeout"),
             (
                 "subprocess",

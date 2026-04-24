@@ -13,18 +13,22 @@ importlib.reload(_runner_mod)
 
 from clauditor.asserters import SkillAsserter  # noqa: E402
 from clauditor.runner import (  # noqa: E402
+    _BACKGROUND_TASK_WARNING_PREFIX,
     _INTERACTIVE_HANG_WARNING_PREFIX,
     _RESULT_TEXT_MAX_CHARS,
     InvokeResult,
     SkillResult,
     SkillRunner,
     _classify_result_message,
+    _count_background_task_launches,
+    _detect_background_task_noncompletion,
     _detect_interactive_hang,
     _invoke_claude_cli,
     env_without_api_key,
 )
 from tests.conftest import (  # noqa: E402
     _FakePopen,
+    make_fake_background_task_stream,
     make_fake_interactive_hang_stream,
     make_fake_skill_stream,
 )
@@ -2997,3 +3001,369 @@ class TestInvokeClaudeCli:
             f"Unexpected caller of _invoke_claude_cli — allowed callers "
             f"are {sorted(allowed_callers)!r}, got extras: {hits!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Background-task non-completion detection (GitHub #97)
+# ---------------------------------------------------------------------------
+
+
+def _bg_task_tool_use(
+    *, run_in_background: bool = True, name: str = "Task", idx: int = 0
+) -> dict:
+    """Build a ``tool_use`` block for background-task detector tests."""
+    return {
+        "type": "tool_use",
+        "id": f"toolu_bg_{idx}",
+        "name": name,
+        "input": {
+            "description": "background agent",
+            "prompt": "do work",
+            "run_in_background": run_in_background,
+        },
+    }
+
+
+def _bg_assistant_event(
+    *,
+    text: str | None = None,
+    launches: int = 1,
+    run_in_background: bool = True,
+    name: str = "Task",
+    stop_reason: str | None = "end_turn",
+) -> dict:
+    """Build an assistant event carrying Task tool_use blocks + optional text."""
+    content: list[dict] = []
+    for i in range(launches):
+        content.append(
+            _bg_task_tool_use(
+                run_in_background=run_in_background, name=name, idx=i
+            )
+        )
+    if text is not None:
+        content.append({"type": "text", "text": text})
+    message: dict = {"role": "assistant", "content": content}
+    if stop_reason is not None:
+        message["stop_reason"] = stop_reason
+    return {"type": "assistant", "message": message}
+
+
+class TestCountBackgroundTaskLaunches:
+    """Pure-unit tests for ``_count_background_task_launches``."""
+
+    def test_empty_stream_returns_zero(self):
+        assert _count_background_task_launches([]) == 0
+
+    def test_single_task_with_run_in_background(self):
+        events = [_bg_assistant_event(launches=1)]
+        assert _count_background_task_launches(events) == 1
+
+    def test_three_tasks_with_run_in_background(self):
+        events = [_bg_assistant_event(launches=3)]
+        assert _count_background_task_launches(events) == 3
+
+    def test_task_without_run_in_background_not_counted(self):
+        events = [_bg_assistant_event(launches=1, run_in_background=False)]
+        assert _count_background_task_launches(events) == 0
+
+    def test_non_task_tool_use_not_counted(self):
+        events = [_bg_assistant_event(launches=1, name="WebFetch")]
+        assert _count_background_task_launches(events) == 0
+
+    def test_truthy_non_true_run_in_background_not_counted(self):
+        """Strict ``is True`` check — ``"true"``, ``1``, etc. are rejected."""
+        events: list[dict] = [
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "x",
+                            "name": "Task",
+                            "input": {"run_in_background": "true"},
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "y",
+                            "name": "Task",
+                            "input": {"run_in_background": 1},
+                        },
+                    ],
+                },
+            }
+        ]
+        assert _count_background_task_launches(events) == 0
+
+    def test_tasks_across_multiple_assistant_messages(self):
+        events = [
+            _bg_assistant_event(launches=2),
+            _bg_assistant_event(launches=1),
+        ]
+        assert _count_background_task_launches(events) == 3
+
+    def test_malformed_events_degrade_to_zero(self):
+        events: list = [
+            "not-a-dict",
+            {"type": "assistant"},  # missing message
+            {"type": "assistant", "message": "not-a-dict"},
+            {
+                "type": "assistant",
+                "message": {"role": "assistant", "content": "not-a-list"},
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        "not-a-dict-block",
+                        {"type": "tool_use", "name": "Task"},  # no input
+                        {
+                            "type": "tool_use",
+                            "name": "Task",
+                            "input": "not-a-dict",
+                        },
+                    ],
+                },
+            },
+        ]
+        assert _count_background_task_launches(events) == 0
+
+
+class TestDetectBackgroundTaskNoncompletion:
+    """Pure-unit tests for ``_detect_background_task_noncompletion``."""
+
+    def test_empty_stream_returns_false(self):
+        assert (
+            _detect_background_task_noncompletion([], "Waiting on agent.")
+            is False
+        )
+
+    def test_no_background_tasks_returns_false(self):
+        """Final text mentions waiting but no bg task launched → False."""
+        events = [
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Waiting on X."}],
+                },
+            },
+            {"type": "result", "num_turns": 1},
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "Waiting on X.")
+            is False
+        )
+
+    def test_bg_task_with_waiting_regex_triggers(self):
+        events = [
+            _bg_assistant_event(text="Waiting on editorial agent.", launches=1),
+            {"type": "result", "num_turns": 5},
+        ]
+        assert (
+            _detect_background_task_noncompletion(
+                events, "Waiting on editorial agent."
+            )
+            is True
+        )
+
+    def test_bg_task_with_few_turns_triggers(self):
+        """3 launches + num_turns=3 < 3+2=5 → triggers via turn-count signal."""
+        events = [
+            _bg_assistant_event(text="All done.", launches=3),
+            {"type": "result", "num_turns": 3},
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "All done.") is True
+        )
+
+    def test_bg_task_with_enough_turns_and_clean_text_returns_false(self):
+        """Skill that polls properly (turns >= launches+2) and synthesizes
+        clean output must not trigger — legitimate coordination pattern.
+        """
+        events = [
+            _bg_assistant_event(text="All done.", launches=3),
+            {"type": "result", "num_turns": 10},  # 10 >= 3 + 2
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "All done.") is False
+        )
+
+    def test_waiting_regex_variants(self):
+        cases = [
+            "waiting on X",
+            "Waiting on X",
+            "still waiting for the agent",
+            "continuing to gather results",
+            "work is in progress",
+            "running in the background",
+        ]
+        for final_text in cases:
+            events = [
+                _bg_assistant_event(text=final_text, launches=1),
+                {"type": "result", "num_turns": 10},
+            ]
+            assert (
+                _detect_background_task_noncompletion(events, final_text)
+                is True
+            ), f"should trigger on {final_text!r}"
+
+    def test_waiting_regex_word_boundary(self):
+        """'in progress bar' must NOT match 'in progress'."""
+        events = [
+            _bg_assistant_event(text="rendering progress bar", launches=1),
+            {"type": "result", "num_turns": 10},
+        ]
+        assert (
+            _detect_background_task_noncompletion(
+                events, "rendering progress bar"
+            )
+            is False
+        )
+
+    def test_missing_num_turns_falls_back_to_text_signal(self):
+        """No num_turns → turn-count signal can't fire, but regex still can."""
+        events = [
+            _bg_assistant_event(text="Waiting on agent.", launches=1),
+            {"type": "result"},  # no num_turns
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "Waiting on agent.")
+            is True
+        )
+
+    def test_missing_num_turns_and_clean_text_returns_false(self):
+        events = [
+            _bg_assistant_event(text="All done.", launches=1),
+            {"type": "result"},
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "All done.") is False
+        )
+
+    def test_non_background_task_not_counted(self):
+        """Task without run_in_background=True → no launches → False."""
+        events = [
+            _bg_assistant_event(
+                text="Waiting on agent.",
+                launches=1,
+                run_in_background=False,
+            ),
+            {"type": "result", "num_turns": 1},
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "Waiting on agent.")
+            is False
+        )
+
+    def test_malformed_events_degrade_to_false(self):
+        events: list = [
+            "not-a-dict",
+            {"type": "assistant"},
+            {"type": "assistant", "message": "nope"},
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "Waiting") is False
+        )
+
+
+class TestBackgroundTaskNoncompletionIntegration:
+    """End-to-end: feed a background-task stream through ``SkillRunner``
+    and assert warning + category wiring.
+    """
+
+    def _run_with_stream(
+        self,
+        fake: _FakePopen,
+        *,
+        allow_hang_heuristic: bool = True,
+    ) -> SkillResult:
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            return runner.run("skill", allow_hang_heuristic=allow_hang_heuristic)
+
+    def test_waiting_text_triggers_warning_and_category(self):
+        fake = make_fake_background_task_stream(
+            text="Waiting on editorial agent.",
+            launches=3,
+            num_turns=3,
+        )
+        result = self._run_with_stream(fake)
+        assert result.error_category == "background-task"
+        assert result.error is None
+        assert any(
+            w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+        assert result.succeeded_cleanly is False
+
+    def test_legitimate_coordination_does_not_trigger(self):
+        """Skill that launched bg tasks AND properly polled (num_turns
+        high, clean final text) must still pass succeeded_cleanly.
+        """
+        fake = make_fake_background_task_stream(
+            text="All three restaurants found with full source lists.",
+            launches=3,
+            num_turns=10,
+        )
+        result = self._run_with_stream(fake)
+        assert result.error_category is None
+        assert result.error is None
+        assert not any(
+            w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+        assert result.succeeded_cleanly is True
+
+    def test_no_background_tasks_does_not_trigger(self):
+        """Plain skill run (no bg tasks) must never fire this detector."""
+        from tests.conftest import make_fake_skill_stream
+
+        fake = make_fake_skill_stream("Clean output with no tasks.")
+        result = self._run_with_stream(fake)
+        assert result.error_category is None
+        assert not any(
+            w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+
+    def test_allow_hang_heuristic_false_skips_detector(self):
+        """``allow_hang_heuristic=False`` disables BOTH heuristics
+        (interactive-hang + background-task) — they share the same
+        opt-out switch per the per-skill escape-hatch contract.
+        """
+        fake = make_fake_background_task_stream(
+            text="Waiting on editorial agent.",
+            launches=3,
+            num_turns=3,
+        )
+        result = self._run_with_stream(fake, allow_hang_heuristic=False)
+        assert result.error_category is None
+        assert not any(
+            w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+        assert result.succeeded_cleanly is True
+
+    def test_interactive_hang_wins_when_both_would_fire(self):
+        """Precedence guard: if a stream matches both interactive-hang
+        (trailing ``?``, num_turns=1, end_turn) AND background-task
+        (Task tool_use with run_in_background=True), the interactive
+        category wins — the detectors are mutually exclusive and
+        interactive runs first.
+        """
+        fake = make_fake_background_task_stream(
+            text="What should I do next?",
+            launches=1,
+            num_turns=1,
+        )
+        result = self._run_with_stream(fake)
+        assert result.error_category == "interactive"
+        # Background-task warning must NOT be appended when
+        # interactive-hang already fired.
+        assert not any(
+            w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings

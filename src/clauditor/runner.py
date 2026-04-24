@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -65,7 +66,13 @@ class SkillResult:
     # runtime-only — do not serialize to sidecars without bumping schema_version
     error_category: (
         Literal[
-            "rate_limit", "auth", "api", "interactive", "subprocess", "timeout"
+            "rate_limit",
+            "auth",
+            "api",
+            "interactive",
+            "background-task",
+            "subprocess",
+            "timeout",
         ]
         | None
     ) = None
@@ -104,6 +111,8 @@ class SkillResult:
             return False
         for w in self.warnings:
             if w.startswith(_INTERACTIVE_HANG_WARNING_PREFIX):
+                return False
+            if w.startswith(_BACKGROUND_TASK_WARNING_PREFIX):
                 return False
         return True
 
@@ -211,6 +220,114 @@ def _detect_interactive_hang(
     return trailing_question or ask_user_question
 
 
+# Background-task non-completion heuristic warning tag. The prefix
+# ``"background-task:"`` is load-bearing — :attr:`SkillResult.succeeded_cleanly`
+# looks for exactly this prefix in ``warnings`` to down-classify a
+# nominally-successful run that launched ``Task(run_in_background=true)``
+# calls and exited before polling them. Traces to GitHub #97.
+_BACKGROUND_TASK_WARNING_PREFIX = "background-task:"
+_BACKGROUND_TASK_WARNING = (
+    "background-task: skill launched Task(run_in_background=true) and "
+    "exited without polling — claude -p does not poll background tasks, "
+    "so output is likely truncated (heuristic)"
+)
+# Case-insensitive match on the final assistant text for phrases that
+# indicate the skill was still expecting background work to finish when
+# the subprocess ended. Word-boundary anchored so "in progress bar" and
+# similar incidental substrings do not match.
+_BACKGROUND_TASK_WAITING_RE = re.compile(
+    r"\b(waiting on|still waiting|continuing|in progress|in the background)\b",
+    re.IGNORECASE,
+)
+
+
+def _count_background_task_launches(stream_events: list[dict]) -> int:
+    """Count ``Task`` tool_use blocks with ``run_in_background: true``.
+
+    Pure helper. Walks assistant messages' ``content`` lists looking for
+    ``{"type": "tool_use", "name": "Task", "input": {"run_in_background":
+    True}}`` blocks. Every malformed/missing field degrades to skipping
+    the block rather than raising.
+    """
+    count = 0
+    for event in stream_events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "tool_use":
+                continue
+            if block.get("name") != "Task":
+                continue
+            inp = block.get("input")
+            if not isinstance(inp, dict):
+                continue
+            if inp.get("run_in_background") is True:
+                count += 1
+    return count
+
+
+def _detect_background_task_noncompletion(
+    stream_events: list[dict], final_text: str
+) -> bool:
+    """Return True when a run looks like it exited with background tasks pending.
+
+    Pure helper (no I/O, no global state) per
+    ``.claude/rules/pure-compute-vs-io-split.md``. Mirrors
+    :func:`_detect_interactive_hang`'s shape. Returns True only when:
+
+    - At least one assistant ``tool_use`` block with ``name="Task"`` and
+      ``input.run_in_background=True`` appears in the stream, AND
+    - Either (a) ``final_text`` matches
+      ``_BACKGROUND_TASK_WAITING_RE`` (case-insensitive word-boundary
+      match on "waiting on", "still waiting", "continuing", "in
+      progress", "in the background"), OR (b) the final
+      ``result`` message's ``num_turns`` is less than
+      ``launches + 2`` — a skill that properly polls each background
+      task takes at least one turn per poll plus one for the final
+      synthesis.
+
+    Tolerates missing / malformed fields via ``.get`` + ``isinstance``.
+    Malformed events degrade to False rather than raising — the
+    detector is advisory and must never abort a run.
+
+    Failure mode this catches: GitHub #97 — ``find-restaurants
+    --depth deep`` launched 3 ``Task(run_in_background=true)`` agents,
+    then emitted "Waiting on editorial agent." and exited. ``claude
+    -p`` does not poll background tasks, so the subprocess terminates
+    at that point with a valid ``result`` message and no error signal.
+    """
+    launches = _count_background_task_launches(stream_events)
+    if launches == 0:
+        return False
+
+    # Signal (a): waiting-pattern regex on the concatenated text.
+    waiting_match = bool(_BACKGROUND_TASK_WAITING_RE.search(final_text))
+
+    # Signal (b): num_turns is suspiciously low relative to launches.
+    num_turns: int | None = None
+    for event in stream_events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") != "result":
+            continue
+        raw = event.get("num_turns")
+        if isinstance(raw, int):
+            num_turns = raw
+    few_turns = num_turns is not None and num_turns < launches + 2
+
+    return waiting_match or few_turns
+
+
 def _classify_result_message(msg: dict) -> tuple[str | None, str | None]:
     """Classify a stream-json ``type="result"`` message's error payload.
 
@@ -306,7 +423,13 @@ class InvokeResult:
     error: str | None = None
     error_category: (
         Literal[
-            "rate_limit", "auth", "api", "interactive", "subprocess", "timeout"
+            "rate_limit",
+            "auth",
+            "api",
+            "interactive",
+            "background-task",
+            "subprocess",
+            "timeout",
         ]
         | None
     ) = None
@@ -632,6 +755,21 @@ def _invoke_claude_cli(
             warnings.append(_INTERACTIVE_HANG_WARNING)
             stream_json_error_category = "interactive"
 
+        # GitHub #97: background-task non-completion heuristic. Runs
+        # only when interactive-hang did NOT fire (categories are
+        # mutually exclusive — a run that ends with a trailing ``?``
+        # is classified as interactive-hang even if it also launched
+        # background tasks). Same shape as interactive-hang: warning
+        # prefix + category, no error text, output/exit_code preserved.
+        if (
+            allow_hang_heuristic
+            and stream_json_error_text is None
+            and stream_json_error_category is None
+            and _detect_background_task_noncompletion(stream_events, final_text)
+        ):
+            warnings.append(_BACKGROUND_TASK_WARNING)
+            stream_json_error_category = "background-task"
+
         # DEC-001: stream-json ``is_error: true`` wins over stderr.
         # When classified, stderr (if any) moves into warnings so it
         # is still observable to callers without shadowing the
@@ -641,14 +779,13 @@ def _invoke_claude_cli(
             final_category: str | None = stream_json_error_category
             if stderr_text:
                 warnings.append(stderr_text)
-        elif stream_json_error_category == "interactive":
-            # Hang heuristic set the category without an error text.
-            # Stderr may still carry subprocess diagnostics (e.g. a
-            # retry notice); preserve it in warnings so it's
-            # observable to callers, parallel to the stream-json
-            # error branch above.
+        elif stream_json_error_category in ("interactive", "background-task"):
+            # Heuristic set the category without an error text. Stderr
+            # may still carry subprocess diagnostics (e.g. a retry
+            # notice); preserve it in warnings so it's observable to
+            # callers, parallel to the stream-json error branch above.
             final_error = None
-            final_category = "interactive"
+            final_category = stream_json_error_category
             if stderr_text:
                 warnings.append(stderr_text)
         else:

@@ -189,6 +189,67 @@ def make_fake_interactive_hang_stream(
     return _FakePopen([json.dumps(m) for m in messages])
 
 
+def make_fake_background_task_stream(
+    text: str = "Waiting on editorial agent.",
+    launches: int = 1,
+    num_turns: int = 1,
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+) -> _FakePopen:
+    """Build a ``_FakePopen`` emitting a background-task non-completion stream.
+
+    Models the GitHub #97 failure mode: the skill fires one or more
+    ``Task(run_in_background=true)`` tool_use blocks, emits a final
+    ``text`` block that references the background work (e.g.
+    "Waiting on editorial agent."), and the ``result`` message carries
+    a ``num_turns`` value consistent with "did not poll".
+
+    - A single ``assistant`` message whose ``content`` contains
+      ``launches`` ``tool_use`` blocks (``name="Task"``,
+      ``input.run_in_background=True``) followed by one ``text``
+      block carrying ``text``.
+    - A final ``result`` message with ``is_error: False``,
+      ``subtype: "success"``, the provided ``num_turns``, and the
+      usual ``usage`` block.
+    """
+    content: list[dict] = []
+    for i in range(launches):
+        content.append(
+            {
+                "type": "tool_use",
+                "id": f"toolu_bg_{i}",
+                "name": "Task",
+                "input": {
+                    "description": f"background agent {i}",
+                    "prompt": f"do work {i}",
+                    "run_in_background": True,
+                },
+            }
+        )
+    content.append({"type": "text", "text": text})
+    messages: list[dict] = [
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "content": content,
+            },
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "num_turns": num_turns,
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            },
+        },
+    ]
+    return _FakePopen([json.dumps(m) for m in messages])
+
+
 @pytest.fixture(autouse=True)
 def _isolate_clauditor_history(tmp_path, monkeypatch):
     """Redirect history.jsonl writes to a per-test tmp dir so running the

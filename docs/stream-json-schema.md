@@ -90,6 +90,15 @@ downstream tooling (transcripts, debug dumps).
 Text chunks from every assistant message are joined with `\n` to form
 `SkillResult.output`.
 
+**`tool_use` block — `Task(run_in_background=true)` detection.** A
+`tool_use` block with `name == "Task"` and
+`input.run_in_background is True` (strict `is True` check, not a
+truthy-match) is counted as a background-task launch for the
+non-completion heuristic described below. Other `Task` calls
+(foreground, or `run_in_background` absent / falsy) are not counted.
+See `_count_background_task_launches` in
+`src/clauditor/runner.py`.
+
 ### `type: "result"`
 
 The terminal line of a run. Carries aggregate token usage and, on
@@ -151,6 +160,42 @@ surfaces this through `SkillResult.error` + `SkillResult.error_category
 {"type":"assistant","message":{"id":"msg_01","role":"assistant","content":[],"stop_reason":null}}
 {"type":"result","subtype":"error_max_turns","is_error":true,"result":"API Error: Request rejected (429). Your organization has exceeded the rate limit.","usage":{"input_tokens":1423,"output_tokens":0}}
 ```
+
+## Heuristic classifications (advisory)
+
+Two detectors run after the stream ends and a `result` message was
+seen. Both are gated on `allow_hang_heuristic=True` (the default;
+per-skill opt-out via `EvalSpec.allow_hang_heuristic`) AND on the
+run not already carrying a stream-json `is_error: true`
+classification. Each detector appends a prefixed warning to
+`SkillResult.warnings` and sets `SkillResult.error_category`
+without setting `SkillResult.error` — `output` and `exit_code` stay
+as reported by the CLI. Both prefixes are load-bearing: they
+down-classify `succeeded_cleanly` to `False`.
+
+**Interactive-hang** (`error_category = "interactive"`, warning prefix
+`interactive-hang:`): a single-turn run whose final assistant message
+has `stop_reason == "end_turn"` and either ends with `?` or contains
+an `AskUserQuestion` `tool_use` block. Catches skills that asked the
+user for input and stalled. See `_detect_interactive_hang`.
+
+**Background-task non-completion** (`error_category = "background-task"`,
+warning prefix `background-task:`): runs only when interactive-hang
+did NOT fire. Triggers when (a) at least one assistant `tool_use`
+block has `name == "Task"` and `input.run_in_background is True`,
+AND (b) either the concatenated final text matches the regex
+`\b(waiting on|still waiting|continuing|in progress|in the background)\b`
+(case-insensitive) OR the `result` message's `num_turns` is less
+than `launches + 2`. `claude -p` does not poll background tasks,
+so a skill that launches them and exits terminates with a valid
+`result` message but truncated output; this detector catches that
+silent failure. See `_detect_background_task_noncompletion`
+(GitHub #97).
+
+Precedence is strict: stream-json `is_error: true` wins over both
+heuristics; interactive-hang wins over background-task. A run that
+matches both heuristics is classified as interactive-hang only
+(background-task does not also fire).
 
 ## Error handling summary
 
