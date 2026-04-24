@@ -288,7 +288,7 @@ Mirrors the DEC-008 contract in `src/clauditor/cli/suggest.py`:
 | Code | Meaning |
 | ---- | ------- |
 | `0` | Success — diff (or `--json` envelope) printed to stdout, sidecar written to `.clauditor/suggestions/`. Also `0` when the latest iteration has zero failing signals: Sonnet is NOT called, a stderr note is printed, no sidecar is written (DEC-008 row 2). |
-| `1` | Load-time or parse-layer failure: no prior `grading.json` under `.clauditor/`, unreadable SKILL.md, unparseable proposer response, OS error writing the sidecar. No sidecar is written for these branches. |
+| `1` | Load-time or parse-layer failure: no prior `grading.json` under `.clauditor/`, unreadable SKILL.md, unparseable proposer response, or OS error while writing the sidecar. For the load/parse branches no sidecar is written; for OS write failures, partial sidecar artifacts may remain if one sidecar file (JSON or diff) was written before the error occurred (`write_sidecar` writes the two sibling files sequentially, not atomically). |
 | `2` | Anchor-validation failure — one or more proposals named an `anchor` that does not appear exactly once in the current SKILL.md. Errors printed on stderr, no sidecar written. Also `2` when no usable authentication is available (neither `ANTHROPIC_API_KEY` nor an authenticated `claude` CLI). |
 | `3` | Anthropic API error — auth failure, rate-limit exhaustion, connection error, or any non-retriable SDK error surfaced by `clauditor._anthropic.call_anthropic`. No sidecar written. |
 
