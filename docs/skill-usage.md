@@ -254,3 +254,88 @@ same cases:
   parent.** Emit multiple `tool_use` blocks per turn directly.
   Shorter latency than Recipe A; loses the sub-agent's isolated
   context window.
+
+### Recipe: skills that ask the user mid-run
+
+Skills that call `AskUserQuestion` (or end a turn with a clarifying
+question expecting an answer) work fine in the interactive Claude
+Code TUI — Claude pauses, the user types, the skill continues.
+Under `claude -p` (which clauditor uses) there's no input channel:
+the skill stops on the question and never gets an answer.
+clauditor's interactive-hang detector catches this and emits
+`error_category="interactive"` so the test fails loudly instead
+of silently truncating.
+
+Three options, in order of preference:
+
+**Option 1 — restructure the skill to take all parameters upfront.**
+The most common case is a skill that asks for context the caller
+could have provided in the initial prompt. Move those parameters
+into `test_args` (and into the prompt format the skill expects in
+production), then have the skill validate them before doing work.
+
+The bundled example skill in
+[`examples/.claude/commands/example-skill.eval.json`](../examples/.claude/commands/example-skill.eval.json)
+demonstrates this pattern end-to-end:
+
+```json
+{
+  "skill_name": "find-kid-activities",
+  "test_args": "\"Cupertino, CA\" --dates today --distance 15mi --ages 4-6 --cost \"Free, $\" --type both --category any --count 5 --depth quick",
+  "assertions": [
+    {"id": "no_ask_user_question", "type": "not_contains", "needle": "AskUserQuestion"}
+  ]
+}
+```
+
+Two things to copy from this example:
+
+1. **Every parameter is in `test_args`.** City, date, distance, age
+   range, cost tier, category, result count, search depth — all
+   passed up front, so the skill never needs to ask.
+2. **An L1 assertion catches regressions.** The `not_contains`
+   assertion on `"AskUserQuestion"` fails the test if the skill
+   ever falls back to asking the user. Cheap, deterministic,
+   catches the failure mode at the structural layer rather than
+   waiting for a hang.
+
+In SKILL.md prose terms, the rewrite looks like:
+
+```diff
+-When the user asks for kid activities, use AskUserQuestion to
+-clarify city, age range, and budget before searching.
++The user's request will include city, age range, and budget as
++command-line flags (e.g. `"<city>" --ages <range> --cost <tiers>`).
++Parse these from the input. If any required parameter is missing,
++return a structured error like `Error: missing parameter "city".
++Provide as: "<city>" --ages <range> --cost <tiers>` and stop.
++Then search...
+```
+
+**Option 2 — disable the interactive-hang heuristic for false
+positives.** If your skill legitimately ends with a rhetorical or
+summary question (e.g. "Want me to search nearby cities too?")
+and the question is decorative — the skill's actual work is done
+— set `allow_hang_heuristic: false` on the eval spec. The run
+still completes; clauditor stops flagging the trailing `?` as
+interactive.
+
+```json
+{
+  "skill_name": "my-skill",
+  "allow_hang_heuristic": false,
+  "assertions": [...]
+}
+```
+
+Use this only for false positives. If the skill genuinely needs
+an answer to do its work, option 1 is the right fix.
+
+**Option 3 — keep the interactive flow, skip eval at this layer.**
+Some skills are inherently interactive (e.g. a step-by-step wizard
+that must clarify with the user). For those, clauditor's L1/L2/L3
+auto-evaluation does not apply directly; you can still use
+`clauditor capture` to record canned outputs after manual runs and
+diff them with `clauditor compare`, but the auto-grade loop is
+out of reach until upstream Claude Code gains a headless input
+channel.

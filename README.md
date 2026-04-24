@@ -235,7 +235,7 @@ Note: `--no-api-key` only affects the subprocess; the six LLM-mediated commands 
 clauditor works for most skills out of the box. A few patterns need a workaround or aren't supported yet:
 
 - **Skills with parallel sub-tasks** (the `Task(run_in_background=true)` pattern): pass `--sync-tasks` to force them to run sequentially. Output capture works correctly, but the *async behavior itself* (race conditions, late-arriving results) is not tested — you're evaluating a slightly different execution model than what ships.
-- **Skills that ask the user mid-run** (e.g. `AskUserQuestion` to clarify intent): not supported. clauditor runs skills non-interactively, so put all context in the initial prompt instead.
+- **Skills that ask the user mid-run** (e.g. `AskUserQuestion` to clarify intent): not supported directly — clauditor runs skills non-interactively, so the question never gets an answer and the run hangs. The fix is usually to take all parameters in the initial prompt; see the worked before/after example and the `not_contains AskUserQuestion` regression assertion in [`docs/skill-usage.md#recipe-skills-that-ask-the-user-mid-run`](docs/skill-usage.md#recipe-skills-that-ask-the-user-mid-run), with [`examples/.claude/commands/example-skill.eval.json`](examples/.claude/commands/example-skill.eval.json) as the canonical anchor.
 - **Skills whose correctness depends on async timing**: cannot be tested accurately yet. Blocked on an upstream Claude Code feature.
 
 <details>
