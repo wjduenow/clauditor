@@ -11,8 +11,10 @@ clauditor registers as a pytest plugin automatically. Available fixtures:
 - `clauditor_spec` — factory for loading `SkillSpec` from skill files
 - `clauditor_grader` — factory for Layer 3 quality grading
 - `clauditor_triggers` — factory for trigger precision testing
-- `clauditor_blind_compare` — factory wrapping `blind_compare_from_spec` for A/B comparison of two skill outputs (requires `user_prompt` on the eval spec)
+- `clauditor_blind_compare` — factory wrapping `blind_compare_from_spec` for A/B comparison of two skill outputs (requires `user_prompt` on the eval spec). Signature: `clauditor_blind_compare(skill_path, output_a, output_b, eval_path=None, *, model=None) → BlindReport`.
 - `clauditor_capture` — factory returning a `Path` to `tests/eval/captured/<skill>.txt` for captured-output tests
+
+> **Auth required for grading fixtures.** `clauditor_grader`, `clauditor_blind_compare`, and `clauditor_triggers` enforce a strict `ANTHROPIC_API_KEY` check at fixture invocation time and raise `AnthropicAuthMissingError` (not `pytest.skip`) when the key is missing. The strict guard fires **even when the `claude` CLI is on PATH** — by default these fixtures route through the Anthropic SDK, not the CLI subprocess. To opt into CLI-transport for fixtures (e.g. on a Claude Pro/Max subscription with no API key), set `CLAUDITOR_FIXTURE_ALLOW_CLI=1` in the test environment. See [`docs/transport-architecture.md`](transport-architecture.md) for the auth-state matrix.
 
 ### SkillResult fields
 

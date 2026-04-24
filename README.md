@@ -10,51 +10,80 @@
 [![License](https://img.shields.io/github/license/wjduenow/clauditor)](https://github.com/wjduenow/clauditor/blob/dev/LICENSE)
 [![codecov](https://codecov.io/gh/wjduenow/clauditor/branch/dev/graph/badge.svg)](https://codecov.io/gh/wjduenow/clauditor)
 
-Auditor for AgentSkills.io skills and Claude Integrations. Catches when your skill produces the wrong shape, not just the wrong answer — layered evaluation from free deterministic assertions through LLM-graded quality rubrics.
+Automated quality checks for [Agent Skills](https://agentskills.io). A skill is a reusable instruction file (`SKILL.md`) that tells Claude how to do a task. clauditor answers three questions about every run: **Did it run?** **Did it return the right structure?** **Was the answer actually good?** First two checks cost pennies and run in CI; the third is for release gates.
 
 <details>
 <summary>Contents</summary>
 
-[Install](#install) · [Why clauditor?](#why-clauditor) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [Suggest](#llm-assisted-skill-improvement-clauditor-suggest) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Eval Spec Format](#eval-spec-format) · [Authentication](#authentication-and-api-keys) · [Reference docs](#reference-docs)
+[Why clauditor?](#why-clauditor) · [Install](#install) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [Suggest](#llm-assisted-skill-improvement-clauditor-suggest) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Eval Spec Format](#eval-spec-format) · [Skill compatibility](#skill-compatibility) · [Authentication](#authentication-and-api-keys) · [Reference docs](#reference-docs)
 
 </details>
+
+## Why clauditor?
+
+Three checks, cheap to expensive:
+
+- **Layer 1 — Did your skill produce the right structure?** A free, instant check that runs in CI. Catches: *"the output is missing the Venues section,"* *"no phone numbers were extracted,"* *"the URL is malformed."* No LLM calls; pure regex and string matching against your assertions.
+- **Layer 2 — Did it pull the right fields?** A small LLM (Anthropic's Haiku model, ~pennies per run) reads the skill's output and validates it against a schema you write. Catches: *"the venue's address field is empty,"* *"tier-1 entries are missing a website URL."*
+- **Layer 3 — Was the answer actually useful?** A stronger LLM (Anthropic's Sonnet model, ~dollars per run) grades the output against your rubric. Run on release, not every commit. Catches: *"the venues are too far from the requested area,"* *"the recommendations don't match the kid's age range."*
+
+The same `eval.json` file drives all three layers. You write it once; clauditor uses it for static checks, structured-field grading, and rubric scoring.
 
 ## Install
 
 ```bash
 pip install clauditor-eval
+clauditor --version
 ```
 
-Layer 1 (deterministic assertions) works without LLM credentials. Layers 2 & 3 and `propose-eval` require either an `ANTHROPIC_API_KEY` or the `claude` CLI transport (with the CLI installed and authenticated).
+Layer 1 works without any LLM credentials. Layers 2 & 3 and `propose-eval` need either an Anthropic API key (`ANTHROPIC_API_KEY`) or the `claude` CLI installed and signed in to a Claude Pro/Max subscription — see [Authentication](#authentication-and-api-keys).
 
-Source install: `git clone https://github.com/wjduenow/clauditor.git && cd clauditor && uv sync --dev`.
+<details>
+<summary>Installing from source (for contributors)</summary>
 
-## Why clauditor?
+```bash
+git clone https://github.com/wjduenow/clauditor.git
+cd clauditor
+uv sync --dev
+```
 
-- **Layer 1 — Does your skill hit the expected output shape?** Deterministic assertions — free, instant, CI-friendly.
-- **Layer 2 — Does it pull the right fields?** Haiku-graded schema extraction — pennies per run.
-- **Layer 3 — Is it actually useful?** Sonnet-graded rubric — dollars per run, release-gating.
+[uv](https://docs.astral.sh/uv/) is the project's package manager; it's a faster drop-in for `pip` + `venv`.
+
+</details>
 
 ## One-minute example
 
-**Greenfield (no SKILL.md yet):**
+Both paths below assume you already have a `SKILL.md` — clauditor checks skills, it doesn't write them. A skill lives in `.claude/skills/<name>/SKILL.md` (modern layout) or `.claude/commands/<name>.md` (older layout); run `ls .claude/` from your project root if you're not sure which you have.
+
+**I want a minimal eval spec I'll fill in myself.** `clauditor init` reads your SKILL.md and writes a bare-bones `eval.json` next to it — no LLM call, no tokens spent. You add assertions and grading criteria from there.
 
 ```bash
-clauditor init .claude/commands/my-skill.md       # generate starter eval spec
-clauditor validate .claude/commands/my-skill.md   # → "4/4 assertions passed (100%)"
+clauditor init .claude/skills/my-skill/SKILL.md       # generate a starter eval spec
+clauditor validate .claude/skills/my-skill/SKILL.md   # run Layer 1 against the skill
 ```
 
-**Brownfield (SKILL.md already exists):**
+Expected output:
+
+```text
+✓ Running /my-skill...
+4/4 assertions passed (100%)
+```
+
+**I want clauditor to write a richer eval spec for me.** `clauditor propose-eval` sends your SKILL.md (and optionally a captured real-world run) to an LLM and gets back a populated `eval.json` with assertions, sections, and grading criteria already drafted.
 
 ```bash
-clauditor propose-eval .claude/skills/my-skill/SKILL.md --dry-run  # preview (no tokens)
-clauditor propose-eval .claude/skills/my-skill/SKILL.md            # LLM writes the spec
-clauditor validate    .claude/skills/my-skill/SKILL.md             # run it
+clauditor propose-eval .claude/skills/my-skill/SKILL.md --dry-run  # preview the prompt — no tokens spent
+clauditor propose-eval .claude/skills/my-skill/SKILL.md            # LLM writes the eval spec
+clauditor validate    .claude/skills/my-skill/SKILL.md             # run Layer 1 against it
 ```
 
-Swap `validate` for `grade` once you've added `grading_criteria` to the spec.
+`--dry-run` prints the prompt clauditor would send to the LLM without making any API call — a cost-free preview so you can iterate on inputs before spending tokens.
+
+Swap `validate` for `grade` once you've added `grading_criteria` to the spec to run Layer 3.
 
 ## Installing the /clauditor slash command
+
+If you use [Claude Code](https://claude.com/claude-code) interactively, you can type `/clauditor <skill>` in the prompt instead of running CLI commands — Claude reads the eval spec, runs the checks, and shows you results in-line. This is optional; the CLI works without it.
 
 From your project root, `uv run clauditor setup` creates a symlink at `.claude/skills/clauditor` pointing at the bundled Claude Code skill; `pip install --upgrade clauditor` then picks up skill updates automatically. Restart Claude Code once if `.claude/skills/` did not exist before.
 
@@ -144,17 +173,41 @@ Full reference: [docs/pytest-plugin.md](https://github.com/wjduenow/clauditor/bl
 
 ## Eval Spec Format
 
-An `<skill-name>.eval.json` lives next to the skill's `.md` file and drives all three layers: deterministic assertions, LLM schema extraction (sections + tiered fields), and rubric grading. Optional blocks (`input_files`, `output_files`, `variance`, `trigger_tests`) add staging, file-based output capture, variance measurement, and trigger precision.
+An `<skill-name>.eval.json` lives next to the skill's `.md` file and drives all three layers. In plain English, it lists: **what input to test the skill with**, **structural rules the output must satisfy** (assertions), **fields the output should contain** (sections + tiers, used by Layer 2), and **rubric questions for the LLM judge** (grading criteria, used by Layer 3).
 
 ```json
 {
   "skill_name": "find-kid-activities",
-  "test_args":  "\"Cupertino, CA\" --ages 4-6",
-  "assertions": [{"id": "has_venues", "type": "contains", "needle": "Venues"}],
-  "sections":   [{"name": "Venues", "tiers": [{"label": "default", "min_entries": 3, "fields": [{"id": "v_name", "name": "name", "required": true}]}]}],
-  "grading_criteria": [{"id": "distance_ok", "criterion": "Are all venues within the specified distance?"}]
+  "test_args": "\"Cupertino, CA\" --ages 4-6",
+
+  "assertions": [
+    {"id": "has_venues", "type": "contains", "needle": "Venues"}
+  ],
+
+  "sections": [
+    {
+      "name": "Venues",
+      "tiers": [
+        {
+          "label": "default",
+          "min_entries": 3,
+          "fields": [
+            {"id": "v_name", "name": "name", "required": true}
+          ]
+        }
+      ]
+    }
+  ],
+
+  "grading_criteria": [
+    {"id": "distance_ok", "criterion": "Are all venues within the specified distance?"}
+  ]
 }
 ```
+
+In this example: `test_args` is the prompt clauditor passes to the skill. The single L1 assertion checks the output literally contains the word "Venues". The `sections` block tells Layer 2 to find a "Venues" section with at least 3 entries, each with a `name` field. The `grading_criteria` block gives Layer 3 a yes/no question to grade the output on.
+
+Optional blocks (`input_files`, `output_files`, `variance`, `trigger_tests`) add staging, file-based output capture, variance measurement, and trigger precision.
 
 **Covered in the full reference:** the full eval-spec JSON shape, `input_files` staging rules, `output_file` / `output_files` capture, and the `format` validation DSL (`phone_us`, `url`, `domain`, … or inline regex). Full reference: [docs/eval-spec-reference.md](https://github.com/wjduenow/clauditor/blob/dev/docs/eval-spec-reference.md).
 
@@ -179,19 +232,32 @@ Note: `--no-api-key` only affects the subprocess; the six LLM-mediated commands 
 
 ## Skill compatibility
 
-clauditor invokes skills through `claude -p` (non-interactive print mode), which is a strict subset of the interactive Claude Code runtime. Most patterns work transparently; a few have caveats today:
+clauditor works for most skills out of the box. A few patterns need a workaround or aren't supported yet:
 
-- **Works**: sequential `Task` calls (no `run_in_background`), parallel tool calls in the parent (multiple `tool_use` blocks per turn), every standard tool (`WebSearch`, `WebFetch`, `Bash`, `Read`, `Write`, `Edit`).
-- **Works with `--sync-tasks` opt-in**: skills using `Task(run_in_background=true)` for parallel sub-agent fanout. The flag sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in the subprocess env, forcing background spawns synchronous so clauditor sees the full transcript. Resolves the [#97](https://github.com/wjduenow/clauditor/issues/97) output-truncation case for the parallel-research-fanout shape — without modifying the skill. **Caveat: you are evaluating a different execution model than what ships**, so async-specific logic (race conditions, late-arriving results, progress-while-async branches) goes untested. See the fidelity tradeoff in [`docs/skill-usage.md`](docs/skill-usage.md#skill-compatibility).
-- **Loud failure today**: skills whose correctness depends on async semantics (not just latency-sensitive fanout) — true async-fidelity evaluation is blocked on upstream Claude Code gaining headless background-task polling, tracked in [anthropics/claude-code#52917](https://github.com/anthropics/claude-code/issues/52917) and catalogued in [`docs/adr/transport-research-103.md`](docs/adr/transport-research-103.md). `AskUserQuestion` and other interactive prompts also fall in this bucket — clauditor's print-mode transport has no input channel.
+- **Skills with parallel sub-tasks** (the `Task(run_in_background=true)` pattern): pass `--sync-tasks` to force them to run sequentially. Output capture works correctly, but the *async behavior itself* (race conditions, late-arriving results) is not tested — you're evaluating a slightly different execution model than what ships.
+- **Skills that ask the user mid-run** (e.g. `AskUserQuestion` to clarify intent): not supported directly — clauditor runs skills non-interactively, so the question never gets an answer and the run hangs. The fix is usually to take all parameters in the initial prompt; see the worked before/after example and the `not_contains AskUserQuestion` regression assertion in [`docs/skill-usage.md#recipe-skills-that-ask-the-user-mid-run`](docs/skill-usage.md#recipe-skills-that-ask-the-user-mid-run), with [`examples/.claude/commands/example-skill.eval.json`](examples/.claude/commands/example-skill.eval.json) as the canonical anchor.
+- **Skills whose correctness depends on async timing**: cannot be tested accurately yet. Blocked on an upstream Claude Code feature.
+
+<details>
+<summary>Technical detail and upstream tracking</summary>
+
+clauditor invokes skills through `claude -p` (non-interactive print mode), which is a strict subset of the interactive Claude Code runtime. **Works**: sequential `Task` calls, parallel tool calls in the parent turn, every standard tool (`WebSearch`, `WebFetch`, `Bash`, `Read`, `Write`, `Edit`). **Works with `--sync-tasks`**: skills using `Task(run_in_background=true)` — the flag sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in the subprocess env, resolving the [#97](https://github.com/wjduenow/clauditor/issues/97) output-truncation case. **Loud failure today**: skills whose correctness depends on true async semantics — blocked on upstream Claude Code gaining headless background-task polling, tracked in [anthropics/claude-code#52917](https://github.com/anthropics/claude-code/issues/52917) and catalogued in [`docs/adr/transport-research-103.md`](docs/adr/transport-research-103.md).
 
 Full matrix and refactoring recipes: [`docs/skill-usage.md#skill-compatibility`](docs/skill-usage.md#skill-compatibility).
 
+</details>
+
 ## Authentication and API Keys
 
-The six LLM-mediated commands (`grade`, `extract`, `propose-eval`, `suggest`, `triggers`, `compare --blind`) work under either `ANTHROPIC_API_KEY` or a `claude` CLI subscription — the default `auto` transport picks CLI when the binary is on PATH, else falls back to the API. Full reference: [docs/transport-architecture.md](docs/transport-architecture.md).
+**Do I need an Anthropic API key?**
 
-Running `clauditor grade <skill> --transport cli` is the one-liner for subscription auth end-to-end: `--transport cli` implicitly strips `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the skill subprocess env, so both the grader and the skill use subscription auth. Pass `--transport api` to keep the keys.
+- **Just running Layer 1 checks** (`validate`, `lint`, `init`, `capture`) → **no key needed**. These are deterministic and never call an LLM.
+- **You have a Claude Pro/Max subscription and the `claude` CLI installed** → **no API key needed**. clauditor's default `auto` transport detects the CLI on PATH and uses your subscription auth for grading. Pass `--transport cli` to be explicit.
+- **Otherwise** → set `ANTHROPIC_API_KEY` (get one at [console.anthropic.com](https://console.anthropic.com/)) before running `grade`, `extract`, `propose-eval`, `suggest`, `triggers`, or `compare --blind`.
+
+The six LLM-mediated commands above route their Anthropic call through a pluggable transport — either the HTTP SDK (`--transport api`) or a subprocess to the local `claude` CLI (`--transport cli`). The default `auto` setting picks CLI when available, else API. Full reference: [docs/transport-architecture.md](docs/transport-architecture.md).
+
+Running `clauditor grade <skill> --transport cli` is the one-liner for subscription auth end-to-end: it implicitly strips `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the skill subprocess env, so both the grader and the skill use subscription auth. Pass `--transport api` to keep the keys.
 
 ## Reference docs
 
@@ -202,6 +268,7 @@ Running `clauditor grade <skill> --transport cli` is the one-liner for subscript
 - [`docs/eval-spec-reference.md`](docs/eval-spec-reference.md) — complete `.eval.json` schema
 - [`docs/pytest-plugin.md`](docs/pytest-plugin.md) — pytest fixtures and options
 - [`docs/skill-usage.md`](docs/skill-usage.md) — using `/clauditor` in Claude Code
+- [`docs/skills.md`](docs/skills.md) — catalog of skills shipped with this repo, with live badge status
 - [`docs/badges.md`](docs/badges.md) — shields.io badges from iteration sidecars (`clauditor badge`)
 - [`docs/stream-json-schema.md`](docs/stream-json-schema.md) — `claude` stream-json parser contract
 - [`docs/transport-architecture.md`](docs/transport-architecture.md) — CLI vs SDK transport, auth-state matrix, precedence, migration

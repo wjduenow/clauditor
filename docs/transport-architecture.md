@@ -84,14 +84,7 @@ uv run python scripts/bench_cli_transport.py --runs 20 --model claude-haiku-4-5
 
 Per DEC-016: single machine, ≥10 runs per transport, report mean + p95 + stddev, distinguish cold (first call in process) vs warm (steady state).
 
-**Representative numbers** — see `scripts/bench_cli_transport.py`; run to generate actual numbers on your hardware. The table below is a placeholder until the benchmark is run against a real Claude CLI binary and API endpoint:
-
-| Transport | Phase | n | mean | median | p95 | stddev |
-| --------- | ----- | - | ---- | ------ | --- | ------ |
-| `api` | cold | 1 | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| `api` | warm | 10 | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| `cli` | cold | 1 | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| `cli` | warm | 10 | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
+**Representative numbers** — see `scripts/bench_cli_transport.py`. Run it on a dedicated machine to generate actual numbers for your hardware; the script reports mean, median, p95, and stddev for both transports across cold (first call in process) and warm (steady state) phases.
 
 The relevant derived metric is the **CLI warm overhead vs SDK warm** — the mean-delta and p95-delta an operator should expect when routing many calls through the CLI path. A small positive overhead (CLI > API by a fraction of a second on warm calls) is the expected shape; any larger gap is worth investigating (network issues, stale subscription auth, an unusually slow `claude` binary path).
 

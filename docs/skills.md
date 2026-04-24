@@ -16,19 +16,21 @@ is constant, so the image updates automatically when CI re-runs
 
 ## How this catalog is populated
 
-1. Each skill lives under `src/clauditor/skills/<name>/SKILL.md`.
-2. `clauditor grade src/clauditor/skills/<name>/SKILL.md` produces
-   the iteration sidecars under `.clauditor/iteration-N/<name>/`.
-3. `clauditor badge src/clauditor/skills/<name>/SKILL.md` aggregates
-   those sidecars into `.clauditor/badges/<name>.json`, which is
-   committed so shields.io can fetch it via
-   `raw.githubusercontent.com`.
+1. User-facing skills live under `src/clauditor/skills/<name>/SKILL.md`
+   and ship in the wheel. Maintainer-only skills live at the repo
+   root under `.claude/skills/<name>/SKILL.md` and are excluded from
+   the wheel and from `clauditor setup`.
+2. `clauditor grade <path-to>/SKILL.md` produces the iteration
+   sidecars under `.clauditor/iteration-N/<name>/`.
+3. `clauditor badge <path-to>/SKILL.md` aggregates those sidecars
+   into `.clauditor/badges/<name>.json`, which is committed so
+   shields.io can fetch it via `raw.githubusercontent.com`.
 4. This page's badges point at those JSON files via the shields.io
    `endpoint` pattern — one Markdown image per skill.
 
-Adding a new skill? Run `clauditor badge src/clauditor/skills/<new>/
-SKILL.md --url-only --repo wjduenow/clauditor --branch dev` to get
-a ready-to-paste image line, then add a row below.
+Adding a new skill? Run `clauditor badge <path-to>/SKILL.md
+--url-only --repo wjduenow/clauditor --branch dev` to get a
+ready-to-paste image line, then add a row below.
 
 ## User-facing skills
 
@@ -90,7 +92,7 @@ internal conformance assumptions (encoded in
 the spec is suspected to have shifted so `clauditor lint` can be
 updated in lockstep.
 
-Source: [`src/clauditor/skills/review-agentskills-spec/SKILL.md`](../src/clauditor/skills/review-agentskills-spec/SKILL.md) · Eval: [`review-agentskills-spec.eval.json`](../src/clauditor/skills/review-agentskills-spec/assets/review-agentskills-spec.eval.json)
+Source: [`.claude/skills/review-agentskills-spec/SKILL.md`](../.claude/skills/review-agentskills-spec/SKILL.md) · Eval: [`.claude/skills/review-agentskills-spec/SKILL.eval.json`](../.claude/skills/review-agentskills-spec/SKILL.eval.json)
 
 Excluded from `clauditor setup`'s install symlinks so it does not
 appear in a user's `/` slash-command menu. Maintainers invoke it

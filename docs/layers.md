@@ -110,7 +110,7 @@ The same contract applies to L1 `has_format.format`:
 {"id": "five-phones", "type": "has_format", "format": "phone_us", "count": 5}
 ```
 
-See [`FORMAT_REGISTRY` in `src/clauditor/formats.py`](../src/clauditor/formats.py) for the full list of registered names (common entries: `phone_us`, `phone_intl`, `email`, `url`, `domain`, `date_iso`, `zip_us`, `uuid`).
+See [`FORMAT_REGISTRY` in `src/clauditor/formats.py`](../src/clauditor/formats.py) for the full list of 20 registered names. Common entries: `phone_us`, `phone_intl`, `email`, `url`, `domain`, `date_iso`, `zip_us`, `uuid`. Less-common entries that may save you a regex: `hex_color`, `latitude`, `longitude`, `star_rating`, `time_12h`, `time_24h`, `currency_eur`, `zip_uk`.
 
 ## Layer 3: Quality Grading (expensive, release-only)
 
