@@ -961,6 +961,134 @@ class TestGradeQuality:
         assert report.input_tokens == 500
         assert report.output_tokens == 200
 
+    @pytest.mark.asyncio
+    async def test_grade_quality_retries_on_malformed_json(self, capsys):
+        """Parse retry (clauditor-6cf / #94): first call returns malformed
+        JSON, second returns valid JSON → final report is the passing
+        verdict, tokens sum across both attempts, stderr records the
+        retry."""
+        spec = _make_spec()
+        good_data = [
+            {
+                "criterion": criterion_text(c), "passed": True,
+                "score": 0.9, "evidence": "e", "reasoning": "r",
+            }
+            for c in spec.grading_criteria
+        ]
+        bad = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        bad.content = [MagicMock(type="text", text="not json at all")]
+        good = MagicMock(usage=MagicMock(input_tokens=100, output_tokens=50))
+        good.content = [
+            MagicMock(type="text", text=json.dumps(good_data))
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[bad, good])
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await grade_quality("output", spec)
+        assert report.passed is True
+        assert len(report.results) == 3
+        # Tokens accumulated across both attempts.
+        assert report.input_tokens == 110
+        assert report.output_tokens == 55
+        # Stderr recorded the retry.
+        captured = capsys.readouterr()
+        assert "grade_quality" in captured.err
+        assert "retrying" in captured.err.lower()
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_no_retry_on_success(self):
+        """Parse retry (clauditor-6cf / #94): a clean first response must
+        NOT trigger a retry — only one API call is made."""
+        spec = _make_spec()
+        good_data = [
+            {
+                "criterion": criterion_text(c), "passed": True,
+                "score": 0.9, "evidence": "e", "reasoning": "r",
+            }
+            for c in spec.grading_criteria
+        ]
+        good = MagicMock(usage=MagicMock(input_tokens=100, output_tokens=50))
+        good.content = [
+            MagicMock(type="text", text=json.dumps(good_data))
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=good)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            await grade_quality("output", spec)
+        assert mock_client.messages.create.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_does_not_retry_on_alignment_failure(self):
+        """Parse retry (clauditor-6cf / #94): alignment failures (wrong
+        number of results) indicate a prompt-design bug and must NOT be
+        retried. Regression guard so we don't waste API calls on a
+        non-transient failure."""
+        spec = _make_spec()  # 3 criteria
+        # Only 1 result returned — raises ValueError in the verbose
+        # parser, which the orchestrator treats as "don't retry".
+        data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True, "score": 0.9,
+                "evidence": "e", "reasoning": "r",
+            }
+        ]
+        resp = MagicMock(usage=MagicMock(input_tokens=50, output_tokens=10))
+        resp.content = [MagicMock(type="text", text=json.dumps(data))]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=resp)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await grade_quality("output", spec)
+        # Exactly one API call despite the failure.
+        assert mock_client.messages.create.await_count == 1
+        assert report.results[0].criterion == "parse_response"
+        assert "misalignment" in report.results[0].reasoning.lower()
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_does_not_retry_on_shape_failure(self):
+        """Parse retry (clauditor-6cf / #94, Copilot feedback on PR #98):
+        a response that is valid JSON but has the wrong top-level type
+        (e.g. a dict where a list was expected) is a model-protocol bug,
+        not a transient hiccup — must NOT be retried. Mirrors
+        ``_call_blind_side_with_retry``'s shape-vs-decode split."""
+        spec = _make_spec()
+        # Valid JSON, top-level dict instead of list → verbose parser
+        # returns ``([], None)`` (shape failure, no decode error).
+        resp = MagicMock(usage=MagicMock(input_tokens=50, output_tokens=10))
+        resp.content = [
+            MagicMock(type="text", text='{"not": "a list"}')
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=resp)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await grade_quality("output", spec)
+        # Exactly one API call — shape failure must not retry.
+        assert mock_client.messages.create.await_count == 1
+        assert report.results[0].criterion == "parse_response"
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_both_attempts_fail(self):
+        """Parse retry (clauditor-6cf / #94): both attempts return
+        malformed JSON → final failure report with cumulative tokens
+        and the detailed parse-error reasoning from C."""
+        spec = _make_spec()
+        bad_a = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        bad_a.content = [MagicMock(type="text", text="not json")]
+        bad_b = MagicMock(usage=MagicMock(input_tokens=11, output_tokens=6))
+        bad_b.content = [MagicMock(type="text", text="still not")]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[bad_a, bad_b])
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await grade_quality("output", spec)
+        assert report.passed is False
+        assert report.results[0].criterion == "parse_response"
+        assert report.input_tokens == 21
+        assert report.output_tokens == 11
+        # C: reasoning carries the JSONDecodeError details from the
+        # LAST attempt, not a generic "Failed to parse" message.
+        assert "at line" in report.results[0].reasoning
+        assert "ends with" in report.results[0].reasoning
+
 
 def _make_grading_report(
     passed: bool, mean_score: float = 0.9, pass_rate: float = 1.0
@@ -1673,12 +1801,20 @@ class TestBlindCompare:
 
     @pytest.mark.asyncio
     async def test_blind_compare_malformed_json_returns_graceful_tie(self):
-        bad1 = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
-        bad1.content = [MagicMock(type="text", text="not json at all")]
-        bad2 = MagicMock(usage=MagicMock(input_tokens=12, output_tokens=7))
-        bad2.content = [MagicMock(type="text", text="also not json")]
+        # Parse-retry (clauditor-6cf / #94): each side retries once on
+        # JSON decode failure, so 4 bad responses total (2 per side).
+        bad1a = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        bad1a.content = [MagicMock(type="text", text="not json at all")]
+        bad1b = MagicMock(usage=MagicMock(input_tokens=11, output_tokens=6))
+        bad1b.content = [MagicMock(type="text", text="still not json")]
+        bad2a = MagicMock(usage=MagicMock(input_tokens=12, output_tokens=7))
+        bad2a.content = [MagicMock(type="text", text="also not json")]
+        bad2b = MagicMock(usage=MagicMock(input_tokens=13, output_tokens=8))
+        bad2b.content = [MagicMock(type="text", text="nope still bad")]
         mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(side_effect=[bad1, bad2])
+        mock_client.messages.create = AsyncMock(
+            side_effect=[bad1a, bad2a, bad1b, bad2b]
+        )
         with patch(
             "anthropic.AsyncAnthropic",
             return_value=mock_client,
@@ -1694,10 +1830,11 @@ class TestBlindCompare:
         assert (
             "parse" in report.reasoning.lower()
             or "not json at all" in report.reasoning
+            or "nope still bad" in report.reasoning
         )
-        # Tokens still populated from both calls (sums exactly)
-        assert report.input_tokens == 22
-        assert report.output_tokens == 12
+        # Tokens accumulate across both sides and both retry attempts.
+        assert report.input_tokens == 10 + 11 + 12 + 13
+        assert report.output_tokens == 5 + 6 + 7 + 8
 
     @pytest.mark.asyncio
     async def test_blind_compare_seeded_rng_is_deterministic(self):
@@ -1802,15 +1939,22 @@ class TestBlindCompare:
     @pytest.mark.asyncio
     async def test_blind_compare_partial_parse_failure_keeps_good_run(self):
         # Seed 1 → run-1 "ab->12"; judge says "1" → a wins in run-1.
-        # Run-2 returns garbage → cannot verify position agreement.
+        # Run-2 returns garbage twice → parse retry exhausts; cannot
+        # verify position agreement. See clauditor-6cf / #94.
         good = _blind_response(
             "1", confidence=0.9, score_1=0.85, score_2=0.3,
             input_tokens=100, output_tokens=40,
         )
-        bad = MagicMock(usage=MagicMock(input_tokens=20, output_tokens=10))
-        bad.content = [MagicMock(type="text", text="garbage not json")]
+        bad_a = MagicMock(usage=MagicMock(input_tokens=20, output_tokens=10))
+        bad_a.content = [MagicMock(type="text", text="garbage not json")]
+        bad_b = MagicMock(usage=MagicMock(input_tokens=21, output_tokens=11))
+        bad_b.content = [MagicMock(type="text", text="garbage not json v2")]
         mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(side_effect=[good, bad])
+        # Order: side1 attempt 1 (good), side2 attempt 1 (bad_a),
+        # side2 attempt 2 (bad_b). Side1 parsed so no retry.
+        mock_client.messages.create = AsyncMock(
+            side_effect=[good, bad_a, bad_b]
+        )
         with patch(
             "anthropic.AsyncAnthropic",
             return_value=mock_client,
@@ -1825,24 +1969,42 @@ class TestBlindCompare:
         assert report.confidence == pytest.approx(0.9)
         assert "parse" in report.reasoning.lower()
         assert "run-1" in report.reasoning
-        assert report.input_tokens == 120
-        assert report.output_tokens == 50
+        assert report.input_tokens == 100 + 20 + 21
+        assert report.output_tokens == 40 + 10 + 11
 
     @pytest.mark.asyncio
     async def test_blind_compare_partial_parse_run1_bad_keeps_run2(self):
         # Symmetric to test_blind_compare_partial_parse_failure_keeps_good_run:
-        # run-1 is garbage, run-2 parses. Verdict must come from run-2 and
-        # the reasoning must credit run-2 (not "run-1"). Regression test for
-        # the hardcoded-run-number bug flagged by CodeRabbit.
-        bad = MagicMock(usage=MagicMock(input_tokens=20, output_tokens=10))
-        bad.content = [MagicMock(type="text", text="garbage not json")]
+        # run-1 is garbage (twice, retry exhausted), run-2 parses.
+        # Verdict must come from run-2 and the reasoning must credit
+        # run-2 (not "run-1"). Regression test for the hardcoded-run-
+        # number bug flagged by CodeRabbit. Parse retry behavior tracked
+        # in clauditor-6cf / #94.
+        #
+        # Use a prompt-content dispatcher: under seed 1, run-1's
+        # mapping places a-text in <response_1>; run-2's mapping
+        # places b-text in <response_1>. Route by this marker so the
+        # test is independent of asyncio scheduling order.
+        bad_a = MagicMock(usage=MagicMock(input_tokens=20, output_tokens=10))
+        bad_a.content = [MagicMock(type="text", text="garbage not json")]
         # Seed 1 → run-2 "ab->21"; judge says "2" → a wins in original space.
         good = _blind_response(
             "2", confidence=0.8, score_1=0.4, score_2=0.85,
             input_tokens=100, output_tokens=40,
         )
+
+        async def dispatcher(**kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            # run-1 mapping under seed 1 places a-text in response_1.
+            r1_block = prompt.split("<response_1>", 1)[1].split(
+                "</response_1>", 1
+            )[0]
+            if "a-text" in r1_block:
+                return bad_a  # run-1: always garbage
+            return good  # run-2: parses cleanly
+
         mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(side_effect=[bad, good])
+        mock_client.messages.create = AsyncMock(side_effect=dispatcher)
         with patch(
             "anthropic.AsyncAnthropic",
             return_value=mock_client,
@@ -1900,11 +2062,26 @@ class TestBlindCompare:
     async def test_blind_compare_empty_content_response(self):
         # Covers the text_of() branch where response.content is empty —
         # the function returns "", which then fails JSON parse → graceful tie.
+        # Parse retry (clauditor-6cf / #94): run-1 side retries after the
+        # empty response; run-2 side parses cleanly on first attempt.
+        # Route responses by prompt content to avoid asyncio-scheduling
+        # fragility.
         empty = MagicMock(usage=MagicMock(input_tokens=5, output_tokens=2))
         empty.content = []
         ok = _blind_response("1", confidence=0.8, score_1=0.9, score_2=0.3)
+
+        async def dispatcher(**kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            r1_block = prompt.split("<response_1>", 1)[1].split(
+                "</response_1>", 1
+            )[0]
+            # Seed 1, run-1 "ab->12": a-text in response_1 slot → empty.
+            if "a-text" in r1_block:
+                return empty
+            return ok
+
         mock_client = AsyncMock()
-        mock_client.messages.create = AsyncMock(side_effect=[empty, ok])
+        mock_client.messages.create = AsyncMock(side_effect=dispatcher)
         with patch(
             "anthropic.AsyncAnthropic",
             return_value=mock_client,
@@ -1915,6 +2092,42 @@ class TestBlindCompare:
         # Partial parse failure path: run-2 is the good run.
         assert report.position_agreement is False
         assert "run-2" in report.reasoning
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_no_retry_on_shape_failure(self):
+        """Parse retry (clauditor-6cf / #94, Copilot feedback on PR #98):
+        a blind judge response that is valid JSON but missing required
+        keys (shape failure) must NOT be retried — covers the
+        ``_call_blind_side_with_retry`` ``parse_err is None`` break
+        branch. Mirrors ``grade_quality``'s shape-vs-decode split."""
+        # Valid JSON dict, but missing required fields (no "preference").
+        shape_bad = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        shape_bad.content = [
+            MagicMock(type="text", text='{"wrong": "keys"}')
+        ]
+        ok = _blind_response("1", confidence=0.8, score_1=0.9, score_2=0.3)
+
+        async def dispatcher(**kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            r1_block = prompt.split("<response_1>", 1)[1].split(
+                "</response_1>", 1
+            )[0]
+            # Seed 1, run-1 "ab->12": a-text in response_1 slot → shape_bad.
+            if "a-text" in r1_block:
+                return shape_bad
+            return ok
+
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=dispatcher)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await blind_compare(
+                "q", "a-text", "b-text", rng=random.Random(1)
+            )
+        # Shape failure must NOT retry — exactly 2 calls total (one per
+        # side, no retry on side1 despite its shape failure).
+        assert mock_client.messages.create.await_count == 2
+        # Run-1 side failed shape, run-2 parsed — partial-parse path.
+        assert report.position_agreement is False
 
 
 class TestParseBlindResponse:
@@ -2310,6 +2523,42 @@ class TestBuildGradingReport:
         )
         assert report.results[0].criterion == "parse_response"
         assert "misalignment" in report.results[0].reasoning
+
+    def test_unparseable_json_surfaces_line_col_and_tail(self):
+        """C (clauditor-6cf / #94): a malformed-JSON response produces a
+        failure report whose reasoning includes the decoder's line/col
+        position AND a tail of the bytes, so an operator can tell
+        malformed-JSON (tail looks like ``]``) from true truncation
+        (tail is mid-content). Regression guard against reverting to
+        the generic "Failed to parse grader response as JSON" string."""
+        spec = _make_spec()
+        # Real-world failure pattern from the #94 repro: unescaped
+        # double-quote inside an evidence string. The JSON array is
+        # closed (ends with "]") so the tail should make that visible.
+        bad_text = (
+            '[{"criterion":"c","passed":true,"score":1.0,'
+            '"evidence":"outer "inner" quote","reasoning":"r"}]'
+        )
+        report = build_grading_report(
+            bad_text,
+            spec,
+            model="m",
+            thresholds=GradeThresholds(),
+            duration=0.0,
+            input_tokens=1,
+            output_tokens=1,
+        )
+        reasoning = report.results[0].reasoning
+        assert report.results[0].criterion == "parse_response"
+        assert "Failed to parse" in reasoning
+        assert "at line" in reasoning
+        assert "col" in reasoning
+        # Tail is rendered so the reader can distinguish truncation
+        # from malformed-but-complete JSON.
+        assert "ends with" in reasoning
+        # The closing bracket should be visible in the tail — proof the
+        # response was NOT truncated.
+        assert "]" in reasoning
 
     def test_unparseable_json_yields_failure_report(self):
         spec = _make_spec()

@@ -10,6 +10,7 @@ import datetime
 import json
 import math
 import random
+import sys
 import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
@@ -25,6 +26,18 @@ DEFAULT_GRADING_MODEL = "claude-sonnet-4-6"
 # Indirection so tests can patch blind_compare timing without affecting
 # the asyncio event loop's own time.monotonic() calls.
 _monotonic = time.monotonic
+
+# Grader-orchestrator parse retry (clauditor-6cf / #94). The model
+# occasionally emits malformed JSON (unescaped quotes in evidence
+# strings, incomplete structures) at ~5% rate; one retry with the same
+# prompt catches the transient hiccup without a structural schema
+# change. This is distinct from :func:`clauditor._anthropic.call_anthropic`'s
+# retry ladder — that ladder handles transport-layer errors
+# (rate-limit, 5xx); this retry handles output-quality errors
+# (malformed JSON) that pass the transport contract but fail the
+# grader's parse. Retries are NOT triggered on alignment failures —
+# those indicate a prompt-design bug, not a model hiccup.
+_GRADER_PARSE_RETRY_LIMIT = 2
 
 
 @dataclass
@@ -293,14 +306,20 @@ def build_blind_prompt(
     )
 
 
-def parse_blind_response(text: str) -> dict | None:
-    """Parse the judge's JSON response for blind A/B comparison.
+def _parse_blind_response_verbose(
+    text: str,
+) -> tuple[dict | None, str | None]:
+    """Same contract as :func:`parse_blind_response` plus a parse-error
+    description for retry / diagnostics.
 
-    Pure function (no I/O). Mirrors :func:`parse_grading_response` style —
-    tries raw JSON first, then falls back to stripping markdown fences.
-    Returns ``None`` on malformed input; :func:`blind_compare` handles
-    graceful failure.
+    Returns ``(data, None)`` on success, ``(None, description)`` on JSON
+    decode failure (with line/col + response tail), and ``(None, None)``
+    on shape failure (top-level not a dict, or missing required keys) —
+    shape failures indicate a model-protocol bug, not a transient
+    hiccup, so retry is unlikely to help.
     """
+    from clauditor.grader import describe_json_parse_failure
+
     json_str = text
     if "```" in json_str:
         if "```json" in json_str:
@@ -312,15 +331,28 @@ def parse_blind_response(text: str) -> dict | None:
 
     try:
         data = json.loads(json_str.strip())
-    except (json.JSONDecodeError, IndexError):
-        return None
+    except json.JSONDecodeError as exc:
+        return None, describe_json_parse_failure(text, exc)
 
     if not isinstance(data, dict):
-        return None
+        return None, None
     required = ("preference", "score_1", "score_2", "confidence", "reasoning")
     if not all(key in data for key in required):
-        return None
-    return data
+        return None, None
+    return data, None
+
+
+def parse_blind_response(text: str) -> dict | None:
+    """Parse the judge's JSON response for blind A/B comparison.
+
+    Pure function (no I/O). Mirrors :func:`parse_grading_response` style —
+    tries raw JSON first, then falls back to stripping markdown fences.
+    Returns ``None`` on malformed input; :func:`blind_compare` handles
+    graceful failure.
+
+    Thin wrapper around :func:`_parse_blind_response_verbose`.
+    """
+    return _parse_blind_response_verbose(text)[0]
 
 
 # Legacy alias — the helper was private pre-US-005. Keep so existing
@@ -539,6 +571,55 @@ def _build_blind_prompt_for_mapping(
     return build_blind_prompt(user_prompt, slot_1, slot_2, rubric_hint)
 
 
+async def _call_blind_side_with_retry(
+    prompt: str,
+    *,
+    model: str,
+    transport: str,
+    side_label: str,
+) -> tuple[dict | None, str, str, int, int]:
+    """Run one side of a blind-compare judge with parse retry.
+
+    Returns ``(parsed, text, source, input_tokens, output_tokens)`` — the
+    parsed verdict dict (or ``None`` on shape failure), the final
+    attempt's response text, the transport source, and the cumulative
+    token counts across attempts. One retry on JSON decode failure per
+    clauditor-6cf / #94; no retry on shape failure (missing required
+    keys) since that indicates a model-protocol bug.
+    """
+    from clauditor._anthropic import call_anthropic
+
+    total_input = 0
+    total_output = 0
+    last_text = ""
+    last_source = "api"
+    parsed: dict | None = None
+    for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
+        r = await call_anthropic(
+            prompt, model=model, max_tokens=2048, transport=transport
+        )
+        total_input += r.input_tokens
+        total_output += r.output_tokens
+        last_source = r.source
+        last_text = r.text_blocks[0] if r.text_blocks else ""
+        parsed, parse_err = _parse_blind_response_verbose(last_text)
+        if parsed is not None:
+            break
+        # Retry only on decode failures (parse_err populated). Shape
+        # failures (parse_err is None, parsed is None) mean the model
+        # returned valid JSON but missing required keys — not a
+        # transient hiccup.
+        if parse_err is None:
+            break
+        if attempt < _GRADER_PARSE_RETRY_LIMIT - 1:
+            _emit_parse_retry_notice(
+                f"blind_compare.{side_label}",
+                attempt + 2,
+                _GRADER_PARSE_RETRY_LIMIT,
+            )
+    return parsed, last_text, last_source, total_input, total_output
+
+
 async def blind_compare(
     user_prompt: str,
     output_a: str,
@@ -558,40 +639,42 @@ async def blind_compare(
     disagreement on the winner yields ``preference="tie"`` with
     ``position_agreement=False``.
 
+    Each side retries once on JSON decode failure (clauditor-6cf / #94).
+    Retries fire independently: if side 1 parses on the first attempt
+    but side 2 needs a retry, only side 2 is re-invoked.
+
     Requires the 'grader' extra: pip install clauditor[grader]
     """
     import asyncio as _asyncio
 
-    from clauditor._anthropic import call_anthropic
     _validate_blind_inputs(user_prompt, output_a, output_b)
     m1, m2 = _pick_blind_mappings(rng)
     args = (user_prompt, output_a, output_b, rubric_hint)
     p1 = _build_blind_prompt_for_mapping(m1, *args)
     p2 = _build_blind_prompt_for_mapping(m2, *args)
     start = _monotonic()
-    r1, r2 = await _asyncio.gather(
-        call_anthropic(p1, model=model, max_tokens=2048, transport=transport),
-        call_anthropic(p2, model=model, max_tokens=2048, transport=transport),
+    side1, side2 = await _asyncio.gather(
+        _call_blind_side_with_retry(
+            p1, model=model, transport=transport, side_label="side1"
+        ),
+        _call_blind_side_with_retry(
+            p2, model=model, transport=transport, side_label="side2"
+        ),
     )
     duration = _monotonic() - start
-    # Pre-refactor semantics: take the FIRST text block only so downstream
-    # parsers see the same string they did before ``_extract_result``
-    # started joining blocks.
-    t1 = r1.text_blocks[0] if r1.text_blocks else ""
-    t2 = r2.text_blocks[0] if r2.text_blocks else ""
+    parsed1, t1, src1, in1, out1 = side1
+    parsed2, t2, src2, in2, out2 = side2
     # DEC-018: transport_source reflects the underlying Anthropic call(s).
     # When the two parallel judges disagree (API + CLI — unlikely but
     # possible in an ``auto`` fallback race), stamp ``"mixed"`` so the
     # audit trail surfaces that the report isn't purely one transport.
-    transport_source = (
-        r1.source if r1.source == r2.source else "mixed"
-    )
+    transport_source = src1 if src1 == src2 else "mixed"
     return combine_blind_results(
-        parsed1=parse_blind_response(t1), parsed2=parse_blind_response(t2),
+        parsed1=parsed1, parsed2=parsed2,
         text1=t1, text2=t2,
         run1_mapping=m1, run2_mapping=m2, model=model,
-        input_tokens=r1.input_tokens + r2.input_tokens,
-        output_tokens=r1.output_tokens + r2.output_tokens,
+        input_tokens=in1 + in2,
+        output_tokens=out1 + out2,
         duration_seconds=duration,
         transport_source=transport_source,
     )
@@ -741,20 +824,26 @@ def _criterion_id(entry: object) -> str:
     return ""
 
 
-def parse_grading_response(
+def _parse_grading_response_verbose(
     text: str, criteria: list
-) -> list[GradingResult]:
-    """Parse a JSON grading response into GradingResult objects.
+) -> tuple[list[GradingResult], str | None]:
+    """Same contract as :func:`parse_grading_response` plus a parse-error
+    description for retry / diagnostics.
 
-    Handles both raw JSON and markdown-wrapped JSON (```json...```).
-    Returns an empty list on parse failure.
+    Returns ``(results, None)`` on success and ``([], description)`` when
+    ``json.loads`` fails — the description includes the decoder's
+    position + a tail of the response so a reader can tell malformed
+    JSON from true truncation (see
+    :func:`clauditor.grader.describe_json_parse_failure`).
+    Returns ``([], None)`` when the top-level value is not a list, so
+    the caller's "no results" branch still fires for shape errors.
 
-    Hard-fails with :class:`ValueError` when the judge returns a result
-    set that does not positionally align with ``criteria`` by expected
-    text — the stable-id assignment is positional (DEC-001 / #25), so
-    a reordered, dropped, or extra result would silently mis-label the
-    audit history. FIX-10: mismatch must be surfaced, not swallowed.
+    Alignment failures still raise :class:`ValueError` — the judge
+    returned a structurally valid but positionally-misaligned result
+    set, which indicates a prompt-design bug (not a transient model
+    hiccup) and should not be retried.
     """
+    from clauditor.grader import describe_json_parse_failure
     from clauditor.schemas import criterion_text
 
     json_str = text
@@ -769,11 +858,11 @@ def parse_grading_response(
 
     try:
         data = json.loads(json_str.strip())
-    except (json.JSONDecodeError, IndexError):
-        return []
+    except json.JSONDecodeError as exc:
+        return [], describe_json_parse_failure(text, exc)
 
     if not isinstance(data, list):
-        return []
+        return [], None
 
     # FIX-10: validate alignment before positional zip. Only filter out
     # non-dict entries up front so length comparisons mean what we think.
@@ -823,7 +912,28 @@ def parse_grading_response(
             )
         )
 
-    return results
+    return results, None
+
+
+def parse_grading_response(
+    text: str, criteria: list
+) -> list[GradingResult]:
+    """Parse a JSON grading response into GradingResult objects.
+
+    Handles both raw JSON and markdown-wrapped JSON (```json...```).
+    Returns an empty list on parse failure.
+
+    Hard-fails with :class:`ValueError` when the judge returns a result
+    set that does not positionally align with ``criteria`` by expected
+    text — the stable-id assignment is positional (DEC-001 / #25), so
+    a reordered, dropped, or extra result would silently mis-label the
+    audit history. FIX-10: mismatch must be surfaced, not swallowed.
+
+    Thin wrapper around :func:`_parse_grading_response_verbose` — the
+    verbose variant exposes a parse-error description for retry /
+    diagnostic use by :func:`build_grading_report`.
+    """
+    return _parse_grading_response_verbose(text, criteria)[0]
 
 
 def _grading_failure_report(
@@ -906,7 +1016,7 @@ def build_grading_report(
             **common,
         )
     try:
-        results = parse_grading_response(
+        results, parse_error = _parse_grading_response_verbose(
             response_text, eval_spec.grading_criteria
         )
     except ValueError as exc:
@@ -917,10 +1027,15 @@ def build_grading_report(
             **common,
         )
     if not results:
+        reasoning = parse_error or (
+            "Grader response parsed as JSON but top-level value was not "
+            f"an array (expected list of criterion verdicts); response "
+            f"was {len(response_text)} chars"
+        )
         return _grading_failure_report(
             eval_spec,
             evidence=response_text[:200],
-            reasoning="Failed to parse grader response as JSON",
+            reasoning=reasoning,
             **common,
         )
     return GradingReport(
@@ -936,6 +1051,22 @@ def build_grading_report(
     )
 
 
+def _emit_parse_retry_notice(ctx: str, attempt: int, total: int) -> None:
+    """Write a one-line stderr notice when a grader call is being retried
+    due to a parse failure (clauditor-6cf / #94).
+
+    Kept separate from the transport-layer stderr notices emitted by
+    :mod:`clauditor._anthropic` so operators can distinguish
+    "retrying because the transport hiccuped" from "retrying because
+    the model emitted bad JSON".
+    """
+    print(
+        f"clauditor.{ctx}: grader response did not parse; "
+        f"retrying ({attempt}/{total})",
+        file=sys.stderr,
+    )
+
+
 async def grade_quality(
     output: str,
     eval_spec: EvalSpec,
@@ -945,10 +1076,15 @@ async def grade_quality(
 ) -> GradingReport:
     """Layer 3: Grade skill output against rubric criteria using an LLM.
 
-    Thin async wrapper: builds a prompt, issues one Anthropic call, parses
-    the response, and returns a :class:`GradingReport`. All heavy lifting
-    lives in the pure helpers :func:`build_grading_prompt` and
-    :func:`parse_grading_response`.
+    Thin async wrapper: builds a prompt, issues up to
+    :data:`_GRADER_PARSE_RETRY_LIMIT` Anthropic calls (one retry on
+    malformed-JSON response — see clauditor-6cf / #94), parses the
+    response, and returns a :class:`GradingReport`. Token counts and
+    duration accumulate across attempts. Retry is NOT triggered on
+    alignment failures (prompt-design bug, not a transient hiccup).
+
+    All heavy lifting lives in the pure helpers
+    :func:`build_grading_prompt` and :func:`parse_grading_response`.
 
     Requires the 'grader' extra: pip install clauditor[grader]
     """
@@ -958,23 +1094,63 @@ async def grade_quality(
     prompt = build_grading_prompt(eval_spec, output)
 
     start = _monotonic()
-    api_result = await call_anthropic(
-        prompt, model=model, max_tokens=4096, transport=transport
-    )
-    duration = _monotonic() - start
+    total_input_tokens = 0
+    total_output_tokens = 0
+    last_response_text = ""
+    last_source = "api"
+    for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
+        api_result = await call_anthropic(
+            prompt, model=model, max_tokens=4096, transport=transport
+        )
+        total_input_tokens += api_result.input_tokens
+        total_output_tokens += api_result.output_tokens
+        last_source = api_result.source
+        last_response_text = (
+            api_result.text_blocks[0] if api_result.text_blocks else ""
+        )
+        # Decide retry based on the parse outcome, not the final
+        # GradingReport. Mirrors :func:`_call_blind_side_with_retry` so
+        # the L3 grader has consistent retry semantics across
+        # grade_quality and blind_compare:
+        # - Alignment failure (ValueError): NOT retry-worthy — the
+        #   judge returned a structurally valid but positionally-
+        #   misaligned result set; a retry won't fix a prompt-design
+        #   bug. Let ``build_grading_report`` classify it.
+        # - True decode failure (``parse_error is not None``): retry-
+        #   worthy — transient model hiccup.
+        # - Empty response (``last_response_text == ""``): retry-
+        #   worthy — transient; the model may just have dropped the
+        #   text block.
+        # - Shape failure (valid JSON but top-level not a list:
+        #   ``parse_error is None`` and ``results == []`` and
+        #   ``last_response_text != ""``): NOT retry-worthy — model-
+        #   protocol bug, same rationale as blind_compare and
+        #   ``_extract_call_with_retry``.
+        try:
+            results, parse_error = _parse_grading_response_verbose(
+                last_response_text, eval_spec.grading_criteria
+            )
+        except ValueError:
+            break  # alignment failure — let build_grading_report classify
+        if results:
+            break  # success
+        if last_response_text and parse_error is None:
+            break  # shape failure — model-protocol bug, not transient
+        if attempt < _GRADER_PARSE_RETRY_LIMIT - 1:
+            _emit_parse_retry_notice(
+                "grade_quality", attempt + 2, _GRADER_PARSE_RETRY_LIMIT
+            )
 
-    response_text = (
-        api_result.text_blocks[0] if api_result.text_blocks else ""
-    )
+    duration = _monotonic() - start
     return build_grading_report(
-        response_text,
+        last_response_text,
         eval_spec,
         model=model,
         thresholds=thresholds,
         duration=duration,
-        input_tokens=api_result.input_tokens,
-        output_tokens=api_result.output_tokens,
-        transport_source=api_result.source,
+        input_tokens=total_input_tokens,
+        output_tokens=total_output_tokens,
+        transport_source=last_source,
     )
 
 
