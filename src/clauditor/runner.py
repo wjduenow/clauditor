@@ -450,6 +450,7 @@ def _invoke_claude_cli(
     claude_bin: str,
     model: str | None = None,
     allow_hang_heuristic: bool = True,
+    subject: str | None = None,
 ) -> InvokeResult:
     """Run ``claude -p <prompt>`` with stream-json output and parse the NDJSON.
 
@@ -733,9 +734,17 @@ def _invoke_claude_cli(
         # line) — absence is the signal. Values are labels
         # (``ANTHROPIC_API_KEY``, ``claude.ai``, ``none``), not
         # secrets, so printing them is safe.
+        #
+        # Issue #107: when ``subject`` is provided (callers like the
+        # L2 extraction grader, the L3 grading judge, the suggest
+        # proposer) append ``" (<subject>)"`` so operators running
+        # ``grade --transport cli`` can attribute each line to a
+        # specific internal LLM call instead of seeing identical
+        # lines from multiple grader subprocesses.
         if api_key_source is not None:
+            suffix = f" ({subject})" if subject else ""
             print(
-                f"clauditor.runner: apiKeySource={api_key_source}",
+                f"clauditor.runner: apiKeySource={api_key_source}{suffix}",
                 file=sys.stderr,
             )
 

@@ -2498,6 +2498,68 @@ class TestApiKeySourceParsing:
         captured = capsys.readouterr()
         assert "apiKeySource=" not in captured.err
 
+    def test_stderr_line_appends_subject_suffix(self, capsys):
+        # Issue #107: when the caller threads a ``subject`` label
+        # through ``_invoke_claude_cli`` (as grader call sites do via
+        # ``call_anthropic``), the stderr info line gains a
+        # ``" (<subject>)"`` suffix so operators can attribute each
+        # line to a specific internal LLM call.
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "apiKeySource": "none",
+            },
+        )
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            _invoke_claude_cli(
+                "prompt",
+                cwd=None,
+                env=None,
+                timeout=180,
+                claude_bin="claude",
+                subject="L2 extraction",
+            )
+        captured = capsys.readouterr()
+        matching = [
+            line
+            for line in captured.err.splitlines()
+            if "apiKeySource=" in line
+        ]
+        assert len(matching) == 1, captured.err
+        assert (
+            matching[0]
+            == "clauditor.runner: apiKeySource=none (L2 extraction)"
+        )
+
+    def test_stderr_line_omits_suffix_when_subject_none(self, capsys):
+        # Issue #107 acceptance criterion 4: no regression in the
+        # existing format when ``subject`` is not threaded through.
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "apiKeySource": "none",
+            },
+        )
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            _invoke_claude_cli(
+                "prompt",
+                cwd=None,
+                env=None,
+                timeout=180,
+                claude_bin="claude",
+            )
+        captured = capsys.readouterr()
+        matching = [
+            line
+            for line in captured.err.splitlines()
+            if "apiKeySource=" in line
+        ]
+        assert matching == ["clauditor.runner: apiKeySource=none"]
+
     def test_stderr_line_suppressed_when_init_missing_field(self, capsys):
         # init present but apiKeySource absent → no stderr line (DEC-012).
         fake = make_fake_skill_stream(

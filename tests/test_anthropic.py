@@ -1258,6 +1258,70 @@ class TestCallViaClaudeCli:
         msg = str(exc_info.value)
         assert secret_leak not in msg
 
+    @pytest.mark.asyncio
+    async def test_subject_labels_stderr_apikeysource_line(
+        self, capsys
+    ) -> None:
+        """Issue #107: ``subject=`` threads through to the CLI's
+        ``apiKeySource`` stderr line so operators running
+        ``grade --transport cli`` can attribute each telemetry line to a
+        specific internal LLM call (e.g. L2 extraction vs L3 grading).
+        """
+        from tests.conftest import make_fake_skill_stream
+
+        fake = make_fake_skill_stream(
+            "ok",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "apiKeySource": "none",
+            },
+        )
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            await call_anthropic(
+                "p",
+                model="m",
+                transport="cli",
+                subject="L2 extraction",
+            )
+        captured = capsys.readouterr()
+        matching = [
+            line
+            for line in captured.err.splitlines()
+            if "apiKeySource=" in line
+        ]
+        assert len(matching) == 1, captured.err
+        assert (
+            matching[0]
+            == "clauditor.runner: apiKeySource=none (L2 extraction)"
+        )
+
+    @pytest.mark.asyncio
+    async def test_subject_none_preserves_unlabeled_stderr_line(
+        self, capsys
+    ) -> None:
+        """Issue #107 acceptance criterion 4: existing format unchanged
+        when ``subject`` is not threaded through."""
+        from tests.conftest import make_fake_skill_stream
+
+        fake = make_fake_skill_stream(
+            "ok",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "apiKeySource": "none",
+            },
+        )
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            await call_anthropic("p", model="m", transport="cli")
+        captured = capsys.readouterr()
+        matching = [
+            line
+            for line in captured.err.splitlines()
+            if "apiKeySource=" in line
+        ]
+        assert matching == ["clauditor.runner: apiKeySource=none"]
+
 
 class TestAnthropicResultFields:
     """Cover :attr:`AnthropicResult.source` and :attr:`duration_seconds`.
