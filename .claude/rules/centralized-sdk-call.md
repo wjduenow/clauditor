@@ -152,6 +152,40 @@ handled each call. `BlindReport.transport_source` propagates this through
 blind-compare; when the two parallel calls disagree (unlikely in practice),
 the report stamps `"mixed"` (DEC-018).
 
+### Implicit-coupling announcements — an emerging family
+
+One-time-per-process stderr notices are an emerging family co-located
+in `src/clauditor/_anthropic.py`. Each member pairs a module-level
+bool flag with an announcement-text constant; the print-and-flip
+logic either lives inline at the call site (the first member, from
+#86) or is factored into a public helper (the second member, from
+#95, and the target shape going forward). Two members today:
+
+- `_announced_cli_transport` (bool flag) + `_CLI_AUTO_ANNOUNCEMENT`
+  (plain `str` constant) — from #86. Fires on auto→cli transport
+  resolution. Print-and-flip is **inlined** inside `call_anthropic`
+  (see the `if not _announced_cli_transport:` block near the bottom
+  of the function). No standalone emitter helper.
+- `_announced_implicit_no_api_key` (bool flag) +
+  `_IMPLICIT_NO_API_KEY_ANNOUNCEMENT` (`Final[str]` constant) — from
+  #95 US-002. Fires when `--transport cli` (or
+  `CLAUDITOR_TRANSPORT=cli`) implicitly strips `ANTHROPIC_API_KEY` /
+  `ANTHROPIC_AUTH_TOKEN` from a skill subprocess env. Print-and-flip
+  lives in the **public helper** `announce_implicit_no_api_key()`,
+  called from the `env_override` computation in
+  `cli/grade.py::cmd_grade` (see `.claude/rules/spec-cli-precedence.md`
+  "Implicit coupling at the operator-intent layers" for the call-site
+  contract).
+
+The #95 shape (`Final[str]` constant + public helper) is the target
+pattern for new members — it makes the notice independently testable
+without reaching into `call_anthropic` internals. New announcement
+flags belong in the same module (DEC-009 of
+`plans/super/95-subscription-auth-flag.md`). Reset mechanism for
+tests is the `monkeypatch.setattr(..., False)` autouse fixture
+pattern — see `tests/test_anthropic.py::TestStderrAnnouncement` and
+`TestAnnounceImplicitNoApiKey` for the shape.
+
 ## When this rule applies
 
 Any new clauditor feature that needs to call Anthropic — a new

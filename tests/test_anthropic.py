@@ -32,6 +32,7 @@ from clauditor._anthropic import (
     _compute_backoff,
     _compute_retry_decision,
     _extract_result,
+    announce_implicit_no_api_key,
     call_anthropic,
     check_any_auth_available,
     check_api_key_only,
@@ -1506,6 +1507,77 @@ class TestStderrAnnouncement:
             "clauditor: using Claude CLI transport"
             not in captured.err
         )
+
+
+class TestAnnounceImplicitNoApiKey:
+    """DEC-003 / DEC-009 / DEC-011 (#95 US-002): one-shot stderr notice
+    emitted when ``--transport cli`` strips ``ANTHROPIC_API_KEY`` /
+    ``ANTHROPIC_AUTH_TOKEN`` from the skill subprocess env.
+
+    Parallel to :class:`TestStderrAnnouncement` — same autouse-reset
+    pattern; same one-shot-per-process contract.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_announcement_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every test starts with the one-shot flag set to False."""
+        monkeypatch.setattr(
+            "clauditor._anthropic._announced_implicit_no_api_key", False
+        )
+
+    def test_first_call_emits_announcement(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        announce_implicit_no_api_key()
+        captured = capsys.readouterr()
+        from clauditor._anthropic import _IMPLICIT_NO_API_KEY_ANNOUNCEMENT
+
+        assert _IMPLICIT_NO_API_KEY_ANNOUNCEMENT in captured.err
+
+    def test_second_call_silent(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        announce_implicit_no_api_key()
+        # Drain the first emission.
+        capsys.readouterr()
+        announce_implicit_no_api_key()
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_constant_names_both_env_vars(self) -> None:
+        """Prose-presence check — both env-var names must appear so
+        users know which variables got stripped."""
+        from clauditor._anthropic import _IMPLICIT_NO_API_KEY_ANNOUNCEMENT
+
+        assert "ANTHROPIC_API_KEY" in _IMPLICIT_NO_API_KEY_ANNOUNCEMENT
+        assert "ANTHROPIC_AUTH_TOKEN" in _IMPLICIT_NO_API_KEY_ANNOUNCEMENT
+
+    def test_constant_names_escape_hatch(self) -> None:
+        """DEC-011: users must see the explicit-opt-out path."""
+        from clauditor._anthropic import _IMPLICIT_NO_API_KEY_ANNOUNCEMENT
+
+        assert "--transport api" in _IMPLICIT_NO_API_KEY_ANNOUNCEMENT
+
+    def test_autouse_fixture_resets_flag_between_tests_first_half(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """First test of a pair — proves first-call emission works."""
+        announce_implicit_no_api_key()
+        captured = capsys.readouterr()
+        assert captured.err != ""
+
+    def test_autouse_fixture_resets_flag_between_tests_second_half(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Second test of the pair — if the autouse fixture did not
+        reset the flag, this test would see silence (the flag would
+        still be ``True`` from the first test). Seeing an emission
+        here proves the fixture reset works."""
+        announce_implicit_no_api_key()
+        captured = capsys.readouterr()
+        assert captured.err != ""
 
 
 class TestResolveTransport:
