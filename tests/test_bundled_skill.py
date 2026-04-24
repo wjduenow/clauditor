@@ -219,6 +219,20 @@ class TestSkillMdBody:
             "(DEC-007 regression guard)"
         )
 
+    def test_body_mentions_suggest(
+        self, frontmatter_and_body: tuple[dict, str]
+    ) -> None:
+        # Regression guard per
+        # .claude/rules/bundled-skill-docs-sync.md: the bundled SKILL.md
+        # body must reference `clauditor suggest` so the closing half of
+        # the workflow (propose SKILL.md edits from failing L3
+        # criteria) does not silently disappear on a future edit.
+        _, body = frontmatter_and_body
+        assert "clauditor suggest" in body, (
+            "bundled SKILL.md body must mention 'clauditor suggest' "
+            "(bundled-skill-docs-sync regression guard)"
+        )
+
 
 class TestBundledSkillViaSpec:
     def test_bundled_skill_loads_via_skillspec(self) -> None:

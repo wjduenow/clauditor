@@ -45,8 +45,19 @@ skill to evaluate.
    reports failing assertion ids.
 4. If L1 passes, asks before running L3 grading (`clauditor grade`) —
    costs Sonnet tokens, writes a full `grading.json` sidecar.
-5. Summarizes: which layers ran, pass/fail counts, sidecar paths you
-   can open for details.
+5. If L3 reports failing criteria, asks before running
+   `clauditor suggest` — proposes a unified diff of SKILL.md edits
+   motivated by the failing criterion ids. Writes
+   `<skill-name>-<timestamp>.diff` and `<skill-name>-<timestamp>.json`
+   under `.clauditor/suggestions/` (`<skill-name>` is the skill's
+   derived identity — frontmatter `name:` or parent-directory name,
+   not the file stem). Shows you the diff plus `motivated_by` +
+   `confidence` from the sidecar; does not auto-apply — review,
+   `git apply` (or hand-edit), then re-run `validate` / `grade` to
+   measure the score delta.
+6. Summarizes: which layers ran, pass/fail counts, sidecar paths
+   (including the suggest diff path if it ran) you can open for
+   details.
 
 **When to use `/clauditor` vs. the CLI directly:**
 
