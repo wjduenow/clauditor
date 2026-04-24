@@ -7,12 +7,18 @@ then validates the extracted data against the eval spec's schema.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 
 from clauditor.assertions import AssertionResult, AssertionSet
 from clauditor.formats import get_format
 from clauditor.schemas import EvalSpec
+
+# Grader-orchestrator parse retry (clauditor-6cf / #94). See module
+# docstring of :mod:`clauditor.quality_grader` for the rationale and
+# distinction from transport-layer retries; mirrored here so the L2
+# extract_and_grade / extract_and_report paths inherit the same
+# recovery shape as L3 grade_quality / blind_compare.
+_GRADER_PARSE_RETRY_LIMIT = 2
 
 
 @dataclass
@@ -86,8 +92,10 @@ class ExtractionReport:
     .. code-block:: json
 
         {
+          "schema_version": 2,
           "skill_name": "...",
           "model": "...",
+          "transport_source": "api",
           "input_tokens": 0,
           "output_tokens": 0,
           "parse_errors": [],
@@ -105,6 +113,13 @@ class ExtractionReport:
     entries within a tier. Fields whose enclosing section had zero extracted
     entries show up with an empty list — downstream auditors can still see
     that the field was *declared* in the spec.
+
+    ``transport_source`` records which :class:`AnthropicResult`
+    transport produced the Haiku response — ``"api"`` or ``"cli"``.
+    Persisted at ``schema_version=2`` per DEC-007 of
+    ``plans/super/86-claude-cli-transport.md``. The audit loader
+    accepts both ``{1, 2}`` and defaults missing ``transport_source``
+    to ``"api"`` when reading v1 sidecars.
     """
 
     skill_name: str
@@ -114,6 +129,7 @@ class ExtractionReport:
     output_tokens: int = 0
     parse_errors: list[str] = field(default_factory=list)
     declared_field_ids: list[str] = field(default_factory=list)
+    transport_source: str = "api"
 
     @property
     def passed(self) -> bool:
@@ -122,6 +138,14 @@ class ExtractionReport:
         )
 
     def to_json(self) -> str:
+        """Serialize the report to a JSON string.
+
+        Emits ``schema_version: 2`` as the first key per
+        ``.claude/rules/json-schema-version.md``. Version 2 adds the
+        ``transport_source`` field; the audit loader accepts both
+        ``{1, 2}`` and defaults missing ``transport_source`` to
+        ``"api"`` when reading v1 sidecars.
+        """
         by_id: dict[str, list[dict]] = {}
         # Pre-populate every declared field id with an empty list so the
         # on-disk contract (every declared field present) holds even on
@@ -133,9 +157,10 @@ class ExtractionReport:
                 {k: v for k, v in r.to_dict().items() if k != "field_id"}
             )
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "skill_name": self.skill_name,
             "model": self.model,
+            "transport_source": self.transport_source,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "parse_errors": list(self.parse_errors),
@@ -145,6 +170,12 @@ class ExtractionReport:
 
     @classmethod
     def from_json(cls, text: str) -> ExtractionReport:
+        """Deserialize an ExtractionReport from a JSON string.
+
+        Tolerates both schema versions (``1`` and ``2``); a missing
+        ``transport_source`` defaults to ``"api"`` so pre-#86 sidecars
+        load cleanly.
+        """
         data = json.loads(text)
         results: list[FieldExtractionResult] = []
         for field_id, entries in (data.get("fields") or {}).items():
@@ -172,6 +203,7 @@ class ExtractionReport:
             output_tokens=int(data.get("output_tokens", 0)),
             parse_errors=list(data.get("parse_errors") or []),
             declared_field_ids=list((data.get("fields") or {}).keys()),
+            transport_source=str(data.get("transport_source") or "api"),
         )
 
 
@@ -184,6 +216,7 @@ def build_extraction_report(
     input_tokens: int = 0,
     output_tokens: int = 0,
     parse_errors: list[str] | None = None,
+    transport_source: str = "api",
 ) -> ExtractionReport:
     """Build a field-id-keyed ``ExtractionReport`` from extracted output.
 
@@ -192,6 +225,10 @@ def build_extraction_report(
     fields produce zero records — the caller's downstream auditor still
     discovers the field via the spec itself). Uses the stable
     ``FieldRequirement.id`` (DEC-001) as the primary key.
+
+    ``transport_source`` is propagated into the returned
+    :class:`ExtractionReport` unchanged (DEC-007 of
+    ``plans/super/86-claude-cli-transport.md``).
     """
     results: list[FieldExtractionResult] = []
 
@@ -209,16 +246,18 @@ def build_extraction_report(
 
                     format_passed: bool | None = None
                     if field_req.format and has_value:
+                        # Registry-only (#99). Load-time validation in
+                        # ``FieldRequirement.__post_init__`` guarantees
+                        # ``get_format`` returns non-None for any
+                        # format value that made it this far.
                         fmt = get_format(field_req.format)
-                        if fmt is not None:
-                            format_passed = (
-                                fmt.pattern.fullmatch(value) is not None
-                            )
-                        else:
-                            format_passed = (
-                                re.fullmatch(field_req.format, value)
-                                is not None
-                            )
+                        assert fmt is not None, (
+                            f"format {field_req.format!r} passed load-time "
+                            f"validation but is missing from FORMAT_REGISTRY"
+                        )
+                        format_passed = (
+                            fmt.pattern.fullmatch(value) is not None
+                        )
 
                     # Required presence is what drives pass/fail for
                     # optional fields: optional + missing still "passes"
@@ -265,6 +304,7 @@ def build_extraction_report(
         output_tokens=output_tokens,
         parse_errors=list(parse_errors or []),
         declared_field_ids=declared_field_ids,
+        transport_source=transport_source,
     )
 
 
@@ -341,11 +381,20 @@ class ExtractionParseError:
 
     ``kind`` is one of:
 
-    - ``"json"`` — the response body could not be parsed as JSON.
+    - ``"json"`` — the response body could not be parsed as JSON (or
+      was empty after fence-stripping). Retry-worthy: transient model
+      decode failure.
+    - ``"shape"`` — the response parsed as valid JSON but with the
+      wrong top-level type (e.g. a list/string/number where a
+      section-keyed dict was expected). NOT retry-worthy: model-
+      protocol bug. Gated separately from ``"json"`` so
+      :func:`_extract_call_with_retry` can treat decode-vs-shape
+      failures differently (clauditor-6cf / #94 Copilot feedback).
     - ``"flat_list"`` — a spec-declared section came back as a flat list
       instead of the expected tier-grouped dict. ``section`` names the
       offending section; ``raw`` carries the full parsed response so the
       CLI layer can attach it to its ``grader:parse:<section>`` assertion.
+      NOT retry-worthy: model-protocol bug.
     """
 
     kind: str
@@ -390,6 +439,25 @@ def _strip_markdown_fence(text: str) -> str:
     return text
 
 
+def describe_json_parse_failure(
+    text: str, exc: json.JSONDecodeError
+) -> str:
+    """Format a grader-response JSON parse failure for operator eyes.
+
+    Includes the decoder's message, position, response length, and a
+    short tail of the bytes so a reader can distinguish malformed-JSON
+    (tail looks like ``]`` / ``}``) from true truncation (tail is
+    mid-content). Used by both :mod:`clauditor.grader` and
+    :mod:`clauditor.quality_grader`. See bead ``clauditor-6cf`` / #94.
+    """
+    tail = text[-120:] if len(text) > 120 else text
+    return (
+        f"Failed to parse grader response as JSON: {exc.msg} "
+        f"at line {exc.lineno} col {exc.colno}. "
+        f"Response was {len(text)} chars; ends with: {tail!r}"
+    )
+
+
 def parse_extraction_response(
     text: str, eval_spec: EvalSpec
 ) -> ExtractionParseResult:
@@ -405,16 +473,13 @@ def parse_extraction_response(
     json_str = _strip_markdown_fence(text)
     try:
         raw = json.loads(json_str.strip())
-    except (json.JSONDecodeError, IndexError):
+    except json.JSONDecodeError as exc:
         return ExtractionParseResult(
             extracted=ExtractedOutput(),
             parse_errors=[
                 ExtractionParseError(
                     kind="json",
-                    message=(
-                        f"Failed to parse grader response as JSON: "
-                        f"{text[:200]}"
-                    ),
+                    message=describe_json_parse_failure(text, exc),
                     evidence=text[:200],
                 )
             ],
@@ -423,13 +488,16 @@ def parse_extraction_response(
     # The prompt asks for a top-level JSON object keyed by section name.
     # A misbehaving model can return a bare list/string/number — iterating
     # ``.items()`` on that would raise AttributeError mid-parse. Fail
-    # explicitly with a structured parse error instead.
+    # explicitly with a structured parse error instead. ``kind="shape"``
+    # (not ``"json"``) so :func:`_extract_call_with_retry` does not
+    # retry — a response that decodes as valid JSON but with the wrong
+    # top-level type is a model-protocol bug, not a transient hiccup.
     if not isinstance(raw, dict):
         return ExtractionParseResult(
             extracted=ExtractedOutput(),
             parse_errors=[
                 ExtractionParseError(
-                    kind="json",
+                    kind="shape",
                     message=(
                         f"Expected JSON object at top level, got "
                         f"{type(raw).__name__}: {text[:200]}"
@@ -548,18 +616,15 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
                     )
 
                     if field_req.format:
+                        # Registry-only (#99). Load-time validation
+                        # guarantees ``get_format`` returns non-None.
                         fmt = get_format(field_req.format)
-                        if fmt is not None:
-                            matched = fmt.pattern.fullmatch(value) is not None
-                            label = f"format '{field_req.format}'"
-                        else:
-                            # DEC-007: format fell through to inline regex.
-                            # FieldRequirement validated compilability at
-                            # construction, so this compile always succeeds.
-                            matched = (
-                                re.fullmatch(field_req.format, value) is not None
-                            )
-                            label = f"regex /{field_req.format}/"
+                        assert fmt is not None, (
+                            f"format {field_req.format!r} passed load-time "
+                            f"validation but is missing from FORMAT_REGISTRY"
+                        )
+                        matched = fmt.pattern.fullmatch(value) is not None
+                        label = f"format '{field_req.format}'"
                         results.results.append(
                             AssertionResult(
                                 name=f"{base}:format",
@@ -659,6 +724,7 @@ def build_extraction_report_from_text(
     model: str,
     input_tokens: int,
     output_tokens: int,
+    transport_source: str = "api",
 ) -> ExtractionReport:
     """Parse ``response_text`` into an :class:`ExtractionReport`.
 
@@ -666,6 +732,10 @@ def build_extraction_report_from_text(
     JSON failures short-circuit to an empty-results report. Flat-list
     failures are merged into ``parse_errors`` while the rest of the
     extraction proceeds.
+
+    ``transport_source`` is propagated into the returned
+    :class:`ExtractionReport` unchanged (DEC-007 of
+    ``plans/super/86-claude-cli-transport.md``).
     """
     if not response_text:
         return ExtractionReport(
@@ -675,10 +745,17 @@ def build_extraction_report_from_text(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             parse_errors=["grader returned no text blocks"],
+            transport_source=transport_source,
         )
 
     parse = parse_extraction_response(response_text, eval_spec)
-    if any(err.kind == "json" for err in parse.parse_errors):
+    # Short-circuit to empty-results on both "json" (decode) and
+    # "shape" (wrong top-level type) — neither leaves us with a
+    # usable ``ExtractedOutput.sections`` to grade. Flat-list
+    # section failures proceed into ``build_extraction_report``
+    # so the per-field schema check still attaches to the other
+    # sections.
+    if any(err.kind in ("json", "shape") for err in parse.parse_errors):
         return ExtractionReport(
             skill_name=skill_name,
             model=model,
@@ -686,6 +763,7 @@ def build_extraction_report_from_text(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             parse_errors=[err.message for err in parse.parse_errors],
+            transport_source=transport_source,
         )
     return build_extraction_report(
         parse.extracted,
@@ -695,36 +773,99 @@ def build_extraction_report_from_text(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         parse_errors=[err.message for err in parse.parse_errors],
+        transport_source=transport_source,
     )
+
+
+async def _extract_call_with_retry(
+    prompt: str,
+    eval_spec: EvalSpec,
+    *,
+    model: str,
+    transport: str,
+    ctx: str,
+) -> tuple[str, str, int, int]:
+    """Issue the extraction Anthropic call with parse retry.
+
+    Returns ``(response_text, source, input_tokens, output_tokens)`` — the
+    final attempt's response text, the transport source, and cumulative
+    token counts across attempts. One retry on ``kind == "json"`` (true
+    decode failures + empty-after-fence-strip) per clauditor-6cf / #94;
+    no retry on ``kind == "shape"`` (valid JSON, wrong top-level type)
+    or ``kind == "flat_list"`` (section tiering missing) — both
+    indicate a model-protocol bug rather than a transient hiccup.
+    """
+    from clauditor._anthropic import call_anthropic
+    from clauditor.quality_grader import _emit_parse_retry_notice
+
+    total_input = 0
+    total_output = 0
+    last_text = ""
+    last_source = "api"
+    for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
+        api_result = await call_anthropic(
+            prompt, model=model, max_tokens=4096, transport=transport
+        )
+        total_input += api_result.input_tokens
+        total_output += api_result.output_tokens
+        last_source = api_result.source
+        last_text = (
+            api_result.text_blocks[0] if api_result.text_blocks else ""
+        )
+        if not last_text:
+            # Empty response — retry-worthy.
+            if attempt < _GRADER_PARSE_RETRY_LIMIT - 1:
+                _emit_parse_retry_notice(
+                    ctx, attempt + 2, _GRADER_PARSE_RETRY_LIMIT
+                )
+                continue
+            break
+        parse = parse_extraction_response(last_text, eval_spec)
+        has_json_error = any(err.kind == "json" for err in parse.parse_errors)
+        if not has_json_error:
+            break
+        if attempt < _GRADER_PARSE_RETRY_LIMIT - 1:
+            _emit_parse_retry_notice(
+                ctx, attempt + 2, _GRADER_PARSE_RETRY_LIMIT
+            )
+    return last_text, last_source, total_input, total_output
 
 
 async def extract_and_grade(
     output: str,
     eval_spec: EvalSpec,
     model: str = "claude-haiku-4-5-20251001",
+    transport: str = "auto",
 ) -> AssertionSet:
     """Layer 2: Extract structured data with Haiku, then validate against schema.
 
-    Thin async wrapper: builds a prompt, issues one Anthropic call, parses
-    the response, and returns an :class:`AssertionSet`. All verdict logic
+    Thin async wrapper: builds a prompt, issues up to
+    :data:`_GRADER_PARSE_RETRY_LIMIT` Anthropic calls (one retry on
+    malformed-JSON response — see clauditor-6cf / #94), parses the
+    response, and returns an :class:`AssertionSet`. All verdict logic
     lives in the pure helpers :func:`build_extraction_prompt`,
     :func:`parse_extraction_response`, :func:`grade_extraction`, and
     :func:`build_extraction_assertion_set`.
 
     Requires the 'grader' extra: pip install clauditor[grader]
     """
-    from clauditor._anthropic import call_anthropic
-
     prompt = build_extraction_prompt(eval_spec, output)
-    api_result = await call_anthropic(prompt, model=model, max_tokens=4096)
-    response_text = (
-        api_result.text_blocks[0] if api_result.text_blocks else ""
+    response_text, _source, input_tokens, output_tokens = (
+        await _extract_call_with_retry(
+            prompt, eval_spec,
+            model=model, transport=transport,
+            ctx="extract_and_grade",
+        )
     )
+    # Note: AssertionSet does not carry transport_source — extract_and_grade's
+    # sidecar (``assertions.json``) is unaffected by US-006. The transport
+    # source for the Layer 2 Haiku call is only persisted through
+    # ``extract_and_report`` → ``ExtractionReport``.
     return build_extraction_assertion_set(
         response_text,
         eval_spec,
-        input_tokens=api_result.input_tokens,
-        output_tokens=api_result.output_tokens,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
 
 
@@ -734,11 +875,14 @@ async def extract_and_report(
     model: str = "claude-haiku-4-5-20251001",
     *,
     skill_name: str = "",
+    transport: str = "auto",
 ) -> ExtractionReport:
     """Layer 2 wrapper that returns a field-id-keyed :class:`ExtractionReport`.
 
-    Thin async wrapper: builds a prompt, issues one Anthropic call, parses
-    the response, and aggregates an :class:`ExtractionReport`. All verdict
+    Thin async wrapper: builds a prompt, issues up to
+    :data:`_GRADER_PARSE_RETRY_LIMIT` Anthropic calls (one retry on
+    malformed-JSON response — see clauditor-6cf / #94), parses the
+    response, and aggregates an :class:`ExtractionReport`. All verdict
     logic lives in the pure helpers :func:`build_extraction_prompt`,
     :func:`parse_extraction_response`, :func:`build_extraction_report`, and
     :func:`build_extraction_report_from_text`.
@@ -746,18 +890,20 @@ async def extract_and_report(
     Used by ``cmd_grade`` (US-003) to persist per-field extraction results to
     ``iteration-N/<skill>/extraction.json``.
     """
-    from clauditor._anthropic import call_anthropic
-
     prompt = build_extraction_prompt(eval_spec, output)
-    api_result = await call_anthropic(prompt, model=model, max_tokens=4096)
-    response_text = (
-        api_result.text_blocks[0] if api_result.text_blocks else ""
+    response_text, source, input_tokens, output_tokens = (
+        await _extract_call_with_retry(
+            prompt, eval_spec,
+            model=model, transport=transport,
+            ctx="extract_and_report",
+        )
     )
     return build_extraction_report_from_text(
         response_text,
         eval_spec,
         skill_name=skill_name,
         model=model,
-        input_tokens=api_result.input_tokens,
-        output_tokens=api_result.output_tokens,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        transport_source=source,
     )

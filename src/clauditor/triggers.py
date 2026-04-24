@@ -175,6 +175,7 @@ async def classify_query(
     query: str,
     expected: bool,
     model: str,
+    transport: str = "auto",
 ) -> TriggerResult:
     """Classify a single query using the LLM.
 
@@ -190,7 +191,9 @@ async def classify_query(
     prompt = build_trigger_prompt(skill_name, description, query)
 
     try:
-        result = await call_anthropic(prompt, model=model, max_tokens=1024)
+        result = await call_anthropic(
+            prompt, model=model, max_tokens=1024, transport=transport
+        )
     except AnthropicHelperError as exc:
         # Graceful degradation: a single API failure (auth, 5xx
         # exhaustion, network) must not abort the entire trigger batch
@@ -240,7 +243,7 @@ async def classify_query(
 
 
 async def test_triggers(
-    eval_spec: EvalSpec, model: str = "claude-sonnet-4-6"
+    eval_spec: EvalSpec, model: str = "claude-sonnet-4-6", transport: str = "auto"
 ) -> TriggerReport:
     """Run trigger precision testing for all queries in an eval spec.
 
@@ -271,6 +274,7 @@ async def test_triggers(
             query=q,
             expected=expected,
             model=model,
+            transport=transport,
         )
         for q, expected in queries
     ]

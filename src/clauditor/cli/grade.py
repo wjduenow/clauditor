@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from clauditor import history
+from clauditor._anthropic import (
+    AnthropicAuthMissingError,
+    announce_implicit_no_api_key,
+    check_any_auth_available,
+)
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.benchmark import Benchmark, compute_benchmark
 from clauditor.paths import resolve_clauditor_dir
@@ -25,11 +31,54 @@ if TYPE_CHECKING:
     from clauditor.quality_grader import GradingReport, VarianceReport
 
 
+def _resolve_grade_env_override(
+    args: argparse.Namespace,
+) -> tuple[dict[str, str] | None, bool]:
+    """Decide the skill-subprocess env override and notice-firing bit.
+
+    Single source of truth for the primary and ``--baseline`` arms of
+    ``cmd_grade`` — both arms must compute ``env_override`` identically,
+    so the coupling decision lives in one pure helper. Addresses PR #96
+    Copilot feedback on primary/baseline duplication and whitespace
+    drift vs :func:`clauditor._anthropic._api_key_is_set`.
+
+    Returns ``(env_override, should_announce)`` where:
+
+    - ``env_override`` is the dict passed to ``spec.run(env_override=...)``.
+      ``None`` means "inherit the parent env" (status quo). A dict means
+      ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_AUTH_TOKEN`` have been stripped.
+    - ``should_announce`` is ``True`` iff the implicit path fired AND a
+      non-whitespace auth key was present — i.e. the caller should call
+      :func:`announce_implicit_no_api_key`. Callers that must not
+      double-announce (the baseline arm) ignore this bit.
+
+    Whitespace-only env values are treated as absent (matching
+    :func:`clauditor._anthropic._api_key_is_set`).
+    """
+    from clauditor.cli import should_strip_api_key_for_skill_subprocess
+
+    explicit_strip = bool(getattr(args, "no_api_key", False))
+    implicit_strip = (
+        not explicit_strip
+        and should_strip_api_key_for_skill_subprocess(args)
+    )
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or ""
+    auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
+    key_was_present = bool(api_key.strip() or auth_token.strip())
+    env_override = (
+        env_without_api_key()
+        if (explicit_strip or implicit_strip)
+        else None
+    )
+    should_announce = implicit_strip and key_was_present
+    return env_override, should_announce
+
+
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``grade`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int, _unit_float
+    from clauditor.cli import _positive_int, _transport_choice, _unit_float
 
     p_grade = subparsers.add_parser(
         "grade", help="Run Layer 3 quality grading against a skill's output"
@@ -145,6 +194,21 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "Defaults to EvalSpec.timeout or 180s."
         ),
     )
+    p_grade.add_argument(
+        "--transport",
+        type=_transport_choice,
+        default=None,
+        choices=("api", "cli", "auto"),
+        help=(
+            "Override the Anthropic call transport: 'api' (HTTP SDK), "
+            "'cli' (subprocess via claude binary), or 'auto' (prefer "
+            "CLI when available). Four-layer precedence: this flag > "
+            "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
+            "'auto'. (on grade, --transport cli or "
+            "CLAUDITOR_TRANSPORT=cli implies --no-api-key when an auth "
+            "key is present — pass --transport api to keep the key.)"
+        ),
+    )
 
 
 def _load_and_validate_grade_args(
@@ -232,6 +296,18 @@ def cmd_grade(args: argparse.Namespace) -> int:
         print(f"Model: {model}")
         print(f"Prompt:\n{prompt}")
         return 0
+
+    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
+    # ANTHROPIC_API_KEY nor the claude CLI binary is available. Guard
+    # lands AFTER --dry-run (dry-run is a cost-free preview — no API
+    # call, no key needed) and BEFORE allocate_iteration so we do not
+    # leave an abandoned iteration-N-tmp/ staging dir behind when the
+    # guard fires.
+    try:
+        check_any_auth_available("grade")
+    except AnthropicAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     # Allocate the iteration workspace early so that a collision
     # (--iteration N already exists) fails before we make any LLM calls.
@@ -355,18 +431,26 @@ def _run_skill_variants(
     non-``None`` when the caller should return that exit code (skill
     subprocess failure).
     """
-    # Shared helper lives in ``clauditor.cli`` (package __init__). Import
+    # Shared helpers live in ``clauditor.cli`` (package __init__). Import
     # lazily to avoid a circular import at module load.
     from clauditor.cli import _render_skill_error
 
-    # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags through
-    # to every ``spec.run`` invocation (primary + variance). Defaults
-    # are both None (today's behavior).
-    env_override = (
-        env_without_api_key()
-        if getattr(args, "no_api_key", False)
-        else None
-    )
+    # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout/transport flags
+    # through to every ``spec.run`` invocation (primary + variance).
+    # Defaults are all None (today's behavior).
+    #
+    # #95 US-003: --transport cli (or CLAUDITOR_TRANSPORT=cli) implicitly
+    # strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN from the skill
+    # subprocess env so the subscription-auth guarantee extends end-to-end
+    # (grader AND skill subprocess). The coupling decision and notice
+    # gating live in :func:`_resolve_grade_env_override` so the primary
+    # and ``--baseline`` arms share one implementation (addresses PR #96
+    # Copilot feedback on duplication). Traces to DEC-001, DEC-003,
+    # DEC-006, DEC-007, DEC-008, DEC-009 of
+    # plans/super/95-subscription-auth-flag.md.
+    env_override, should_announce = _resolve_grade_env_override(args)
+    if should_announce:
+        announce_implicit_no_api_key()
     timeout_override = getattr(args, "timeout", None)
 
     run_outputs: list[tuple[str, list[dict]]] = []
@@ -512,6 +596,7 @@ def _write_workspace_sidecars(
     primary_report: GradingReport,
     reports: list[GradingReport],
     model: str,
+    transport: str = "auto",
 ) -> Benchmark | None:
     """Write grading/assertions/extraction/baseline/benchmark sidecars.
 
@@ -547,13 +632,20 @@ def _write_workspace_sidecars(
     )
 
     if spec.eval_spec.sections:
-        _write_extraction_sidecar(skill_dir, primary_text, spec)
+        _write_extraction_sidecar(skill_dir, primary_text, spec, transport=transport)
 
     if getattr(args, "baseline", False):
         # Mirror the primary arm's env/timeout wiring so --no-api-key
         # and --timeout apply to both halves of the baseline delta.
-        no_api_key = bool(getattr(args, "no_api_key", False))
-        env_override = env_without_api_key() if no_api_key else None
+        # #95 US-003: also mirror the implicit --transport cli coupling
+        # so both arms of the baseline delta share the same auth posture;
+        # otherwise the baseline would bypass the strip that the primary
+        # arm just applied. The coupling decision lives in
+        # :func:`_resolve_grade_env_override` so both arms stay in
+        # lockstep by construction. The ``should_announce`` return is
+        # deliberately ignored here — the primary arm already fired the
+        # notice (and the helper is idempotent per US-002 regardless).
+        env_override, _ = _resolve_grade_env_override(args)
         timeout_override = getattr(args, "timeout", None)
         return _write_baseline_and_benchmark(
             spec=spec,
@@ -666,7 +758,7 @@ def _write_assertions_sidecar(
 
 
 def _write_extraction_sidecar(
-    skill_dir: Path, primary_text: str, spec: SkillSpec
+    skill_dir: Path, primary_text: str, spec: SkillSpec, transport: str = "auto"
 ) -> None:
     """Run Layer 2 schema extraction and persist ``extraction.json``."""
     import asyncio
@@ -678,6 +770,7 @@ def _write_extraction_sidecar(
             primary_text,
             spec.eval_spec,
             skill_name=spec.skill_name,
+            transport=transport,
         )
     )
     (skill_dir / "extraction.json").write_text(
@@ -850,6 +943,7 @@ def _grade_all_runs(
     run_outputs: list[tuple[str, list[dict]]],
     spec: SkillSpec,
     model: str,
+    transport: str = "auto",
 ) -> list[GradingReport]:
     """Grade every run's output concurrently and return the per-run reports."""
     import asyncio
@@ -865,6 +959,7 @@ def _grade_all_runs(
                         spec.eval_spec,
                         model,
                         thresholds=spec.eval_spec.grade_thresholds,
+                        transport=transport,
                     )
                     for text, _ev in run_outputs
                 ]
@@ -898,8 +993,12 @@ def _cmd_grade_with_workspace(
     if error_rc is not None:
         return error_rc
 
+    from clauditor.cli import _resolve_grader_transport
+
+    grader_transport = _resolve_grader_transport(args, spec.eval_spec)
+
     primary_text = run_outputs[0][0]
-    reports = _grade_all_runs(run_outputs, spec, model)
+    reports = _grade_all_runs(run_outputs, spec, model, transport=grader_transport)
     primary_report = reports[0]
 
     variance_report: VarianceReport | None = None
@@ -944,6 +1043,7 @@ def _cmd_grade_with_workspace(
             primary_report=primary_report,
             reports=reports,
             model=model,
+            transport=grader_transport,
         )
         _write_timing_and_finalize(
             workspace=workspace,

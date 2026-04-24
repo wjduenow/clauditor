@@ -1,7 +1,7 @@
 # clauditor
 
 <p align="center">
-  <img src="docs/assets/clauditor-social-preview.png" alt="clauditor" width="600">
+  <img src="https://raw.githubusercontent.com/wjduenow/clauditor/dev/docs/assets/clauditor-social-preview.png" alt="clauditor" width="600">
 </p>
 
 [![CI](https://github.com/wjduenow/clauditor/actions/workflows/ci.yml/badge.svg)](https://github.com/wjduenow/clauditor/actions/workflows/ci.yml)
@@ -15,16 +15,17 @@ Auditor for AgentSkills.io skills and Claude Integrations. Catches when your ski
 <details>
 <summary>Contents</summary>
 
-[Install](#install) · [Why clauditor?](#why-clauditor) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Eval Spec Format](#eval-spec-format) · [Reference docs](#reference-docs)
+[Install](#install) · [Why clauditor?](#why-clauditor) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Eval Spec Format](#eval-spec-format) · [Authentication](#authentication-and-api-keys) · [Reference docs](#reference-docs)
 
 </details>
 
 ## Install
 
 ```bash
-pip install clauditor           # CLI only (Layer 1)
-pip install clauditor[grader]   # + LLM grading (Layers 2 & 3) and `propose-eval`
+pip install clauditor-eval
 ```
+
+Layer 1 (deterministic assertions) works without LLM credentials. Layers 2 & 3 and `propose-eval` require either an `ANTHROPIC_API_KEY` or the `claude` CLI transport (with the CLI installed and authenticated).
 
 Source install: `git clone https://github.com/wjduenow/clauditor.git && cd clauditor && uv sync --dev`.
 
@@ -75,19 +76,20 @@ Invoke the slash command with a skill path — Claude locates the eval spec, run
 /clauditor .claude/commands/my-skill.md
 ```
 
-Full reference: [docs/skill-usage.md](docs/skill-usage.md).
+Full reference: [docs/skill-usage.md](https://github.com/wjduenow/clauditor/blob/dev/docs/skill-usage.md).
 
 ## Quick Start
 
-A new skill goes from "untested" to "covered" in three steps: `clauditor init` generates an eval spec, `clauditor validate` tightens L1 assertions against a real capture, then the same spec wires into pytest for regression coverage. If the SKILL.md already exists, substitute `clauditor propose-eval` for `init` to have Sonnet bootstrap a full three-layer spec from the skill (plus any captured run).
+A new skill goes from "untested" to "covered" in four steps: `clauditor capture` records a real run, `clauditor propose-eval` bootstraps a full three-layer spec from the SKILL.md plus that capture, `clauditor validate` tightens L1 assertions, then the spec wires into pytest for regression coverage.
 
 ```bash
-clauditor init .claude/commands/my-skill.md
+clauditor capture my-skill -- "initial context"   # save real output → tests/eval/captured/
+clauditor propose-eval .claude/commands/my-skill.md  # LLM writes the spec from SKILL.md + capture
 clauditor validate .claude/commands/my-skill.md
 clauditor validate .claude/commands/my-skill.md --json  # CI mode
 ```
 
-**Covered in the full reference:** authoring `.eval.json`, captured-output mode (`--output captured.txt`), pytest fixtures (`clauditor_runner`, `clauditor_asserter`, `clauditor_spec`). Full reference: [docs/quick-start.md](docs/quick-start.md).
+**Covered in the full reference:** the `capture` command and interactive-skill limitations, `propose-eval` options, pytest fixtures (`clauditor_runner`, `clauditor_asserter`, `clauditor_spec`). Full reference: [docs/quick-start.md](https://github.com/wjduenow/clauditor/blob/dev/docs/quick-start.md).
 
 ## Three Layers of Validation
 
@@ -97,7 +99,7 @@ L1 catches shape regressions for free, L2 uses Haiku to validate structured fiel
 {"assertions": [...], "sections": [...], "grading_criteria": [...]}
 ```
 
-Full reference: [docs/layers.md](docs/layers.md).
+Full reference: [docs/layers.md](https://github.com/wjduenow/clauditor/blob/dev/docs/layers.md).
 
 ## CLI Reference
 
@@ -114,7 +116,7 @@ clauditor trend <skill> --metric total.total   # History + sparkline
 clauditor badge <skill.md>            # Shields.io endpoint JSON for README embed
 ```
 
-**Covered in the full reference:** every subcommand flag (`--variance`, `--iteration`, `--diff`, …), exit codes, `history.jsonl` shape, `clauditor trend` metric paths. Full reference: [docs/cli-reference.md](docs/cli-reference.md).
+**Covered in the full reference:** every subcommand flag (`--variance`, `--iteration`, `--diff`, …), exit codes, `history.jsonl` shape, `clauditor trend` metric paths. Full reference: [docs/cli-reference.md](https://github.com/wjduenow/clauditor/blob/dev/docs/cli-reference.md).
 
 ## Pytest Integration
 
@@ -124,7 +126,7 @@ def test_my_skill(clauditor_runner, clauditor_asserter):
     clauditor_asserter(result).assert_contains("Results")
 ```
 
-Full reference: [docs/pytest-plugin.md](docs/pytest-plugin.md).
+Full reference: [docs/pytest-plugin.md](https://github.com/wjduenow/clauditor/blob/dev/docs/pytest-plugin.md).
 
 ## Eval Spec Format
 
@@ -140,7 +142,7 @@ An `<skill-name>.eval.json` lives next to the skill's `.md` file and drives all 
 }
 ```
 
-**Covered in the full reference:** the full eval-spec JSON shape, `input_files` staging rules, `output_file` / `output_files` capture, and the `format` validation DSL (`phone_us`, `url`, `domain`, … or inline regex). Full reference: [docs/eval-spec-reference.md](docs/eval-spec-reference.md).
+**Covered in the full reference:** the full eval-spec JSON shape, `input_files` staging rules, `output_file` / `output_files` capture, and the `format` validation DSL (`phone_us`, `url`, `domain`, … or inline regex). Full reference: [docs/eval-spec-reference.md](https://github.com/wjduenow/clauditor/blob/dev/docs/eval-spec-reference.md).
 
 <details><summary>Alignment with agentskills.io</summary>
 
@@ -157,7 +159,15 @@ clauditor implements (and extends) the workflow at [agentskills.io/skill-creatio
 
 **Beyond the spec**: trigger precision testing, tiered extraction, pytest plugin, `input_files` staging, blind A/B judge, baseline pair runs, transcript capture, LLM-driven skill improvement proposer (`clauditor suggest`), LLM-assisted EvalSpec bootstrap (`clauditor propose-eval`), Pro/Max subscription-auth option (`--no-api-key`) for research-heavy skills that exceed the API-tier rate limit, static spec-conformance check (`clauditor lint`). **Out of scope**: human-in-the-loop feedback capture.
 
+Note: `--no-api-key` only affects the subprocess; the six LLM-mediated commands (`grade`, `propose-eval`, `suggest`, `triggers`, `extract`, `compare --blind`) route their own Anthropic call through a pluggable transport that accepts either `ANTHROPIC_API_KEY` or a `claude` CLI subscription by default. See [Authentication and API Keys](#authentication-and-api-keys).
+
 </details>
+
+## Authentication and API Keys
+
+The six LLM-mediated commands (`grade`, `extract`, `propose-eval`, `suggest`, `triggers`, `compare --blind`) work under either `ANTHROPIC_API_KEY` or a `claude` CLI subscription — the default `auto` transport picks CLI when the binary is on PATH, else falls back to the API. Full reference: [docs/transport-architecture.md](docs/transport-architecture.md).
+
+Running `clauditor grade <skill> --transport cli` is the one-liner for subscription auth end-to-end: `--transport cli` implicitly strips `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the skill subprocess env, so both the grader and the skill use subscription auth. Pass `--transport api` to keep the keys.
 
 ## Reference docs
 
@@ -170,6 +180,7 @@ clauditor implements (and extends) the workflow at [agentskills.io/skill-creatio
 - [`docs/skill-usage.md`](docs/skill-usage.md) — using `/clauditor` in Claude Code
 - [`docs/badges.md`](docs/badges.md) — shields.io badges from iteration sidecars (`clauditor badge`)
 - [`docs/stream-json-schema.md`](docs/stream-json-schema.md) — `claude` stream-json parser contract
+- [`docs/transport-architecture.md`](docs/transport-architecture.md) — CLI vs SDK transport, auth-state matrix, precedence, migration
 - [`CONTRIBUTING.md`](CONTRIBUTING.md#pre-release-dogfood) — maintainer pre-release dogfood gate + contribution workflow
 
 ## License

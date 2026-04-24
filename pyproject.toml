@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "clauditor"
-version = "0.1.0"
+name = "clauditor-eval"
+version = "0.1.0.dev4"
 description = "Auditor for Claude Code skills and slash commands. Validates structured output against schemas using layered evaluation."
 readme = "README.md"
 license = "Apache-2.0"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["claude", "claude-code", "testing", "eval", "skills", "llm"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Framework :: Pytest",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
@@ -26,10 +26,10 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 
-dependencies = []
+dependencies = ["anthropic>=0.40.0"]
 
 [project.optional-dependencies]
-grader = ["anthropic>=0.40.0"]
+grader = []  # backward compat — anthropic is now a default dependency
 dev = [
     "pytest>=8.0",
     "ruff>=0.4.0",
@@ -44,6 +44,7 @@ clauditor = "clauditor.pytest_plugin"
 
 [project.urls]
 Homepage = "https://github.com/wjduenow/clauditor"
+Documentation = "https://wjduenow.github.io/clauditor/"
 Repository = "https://github.com/wjduenow/clauditor"
 Issues = "https://github.com/wjduenow/clauditor/issues"
 
@@ -53,6 +54,21 @@ include = ["src/clauditor/skills/**/*"]
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "build_hooks/stamp_skill_version.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/clauditor",
+    "build_hooks",
+    "tests",
+    "examples",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "pyproject.toml",
+]
+exclude = [
+    ".beads",
+]
 
 [tool.ruff]
 target-version = "py311"
@@ -77,4 +93,5 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.4.0",
     "anthropic>=0.40.0",
+    "mkdocs-material>=9.0",
 ]

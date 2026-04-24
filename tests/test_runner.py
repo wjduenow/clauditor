@@ -13,16 +13,22 @@ importlib.reload(_runner_mod)
 
 from clauditor.asserters import SkillAsserter  # noqa: E402
 from clauditor.runner import (  # noqa: E402
+    _BACKGROUND_TASK_WARNING_PREFIX,
     _INTERACTIVE_HANG_WARNING_PREFIX,
     _RESULT_TEXT_MAX_CHARS,
+    InvokeResult,
     SkillResult,
     SkillRunner,
     _classify_result_message,
+    _count_background_task_launches,
+    _detect_background_task_noncompletion,
     _detect_interactive_hang,
+    _invoke_claude_cli,
     env_without_api_key,
 )
 from tests.conftest import (  # noqa: E402
     _FakePopen,
+    make_fake_background_task_stream,
     make_fake_interactive_hang_stream,
     make_fake_skill_stream,
 )
@@ -1480,6 +1486,19 @@ class TestSkillResultErrorCategory:
         assert result.error_category is None
         assert result.succeeded_cleanly is False
 
+    def test_succeeded_cleanly_false_on_background_task_warning(self):
+        """A ``warnings`` entry starting with the ``background-task:``
+        prefix disqualifies the result even with error=None and
+        error_category=None. Mirrors the interactive-hang check added
+        in US-003. GitHub #97.
+        """
+        result = self._make(
+            warnings=["background-task: skill launched Task(run_in_background=true)"]
+        )
+        assert result.error is None
+        assert result.error_category is None
+        assert result.succeeded_cleanly is False
+
     def test_succeeded_cleanly_tolerates_other_warnings(self):
         """Warnings that do NOT start with the interactive-hang prefix
         do not disqualify a clean success — only the prefixed tag does."""
@@ -2579,3 +2598,825 @@ class TestEnvWithoutApiKey:
         result = env_without_api_key(base)
         assert result == base
         assert result is not base
+
+
+# ---------------------------------------------------------------------------
+# US-001 (#86): Regression smoke + fixture-replay for the extraction
+# ---------------------------------------------------------------------------
+
+
+class TestSkillRunnerInvokeRegressionSmoke:
+    """Smoke tests for ``SkillRunner.run`` invariants preserved by
+    the US-001 extraction of ``_invoke_claude_cli``.
+
+    These tests were authored BEFORE the extraction to lock in the
+    current field-population shape of ``SkillResult``. Every existing
+    field is asserted populated (or defaulted correctly) so the
+    projection from :class:`InvokeResult` back onto :class:`SkillResult`
+    is exhaustive.
+    """
+
+    def test_skillresult_every_field_populated_on_success(self):
+        """Full-field smoke: all observable SkillResult fields reflect
+        the stream-json input, with ``skill_name``/``args`` threaded
+        from the caller and ``duration_seconds`` populated by the
+        try/finally measurement."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=make_fake_skill_stream(
+                "canonical success",
+                input_tokens=123,
+                output_tokens=45,
+                init_message={
+                    "type": "system",
+                    "subtype": "init",
+                    "apiKeySource": "ANTHROPIC_API_KEY",
+                },
+            ),
+        ):
+            result = runner.run("canonical-skill", "some-args")
+        assert result.output == "canonical success"
+        assert result.exit_code == 0
+        assert result.skill_name == "canonical-skill"
+        assert result.args == "some-args"
+        assert result.duration_seconds >= 0.0
+        assert result.error is None
+        assert result.error_category is None
+        assert result.outputs == {}
+        assert result.input_tokens == 123
+        assert result.output_tokens == 45
+        # Init (+ apiKeySource) + assistant + result = 3 events.
+        assert len(result.raw_messages) == 3
+        assert len(result.stream_events) == 3
+        assert result.warnings == []
+        assert result.api_key_source == "ANTHROPIC_API_KEY"
+
+    def test_fixture_replay_output_matches_pinned_value(self):
+        """Canonical success stream-json → pinned ``output`` text."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=make_fake_skill_stream(
+                "pinned-output-text-abc123",
+                input_tokens=10,
+                output_tokens=20,
+            ),
+        ):
+            result = runner.run("skill", "")
+        assert result.output == "pinned-output-text-abc123"
+        assert result.exit_code == 0
+        assert result.input_tokens == 10
+        assert result.output_tokens == 20
+
+    def test_fixture_replay_rate_limit_category(self):
+        """429-style stream-json result → ``error_category=="rate_limit"``."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor.runner.subprocess.Popen",
+            return_value=make_fake_skill_stream(
+                "partial",
+                error_text="429 Too Many Requests: rate limit exceeded",
+            ),
+        ):
+            result = runner.run("skill", "")
+        assert result.error_category == "rate_limit"
+        assert "429" in (result.error or "")
+
+
+# ---------------------------------------------------------------------------
+# US-001 (#86): _invoke_claude_cli direct tests
+# ---------------------------------------------------------------------------
+
+
+class TestInvokeClaudeCli:
+    """Direct tests for the module-private ``_invoke_claude_cli`` helper
+    extracted in US-001 of ``plans/super/86-claude-cli-transport.md``.
+
+    The helper is the transport-level primitive: it takes a pre-built
+    prompt plus explicit ``cwd`` / ``env`` / ``timeout`` / ``claude_bin``
+    and returns a lean :class:`InvokeResult` with no skill-name / args
+    context. US-003 will wire a second caller (``call_anthropic``'s CLI
+    transport branch) that needs exactly this raw-prompt shape.
+    """
+
+    def _call(self, fake, **overrides):
+        """Run ``_invoke_claude_cli`` with the fake Popen + sane defaults."""
+        kwargs = dict(
+            cwd=None,
+            env=None,
+            timeout=180,
+            claude_bin="claude",
+            allow_hang_heuristic=True,
+        )
+        kwargs.update(overrides)
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            return _invoke_claude_cli("hi there prompt", **kwargs)
+
+    # --------------------------------------------------------------- #
+    # Success + field-population                                       #
+    # --------------------------------------------------------------- #
+
+    def test_success_returns_invokeresult_with_every_field(self):
+        """InvokeResult is populated identically to SkillResult minus
+        skill_name / args (which live only on the higher-level dataclass)."""
+        result = self._call(
+            make_fake_skill_stream(
+                "the quick brown fox",
+                input_tokens=7,
+                output_tokens=11,
+                init_message={
+                    "type": "system",
+                    "subtype": "init",
+                    "apiKeySource": "ANTHROPIC_API_KEY",
+                },
+            )
+        )
+        assert isinstance(result, InvokeResult)
+        assert result.output == "the quick brown fox"
+        assert result.exit_code == 0
+        assert result.duration_seconds >= 0.0
+        assert result.error is None
+        assert result.error_category is None
+        assert result.input_tokens == 7
+        assert result.output_tokens == 11
+        # init + assistant + result = 3 entries.
+        assert len(result.raw_messages) == 3
+        assert len(result.stream_events) == 3
+        assert result.warnings == []
+        assert result.api_key_source == "ANTHROPIC_API_KEY"
+
+    def test_success_no_skill_name_or_args_on_invokeresult(self):
+        """InvokeResult is the transport primitive — no slash-command
+        context. SkillResult adds those on top."""
+        result = self._call(make_fake_skill_stream("ok"))
+        # InvokeResult does NOT carry skill_name / args — those belong
+        # to the SkillResult projection. Guard the dataclass surface.
+        assert not hasattr(result, "skill_name")
+        assert not hasattr(result, "args")
+
+    # --------------------------------------------------------------- #
+    # Error-category classification (US-002 branches reused verbatim)  #
+    # --------------------------------------------------------------- #
+
+    def test_rate_limit_category(self):
+        """``429`` in the result text → ``error_category == "rate_limit"``."""
+        result = self._call(
+            make_fake_skill_stream(
+                "partial",
+                error_text="429 Too Many Requests: rate limit exceeded",
+            )
+        )
+        assert result.error_category == "rate_limit"
+        assert "429" in (result.error or "")
+
+    def test_auth_category(self):
+        """``401`` / ``unauthorized`` → ``error_category == "auth"``."""
+        result = self._call(
+            make_fake_skill_stream(
+                "partial",
+                error_text="401 Unauthorized: check your ANTHROPIC_API_KEY",
+            )
+        )
+        assert result.error_category == "auth"
+
+    def test_api_5xx_category_fallback(self):
+        """A 5xx result text with no rate-limit / auth keyword falls
+        through to the ``api`` category (the default per DEC-010)."""
+        result = self._call(
+            make_fake_skill_stream(
+                "partial",
+                error_text="500 Internal Server Error: upstream timeout",
+            )
+        )
+        assert result.error_category == "api"
+
+    # --------------------------------------------------------------- #
+    # Defensive parsing + observability                                #
+    # --------------------------------------------------------------- #
+
+    def test_malformed_ndjson_line_skipped_and_warned(self, capsys):
+        """A malformed JSON line is skipped, a stderr warning is
+        printed, and ``InvokeResult.warnings`` records the skip."""
+        lines = [
+            "this is not json at all",
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "survived"}],
+                    },
+                }
+            ),
+            json.dumps(
+                {"type": "result", "usage": {"input_tokens": 2, "output_tokens": 3}}
+            ),
+        ]
+        result = self._call(_FakePopen(lines))
+        assert result.output == "survived"
+        assert result.input_tokens == 2
+        assert result.output_tokens == 3
+        assert any("malformed stream-json" in w for w in result.warnings)
+        captured = capsys.readouterr()
+        assert "malformed" in captured.err
+
+    def test_missing_result_message_warning(self, capsys):
+        """Stream without a ``result`` message: warnings records the
+        EOF condition and tokens default to 0."""
+        lines = [
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "no result"}],
+                    },
+                }
+            ),
+        ]
+        result = self._call(_FakePopen(lines))
+        assert result.output == "no result"
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+        assert any(
+            "without a 'result' message" in w for w in result.warnings
+        )
+        captured = capsys.readouterr()
+        assert "without a 'result'" in captured.err
+
+    # --------------------------------------------------------------- #
+    # Timeout + binary-missing terminal paths                          #
+    # --------------------------------------------------------------- #
+
+    def test_timeout_kills_process_and_reports_timeout_category(self):
+        """Watchdog firing → exit_code=-1, error="timeout",
+        error_category="timeout", and the child is killed."""
+        fake = make_fake_skill_stream("partial")
+
+        class _ImmediateTimer:
+            def __init__(self, interval, function, args=None, kwargs=None):
+                self.function = function
+                self.daemon = True
+
+            def start(self):
+                self.function()
+
+            def cancel(self):
+                pass
+
+        with (
+            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+        ):
+            result = _invoke_claude_cli(
+                "hi",
+                cwd=None,
+                env=None,
+                timeout=1,
+                claude_bin="claude",
+                allow_hang_heuristic=True,
+            )
+        assert result.exit_code == -1
+        assert result.error == "timeout"
+        assert result.error_category == "timeout"
+        assert result.duration_seconds >= 0.0
+        assert fake.kill_called is True
+
+    def test_filenotfounderror_on_missing_binary(self):
+        """Popen raising FileNotFoundError produces a clean InvokeResult
+        with a descriptive error and no leaked stream state."""
+        with patch(
+            "clauditor.runner.subprocess.Popen", side_effect=FileNotFoundError
+        ):
+            result = _invoke_claude_cli(
+                "hi",
+                cwd=None,
+                env=None,
+                timeout=180,
+                claude_bin="nonexistent-claude-binary",
+                allow_hang_heuristic=True,
+            )
+        assert isinstance(result, InvokeResult)
+        assert result.exit_code == -1
+        assert result.output == ""
+        assert "not found" in (result.error or "")
+        assert "nonexistent-claude-binary" in (result.error or "")
+        assert result.duration_seconds >= 0.0
+        assert result.raw_messages == []
+        assert result.stream_events == []
+
+    # --------------------------------------------------------------- #
+    # Env + cwd thread-through (transport primitive has no defaults)   #
+    # --------------------------------------------------------------- #
+
+    def test_env_none_passes_through_to_popen_verbatim(self):
+        """``env=None`` reaches Popen unchanged (Popen's own default:
+        inherit ``os.environ``)."""
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("ok")
+            _invoke_claude_cli(
+                "hi",
+                cwd=None,
+                env=None,
+                timeout=180,
+                claude_bin="claude",
+                allow_hang_heuristic=True,
+            )
+            assert mock_popen.call_args.kwargs["env"] is None
+            # cwd=None → Popen.cwd=None (helper has no self.project_dir
+            # fallback — that lives on SkillRunner._invoke).
+            assert mock_popen.call_args.kwargs["cwd"] is None
+
+    def test_env_dict_and_cwd_threaded_to_popen(self, tmp_path):
+        """A non-None ``env`` / ``cwd`` reaches Popen verbatim. The
+        CLI-transport caller (US-003) uses this path with
+        ``env=env_without_api_key(os.environ)``."""
+        env = {"PATH": "/usr/bin", "MARKER": "x"}
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("ok")
+            _invoke_claude_cli(
+                "hi",
+                cwd=tmp_path,
+                env=env,
+                timeout=180,
+                claude_bin="claude",
+                allow_hang_heuristic=True,
+            )
+            assert mock_popen.call_args.kwargs["env"] == env
+            assert mock_popen.call_args.kwargs["cwd"] == str(tmp_path)
+
+    def test_model_kwarg_added_to_argv(self):
+        """``model=`` kwarg is inserted into the subprocess argv as
+        ``["--model", model]`` so CLI transport honours the requested model.
+        """
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("ok")
+            _invoke_claude_cli(
+                "hi",
+                cwd=None,
+                env=None,
+                timeout=180,
+                claude_bin="claude",
+                model="claude-haiku-4-5-20251001",
+                allow_hang_heuristic=True,
+            )
+            argv = mock_popen.call_args.args[0]
+            assert "--model" in argv
+            idx = argv.index("--model")
+            assert argv[idx + 1] == "claude-haiku-4-5-20251001"
+
+    def test_model_none_omits_flag(self):
+        """When ``model=None`` (the default), ``--model`` is not added to argv."""
+        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+            mock_popen.return_value = make_fake_skill_stream("ok")
+            _invoke_claude_cli(
+                "hi",
+                cwd=None,
+                env=None,
+                timeout=180,
+                claude_bin="claude",
+                allow_hang_heuristic=True,
+            )
+            argv = mock_popen.call_args.args[0]
+            assert "--model" not in argv
+
+    # --------------------------------------------------------------- #
+    # Single-caller invariant (US-001 done-when criterion)             #
+    # --------------------------------------------------------------- #
+
+    def test_single_caller_runner_py_only(self):
+        """Drift guard: ``_invoke_claude_cli`` is only called from the
+        whitelisted modules.
+
+        US-001 restricted callers to ``runner.py`` alone. US-003 added
+        the CLI transport branch in ``_anthropic.py`` as the second
+        (and only other) legitimate caller. Any third caller is a
+        layering smell — the transport primitive should not be reached
+        directly from CLI commands, pytest fixtures, or grader modules.
+        """
+        import pathlib
+
+        import clauditor
+
+        src_root = pathlib.Path(clauditor.__file__).parent
+        allowed_callers = {"runner.py", "_anthropic.py"}
+        hits: list[pathlib.Path] = []
+        for py_file in src_root.rglob("*.py"):
+            text = py_file.read_text(encoding="utf-8")
+            # Skip the definition site + the US-003 CLI transport
+            # caller. Any other hit is a layering violation.
+            if py_file.name in allowed_callers:
+                continue
+            if "_invoke_claude_cli" in text:
+                hits.append(py_file)
+        assert hits == [], (
+            f"Unexpected caller of _invoke_claude_cli — allowed callers "
+            f"are {sorted(allowed_callers)!r}, got extras: {hits!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Background-task non-completion detection (GitHub #97)
+# ---------------------------------------------------------------------------
+
+
+def _bg_task_tool_use(
+    *, run_in_background: bool = True, name: str = "Task", idx: int = 0
+) -> dict:
+    """Build a ``tool_use`` block for background-task detector tests."""
+    return {
+        "type": "tool_use",
+        "id": f"toolu_bg_{idx}",
+        "name": name,
+        "input": {
+            "description": "background agent",
+            "prompt": "do work",
+            "run_in_background": run_in_background,
+        },
+    }
+
+
+def _bg_assistant_event(
+    *,
+    text: str | None = None,
+    launches: int = 1,
+    run_in_background: bool = True,
+    name: str = "Task",
+    stop_reason: str | None = "end_turn",
+) -> dict:
+    """Build an assistant event carrying Task tool_use blocks + optional text."""
+    content: list[dict] = []
+    for i in range(launches):
+        content.append(
+            _bg_task_tool_use(
+                run_in_background=run_in_background, name=name, idx=i
+            )
+        )
+    if text is not None:
+        content.append({"type": "text", "text": text})
+    message: dict = {"role": "assistant", "content": content}
+    if stop_reason is not None:
+        message["stop_reason"] = stop_reason
+    return {"type": "assistant", "message": message}
+
+
+class TestCountBackgroundTaskLaunches:
+    """Pure-unit tests for ``_count_background_task_launches``."""
+
+    def test_empty_stream_returns_zero(self):
+        assert _count_background_task_launches([]) == 0
+
+    def test_single_task_with_run_in_background(self):
+        events = [_bg_assistant_event(launches=1)]
+        assert _count_background_task_launches(events) == 1
+
+    def test_three_tasks_with_run_in_background(self):
+        events = [_bg_assistant_event(launches=3)]
+        assert _count_background_task_launches(events) == 3
+
+    def test_task_without_run_in_background_not_counted(self):
+        events = [_bg_assistant_event(launches=1, run_in_background=False)]
+        assert _count_background_task_launches(events) == 0
+
+    def test_non_task_tool_use_not_counted(self):
+        events = [_bg_assistant_event(launches=1, name="WebFetch")]
+        assert _count_background_task_launches(events) == 0
+
+    def test_truthy_non_true_run_in_background_not_counted(self):
+        """Strict ``is True`` check — ``"true"``, ``1``, etc. are rejected."""
+        events: list[dict] = [
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "x",
+                            "name": "Task",
+                            "input": {"run_in_background": "true"},
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "y",
+                            "name": "Task",
+                            "input": {"run_in_background": 1},
+                        },
+                    ],
+                },
+            }
+        ]
+        assert _count_background_task_launches(events) == 0
+
+    def test_tasks_across_multiple_assistant_messages(self):
+        events = [
+            _bg_assistant_event(launches=2),
+            _bg_assistant_event(launches=1),
+        ]
+        assert _count_background_task_launches(events) == 3
+
+    def test_malformed_events_degrade_to_zero(self):
+        events: list = [
+            "not-a-dict",
+            {"type": "assistant"},  # missing message
+            {"type": "assistant", "message": "not-a-dict"},
+            {
+                "type": "assistant",
+                "message": {"role": "assistant", "content": "not-a-list"},
+            },
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        "not-a-dict-block",
+                        {"type": "tool_use", "name": "Task"},  # no input
+                        {
+                            "type": "tool_use",
+                            "name": "Task",
+                            "input": "not-a-dict",
+                        },
+                    ],
+                },
+            },
+        ]
+        assert _count_background_task_launches(events) == 0
+
+
+class TestDetectBackgroundTaskNoncompletion:
+    """Pure-unit tests for ``_detect_background_task_noncompletion``."""
+
+    def test_empty_stream_returns_false(self):
+        assert (
+            _detect_background_task_noncompletion([], "Waiting on agent.")
+            is False
+        )
+
+    def test_no_background_tasks_returns_false(self):
+        """Final text mentions waiting but no bg task launched → False."""
+        events = [
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Waiting on X."}],
+                },
+            },
+            {"type": "result", "num_turns": 1},
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "Waiting on X.")
+            is False
+        )
+
+    def test_bg_task_with_waiting_regex_triggers(self):
+        events = [
+            _bg_assistant_event(text="Waiting on editorial agent.", launches=1),
+            {"type": "result", "num_turns": 5},
+        ]
+        assert (
+            _detect_background_task_noncompletion(
+                events, "Waiting on editorial agent."
+            )
+            is True
+        )
+
+    def test_bg_task_with_few_turns_triggers(self):
+        """3 launches + num_turns=3 < 3+2=5 → triggers via turn-count signal."""
+        events = [
+            _bg_assistant_event(text="All done.", launches=3),
+            {"type": "result", "num_turns": 3},
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "All done.") is True
+        )
+
+    def test_bg_task_with_enough_turns_and_clean_text_returns_false(self):
+        """Skill that polls properly (turns >= launches+2) and synthesizes
+        clean output must not trigger — legitimate coordination pattern.
+        """
+        events = [
+            _bg_assistant_event(text="All done.", launches=3),
+            {"type": "result", "num_turns": 10},  # 10 >= 3 + 2
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "All done.") is False
+        )
+
+    def test_waiting_regex_variants(self):
+        cases = [
+            "waiting on X",
+            "Waiting on X",
+            "still waiting for the agent",
+            "continuing to gather results",
+            "work is in progress",
+            "running in the background",
+        ]
+        for final_text in cases:
+            events = [
+                _bg_assistant_event(text=final_text, launches=1),
+                {"type": "result", "num_turns": 10},
+            ]
+            assert (
+                _detect_background_task_noncompletion(events, final_text)
+                is True
+            ), f"should trigger on {final_text!r}"
+
+    def test_waiting_regex_word_boundary(self):
+        """'in progress bar' must NOT match 'in progress'."""
+        events = [
+            _bg_assistant_event(text="rendering progress bar", launches=1),
+            {"type": "result", "num_turns": 10},
+        ]
+        assert (
+            _detect_background_task_noncompletion(
+                events, "rendering progress bar"
+            )
+            is False
+        )
+
+    def test_missing_num_turns_falls_back_to_text_signal(self):
+        """No num_turns → turn-count signal can't fire, but regex still can."""
+        events = [
+            _bg_assistant_event(text="Waiting on agent.", launches=1),
+            {"type": "result"},  # no num_turns
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "Waiting on agent.")
+            is True
+        )
+
+    def test_missing_num_turns_and_clean_text_returns_false(self):
+        events = [
+            _bg_assistant_event(text="All done.", launches=1),
+            {"type": "result"},
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "All done.") is False
+        )
+
+    def test_non_background_task_not_counted(self):
+        """Task without run_in_background=True → no launches → False."""
+        events = [
+            _bg_assistant_event(
+                text="Waiting on agent.",
+                launches=1,
+                run_in_background=False,
+            ),
+            {"type": "result", "num_turns": 1},
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "Waiting on agent.")
+            is False
+        )
+
+    def test_malformed_events_degrade_to_false(self):
+        events: list = [
+            "not-a-dict",
+            {"type": "assistant"},
+            {"type": "assistant", "message": "nope"},
+        ]
+        assert (
+            _detect_background_task_noncompletion(events, "Waiting") is False
+        )
+
+    def test_non_dict_event_during_num_turns_scan_is_skipped(self):
+        """Covers the ``if not isinstance(event, dict): continue`` guard
+        in the num_turns scanner when launches > 0 forces the scan to
+        run. Non-dict event must be skipped without raising, and the
+        detector still decides correctly based on real events.
+        """
+        events: list = [
+            _bg_assistant_event(text="All done.", launches=1),
+            "not-a-dict-event-during-result-scan",
+            42,  # numeric event
+            {"type": "result", "num_turns": 10},  # enough turns → no trigger
+        ]
+        # launches=1, num_turns=10 >= 1+2, no waiting regex → False,
+        # but we had to walk past the non-dict events to get num_turns.
+        assert (
+            _detect_background_task_noncompletion(events, "All done.") is False
+        )
+
+
+class TestBackgroundTaskNoncompletionIntegration:
+    """End-to-end: feed a background-task stream through ``SkillRunner``
+    and assert warning + category wiring.
+    """
+
+    def _run_with_stream(
+        self,
+        fake: _FakePopen,
+        *,
+        allow_hang_heuristic: bool = True,
+    ) -> SkillResult:
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            return runner.run("skill", allow_hang_heuristic=allow_hang_heuristic)
+
+    def test_waiting_text_triggers_warning_and_category(self):
+        fake = make_fake_background_task_stream(
+            text="Waiting on editorial agent.",
+            launches=3,
+            num_turns=3,
+        )
+        result = self._run_with_stream(fake)
+        assert result.error_category == "background-task"
+        assert result.error is None
+        assert any(
+            w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+        assert result.succeeded_cleanly is False
+
+    def test_legitimate_coordination_does_not_trigger(self):
+        """Skill that launched bg tasks AND properly polled (num_turns
+        high, clean final text) must still pass succeeded_cleanly.
+        """
+        fake = make_fake_background_task_stream(
+            text="All three restaurants found with full source lists.",
+            launches=3,
+            num_turns=10,
+        )
+        result = self._run_with_stream(fake)
+        assert result.error_category is None
+        assert result.error is None
+        assert not any(
+            w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+        assert result.succeeded_cleanly is True
+
+    def test_no_background_tasks_does_not_trigger(self):
+        """Plain skill run (no bg tasks) must never fire this detector."""
+        from tests.conftest import make_fake_skill_stream
+
+        fake = make_fake_skill_stream("Clean output with no tasks.")
+        result = self._run_with_stream(fake)
+        assert result.error_category is None
+        assert not any(
+            w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+
+    def test_allow_hang_heuristic_false_skips_detector(self):
+        """``allow_hang_heuristic=False`` disables BOTH heuristics
+        (interactive-hang + background-task) — they share the same
+        opt-out switch per the per-skill escape-hatch contract.
+        """
+        fake = make_fake_background_task_stream(
+            text="Waiting on editorial agent.",
+            launches=3,
+            num_turns=3,
+        )
+        result = self._run_with_stream(fake, allow_hang_heuristic=False)
+        assert result.error_category is None
+        assert not any(
+            w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+        assert result.succeeded_cleanly is True
+
+    def test_interactive_hang_wins_when_both_would_fire(self):
+        """Precedence guard: if a stream matches both interactive-hang
+        (trailing ``?``, num_turns=1, end_turn) AND background-task
+        (Task tool_use with run_in_background=True), the interactive
+        category wins — the detectors are mutually exclusive and
+        interactive runs first.
+        """
+        fake = make_fake_background_task_stream(
+            text="What should I do next?",
+            launches=1,
+            num_turns=1,
+        )
+        result = self._run_with_stream(fake)
+        assert result.error_category == "interactive"
+        # Background-task warning must NOT be appended when
+        # interactive-hang already fired.
+        assert not any(
+            w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+
+    def test_stderr_moved_to_warnings_when_bg_task_fires(self):
+        """Parallel to the interactive-hang branch: when the bg-task
+        heuristic sets ``error_category`` without an error text, any
+        captured stderr is preserved in ``warnings`` (not silently
+        dropped). Covers the shared
+        ``("interactive", "background-task")`` branch in
+        ``_invoke_claude_cli`` that moves stderr to warnings so the
+        caller can still observe subprocess diagnostics.
+        """
+        fake = make_fake_background_task_stream(
+            text="Waiting on editorial agent.",
+            launches=3,
+            num_turns=3,
+        )
+        fake.stderr = iter(["retry notice from subprocess\n"])
+        result = self._run_with_stream(fake)
+        assert result.error_category == "background-task"
+        assert result.error is None
+        assert any(
+            "retry notice from subprocess" in w for w in result.warnings
+        ), result.warnings

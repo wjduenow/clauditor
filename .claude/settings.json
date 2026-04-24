@@ -17,6 +17,10 @@
           {
             "command": "bd prime",
             "type": "command"
+          },
+          {
+            "command": "bash .claude/show-maintainer-skills.sh",
+            "type": "command"
           }
         ],
         "matcher": ""

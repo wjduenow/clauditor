@@ -834,7 +834,7 @@ class TestExtractAndGrade:
 
 
 def _make_format_spec() -> EvalSpec:
-    """Spec exercising both registry formats and inline-regex formats (DEC-007)."""
+    """Spec exercising registry-only ``format`` values (#99)."""
     return EvalSpec(
         skill_name="test-skill",
         sections=[
@@ -849,7 +849,7 @@ def _make_format_spec() -> EvalSpec:
                             FieldRequirement(
                                 name="phone",
                                 required=True,
-                                format=r"\(\d{3}\) \d{3}-\d{4}",  # inline regex
+                                format="phone_us",  # registry
                             ),
                             FieldRequirement(
                                 name="website",
@@ -870,9 +870,9 @@ def _make_format_spec() -> EvalSpec:
 
 
 class TestFormatEnforcement:
-    """DEC-007: format field does registry-lookup-then-regex-fallback."""
+    """Registry-only ``format`` values (#99, reversal of DEC-007)."""
 
-    def test_inline_regex_match(self):
+    def test_registry_format_match(self):
         extracted = ExtractedOutput(
             sections={
                 "Restaurants": {
@@ -894,7 +894,7 @@ class TestFormatEnforcement:
         ]
         assert all(r.passed for r in format_results)
 
-    def test_inline_regex_mismatch(self):
+    def test_registry_format_mismatch_on_phone(self):
         extracted = ExtractedOutput(
             sections={
                 "Restaurants": {
@@ -918,7 +918,7 @@ class TestFormatEnforcement:
         assert len(failing) == 1
         assert "phone" in failing[0].name
         assert failing[0].evidence == "call for hours"
-        assert "regex" in failing[0].message.lower()
+        assert "phone_us" in failing[0].message
 
     def test_registry_format_mismatch(self):
         extracted = ExtractedOutput(
@@ -945,9 +945,11 @@ class TestFormatEnforcement:
         assert "website" in failing[0].name
         assert "url" in failing[0].message
 
-    def test_unknown_format_not_valid_regex_raises_at_construction(self):
-        """DEC-011: an unknown format that is also invalid regex fails loud."""
-        with pytest.raises(ValueError, match="nor a valid regex"):
+    def test_unknown_format_raises_at_construction(self):
+        """#99: an unknown format name fails loud (no regex fallback)."""
+        with pytest.raises(
+            ValueError, match="not a registered format name"
+        ):
             FieldRequirement(name="val", format="[invalid")
 
     def test_optional_field_missing_skips_format_check(self):
@@ -975,21 +977,21 @@ class TestFormatEnforcement:
         assert len(email_format) == 0
 
     def test_non_string_field_value_coerced(self):
-        """Non-string values (e.g. int from LLM) are coerced to str for format check."""
+        """Non-string values (e.g. float) are coerced to str for format check."""
         spec = EvalSpec(
             skill_name="test",
             sections=[
                 SectionRequirement(
-                    name="Items",
+                    name="Coords",
                     tiers=[
                         TierRequirement(
                             label="default",
                             min_entries=1,
                             fields=[
                                 FieldRequirement(
-                                    name="count",
+                                    name="lat",
                                     required=True,
-                                    format=r"\d+",
+                                    format="latitude",
                                 ),
                             ],
                         ),
@@ -999,9 +1001,9 @@ class TestFormatEnforcement:
         )
         extracted = ExtractedOutput(
             sections={
-                "Items": {
+                "Coords": {
                     "default": [
-                        ExtractedEntry(fields={"count": 42}),
+                        ExtractedEntry(fields={"lat": 37.3382}),
                     ]
                 }
             }
@@ -1012,7 +1014,7 @@ class TestFormatEnforcement:
         ]
         assert len(format_r) == 1
         assert format_r[0].passed
-        assert format_r[0].evidence == "42"
+        assert format_r[0].evidence == "37.3382"
 
 
 class TestExtractionReport:
@@ -1221,13 +1223,23 @@ class TestExtractAndReportEmptyResponse:
             ],
         )
 
-        fake_response = MagicMock()
-        fake_response.content = []
-        fake_response.usage.input_tokens = 10
-        fake_response.usage.output_tokens = 3
+        # Parse retry (clauditor-6cf / #94): empty content triggers one
+        # retry. Provide 2 empty responses; the final report should
+        # still carry the "no text blocks" parse error and sum tokens
+        # across attempts.
+        empty_a = MagicMock()
+        empty_a.content = []
+        empty_a.usage.input_tokens = 10
+        empty_a.usage.output_tokens = 3
+        empty_b = MagicMock()
+        empty_b.content = []
+        empty_b.usage.input_tokens = 11
+        empty_b.usage.output_tokens = 4
 
         fake_client = MagicMock()
-        fake_client.messages.create = AsyncMock(return_value=fake_response)
+        fake_client.messages.create = AsyncMock(
+            side_effect=[empty_a, empty_b]
+        )
 
         with patch(
             "anthropic.AsyncAnthropic", return_value=fake_client
@@ -1239,8 +1251,8 @@ class TestExtractAndReportEmptyResponse:
         assert report.parse_errors
         assert "no text blocks" in report.parse_errors[0]
         assert report.results == []
-        assert report.input_tokens == 10
-        assert report.output_tokens == 3
+        assert report.input_tokens == 21
+        assert report.output_tokens == 7
 
     @pytest.mark.asyncio
     async def test_extract_and_grade_handles_empty_content(self) -> None:
@@ -1282,6 +1294,142 @@ class TestExtractAndReportEmptyResponse:
         assert result.results
         assert result.results[0].name == "grader:parse"
         assert "no text blocks" in result.results[0].message
+
+
+class TestExtractAndReportParseRetry:
+    """Parse retry (clauditor-6cf / #94): L2 orchestrators retry once on
+    JSON decode failure. Parallel to
+    :class:`tests.test_quality_grader.TestGradeQuality`'s retry tests."""
+
+    def _minimal_spec(self) -> EvalSpec:
+        return EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[
+                                FieldRequirement(
+                                    name="venue_name", id="v1"
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_retries_on_malformed_json(self, capsys):
+        from clauditor.grader import extract_and_report
+
+        spec = self._minimal_spec()
+        good_payload = {
+            "Venues": {"primary": [{"venue_name": "A"}]}
+        }
+        bad = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        bad.content = [MagicMock(type="text", text="definitely not json")]
+        good = MagicMock(usage=MagicMock(input_tokens=100, output_tokens=50))
+        good.content = [
+            MagicMock(type="text", text=json.dumps(good_payload))
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[bad, good])
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await extract_and_report("out", spec, skill_name="s")
+        # Retry succeeded → parse_errors empty, tokens accumulated.
+        assert report.parse_errors == []
+        assert report.input_tokens == 110
+        assert report.output_tokens == 55
+        # Stderr records the retry.
+        captured = capsys.readouterr()
+        assert "extract_and_report" in captured.err
+        assert "retrying" in captured.err.lower()
+
+    @pytest.mark.asyncio
+    async def test_extract_and_grade_retries_on_malformed_json(self, capsys):
+        from clauditor.grader import extract_and_grade
+
+        spec = self._minimal_spec()
+        good_payload = {
+            "Venues": {"primary": [{"venue_name": "A"}]}
+        }
+        bad = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        bad.content = [MagicMock(type="text", text="oh no not json")]
+        good = MagicMock(usage=MagicMock(input_tokens=100, output_tokens=50))
+        good.content = [
+            MagicMock(type="text", text=json.dumps(good_payload))
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[bad, good])
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            result = await extract_and_grade("out", spec)
+        # Retry succeeded → no grader:parse failure assertion.
+        assert not any(r.name == "grader:parse" for r in result.results)
+        assert result.input_tokens == 110
+        assert result.output_tokens == 55
+        captured = capsys.readouterr()
+        assert "extract_and_grade" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_no_retry_on_success(self):
+        from clauditor.grader import extract_and_report
+
+        spec = self._minimal_spec()
+        good_payload = {"Venues": {"primary": [{"venue_name": "A"}]}}
+        good = MagicMock(usage=MagicMock(input_tokens=100, output_tokens=50))
+        good.content = [
+            MagicMock(type="text", text=json.dumps(good_payload))
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=good)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            await extract_and_report("out", spec, skill_name="s")
+        assert mock_client.messages.create.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_no_retry_on_shape_failure(self):
+        """Parse retry (clauditor-6cf / #94, Copilot feedback on PR #98):
+        a response that decodes as valid JSON but with the wrong top-
+        level type (list/string/number instead of section-keyed dict)
+        is tagged ``kind="shape"`` and must NOT be retried. Mirrors
+        ``grade_quality``'s shape-vs-decode split."""
+        from clauditor.grader import extract_and_report
+
+        spec = self._minimal_spec()
+        # Valid JSON, but a bare list where a dict was expected.
+        resp = MagicMock(usage=MagicMock(input_tokens=50, output_tokens=10))
+        resp.content = [MagicMock(type="text", text='["not", "a", "dict"]')]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=resp)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await extract_and_report("out", spec, skill_name="s")
+        assert mock_client.messages.create.await_count == 1
+        assert report.parse_errors
+        assert any(
+            "top level" in err.lower() for err in report.parse_errors
+        )
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_both_attempts_fail(self):
+        from clauditor.grader import extract_and_report
+
+        spec = self._minimal_spec()
+        bad_a = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        bad_a.content = [MagicMock(type="text", text="junk")]
+        bad_b = MagicMock(usage=MagicMock(input_tokens=11, output_tokens=6))
+        bad_b.content = [MagicMock(type="text", text="still junk")]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[bad_a, bad_b])
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await extract_and_report("out", spec, skill_name="s")
+        assert report.parse_errors
+        # C: the detailed error message (line/col/ends-with) propagates.
+        assert any("at line" in err for err in report.parse_errors)
+        assert report.input_tokens == 21
+        assert report.output_tokens == 11
 
 
 class TestExtractAndReportHappyPath:
@@ -1475,6 +1623,153 @@ class TestExtractAndReportHappyPath:
         assert any("flat list" in e for e in report.parse_errors)
 
 
+class TestExtractionReportTransport:
+    """US-006 (#86): ExtractionReport carries ``transport_source`` and
+    ``schema_version=2``. Legacy v1 sidecars without ``transport_source``
+    load with ``transport_source="api"`` defaulted."""
+
+    def _report(self, **overrides) -> ExtractionReport:
+        defaults = dict(
+            skill_name="transport-test",
+            model="claude-haiku-4-5",
+            results=[],
+            declared_field_ids=["v1"],
+        )
+        defaults.update(overrides)
+        return ExtractionReport(**defaults)
+
+    def test_default_transport_source_is_api(self):
+        report = self._report()
+        assert report.transport_source == "api"
+
+    def test_to_json_schema_version_bumped_to_2(self):
+        report = self._report(transport_source="cli")
+        data = json.loads(report.to_json())
+        assert data["schema_version"] == 2
+
+    def test_schema_version_is_first_key(self):
+        report = self._report(transport_source="cli")
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert next(iter(data)) == "schema_version"
+
+    def test_to_json_includes_transport_source_cli(self):
+        report = self._report(transport_source="cli")
+        data = json.loads(report.to_json())
+        assert data["transport_source"] == "cli"
+
+    def test_to_json_includes_transport_source_api(self):
+        report = self._report(transport_source="api")
+        data = json.loads(report.to_json())
+        assert data["transport_source"] == "api"
+
+    def test_from_json_v1_defaults_transport_source_to_api(self):
+        """Legacy v1 sidecars (no ``transport_source``) default to
+        ``"api"`` so pre-#86 iterations load cleanly."""
+        legacy_payload = json.dumps({
+            "schema_version": 1,
+            "skill_name": "legacy",
+            "model": "haiku",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {},
+        })
+        restored = ExtractionReport.from_json(legacy_payload)
+        assert restored.transport_source == "api"
+
+    def test_from_json_v2_preserves_transport_source_cli(self):
+        original = self._report(transport_source="cli")
+        restored = ExtractionReport.from_json(original.to_json())
+        assert restored.transport_source == "cli"
+
+    def test_build_extraction_report_forwards_transport_source(self):
+        """``build_extraction_report`` propagates ``transport_source``
+        into the returned :class:`ExtractionReport`."""
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[
+                                FieldRequirement(name="a", id="v1"),
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+        report = build_extraction_report(
+            ExtractedOutput(raw_json={}, sections={}),
+            spec,
+            transport_source="cli",
+        )
+        assert report.transport_source == "cli"
+
+    def test_build_extraction_report_from_text_forwards_transport_source(
+        self,
+    ):
+        """``build_extraction_report_from_text`` propagates
+        ``transport_source`` into the returned report (all three
+        branches: empty text, JSON error, success)."""
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[
+                                FieldRequirement(name="a", id="v1"),
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+
+        # Empty text branch.
+        empty_report = build_extraction_report_from_text(
+            "",
+            spec,
+            skill_name="s",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            transport_source="cli",
+        )
+        assert empty_report.transport_source == "cli"
+
+        # JSON-failure branch.
+        bad_report = build_extraction_report_from_text(
+            "not json at all",
+            spec,
+            skill_name="s",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            transport_source="cli",
+        )
+        assert bad_report.transport_source == "cli"
+
+        # Success branch.
+        good_text = json.dumps({"Venues": {"primary": [{"a": "v"}]}})
+        good_report = build_extraction_report_from_text(
+            good_text,
+            spec,
+            skill_name="s",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            transport_source="cli",
+        )
+        assert good_report.transport_source == "cli"
+
+
 class TestExtractionReportDeclaredFieldIds:
     """Copilot fix (PR #34): ``ExtractionReport.to_json`` pre-populates
     every declared field id with an empty list, so the on-disk contract
@@ -1576,6 +1871,60 @@ class TestStripMarkdownFence:
         # Only a single ``` with no closing partner: fallback to input.
         text = 'hello ``` world'
         assert _strip_markdown_fence(text) == text
+
+
+class TestDescribeJsonParseFailure:
+    """Pure helper: grader JSON parse failure → operator-readable string.
+
+    C (clauditor-6cf / #94): this is the shared error-description helper
+    used by both ``clauditor.grader`` and ``clauditor.quality_grader``.
+    """
+
+    def test_includes_decoder_position_and_length(self):
+        from clauditor.grader import describe_json_parse_failure
+
+        text = '{"broken": '  # trailing
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
+            msg = describe_json_parse_failure(text, exc)
+        assert "at line" in msg
+        assert "col" in msg
+        assert f"{len(text)} chars" in msg
+        assert "ends with" in msg
+
+    def test_tail_visible_for_malformed_but_complete(self):
+        """The tail should expose the final bytes so a reader can tell
+        malformed-JSON (tail is ``]`` / ``}``) from true truncation
+        (tail is mid-content)."""
+        from clauditor.grader import describe_json_parse_failure
+
+        # JSON array closed but with unescaped interior quote — the
+        # tail must include the closing bracket so the reader knows
+        # this wasn't truncated.
+        text = '[{"k":"v with "bad" quote"}]'
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
+            msg = describe_json_parse_failure(text, exc)
+        assert "]" in msg  # closing bracket surfaces in tail
+
+    def test_tail_truncated_for_long_responses(self):
+        """Long responses should only show a trailing window, not the
+        whole text, so the error stays one line of readable output."""
+        from clauditor.grader import describe_json_parse_failure
+
+        # 2KB of whitespace followed by broken JSON.
+        filler = " " * 2000
+        text = filler + "{"
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
+            msg = describe_json_parse_failure(text, exc)
+        # The full text's length is recorded …
+        assert f"{len(text)} chars" in msg
+        # … but the rendered message itself is not 2KB long.
+        assert len(msg) < 500
 
 
 class TestBuildExtractionPromptWithOutput:
@@ -1704,13 +2053,19 @@ class TestParseExtractionResponse:
         structured parse error, not crash with AttributeError on
         ``raw.items()``. Guards against a misbehaving grader that
         returns a bare list/string/number/bool/null.
+
+        ``kind == "shape"`` (not ``"json"``) so
+        :func:`_extract_call_with_retry` does not retry — the response
+        decoded cleanly; the top-level type is wrong, which is a
+        model-protocol bug (clauditor-6cf / #94 Copilot feedback on
+        PR #98).
         """
         spec = _make_spec()
         result = parse_extraction_response(payload, spec)
         assert not result.success
         assert len(result.parse_errors) == 1
         err = result.parse_errors[0]
-        assert err.kind == "json"
+        assert err.kind == "shape"
         assert "Expected JSON object at top level" in err.message
         assert err.evidence == payload[:200]
 

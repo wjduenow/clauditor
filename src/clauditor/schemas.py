@@ -6,7 +6,6 @@ Loads eval.json files that define what a skill's output should look like.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -131,10 +130,14 @@ _ASSERTION_DRIFT_HINTS: dict[str, dict[str, str]] = {
 class FieldRequirement:
     """A required field in a structured entry (venue, event, etc.).
 
-    The ``format`` field does double duty (DEC-007): it accepts either a
-    registered format name (e.g. ``"phone_us"``, ``"domain"``) or an inline
-    regex. Registry lookup wins when both could apply. Invalid values raise
-    ``ValueError`` at construction time.
+    The ``format`` field accepts a registered format name
+    (e.g. ``"phone_us"``, ``"domain"``) from
+    :data:`clauditor.formats.FORMAT_REGISTRY`. Unknown names raise
+    ``ValueError`` at construction time. When no registry entry fits,
+    author the invariant as an L1 ``type: regex`` assertion instead —
+    the registry-only contract keeps format names as stable
+    identifiers across history so trend reports don't churn when a
+    pattern changes. (Reversal of DEC-007, see #99.)
 
     ``id`` is a stable identifier scoped to the enclosing skill (DEC-001,
     ticket #25). It is required on all fields loaded from disk via
@@ -144,7 +147,7 @@ class FieldRequirement:
 
     name: str
     required: bool = True
-    format: str | None = None  # Registry key or inline regex (DEC-007)
+    format: str | None = None  # Registry key only — see FORMAT_REGISTRY
     id: str = ""  # Stable id, required via from_file() (DEC-001)
 
     def __post_init__(self) -> None:
@@ -156,16 +159,14 @@ class FieldRequirement:
                 f"an empty string (use None to disable format validation)."
             )
         from clauditor.formats import FORMAT_REGISTRY
-        if self.format in FORMAT_REGISTRY:
-            return
-        try:
-            re.compile(self.format)
-        except re.error as e:
+        if self.format not in FORMAT_REGISTRY:
             raise ValueError(
                 f"FieldRequirement(name={self.name!r}): format "
-                f"{self.format!r} is neither a registered format name "
-                f"({sorted(FORMAT_REGISTRY)}) nor a valid regex: {e}"
-            ) from e
+                f"{self.format!r} is not a registered format name. "
+                f"Valid formats: {sorted(FORMAT_REGISTRY)}. "
+                f"For custom patterns, use an L1 'regex' assertion "
+                f"instead (see #99)."
+            )
 
 
 @dataclass
@@ -274,6 +275,16 @@ class EvalSpec:
     # explicitly rejected at load time per
     # ``.claude/rules/constant-with-type-info.md``.
     timeout: int | None = None
+    # DEC-012 / DEC-017 of #86: per-spec transport selector for the
+    # Anthropic call. One of ``"api"``, ``"cli"``, ``"auto"``. The
+    # default ``"auto"`` preserves DEC-001's subscription-first
+    # behavior (picks CLI when the ``claude`` binary is on PATH).
+    # Four-layer precedence per ``.claude/rules/spec-cli-precedence.md``:
+    # CLI ``--transport`` > ``CLAUDITOR_TRANSPORT`` env > this field >
+    # default. Validated at load time against the literal set; non-
+    # string / bool values rejected per
+    # ``.claude/rules/constant-with-type-info.md``.
+    transport: str = "auto"
 
     @classmethod
     def from_file(cls, path: str | Path) -> EvalSpec:
@@ -514,6 +525,28 @@ class EvalSpec:
                         f"{expected.__name__}, got "
                         f"{type(val).__name__} {val!r}"
                     )
+            # (e) ``has_format.format`` must be a known registry key
+            # (#99). Catches doomed-at-runtime regex values that
+            # would otherwise fail late with "Unknown format: <regex>"
+            # after the skill already spent tokens producing output.
+            # Mirrors the FieldRequirement.__post_init__ contract so
+            # L1 and L2 share one contract.
+            if type_val == "has_format":
+                from clauditor.formats import FORMAT_REGISTRY
+
+                fmt_val = entry.get("format")
+                if (
+                    isinstance(fmt_val, str)
+                    and fmt_val not in FORMAT_REGISTRY
+                ):
+                    raise ValueError(
+                        f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                        f"(type='has_format'): format {fmt_val!r} is "
+                        f"not a registered format name. Valid "
+                        f"formats: {sorted(FORMAT_REGISTRY)}. For "
+                        f"custom patterns, use an L1 'regex' "
+                        f"assertion instead (see #99)."
+                    )
 
         raw_assertions = data.get("assertions", [])
         if not isinstance(raw_assertions, list):
@@ -635,6 +668,37 @@ class EvalSpec:
                 )
             timeout = raw_timeout
 
+        # DEC-012 of #86: optional per-spec transport selector.
+        # Missing → default ``"auto"`` (back-compat). Must be a
+        # non-bool string in the literal set ``{"api", "cli", "auto"}``.
+        # Explicit ``null`` is rejected (use omission for default).
+        # Bool guard first per ``.claude/rules/constant-with-type-info.md``.
+        transport: str = "auto"
+        if "transport" in data:
+            raw_transport = data["transport"]
+            if raw_transport is None:
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'transport' must be one of "
+                    "'api', 'cli', 'auto', got null "
+                    "(omit the key to use the default 'auto')"
+                )
+            if isinstance(raw_transport, bool) or not isinstance(
+                raw_transport, str
+            ):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"'transport' must be a string, got "
+                    f"{type(raw_transport).__name__} {raw_transport!r}"
+                )
+            if raw_transport not in ("api", "cli", "auto"):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"'transport' must be one of 'api', 'cli', 'auto', "
+                    f"got {raw_transport!r}"
+                )
+            transport = raw_transport
+
         trigger_tests = None
         if "trigger_tests" in data:
             tt = data["trigger_tests"]
@@ -676,6 +740,7 @@ class EvalSpec:
             grade_thresholds=grade_thresholds,
             allow_hang_heuristic=allow_hang_heuristic,
             timeout=timeout,
+            transport=transport,
         )
 
     def to_dict(self) -> dict:
@@ -734,6 +799,10 @@ class EvalSpec:
             # Emit only on non-default to keep diffs minimal; omission
             # at load time means "default True" per from_dict.
             result["allow_hang_heuristic"] = False
+        if self.transport != "auto":
+            # DEC-012 of #86: emit only on non-default. Omission at
+            # load time means default "auto" per from_dict.
+            result["transport"] = self.transport
         if self.output_file is not None:
             result["output_file"] = self.output_file
         if self.output_files:

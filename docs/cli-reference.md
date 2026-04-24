@@ -76,7 +76,7 @@ Non-LLM 0/1/2 taxonomy per `.claude/rules/llm-cli-exit-code-taxonomy.md`:
 
 ### Claude Code extension allowlist
 
-The agentskills.io spec defines the frontmatter keys `name`, `description`, `license`, `compatibility`, `metadata`, and `allowed-tools`. Unknown keys normally trigger `AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY` (warning). Two Claude Code extension keys are allowlisted and do NOT trigger the warning: `argument-hint` and `disable-model-invocation`. The allowlist is maintained by the maintainer-only `/review-agentskills-spec` skill, which periodically diffs Claude Code's published frontmatter documentation against the `KNOWN_CLAUDE_CODE_EXTENSION_KEYS` constant in `src/clauditor/conformance.py` (per DEC-009 and DEC-013 of `plans/super/71-agentskills-lint.md`).
+The agentskills.io spec defines the frontmatter keys `name`, `description`, `license`, `compatibility`, `metadata`, and `allowed-tools`. Unknown keys normally trigger `AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY` (warning). Two Claude Code extension keys are allowlisted and do NOT trigger the warning: `argument-hint` and `disable-model-invocation`. `argument-hint` is a Claude Code UI hint (shows in slash-command autocomplete, e.g. `argument-hint: "[skill-path]"`) but is **not part of the agentskills.io spec** — there is currently no spec-level standard for declaring skill arguments. The allowlist is maintained by the maintainer-only `/review-agentskills-spec` skill, which periodically diffs Claude Code's published frontmatter documentation against the `KNOWN_CLAUDE_CODE_EXTENSION_KEYS` constant in `src/clauditor/conformance.py` (per DEC-009 and DEC-013 of `plans/super/71-agentskills-lint.md`).
 
 Unquoted `: ` (space-colon-space) inside a frontmatter scalar value triggers `AGENTSKILLS_FRONTMATTER_UNQUOTED_COLON_IN_SCALAR` (error, exit 2) — strict YAML parsers (PyYAML, GitHub's renderer) treat such values as nested mappings while clauditor's permissive reader accepts them silently. Wrap the value in double quotes to silence it (per DEC-003 and DEC-007 of `plans/super/80-strict-frontmatter-yaml.md`).
 
@@ -88,9 +88,73 @@ Beyond the standalone `lint` command, `SkillSpec.from_file` calls `check_conform
 
 - **`/review-agentskills-spec`** — the maintainer-only sibling skill (lives at repo-root `.claude/skills/`, not shipped in the wheel, not installed by `clauditor setup`). **`clauditor lint`** checks a user's skill against the spec; **`/review-agentskills-spec`** audits the upstream spec itself (and Claude Code's frontmatter documentation) for drift against clauditor's enforcement. Two sides of the same check: one catches user skills that drift from the spec, the other catches clauditor's enforcement drifting from the spec.
 
+## capture
+
+Run a skill via `claude -p` and save its output to a file. The primary use case is grounding `clauditor propose-eval` in real skill output before bootstrapping the eval spec — a proposer that sees what the skill actually emits writes much tighter assertions than one working from the SKILL.md alone.
+
+```bash
+clauditor capture <skill>           # save to tests/eval/captured/<skill>.txt
+clauditor capture <skill> -- args   # pass initial context to the skill
+clauditor capture <skill> --no-api-key --timeout 300  # subscription auth, 5-min watchdog
+```
+
+### Required inputs
+
+- `<skill>` (positional) — skill name (leading slash optional, e.g. `review-agentskills-spec` or `/review-agentskills-spec`). Resolved against the project's `.claude/skills/` and `.claude/commands/` directories the same way `clauditor validate` does.
+
+### Flags
+
+| Flag | Purpose |
+| ---- | ------- |
+| `-- <args>` | Arguments passed to the skill command as initial context, appended to the `-p` prompt: `claude -p "/<skill> <args>"`. The only injection point before the skill runs — see [Interactive skills](#interactive-skills) below. |
+| `--out PATH` | Write captured output to a custom path instead of the default `tests/eval/captured/<skill>.txt`. |
+| `--versioned` | Append `-YYYY-MM-DD` to the output file stem (e.g. `my-skill-2026-04-22.txt`). Useful when keeping a dated history of captures. |
+| `--no-api-key` | Strip `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the subprocess environment. Falls back to subscription auth cached in `~/.claude/`. Useful for skills that exhaust the API-tier rate limit. |
+| `--timeout SECONDS` | Override the default 180-second watchdog. Long-running skills (research, multi-step workflows) frequently need 300–600 s. |
+| `--claude-bin PATH` | Path to the `claude` CLI (default: `claude` on PATH). |
+
+### Default output path
+
+`tests/eval/captured/<skill>.txt` — the same directory `clauditor propose-eval` checks first during [capture discovery](cli-reference.md#capture-discovery-dec-001). Running `capture` before `propose-eval` is all it takes; the proposer picks up the file automatically.
+
+### Interactive skills
+
+`clauditor capture` runs `claude -p "/<skill> <args>"` — a **strictly single-turn, non-interactive** invocation. There is no stdin, no multi-turn conversation, and no way to inject answers to mid-run questions. If the skill asks the user a question mid-run (e.g. "Confirm? yes/no"), Claude emits the question and exits. The runner detects this via the **interactive-hang heuristic** (trailing `?` on the output, or an `AskUserQuestion` tool-use block in the stream-json) and surfaces:
+
+```
+WARNING: interactive-hang: skill may have asked for input
+         — ensure all parameters are in test_args (heuristic)
+```
+
+The output file is still written with whatever the skill produced before the hang.
+
+**For eval-friendly skills:** put all decision context in `-- args` (passed upfront) rather than in mid-run prompts. In the eval spec, mirror this via the `test_args` field — `clauditor validate` and `clauditor grade` use `test_args` as the same initial argument string.
+
+**No spec-level args standard exists yet.** Claude Code adds an `argument-hint` frontmatter key (e.g. `argument-hint: "[test|full]"`) that displays a hint in the slash-command autocomplete UI, but this is a Claude Code extension — it is not in the [agentskills.io specification](https://agentskills.io/specification), carries no validation, and does not distinguish required from optional args. clauditor allowlists it to suppress a spurious lint warning (see [`lint`](#lint)). A proper `arguments` declaration in the agentskills.io spec — covering name, required/optional, type, and default — is tracked in [issue #93](https://github.com/wjduenow/clauditor/issues/93).
+
+### Relationship to `propose-eval` and `validate`
+
+```
+clauditor capture my-skill -- "initial context"    # 1. capture real output
+clauditor propose-eval my-skill.md                 # 2. bootstrap eval from SKILL.md + capture
+clauditor validate my-skill.md                     # 3. tighten and verify L1 assertions
+```
+
+`propose-eval` reads the capture automatically from `tests/eval/captured/`; no flag needed. See [Capture discovery](#capture-discovery-dec-001).
+
+### Exit codes
+
+| Code | Meaning |
+| ---- | ------- |
+| `0` | Skill ran and output was written (even if the skill itself reported an error — the capture records whatever the skill emitted). |
+| `1` | Skill subprocess failed to start, timed out, or the runner encountered a fatal stream-json error. Output file is not written. |
+| `2` | Input-validation failure — skill name not found, `--out` parent directory does not exist. |
+
 ## propose-eval
 
 LLM-assisted EvalSpec bootstrap. `clauditor propose-eval <skill.md>` reads the SKILL.md file and (optionally) a captured skill run, asks Sonnet to propose a full three-layer EvalSpec (L1 assertions, L2 tiered extraction, L3 rubric), validates the proposal through `EvalSpec.from_dict`, and writes a sibling `<skill>.eval.json` next to the SKILL.md (the same path `SkillSpec.from_file` and `clauditor init` auto-discover). Use it to skip the blank-spec drudgery when onboarding a new skill.
+
+Requires authentication: `ANTHROPIC_API_KEY` for API transport, or an authenticated `claude` CLI for CLI transport. See [Authentication and API Keys](#authentication-and-api-keys).
 
 ### Required inputs
 
@@ -108,6 +172,7 @@ LLM-assisted EvalSpec bootstrap. `clauditor propose-eval <skill.md>` reads the S
 | `--json` | Emit the full `ProposeEvalReport` JSON envelope on stdout (includes `schema_version`, tokens, duration, validation errors). |
 | `-v, --verbose` | Log capture source, redaction count, model, and token estimates to stderr. |
 | `--project-dir PATH` | Override project root (default: cwd). Used for capture discovery and relative-path reporting. |
+| `--transport {api,cli,auto}` | Route the Anthropic call through the HTTP SDK (`api`), the `claude -p` subprocess (`cli`), or the default auto-resolution (`auto` — picks CLI when available). Precedence: this flag > `CLAUDITOR_TRANSPORT` env > `EvalSpec.transport` > default `auto`. Full reference: [docs/transport-architecture.md](transport-architecture.md). Same flag on `grade`, `extract`, `propose-eval`, `suggest`, `triggers`, `compare --blind`. On `grade`, `--transport cli` (explicit flag or `CLAUDITOR_TRANSPORT=cli` env var) implies `--no-api-key` for the skill subprocess so the skill subprocess and grader both use subscription auth end-to-end. When `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` was actually present, a one-time stderr notice announces the strip; with no key in env, the strip is a silent no-op. Pass `--transport api` to keep the keys. |
 
 ### Examples
 
@@ -219,7 +284,7 @@ Four skill-invoking commands share two flags that control the `claude -p` subpro
 
 | Flag | Purpose |
 | ---- | ------- |
-| `--no-api-key` | Strip both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the subprocess environment before invoking `claude -p`. The child then falls back to whatever auth is cached in `~/.claude/` — typically a Pro/Max subscription, which carries a much higher throughput ceiling than the API-key tier. Useful for research-heavy skills (multi-agent, deep-research) that exhaust the free API tier in a single run. Non-auth Anthropic env vars such as `ANTHROPIC_BASE_URL` are preserved. |
+| `--no-api-key` | Strip both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the subprocess environment before invoking `claude -p`. The child then falls back to whatever auth is cached in `~/.claude/` — typically a Pro/Max subscription, which carries a much higher throughput ceiling than the API-key tier. Useful for research-heavy skills (multi-agent, deep-research) that exhaust the free API tier in a single run. Non-auth Anthropic env vars such as `ANTHROPIC_BASE_URL` are preserved. Also implied by `--transport cli` on `grade` (see `--transport`). |
 | `--timeout SECONDS` | Override the runner's 180-second watchdog for a single invocation. Must be a positive integer; `--timeout 0`, `--timeout -5`, and `--timeout foo` exit `2` at argparse time. Precedence: the CLI flag wins when passed explicitly; otherwise the `EvalSpec.timeout` field wins when set; otherwise the built-in 180s default applies. See [`docs/eval-spec-reference.md#optional-top-level-fields`](eval-spec-reference.md#optional-top-level-fields) for the spec-field side of the contract. |
 
 When `claude -p` emits an `apiKeySource` value on its stream-json `init` event, the runner captures it on `SkillResult.api_key_source` and prints one stderr info line of the form `clauditor.runner: apiKeySource=<value>`. Values are labels (`"ANTHROPIC_API_KEY"`, `"claude.ai"`, `"none"`), not secrets. Older `claude` builds that omit the field leave `api_key_source` at `None` and suppress the stderr line — absence is the signal. See [`docs/stream-json-schema.md`](stream-json-schema.md#type-system) for the parser contract.
@@ -233,6 +298,69 @@ clauditor validate .claude/commands/my-skill.md --no-api-key --timeout 30
 ```
 
 Pytest integration: `--clauditor-no-api-key` is the plugin-option counterpart to `--no-api-key` on the CLI. It threads the same env scrub through the `clauditor_spec` fixture's `env_override`. The existing `--clauditor-timeout` pytest option continues to control the per-runner default (constructor `timeout=...`); per-invocation overrides flow through the fixture factory just like the CLI path. See [`docs/pytest-plugin.md`](pytest-plugin.md).
+
+## Authentication and API Keys
+
+Anthropic exposes two distinct auth modes, and clauditor commands split cleanly along that line:
+
+- **API key** — pay-per-token, set via the `ANTHROPIC_API_KEY` environment variable. Required by any clauditor command that calls the Anthropic API from the Python process.
+- **Claude Pro/Max subscription** — flat-rate plan, credentials cached under `~/.claude/` by the `claude` CLI. Works for commands that only spawn the `claude -p` skill subprocess.
+
+The Python `anthropic` SDK is API-only: it does not read subscription credentials from `~/.claude/`. That is why the LLM-mediated commands below (`grade`, `propose-eval`, `suggest`, `triggers`, `extract`, and `compare --blind`) require `ANTHROPIC_API_KEY` even when the user is signed in to Claude Pro/Max. Commands that only run the skill subprocess work under either auth mode.
+
+### Feature-impact matrix
+
+| Command | Works without API key? | Why |
+| ------- | :--------------------: | --- |
+| `clauditor validate` | ✓ | L1 deterministic assertions; no LLM call on the clauditor side. |
+| `clauditor capture` | ✓ | Runs the skill subprocess only. |
+| `clauditor run` | ✓ | Runs the skill subprocess only. |
+| `clauditor lint` | ✓ | Static conformance check, no LLM. |
+| `clauditor init` | ✓ | Eval-spec scaffold, no LLM. |
+| `clauditor badge` | ✓ | Reads persisted sidecars, no LLM. |
+| `clauditor audit` | ✓ | Reads persisted sidecars. |
+| `clauditor trend` | ✓ | Reads persisted sidecars. |
+| `clauditor grade` | ✓ (with caveat) | Routes through the `claude -p` CLI transport when available. Requires `claude` on PATH + subscription auth; else `ANTHROPIC_API_KEY`. |
+| `clauditor grade --variance N` | ✓ (with caveat) | Same as `grade` — each variance rep routes through the selected transport. |
+| `clauditor propose-eval` | ✓ (with caveat) | Routes through the CLI transport when available (subscription auth); else `ANTHROPIC_API_KEY`. |
+| `clauditor suggest` | ✓ (with caveat) | Routes through the CLI transport when available (subscription auth); else `ANTHROPIC_API_KEY`. |
+| `clauditor triggers` | ✓ (with caveat) | Routes through the CLI transport when available (subscription auth); else `ANTHROPIC_API_KEY`. |
+| `clauditor extract` | ✓ (with caveat) | Routes through the CLI transport when available (subscription auth); else `ANTHROPIC_API_KEY`. |
+| `clauditor compare --blind` | ✓ (with caveat) | Routes the blind A/B judge through the CLI transport when available; else `ANTHROPIC_API_KEY`. |
+
+The "with caveat" rows resolve through the four-layer precedence (CLI flag > env > spec > default `auto`). The `auto` default picks CLI when `claude` is on PATH, else API. Pytest fixtures keep the strict API-key guard unless `CLAUDITOR_FIXTURE_ALLOW_CLI=1` is set. Full details: [docs/transport-architecture.md](transport-architecture.md).
+
+### Error behavior
+
+When neither `ANTHROPIC_API_KEY` is set nor the `claude` CLI is on PATH, the relaxed pre-flight guard (`check_any_auth_available`) fires at exit `2` with an actionable stderr message naming the offending subcommand and both auth paths:
+
+```
+ERROR: No usable authentication found.
+clauditor grade needs either:
+  1. ANTHROPIC_API_KEY exported (API key from https://console.anthropic.com/), OR
+  2. claude CLI installed and authenticated (Claude Pro/Max subscription)
+Commands that don't need authentication: validate, capture, run, lint, init,
+badge, audit, trend.
+```
+
+The exit code (`2`) matches the pre-call input-validation category in the [four-exit-code taxonomy](#exit-codes) — the guard fires before any API call is made, so no tokens are spent and no sidecar is written. Pytest fixtures use a strict variant of the guard (`check_api_key_only`) that still requires `ANTHROPIC_API_KEY` unless `CLAUDITOR_FIXTURE_ALLOW_CLI=1` is set — see [docs/transport-architecture.md](transport-architecture.md#auth-state-matrix) for the full matrix.
+
+## Transport architecture
+
+The six LLM-mediated commands above route their Anthropic call through one of two transports: an HTTP SDK path (the `anthropic` Python SDK) or a subprocess path that shells out to the `claude` CLI. The default `auto` resolution picks CLI when `claude` is on PATH (so a Pro/Max subscription alone suffices); operators can force a specific path per-invocation, per-shell, or per-skill.
+
+```bash
+# Per-invocation: force API path for this one grade (e.g. CI consistency).
+clauditor grade .claude/skills/my-skill/SKILL.md --transport api
+
+# Per-shell / per-CI-job: export CLAUDITOR_TRANSPORT=cli for this session.
+export CLAUDITOR_TRANSPORT=cli
+clauditor propose-eval .claude/skills/my-skill/SKILL.md
+
+# Per-skill: add "transport": "api" to eval.json for every invocation.
+```
+
+**Covered in the full reference:** the two-axis auth-state matrix (API-key × CLI-on-PATH), the four-layer precedence resolution (CLI > env > spec > default), per-category retry ladders and error templates (`rate_limit`, `auth`, `api`, `transport`), the spawn-overhead benchmark (cold vs warm), migration notes for operators who had both transports, and the known limitations (`raw_message=None` under CLI, no cache-token accounting under CLI, `api_key_source` only populated under CLI). Full reference: [docs/transport-architecture.md](transport-architecture.md).
 
 ## Persistent metric history
 

@@ -32,23 +32,49 @@ from pathlib import Path
 
 from clauditor.paths import resolve_clauditor_dir
 
-_AUDIT_SCHEMA_VERSION = 1
+# US-006 / #86: per-sidecar accepted schema versions. Grading and
+# extraction sidecars bumped to v2 to carry the ``transport_source``
+# field added by the CLI-transport feature; the loader accepts both
+# versions and defaults missing ``transport_source`` to ``"api"`` at
+# read time. Assertions sidecars stay at v1 (no transport_source field
+# for L1 assertions). See DEC-007 and DEC-018 in
+# ``plans/super/86-claude-cli-transport.md``.
+_ACCEPTED_SCHEMA_VERSIONS: dict[str, frozenset[int]] = {
+    "assertions.json": frozenset({1}),
+    "extraction.json": frozenset({1, 2}),
+    "grading.json": frozenset({1, 2}),
+}
+
+
+def _accepted_versions_for(filename: str) -> frozenset[int]:
+    """Map a sidecar filename (with optional ``baseline_`` prefix) to its
+    accepted schema versions. Falls back to ``{1}`` for unknown filenames.
+    """
+    base = filename
+    if base.startswith("baseline_"):
+        base = base[len("baseline_"):]
+    return _ACCEPTED_SCHEMA_VERSIONS.get(base, frozenset({1}))
 
 
 def _check_schema_version(
     data: dict, *, iteration_dir: Path | str, filename: str
 ) -> bool:
-    """FIX-11: verify the on-disk sidecar advertises schema_version==1.
+    """Verify the on-disk sidecar advertises an accepted schema_version.
 
-    Returns True on a match; on mismatch or absence, logs a one-line
-    warning to stderr and returns False so the caller can skip the file.
+    Grading and extraction sidecars accept ``{1, 2}`` (US-006 of
+    ``plans/super/86-claude-cli-transport.md`` bumps them to v2 to
+    carry ``transport_source``); assertions sidecars accept ``{1}``.
+    A missing ``schema_version`` is treated as unknown and skipped
+    with a one-line stderr warning.
     """
+    accepted = _accepted_versions_for(filename)
     version = data.get("schema_version")
-    if version == _AUDIT_SCHEMA_VERSION:
+    if version in accepted:
         return True
     print(
         f"clauditor.audit: skipping {iteration_dir}/{filename} — "
-        f"schema_version={version!r} (expected {_AUDIT_SCHEMA_VERSION})",
+        f"schema_version={version!r} "
+        f"(expected one of {sorted(accepted)})",
         file=sys.stderr,
     )
     return False

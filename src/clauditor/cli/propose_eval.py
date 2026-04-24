@@ -29,6 +29,10 @@ import json
 import sys
 from pathlib import Path
 
+from clauditor._anthropic import (
+    AnthropicAuthMissingError,
+    check_any_auth_available,
+)
 from clauditor.propose_eval import (
     DEFAULT_PROPOSE_EVAL_MODEL,
     build_propose_eval_prompt,
@@ -107,6 +111,23 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         "--project-dir",
         default=None,
         help="Project directory (default: cwd)",
+    )
+    # Shared argparse type helpers live in the package __init__; import
+    # lazily to avoid a circular import at module load time.
+    from clauditor.cli import _transport_choice
+
+    p.add_argument(
+        "--transport",
+        type=_transport_choice,
+        default=None,
+        choices=("api", "cli", "auto"),
+        help=(
+            "Override the Anthropic call transport: 'api' (HTTP SDK), "
+            "'cli' (subprocess via claude binary), or 'auto' (prefer "
+            "CLI when available). Four-layer precedence: this flag > "
+            "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
+            "'auto'."
+        ),
     )
 
 
@@ -297,10 +318,23 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
         print(prompt, end="" if prompt.endswith("\n") else "\n")
         return 0
 
+    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
+    # ANTHROPIC_API_KEY nor the claude CLI binary is available. Guard
+    # lands AFTER --dry-run (dry-run is a cost-free preview — no API
+    # call, no key needed) and BEFORE the propose_eval orchestrator.
+    try:
+        check_any_auth_available("propose-eval")
+    except AnthropicAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    from clauditor.cli import _resolve_grader_transport
+
     report = await propose_eval(
         propose_input,
         model=model,
         spec_dir=skill_md_path.parent,
+        transport=_resolve_grader_transport(args),
     )
 
     # DEC-006 row: Anthropic API failure → exit 3.

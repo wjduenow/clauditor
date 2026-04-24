@@ -40,6 +40,109 @@ def _positive_int(value: str) -> int:
     return ivalue
 
 
+def _transport_choice(value: str) -> str:
+    """argparse type: accept one of ``"api"``, ``"cli"``, ``"auto"``.
+
+    DEC-012 of ``plans/super/86-claude-cli-transport.md``. Shared
+    across the six LLM-mediated commands (``grade``, ``extract``,
+    ``propose-eval``, ``suggest``, ``triggers``, ``compare``) so
+    help text + error messages stay consistent.
+    """
+    if value not in ("api", "cli", "auto"):
+        raise argparse.ArgumentTypeError(
+            f"must be one of 'api', 'cli', 'auto', got {value!r}"
+        )
+    return value
+
+
+def _resolve_grader_transport(args: argparse.Namespace, eval_spec=None) -> str:
+    """Resolve grader transport using four-layer precedence.
+
+    CLI flag > ``CLAUDITOR_TRANSPORT`` env > ``EvalSpec.transport`` > default
+    ``"auto"``. Normalizes whitespace-only env values to ``None`` so they are
+    treated as unset, matching the ``spec.run`` seam in
+    ``src/clauditor/spec.py``.
+
+    ``eval_spec`` is the loaded ``EvalSpec`` (or ``None`` when the calling
+    command has no eval spec — e.g. ``suggest``, ``propose-eval``).
+
+    Raises ``SystemExit(2)`` on invalid ``CLAUDITOR_TRANSPORT`` values (e.g.
+    ``CLAUDITOR_TRANSPORT=foo``). Printing the error to stderr before exit
+    centralizes the routing so all six LLM-mediated commands share one
+    error surface.
+    """
+    import os
+
+    from clauditor._anthropic import resolve_transport
+
+    env_transport = os.environ.get("CLAUDITOR_TRANSPORT")
+    if env_transport is not None and env_transport.strip() == "":
+        env_transport = None
+    spec_transport = eval_spec.transport if eval_spec is not None else None
+    try:
+        return resolve_transport(
+            getattr(args, "transport", None), env_transport, spec_transport
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def should_strip_api_key_for_skill_subprocess(
+    args: argparse.Namespace,
+) -> bool:
+    """Return True iff operator-intent selected CLI grader transport.
+
+    Used by ``cmd_grade`` to decide whether ``--transport cli`` should
+    implicitly strip ``ANTHROPIC_API_KEY`` (and ``ANTHROPIC_AUTH_TOKEN``)
+    from the skill subprocess env, so a subscription-auth-end-to-end
+    run does not re-hit the 429 inside the skill subprocess.
+
+    Returns True when **either** operator-intent layer named CLI:
+
+    - ``args.transport == "cli"`` (explicit ``--transport cli`` flag), OR
+    - ``os.environ["CLAUDITOR_TRANSPORT"] == "cli"`` (env var, exact
+      match — see whitespace note below).
+
+    Returns False otherwise, including:
+
+    - ``args.transport`` is missing, ``None``, ``"api"``, or ``"auto"``.
+    - ``CLAUDITOR_TRANSPORT`` is unset, empty, or any value other than
+      exactly ``"cli"`` (whitespace-padded values like ``"  cli  "``
+      are rejected downstream by :func:`_resolve_grader_transport`
+      with exit 2, so treating them as "cli" here would silently
+      strip the skill-subprocess key right before the grader call
+      exits — worse UX than a single clear error).
+    - ``EvalSpec.transport == "cli"`` — **NOT** consulted here.
+      Author-intent does not know the operator's env and must not
+      trigger the strip (DEC-002 of
+      ``plans/super/95-subscription-auth-flag.md``).
+    - ``--transport auto`` resolving to CLI at runtime — this helper
+      does NOT resolve auto (DEC-002). Stripping keys on any machine
+      with ``claude`` on PATH would surprise users who maintain an
+      API key for production purposes.
+
+    Pure function — reads ``os.environ`` only; no stderr, no side
+    effects. Matches ``.claude/rules/pure-compute-vs-io-split.md``.
+    Sibling to :func:`_resolve_grader_transport` so the transport
+    resolver stays purely about transport, and this helper owns the
+    coupling decision (DEC-006).
+
+    Env-var value semantics match :func:`_resolve_grader_transport` /
+    :func:`clauditor._anthropic.resolve_transport`: exact ``"cli"``
+    only, no whitespace normalization. Keeping the two in lockstep
+    prevents the "helper accepts ``'  cli  '`` but resolver rejects
+    it" split-brain that would leak a stripped-key subprocess run
+    before a SystemExit(2) from the grader path.
+    """
+    import os
+
+    flag = getattr(args, "transport", None)
+    if flag == "cli":
+        return True
+    return os.environ.get("CLAUDITOR_TRANSPORT") == "cli"
+
+
 def _append_validate_history(
     skill_name: str,
     *,
@@ -251,6 +354,11 @@ _CATEGORY_HINTS: dict[str, str] = {
     "interactive": (
         "Hint: ensure all parameters are in test_args; "
         "/clauditor cannot drive interactive skills"
+    ),
+    "background-task": (
+        "Hint: skill launched Task(run_in_background=true) and exited "
+        "before polling — claude -p does not poll background tasks, "
+        "so output is likely truncated"
     ),
     "timeout": "Hint: skill exceeded the run timeout",
     "subprocess": (

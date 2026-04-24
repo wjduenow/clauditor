@@ -3944,6 +3944,83 @@ class TestTimeoutFlag:
         assert mock_runner.run.call_args.kwargs.get("timeout") == 300
 
 
+class TestCLITransportFlag:
+    """US-004 (#86): ``--transport {api,cli,auto}`` argparse flag on six commands.
+
+    DEC-012 / DEC-017. Each of the six LLM-mediated commands (``grade``,
+    ``extract``, ``propose-eval``, ``suggest``, ``triggers``, ``compare``)
+    accepts ``--transport`` with the shared ``_transport_choice`` validator.
+    Invalid values exit 2 at argparse time per
+    ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    """
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            ["grade", "skill.md", "--transport", "sdk"],
+            ["extract", "skill.md", "--transport", "sdk"],
+            ["propose-eval", "skill.md", "--transport", "sdk"],
+            ["suggest", "skill.md", "--transport", "sdk"],
+            ["triggers", "skill.md", "--transport", "sdk"],
+            ["compare", "a.txt", "b.txt", "--transport", "sdk"],
+        ],
+    )
+    def test_invalid_transport_exits_2(self, cmd, capsys):
+        """Invalid ``--transport sdk`` rejected by argparse with exit 2."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(cmd)
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        # Either argparse's "invalid _transport_choice value" wrapper
+        # or our own "must be one of" message must appear.
+        assert "must be one of" in err or "invalid" in err.lower()
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            ["grade", "--help"],
+            ["extract", "--help"],
+            ["propose-eval", "--help"],
+            ["suggest", "--help"],
+            ["triggers", "--help"],
+            ["compare", "--help"],
+        ],
+    )
+    def test_six_commands_advertise_transport_in_help(self, cmd, capsys):
+        """Each of the six commands advertises ``--transport`` in help text."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(cmd)
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "--transport" in out
+
+    @pytest.mark.parametrize("value", ["api", "cli", "auto"])
+    def test_transport_choice_validator_accepts_each_literal(self, value):
+        """The shared argparse type validator accepts every literal
+        value and returns it unchanged. Pure unit test — no main
+        round-trip, no help-text sniffing.
+        """
+        from clauditor.cli import _transport_choice
+
+        assert _transport_choice(value) == value
+
+    @pytest.mark.parametrize("value", ["sdk", "", "API", "CLI", " api"])
+    def test_transport_choice_validator_rejects_invalid(self, value):
+        """Anything outside ``{"api", "cli", "auto"}`` raises
+        ``ArgumentTypeError``, which argparse translates into a clean
+        exit 2 at CLI parse time (covered separately by
+        ``test_invalid_transport_exits_2``).
+        """
+        import argparse
+
+        from clauditor.cli import _transport_choice
+
+        with pytest.raises(
+            argparse.ArgumentTypeError, match="must be one of"
+        ):
+            _transport_choice(value)
+
+
 class TestCmdDoctor:
     """Tests for the doctor subcommand (US-007)."""
 
@@ -4002,9 +4079,9 @@ class TestCmdDoctor:
         assert rc == 0
         out = capsys.readouterr().out
         assert "claude-cli" in out
-        # Expect fail marker for missing claude CLI
+        # Expect info marker for missing claude CLI (not fail — absence is valid)
         lines = [line for line in out.splitlines() if "claude-cli" in line]
-        assert any("[fail]" in line for line in lines)
+        assert any("[info]" in line for line in lines)
 
     # --- DEC-013 clauditor-skill-symlink check (5 states) ---------------
 
@@ -5365,6 +5442,46 @@ class TestCmdSuggest:
         assert len(jsons) == 1
         assert len(diffs) == 1
 
+    def test_modern_layout_locates_iteration_by_parent_dir_name(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Regression for #100: modern-layout ``<dir>/SKILL.md`` must
+        derive ``skill_name`` from the parent dir (or frontmatter
+        ``name:``), not from ``skill_path.stem`` which returns the
+        literal ``"SKILL"``. Pre-fix this test errored with
+        "no iteration under ... contains SKILL/grading.json"."""
+        (tmp_path / ".git").mkdir()
+        skill_dir_src = tmp_path / ".claude" / "skills" / "my-skill"
+        skill_dir_src.mkdir(parents=True)
+        skill_md = skill_dir_src / "SKILL.md"
+        skill_md.write_text(
+            "---\n"
+            "name: my-skill\n"
+            "description: does things\n"
+            "---\n"
+            "\n"
+            "# My Skill\n"
+            "\n"
+            "This skill does things.\n"
+        )
+        iteration_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(iteration_dir, all_pass=False)
+        self._write_failing_assertions(iteration_dir)
+        monkeypatch.chdir(tmp_path)
+
+        report = self._fake_report()
+        with patch(
+            "clauditor.cli.suggest.propose_edits",
+            new=AsyncMock(return_value=report),
+        ):
+            rc = main(["suggest", ".claude/skills/my-skill/SKILL.md"])
+
+        err = capsys.readouterr().err
+        assert "SKILL/grading.json" not in err, (
+            f"suggest used literal SKILL stem as skill_name: {err!r}"
+        )
+        assert rc == 0, f"expected exit 0, got {rc}; stderr={err!r}"
+
     def test_json_flag_prints_sidecar_json_to_stdout(
         self, tmp_path, monkeypatch, capsys
     ):
@@ -5397,7 +5514,7 @@ class TestCmdSuggest:
 
         captured = {}
 
-        async def _fake_propose(suggest_input, *, model=None):
+        async def _fake_propose(suggest_input, *, model=None, transport="auto"):
             captured["source_iteration"] = suggest_input.source_iteration
             return self._fake_report(source_iteration=suggest_input.source_iteration)
 
@@ -5417,7 +5534,7 @@ class TestCmdSuggest:
 
         captured = {}
 
-        async def _fake_propose(suggest_input, *, model=None):
+        async def _fake_propose(suggest_input, *, model=None, transport="auto"):
             captured["transcripts"] = suggest_input.transcript_events
             return self._fake_report()
 
@@ -5760,6 +5877,12 @@ class TestRenderSkillError:
                 "interactive",
                 "Hint: ensure all parameters are in test_args; "
                 "/clauditor cannot drive interactive skills",
+            ),
+            (
+                "background-task",
+                "Hint: skill launched Task(run_in_background=true) and "
+                "exited before polling — claude -p does not poll "
+                "background tasks, so output is likely truncated",
             ),
             ("timeout", "Hint: skill exceeded the run timeout"),
             (
@@ -6229,3 +6352,73 @@ class TestCmdExtractErrorSurfacingRegression:
         assert "Hint: retry in ~60s (rate limit)" in err
         assert ": None" not in err
         assert "Unknown error" not in err
+
+
+class TestResolveGraderTransport:
+    """Regression tests for the four-layer transport precedence in grader commands.
+
+    ``_resolve_grader_transport`` is a shared helper used by all six LLM-mediated
+    CLI commands.  These tests verify the precedence chain (CLI > env > spec >
+    default) and that whitespace-only env values are treated as unset.
+    """
+
+    def test_default_is_auto(self, monkeypatch):
+        monkeypatch.delenv("CLAUDITOR_TRANSPORT", raising=False)
+        from clauditor.cli import _resolve_grader_transport
+        args = argparse.Namespace(transport=None)
+        result = _resolve_grader_transport(args, None)
+        assert result == "auto"
+
+    def test_cli_flag_wins_over_env(self, monkeypatch):
+        monkeypatch.setenv("CLAUDITOR_TRANSPORT", "cli")
+        from clauditor.cli import _resolve_grader_transport
+        args = argparse.Namespace(transport="api")
+        result = _resolve_grader_transport(args, None)
+        assert result == "api"
+
+    def test_env_wins_over_spec(self, monkeypatch):
+        monkeypatch.setenv("CLAUDITOR_TRANSPORT", "api")
+        from clauditor.cli import _resolve_grader_transport
+        eval_spec = MagicMock()
+        eval_spec.transport = "cli"
+        args = argparse.Namespace(transport=None)
+        result = _resolve_grader_transport(args, eval_spec)
+        assert result == "api"
+
+    def test_spec_wins_over_default(self, monkeypatch):
+        monkeypatch.delenv("CLAUDITOR_TRANSPORT", raising=False)
+        from clauditor.cli import _resolve_grader_transport
+        eval_spec = MagicMock()
+        eval_spec.transport = "cli"
+        args = argparse.Namespace(transport=None)
+        result = _resolve_grader_transport(args, eval_spec)
+        assert result == "cli"
+
+    def test_whitespace_only_env_treated_as_unset(self, monkeypatch):
+        monkeypatch.setenv("CLAUDITOR_TRANSPORT", "   ")
+        from clauditor.cli import _resolve_grader_transport
+        eval_spec = MagicMock()
+        eval_spec.transport = "cli"
+        args = argparse.Namespace(transport=None)
+        result = _resolve_grader_transport(args, eval_spec)
+        # whitespace-only env → treated as None → spec wins
+        assert result == "cli"
+
+    def test_no_eval_spec_falls_through_to_default(self, monkeypatch):
+        monkeypatch.delenv("CLAUDITOR_TRANSPORT", raising=False)
+        from clauditor.cli import _resolve_grader_transport
+        args = argparse.Namespace(transport=None)
+        result = _resolve_grader_transport(args, None)
+        assert result == "auto"
+
+    def test_invalid_env_exits_2(self, monkeypatch, capsys):
+        """Invalid ``CLAUDITOR_TRANSPORT`` value → SystemExit(2) + ERROR line."""
+        monkeypatch.setenv("CLAUDITOR_TRANSPORT", "sdk")
+        from clauditor.cli import _resolve_grader_transport
+        args = argparse.Namespace(transport=None)
+        with pytest.raises(SystemExit) as exc_info:
+            _resolve_grader_transport(args, None)
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "ERROR:" in captured.err
+        assert "sdk" in captured.err

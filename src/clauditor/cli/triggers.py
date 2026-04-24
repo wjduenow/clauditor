@@ -6,9 +6,18 @@ import argparse
 import json
 import sys
 
+from clauditor._anthropic import (
+    AnthropicAuthMissingError,
+    check_any_auth_available,
+)
+
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``triggers`` subparser."""
+    # Shared argparse type helpers live in the package __init__; import
+    # lazily to avoid a circular import at module load time.
+    from clauditor.cli import _transport_choice
+
     p_triggers = subparsers.add_parser(
         "triggers", help="Run trigger precision testing for a skill"
     )
@@ -22,6 +31,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p_triggers.add_argument(
         "--dry-run", action="store_true", help="Print sample trigger prompts"
+    )
+    p_triggers.add_argument(
+        "--transport",
+        type=_transport_choice,
+        default=None,
+        choices=("api", "cli", "auto"),
+        help=(
+            "Override the Anthropic call transport: 'api' (HTTP SDK), "
+            "'cli' (subprocess via claude binary), or 'auto' (prefer "
+            "CLI when available). Four-layer precedence: this flag > "
+            "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
+            "'auto'."
+        ),
     )
 
 
@@ -80,9 +102,26 @@ def cmd_triggers(args: argparse.Namespace) -> int:
             print(prompt)
         return 0
 
+    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
+    # ANTHROPIC_API_KEY nor the claude CLI binary is available. Guard
+    # lands AFTER --dry-run (dry-run is a cost-free preview — no API
+    # call, no key needed) and BEFORE test_triggers.
+    try:
+        check_any_auth_available("triggers")
+    except AnthropicAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    from clauditor.cli import _resolve_grader_transport
     from clauditor.triggers import test_triggers
 
-    report = asyncio.run(test_triggers(spec.eval_spec, model))
+    report = asyncio.run(
+        test_triggers(
+            spec.eval_spec,
+            model,
+            transport=_resolve_grader_transport(args, spec.eval_spec),
+        )
+    )
 
     if args.json:
         data = {

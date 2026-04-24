@@ -6,6 +6,10 @@ import argparse
 import sys
 from pathlib import Path
 
+from clauditor._anthropic import (
+    AnthropicAuthMissingError,
+    check_any_auth_available,
+)
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.paths import resolve_clauditor_dir
 from clauditor.spec import SkillSpec
@@ -16,7 +20,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``compare`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int
+    from clauditor.cli import _positive_int, _transport_choice
 
     p_compare = subparsers.add_parser(
         "compare",
@@ -72,6 +76,20 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "Run a blind A/B LLM judge over two .txt outputs "
             "(requires --spec). Prints a preference verdict."
+        ),
+    )
+    p_compare.add_argument(
+        "--transport",
+        type=_transport_choice,
+        default=None,
+        choices=("api", "cli", "auto"),
+        help=(
+            "Override the Anthropic call transport: 'api' (HTTP SDK), "
+            "'cli' (subprocess via claude binary), or 'auto' (prefer "
+            "CLI when available). Only used with --blind; ignored for "
+            "plain assertion diffs. Four-layer precedence: this flag > "
+            "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
+            "'auto'."
         ),
     )
 
@@ -171,7 +189,11 @@ def _print_blind_report(report, before_path: Path, after_path: Path) -> None:
 
 
 def _run_blind_compare(
-    before_path: Path, after_path: Path, spec_path: str, eval_path: str | None
+    before_path: Path,
+    after_path: Path,
+    spec_path: str,
+    eval_path: str | None,
+    args: argparse.Namespace | None = None,
 ) -> int:
     """Dispatch blind A/B comparison for a pair of ``.txt`` outputs.
 
@@ -198,6 +220,20 @@ def _run_blind_compare(
         validate_blind_compare_spec(skill_spec)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+    # Pre-flight auth guard (QG pass 2 of #83 — plans/super/
+    # 83-subscription-auth-gap.md; relaxed per #86 DEC-008 —
+    # plans/super/86-claude-cli-transport.md). ``compare --blind`` routes
+    # through ``blind_compare_from_spec`` → ``call_anthropic``, so
+    # subscription-only users need the same actionable exit-2 message the
+    # other five LLM-mediated commands already produce. Lands after spec
+    # validation (which has its own exit-2 surface) and before file I/O
+    # / SDK call.
+    try:
+        check_any_auth_available("compare --blind")
+    except AnthropicAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
         return 2
 
     for path in (before_path, after_path):
@@ -234,6 +270,13 @@ def _run_blind_compare(
     # above (fail-fast), so the progress message now reliably means
     # "actual API calls are about to happen".
     assert skill_spec.eval_spec is not None  # validate_blind_compare_spec enforced
+    import argparse as _argparse
+
+    from clauditor.cli import _resolve_grader_transport
+
+    effective_transport = _resolve_grader_transport(
+        args if args is not None else _argparse.Namespace(), skill_spec.eval_spec
+    )
     print(
         f"Running blind A/B judge ({skill_spec.eval_spec.grading_model}) "
         "— 2 API calls...",
@@ -244,6 +287,7 @@ def _run_blind_compare(
             skill_spec,
             output_a,
             output_b,
+            transport=effective_transport,
         )
     )
     _print_blind_report(report, before_path, after_path)
@@ -301,7 +345,11 @@ def cmd_compare(args: argparse.Namespace) -> int:
             )
             return 2
         return _run_blind_compare(
-            before_path, after_path, args.spec, args.eval
+            before_path,
+            after_path,
+            args.spec,
+            args.eval,
+            args=args,
         )
 
     if numeric_form and positional_form:

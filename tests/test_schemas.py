@@ -131,14 +131,18 @@ class TestFieldRequirement:
         f = FieldRequirement(name="phone", format="phone_us")
         assert f.format == "phone_us"
 
-    def test_with_inline_regex_format(self):
-        """DEC-007: format accepts an inline regex when no registry match."""
-        f = FieldRequirement(name="phone", format=r"\(\d{3}\)\s\d{3}-\d{4}")
-        assert f.format == r"\(\d{3}\)\s\d{3}-\d{4}"
+    def test_inline_regex_format_rejected(self):
+        """#99: inline regex is no longer accepted — registry-only contract."""
+        with pytest.raises(
+            ValueError, match="not a registered format name"
+        ):
+            FieldRequirement(name="phone", format=r"\(\d{3}\)\s\d{3}-\d{4}")
 
     def test_invalid_format_raises_value_error(self):
-        """DEC-011: bad format (not registry, not compilable regex) fails loud."""
-        with pytest.raises(ValueError, match="nor a valid regex"):
+        """#99: any non-registry value raises at construction."""
+        with pytest.raises(
+            ValueError, match="not a registered format name"
+        ):
             FieldRequirement(name="phone", format="[invalid")
 
     def test_empty_string_format_raises(self):
@@ -385,7 +389,7 @@ FULL_EVAL_DATA = {
                             "id": "p_zip",
                             "name": "zip",
                             "required": False,
-                            "format": r"^\d{5}$",
+                            "format": "zip_us",
                         },
                     ],
                 }
@@ -430,7 +434,7 @@ class TestFromFile:
         assert tier.label == "default"
         assert tier.min_entries == 2
         assert len(tier.fields) == 3
-        assert tier.fields[2].format == r"^\d{5}$"
+        assert tier.fields[2].format == "zip_us"
         assert tier.fields[2].required is False
         assert spec.grading_criteria == [
             {"id": "c_relevant", "criterion": "Are results relevant?"},
@@ -739,7 +743,7 @@ class TestToDict:
         assert tier["min_entries"] == 2
         assert len(tier["fields"]) == 3
         # Format included only where present (pattern field removed)
-        assert tier["fields"][2]["format"] == r"^\d{5}$"
+        assert tier["fields"][2]["format"] == "zip_us"
         assert "format" not in tier["fields"][0]
         assert "pattern" not in tier["fields"][2]
         # Trigger tests
@@ -1940,6 +1944,96 @@ class TestAllowHangHeuristic:
         assert spec.allow_hang_heuristic is True
 
 
+class TestEvalSpecTransport:
+    """DEC-012 of #86: ``EvalSpec.transport`` parsing in ``from_dict``.
+
+    Default ``"auto"`` preserves back-compat. The literal set
+    ``{"api", "cli", "auto"}`` is enforced at load time; non-string,
+    bool, and null values are rejected with a ``ValueError`` per
+    ``.claude/rules/constant-with-type-info.md``.
+    """
+
+    def test_valid_api_loads(self, tmp_path):
+        """``{"transport": "api"}`` loads with ``.transport == "api"``."""
+        data = {"skill_name": "s", "transport": "api"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.transport == "api"
+
+    def test_valid_cli_loads(self, tmp_path):
+        """``{"transport": "cli"}`` loads with ``.transport == "cli"``."""
+        data = {"skill_name": "s", "transport": "cli"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.transport == "cli"
+
+    def test_valid_auto_loads(self, tmp_path):
+        """``{"transport": "auto"}`` loads with ``.transport == "auto"``."""
+        data = {"skill_name": "s", "transport": "auto"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.transport == "auto"
+
+    def test_missing_defaults_to_auto(self, tmp_path):
+        """No ``transport`` key → ``.transport == "auto"`` (back-compat)."""
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.transport == "auto"
+
+    def test_invalid_string_rejects(self, tmp_path):
+        """Unknown literal string (e.g. ``"sdk"``) rejected with a
+        ``must be one of`` error that names the allowed values.
+        """
+        data = {"skill_name": "s", "transport": "sdk"}
+        with pytest.raises(
+            ValueError,
+            match=r"'transport' must be one of 'api', 'cli', 'auto', got 'sdk'",
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_non_string_rejects(self, tmp_path):
+        """Non-string (e.g. int 42) rejected with a type error."""
+        data = {"skill_name": "s", "transport": 42}
+        with pytest.raises(
+            ValueError,
+            match=r"'transport' must be a string, got int 42",
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_bool_rejects(self, tmp_path):
+        """Bool guard: ``isinstance(True, str)`` is False in Python,
+        but we still want a distinct error path that names the type."""
+        data = {"skill_name": "s", "transport": True}
+        with pytest.raises(
+            ValueError,
+            match=r"'transport' must be a string, got bool True",
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_null_rejects(self, tmp_path):
+        """Explicit null is rejected — authors should omit the key
+        to get the default ``"auto"``, not write ``null`` explicitly.
+        """
+        data = {"skill_name": "s", "transport": None}
+        with pytest.raises(
+            ValueError,
+            match=r"'transport' must be one of 'api', 'cli', 'auto', got null",
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_round_trip_non_default(self, tmp_path):
+        """Non-default transport round-trips through to_dict / from_dict."""
+        data = {"skill_name": "s", "transport": "cli"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        round_tripped = spec.to_dict()
+        assert round_tripped.get("transport") == "cli"
+
+    def test_round_trip_default_omits_key(self, tmp_path):
+        """Default ``"auto"`` is omitted from ``to_dict`` output to
+        keep diffs minimal (matches ``allow_hang_heuristic`` pattern).
+        """
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        round_tripped = spec.to_dict()
+        assert "transport" not in round_tripped
+
 
 class TestAssertionKeySpec:
     """Tests for ``AssertionKeySpec`` + ``ASSERTION_TYPE_REQUIRED_KEYS``
@@ -2117,12 +2211,19 @@ def _minimal_assertion_entry(atype: str, aid: str = "a1") -> dict:
     #67 the loader also type-checks each required key against
     ``spec.field_types``, so this helper emits a value of the
     declared native type (``"1"`` for ``str``, ``1`` for ``int``).
+
+    Per #99, ``has_format.format`` is additionally required to be a
+    known registry key — the `"1"` placeholder won't pass load-time
+    validation, so substitute a real registry entry for that key.
     """
     spec = ASSERTION_TYPE_REQUIRED_KEYS[atype]
     entry: dict = {"id": aid, "type": atype}
     for key in spec.required:
         expected = spec.field_types.get(key, str)
-        entry[key] = 1 if expected is int else "1"
+        if atype == "has_format" and key == "format":
+            entry[key] = "phone_us"
+        else:
+            entry[key] = 1 if expected is int else "1"
     return entry
 
 
@@ -2436,3 +2537,73 @@ class TestRequireAssertionKeys:
         msg = str(ei.value)
         assert "key 'count' must be int" in msg
         assert "bool" in msg
+
+
+class TestHasFormatRegistryValidation:
+    """#99: ``has_format.format`` must be a registered format name.
+
+    Catches the doc/impl drift where the propose-eval prompt claimed
+    regex was accepted but ``assert_has_format`` only consults the
+    registry — authors (and LLMs) writing a regex for ``format`` used
+    to see the failure at validate-runtime with "Unknown format: <regex>"
+    after the skill already spent tokens. This test class pins the
+    load-time rejection so the feedback comes before any API spend.
+    """
+
+    def test_registry_key_accepted(self, tmp_path):
+        entry = {
+            "id": "a1",
+            "type": "has_format",
+            "format": "phone_us",
+            "count": 3,
+        }
+        data = {"skill_name": "s", "assertions": [entry]}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.assertions[0]["format"] == "phone_us"
+
+    def test_regex_rejected(self, tmp_path):
+        """An inline regex in ``format`` raises at load with a clear error."""
+        entry = {
+            "id": "a1",
+            "type": "has_format",
+            "format": r"\(\d{3}\) \d{3}-\d{4}",
+            "count": 3,
+        }
+        data = {"skill_name": "s", "assertions": [entry]}
+        with pytest.raises(ValueError) as ei:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(ei.value)
+        assert "has_format" in msg
+        assert "not a registered format name" in msg
+        assert "regex" in msg.lower()  # mentions the regex escape hatch
+
+    def test_unknown_name_rejected(self, tmp_path):
+        """A typo'd registry key (not a valid registry entry) raises."""
+        entry = {
+            "id": "a1",
+            "type": "has_format",
+            "format": "phone_US",  # wrong case
+        }
+        data = {"skill_name": "s", "assertions": [entry]}
+        with pytest.raises(
+            ValueError, match="not a registered format name"
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_error_lists_available_formats(self, tmp_path):
+        """Error message enumerates valid registry keys so authors
+        can self-correct without consulting external docs.
+        """
+        entry = {
+            "id": "a1",
+            "type": "has_format",
+            "format": "unknown_format",
+        }
+        data = {"skill_name": "s", "assertions": [entry]}
+        with pytest.raises(ValueError) as ei:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(ei.value)
+        # Spot-check a handful of known registry keys are present.
+        assert "phone_us" in msg
+        assert "email" in msg
+        assert "url" in msg
