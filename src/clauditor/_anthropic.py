@@ -636,6 +636,7 @@ async def call_anthropic(
     model: str,
     max_tokens: int = 4096,
     transport: Literal["api", "cli", "auto"] = "auto",
+    subject: str | None = None,
 ) -> AnthropicResult:
     """Issue a single-turn user prompt against ``model`` with retries.
 
@@ -660,6 +661,14 @@ async def call_anthropic(
               binary is on PATH, else API (DEC-001 subscription-first).
               The first ``auto → cli`` resolution per Python process
               emits a one-shot stderr announcement (DEC-019).
+        subject: Optional call-site label threaded to the CLI transport
+            for :func:`clauditor.runner._invoke_claude_cli`'s
+            ``apiKeySource`` telemetry line. When set, the CLI branch
+            emits ``clauditor.runner: apiKeySource=<val> (<subject>)``
+            so operators can attribute each line to a specific internal
+            LLM call (e.g. ``"L2 extraction"``, ``"L3 grading"``). See
+            issue #107. Ignored by the SDK transport (no telemetry
+            line is emitted there).
     """
     resolved, from_auto = _resolve_transport(transport)
 
@@ -674,7 +683,7 @@ async def call_anthropic(
 
     if resolved == "cli":
         return await _call_via_claude_cli(
-            prompt, model=model, max_tokens=max_tokens
+            prompt, model=model, max_tokens=max_tokens, subject=subject
         )
     return await _call_via_sdk(prompt, model=model, max_tokens=max_tokens)
 
@@ -811,10 +820,11 @@ async def _call_via_sdk(
         return result
 
 
-# CLI-transport default timeout. Matches :class:`SkillRunner`'s own
-# default and is ample for a grading call (per the bead's "If you
-# identify a better cwd choice ..." guidance — 180 s aligns with the
-# rest of the codebase).
+# CLI-transport default timeout. A single grading call should not
+# legitimately exceed this; skills that need longer run budgets use
+# :class:`SkillRunner`'s separate (and larger, 300 s) default. The
+# grader budget is intentionally tighter — if a grading call is
+# taking minutes, something is wrong with the prompt or the model.
 _CLI_TRANSPORT_TIMEOUT = 180
 
 
@@ -823,6 +833,7 @@ async def _call_via_claude_cli(
     *,
     model: str,
     max_tokens: int,  # noqa: ARG001 — CLI does not take max_tokens.
+    subject: str | None = None,
 ) -> AnthropicResult:
     """CLI (subprocess) transport branch.
 
@@ -876,6 +887,7 @@ async def _call_via_claude_cli(
             claude_bin="claude",
             model=model,
             allow_hang_heuristic=False,
+            subject=subject,
         )
         duration = _monotonic() - start
 

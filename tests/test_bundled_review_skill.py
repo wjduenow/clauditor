@@ -330,7 +330,7 @@ class TestLiveSkillRun:
 
         spec = SkillSpec.from_file(SKILL_MD, eval_path=EVAL_JSON)
         # Longer timeout: the skill issues WebFetch + a codebase inventory,
-        # which easily exceeds the 180s default on Sonnet.
+        # which easily exceeds the 300s default on Sonnet.
         runner = SkillRunner(project_dir=project_dir, timeout=360)
         result = runner.run(spec.skill_name)
         assert result.succeeded, (

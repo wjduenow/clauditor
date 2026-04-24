@@ -191,7 +191,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         metavar="SECONDS",
         help=(
             "Override the runner timeout (seconds); must be > 0. "
-            "Defaults to EvalSpec.timeout or 180s."
+            "Defaults to EvalSpec.timeout or 300s."
         ),
     )
     p_grade.add_argument(

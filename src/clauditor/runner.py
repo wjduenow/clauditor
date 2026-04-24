@@ -450,6 +450,7 @@ def _invoke_claude_cli(
     claude_bin: str,
     model: str | None = None,
     allow_hang_heuristic: bool = True,
+    subject: str | None = None,
 ) -> InvokeResult:
     """Run ``claude -p <prompt>`` with stream-json output and parse the NDJSON.
 
@@ -733,9 +734,29 @@ def _invoke_claude_cli(
         # line) — absence is the signal. Values are labels
         # (``ANTHROPIC_API_KEY``, ``claude.ai``, ``none``), not
         # secrets, so printing them is safe.
+        #
+        # Issue #107: when ``subject`` is provided (callers like the
+        # L2 extraction grader, the L3 grading judge, the suggest
+        # proposer) append ``" (<subject>)"`` so operators running
+        # ``grade --transport cli`` can attribute each line to a
+        # specific internal LLM call instead of seeing identical
+        # lines from multiple grader subprocesses. Sanitize any
+        # embedded newlines / carriage returns and cap the length so
+        # a hostile or buggy caller cannot break the "one line per
+        # run" invariant that log-scraping tools rely on.
         if api_key_source is not None:
+            sanitized_subject = None
+            if subject:
+                sanitized_subject = (
+                    subject.replace("\r", " ").replace("\n", " ").strip()
+                )
+                if sanitized_subject:
+                    sanitized_subject = sanitized_subject[:200]
+            suffix = (
+                f" ({sanitized_subject})" if sanitized_subject else ""
+            )
             print(
-                f"clauditor.runner: apiKeySource={api_key_source}",
+                f"clauditor.runner: apiKeySource={api_key_source}{suffix}",
                 file=sys.stderr,
             )
 
@@ -888,7 +909,7 @@ class SkillRunner:
     def __init__(
         self,
         project_dir: str | Path | None = None,
-        timeout: int = 180,
+        timeout: int = 300,
         claude_bin: str = "claude",
     ):
         self.project_dir = Path(project_dir) if project_dir else Path.cwd()

@@ -3907,7 +3907,7 @@ class TestTimeoutFlag:
 
     def test_run_timeout_default_none_preserves_fallback(self):
         """run (no --timeout) → SkillRunner.run(timeout=None), so the runner's
-        self.timeout default of 180s kicks in."""
+        self.timeout default of 300s kicks in."""
         mock_runner = MagicMock()
         mock_runner.run.return_value = make_skill_result(
             output="skill output", skill_name="my-skill",
@@ -5900,7 +5900,11 @@ class TestRenderSkillError:
                 "exited before polling — claude -p does not poll "
                 "background tasks, so output is likely truncated",
             ),
-            ("timeout", "Hint: skill exceeded the run timeout"),
+            (
+                "timeout",
+                "Hint: skill exceeded the run timeout — "
+                "increase the timeout with --timeout SECONDS (e.g. --timeout 600)",
+            ),
             (
                 "subprocess",
                 "Hint: the claude CLI itself errored — see stream_events",

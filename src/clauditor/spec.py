@@ -161,7 +161,7 @@ class SkillSpec:
         )
         # DEC-002: timeout precedence is CLI > spec > default. ``None``
         # falls through to ``SkillRunner.run``, which then uses its own
-        # ``self.timeout`` default (180s). DEC-013: ``env_override`` has
+        # ``self.timeout`` default (300s). DEC-013: ``env_override`` has
         # no merge — passed through to ``runner.run(env=...)`` unchanged.
         effective_timeout = (
             timeout_override
