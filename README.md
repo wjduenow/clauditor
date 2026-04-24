@@ -177,6 +177,16 @@ Note: `--no-api-key` only affects the subprocess; the six LLM-mediated commands 
 
 </details>
 
+## Skill compatibility
+
+clauditor invokes skills through `claude -p` (non-interactive print mode), which is a strict subset of the interactive Claude Code runtime. Most patterns work transparently; a few have caveats today:
+
+- **Works**: sequential `Task` calls (no `run_in_background`), parallel tool calls in the parent (multiple `tool_use` blocks per turn), every standard tool (`WebSearch`, `WebFetch`, `Bash`, `Read`, `Write`, `Edit`).
+- **Works with `--sync-tasks` opt-in**: skills using `Task(run_in_background=true)` for parallel sub-agent fanout. The flag sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in the subprocess env, forcing background spawns synchronous so clauditor sees the full transcript. Resolves the [#97](https://github.com/wjduenow/clauditor/issues/97) output-truncation case for the parallel-research-fanout shape — without modifying the skill. **Caveat: you are evaluating a different execution model than what ships**, so async-specific logic (race conditions, late-arriving results, progress-while-async branches) goes untested. See the fidelity tradeoff in [`docs/skill-usage.md`](docs/skill-usage.md#skill-compatibility).
+- **Loud failure today**: skills whose correctness depends on async semantics (not just latency-sensitive fanout) — true async-fidelity evaluation is blocked on upstream Claude Code gaining headless background-task polling, tracked in [anthropics/claude-code#52917](https://github.com/anthropics/claude-code/issues/52917) and catalogued in [`docs/adr/transport-research-103.md`](docs/adr/transport-research-103.md). `AskUserQuestion` and other interactive prompts also fall in this bucket — clauditor's print-mode transport has no input channel.
+
+Full matrix and refactoring recipes: [`docs/skill-usage.md#skill-compatibility`](docs/skill-usage.md#skill-compatibility).
+
 ## Authentication and API Keys
 
 The six LLM-mediated commands (`grade`, `extract`, `propose-eval`, `suggest`, `triggers`, `compare --blind`) work under either `ANTHROPIC_API_KEY` or a `claude` CLI subscription — the default `auto` transport picks CLI when the binary is on PATH, else falls back to the API. Full reference: [docs/transport-architecture.md](docs/transport-architecture.md).
