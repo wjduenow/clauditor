@@ -842,6 +842,120 @@ class TestAllowHangHeuristicThreading:
         )
 
 
+class TestSyncTasksPrecedence:
+    """Tier 1.5 of GitHub #103: ``SkillSpec.run`` resolves the
+    effective sync-tasks mode as CLI > spec > default ``False`` per
+    ``.claude/rules/spec-cli-precedence.md``. When effective,
+    ``CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`` is injected into the
+    ``env`` dict threaded to ``SkillRunner.run``. Composes with an
+    existing ``env_override`` — both effects apply.
+    """
+
+    _VAR = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+
+    def _env_from_call(self, runner):
+        return runner.run.call_args.kwargs.get("env")
+
+    def test_default_no_cli_no_spec_leaves_env_untouched(
+        self, tmp_skill_file, mock_runner
+    ):
+        eval_data = {"skill_name": "s", "test_args": "", "assertions": []}
+        skill_path, _ = tmp_skill_file("s", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run()
+        # No sync-tasks source → env passed through as-is (None).
+        assert self._env_from_call(runner) is None
+
+    def test_cli_override_true_sets_env_var(
+        self, tmp_skill_file, mock_runner
+    ):
+        eval_data = {"skill_name": "s", "test_args": "", "assertions": []}
+        skill_path, _ = tmp_skill_file("s", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run(sync_tasks_override=True)
+        env = self._env_from_call(runner)
+        assert env is not None
+        assert env[self._VAR] == "1"
+
+    def test_spec_true_sets_env_var_when_cli_absent(
+        self, tmp_skill_file, mock_runner
+    ):
+        eval_data = {
+            "skill_name": "s",
+            "test_args": "",
+            "assertions": [],
+            "sync_tasks": True,
+        }
+        skill_path, _ = tmp_skill_file("s", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run()
+        env = self._env_from_call(runner)
+        assert env is not None
+        assert env[self._VAR] == "1"
+
+    def test_cli_override_wins_over_spec(
+        self, tmp_skill_file, mock_runner
+    ):
+        """The spec says sync_tasks=False but the CLI forces True;
+        precedence says CLI wins."""
+        eval_data = {
+            "skill_name": "s",
+            "test_args": "",
+            "assertions": [],
+            "sync_tasks": False,
+        }
+        skill_path, _ = tmp_skill_file("s", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run(sync_tasks_override=True)
+        env = self._env_from_call(runner)
+        assert env is not None
+        assert env[self._VAR] == "1"
+
+    def test_composes_with_env_override(
+        self, tmp_skill_file, mock_runner
+    ):
+        """When --no-api-key already built an env_override dict,
+        --sync-tasks adds the var without losing the strip."""
+        eval_data = {"skill_name": "s", "test_args": "", "assertions": []}
+        skill_path, _ = tmp_skill_file("s", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        stripped = {"PATH": "/usr/bin"}  # no auth keys
+        spec.run(
+            env_override=stripped,
+            sync_tasks_override=True,
+        )
+        env = self._env_from_call(runner)
+        assert env is not None
+        assert env[self._VAR] == "1"
+        assert env["PATH"] == "/usr/bin"
+        assert "ANTHROPIC_API_KEY" not in env
+
+    def test_sync_tasks_override_false_does_not_set_var(
+        self, tmp_skill_file, mock_runner
+    ):
+        """Explicit CLI False overrides spec True (defensive
+        precedence direction: operator can disable forced-sync even
+        when the spec author set it)."""
+        eval_data = {
+            "skill_name": "s",
+            "test_args": "",
+            "assertions": [],
+            "sync_tasks": True,
+        }
+        skill_path, _ = tmp_skill_file("s", eval_data=eval_data)
+        runner = mock_runner(output="ok")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+        spec.run(sync_tasks_override=False)
+        env = self._env_from_call(runner)
+        # No env mutation should have happened since effective=False.
+        assert env is None
+
+
 class TestTimeoutPrecedence:
     """DEC-002 / US-005: ``SkillSpec.run`` resolves the effective timeout
     as CLI > spec > default, and threads ``env_override`` through to

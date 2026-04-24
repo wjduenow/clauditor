@@ -3858,6 +3858,173 @@ class TestNoApiKeyFlag:
         assert kwargs.get("timeout") == 60
 
 
+class TestSyncTasksFlag:
+    """Tier 1.5 of GitHub #103: ``--sync-tasks`` on validate / grade /
+    capture / run threads ``sync_tasks_override=True`` (for spec-
+    routed commands) or directly mutates the env dict (for
+    runner-routed commands).
+    """
+
+    _VAR = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+
+    def test_validate_sync_tasks_threads_override(
+        self, tmp_path, monkeypatch
+    ):
+        """validate --sync-tasks → SkillSpec.run(sync_tasks_override=True)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--sync-tasks"])
+        assert rc == 0
+        assert (
+            spec.run.call_args.kwargs.get("sync_tasks_override") is True
+        )
+
+    def test_validate_without_sync_tasks_threads_none(
+        self, tmp_path, monkeypatch
+    ):
+        """Without --sync-tasks, sync_tasks_override stays None."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+        assert rc == 0
+        assert (
+            spec.run.call_args.kwargs.get("sync_tasks_override") is None
+        )
+
+    def test_grade_sync_tasks_threads_override(
+        self, tmp_path, monkeypatch
+    ):
+        """grade --sync-tasks → SkillSpec.run(sync_tasks_override=True)."""
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.return_value = make_skill_result(
+            output="primary output",
+            duration_seconds=0.5,
+            input_tokens=10,
+            output_tokens=5,
+        )
+        report = make_grading_report(passed=True)
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--sync-tasks"])
+        assert rc == 0
+        assert (
+            spec.run.call_args.kwargs.get("sync_tasks_override") is True
+        )
+
+    def test_capture_sync_tasks_sets_env_var(self, tmp_path, monkeypatch):
+        """capture --sync-tasks → runner.run(env={...DISABLE...=1})."""
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="captured stdout",
+            skill_name="find-restaurants",
+            duration_seconds=0.5,
+        )
+        with patch(
+            "clauditor.cli.capture.SkillRunner", return_value=mock_runner
+        ):
+            rc = main(
+                ["capture", "find-restaurants", "--sync-tasks"]
+            )
+        assert rc == 0
+        env = mock_runner.run.call_args.kwargs.get("env")
+        assert env is not None
+        assert env[self._VAR] == "1"
+
+    def test_run_sync_tasks_sets_env_var(self, monkeypatch):
+        """run --sync-tasks → runner.run(env={...DISABLE...=1})."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="skill output",
+            skill_name="my-skill",
+            duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--sync-tasks"])
+        assert rc == 0
+        env = mock_runner.run.call_args.kwargs.get("env")
+        assert env is not None
+        assert env[self._VAR] == "1"
+
+    def test_run_no_api_key_plus_sync_tasks_composes(self, monkeypatch):
+        """--no-api-key and --sync-tasks compose: env has the sync var
+        AND the auth keys are stripped."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token")
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="ok", skill_name="my-skill", duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(
+                ["run", "my-skill", "--no-api-key", "--sync-tasks"]
+            )
+        assert rc == 0
+        env = mock_runner.run.call_args.kwargs.get("env")
+        assert env is not None
+        assert env[self._VAR] == "1"
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_AUTH_TOKEN" not in env
+
+    def test_grade_baseline_sync_tasks_threads_to_run_raw(
+        self, tmp_path, monkeypatch
+    ):
+        """grade --baseline --sync-tasks threads the env var to
+        run_raw so both arms of the baseline delta share sync mode."""
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.return_value = make_skill_result(
+            output="primary output",
+            duration_seconds=0.5,
+            input_tokens=10,
+            output_tokens=5,
+        )
+        spec.runner = MagicMock()
+        spec.runner.run_raw.return_value = make_skill_result(
+            output="baseline output",
+            duration_seconds=0.3,
+            input_tokens=8,
+            output_tokens=4,
+            skill_name="__baseline__",
+        )
+        report = make_grading_report(passed=True)
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                ["grade", "skill.md", "--baseline", "--sync-tasks"]
+            )
+        assert rc == 0
+        spec.runner.run_raw.assert_called_once()
+        env = spec.runner.run_raw.call_args.kwargs.get("env")
+        assert env is not None
+        assert env[self._VAR] == "1"
+
+
 class TestTimeoutFlag:
     """US-006: --timeout SECONDS threads to the runner, rejects <= 0 at parse time.
 

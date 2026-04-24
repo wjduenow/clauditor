@@ -285,6 +285,18 @@ class EvalSpec:
     # string / bool values rejected per
     # ``.claude/rules/constant-with-type-info.md``.
     transport: str = "auto"
+    # Tier 1.5 of GitHub #103: when ``True``, clauditor sets
+    # ``CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`` in the skill
+    # subprocess env, forcing ``Task(run_in_background=true)`` calls
+    # synchronous. Resolves the output-truncation gap for the
+    # parallel-fanout case without modifying the skill; does NOT
+    # substitute for async-fidelity evaluation (see
+    # ``docs/adr/transport-research-103.md`` for the tradeoff). Three-
+    # level precedence per ``.claude/rules/spec-cli-precedence.md``:
+    # CLI ``--sync-tasks`` > this field > default ``False``. Bool-
+    # guarded at load time per
+    # ``.claude/rules/constant-with-type-info.md``.
+    sync_tasks: bool = False
 
     @classmethod
     def from_file(cls, path: str | Path) -> EvalSpec:
@@ -699,6 +711,24 @@ class EvalSpec:
                 )
             transport = raw_transport
 
+        # Tier 1.5 of GitHub #103: optional per-spec sync-tasks
+        # opt-in. Missing → default ``False``. Must be a real bool
+        # per ``.claude/rules/constant-with-type-info.md`` — a
+        # truthy string or int is rejected explicitly so an author
+        # who typos ``"sync_tasks": "true"`` sees a crisp error
+        # rather than silent truthy-coercion to ``True``.
+        sync_tasks: bool = False
+        if "sync_tasks" in data:
+            raw_sync_tasks = data["sync_tasks"]
+            if not isinstance(raw_sync_tasks, bool):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'sync_tasks' must be a bool (true or false), got "
+                    f"{type(raw_sync_tasks).__name__} "
+                    f"{raw_sync_tasks!r}"
+                )
+            sync_tasks = raw_sync_tasks
+
         trigger_tests = None
         if "trigger_tests" in data:
             tt = data["trigger_tests"]
@@ -741,6 +771,7 @@ class EvalSpec:
             allow_hang_heuristic=allow_hang_heuristic,
             timeout=timeout,
             transport=transport,
+            sync_tasks=sync_tasks,
         )
 
     def to_dict(self) -> dict:
@@ -803,6 +834,10 @@ class EvalSpec:
             # DEC-012 of #86: emit only on non-default. Omission at
             # load time means default "auto" per from_dict.
             result["transport"] = self.transport
+        if self.sync_tasks:
+            # Tier 1.5 of GitHub #103: emit only on non-default.
+            # Omission at load time means default ``False``.
+            result["sync_tasks"] = True
         if self.output_file is not None:
             result["output_file"] = self.output_file
         if self.output_files:
