@@ -224,6 +224,78 @@ Captured skill output is scrubbed through `clauditor.transcripts.redact` before 
 - `clauditor propose-eval` fills in an `eval.json` for a skill whose **SKILL.md already exists**. It does not write a skill stub and does not regenerate SKILL.md.
 - `clauditor capture <skill> -- "args"` produces the captured run that `propose-eval` reads as grounding context. Capturing before `propose-eval` typically lifts the quality of the generated spec (the proposer sees what real output looks like).
 
+## suggest
+
+LLM-assisted skill improvement. `clauditor suggest <skill.md>` reads the latest `.clauditor/iteration-N/<skill>/grading.json`, asks Sonnet to propose minimal SKILL.md edits keyed to the failing L3 criteria (and any failing L1 assertions captured in the same iteration), hard-validates every proposal's `anchor` as a once-only substring of the current SKILL.md, and writes a unified diff plus a JSON sidecar under `.clauditor/suggestions/`. Use it to close the loop from "grader produced a verdict" to "tool produced an applicable, motivated, anchor-validated edit proposal."
+
+Requires authentication: `ANTHROPIC_API_KEY` for API transport, or an authenticated `claude` CLI for CLI transport. See [Authentication and API Keys](#authentication-and-api-keys).
+
+### Why `suggest` exists
+
+Three guarantees you can't get from a hand-written or free-form-LLM patch:
+
+- **Traceability** — every proposed edit carries `motivated_by: [criterion_id, ...]`, tying the SKILL.md change back to the specific grader signals that motivated it. The proposer rejects at parse time any `motivated_by` id that does not appear in the input's failing-signal lists.
+- **Anchor safety** — each `edit_proposal.anchor` is validated to appear **exactly once** in the on-disk SKILL.md (sequentially, so later edits see the mutated buffer earlier edits produced). Any failure aborts the run before writing either file; no partial diffs, no blind replacement.
+- **Structured output** — diff + JSON sidecar with `motivated_by`, `anchor`, `replacement`, `rationale`, `confidence`, model/timestamp, `source_iteration`, and `schema_version: 1` for downstream tooling consumers.
+
+### Required inputs
+
+- `<skill_md>` (positional) — path to the SKILL.md file. The command reads the latest iteration under `.clauditor/` that contains `<skill>/grading.json` (skill identity is derived from the SKILL.md via the canonical `derive_skill_name` helper — frontmatter `name:` first, parent-directory name as fallback).
+
+### Flags
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--from-iteration N` | Override latest-iteration discovery. Loads the grade run from `.clauditor/iteration-N/<skill>/grading.json` (N must be a positive integer). |
+| `--with-transcripts` | Include per-run stream-json transcripts in the proposer prompt. Increases token spend; useful when grading-only signals are ambiguous about the failure mode. |
+| `--model MODEL` | Override the proposer model (default: `claude-sonnet-4-6`). |
+| `--json` | Print the full `SuggestReport` JSON envelope to stdout instead of the unified diff. The sidecar file is still written regardless. |
+| `-v, --verbose` | Log bundle size, token counts, duration, and sidecar paths to stderr. |
+| `--transport {api,cli,auto}` | Route the Anthropic call through the HTTP SDK (`api`), the `claude -p` subprocess (`cli`), or the default auto-resolution (`auto` — picks CLI when available). Precedence: this flag > `CLAUDITOR_TRANSPORT` env > `EvalSpec.transport` > default `auto`. Full reference: [docs/transport-architecture.md](transport-architecture.md). |
+
+### Examples
+
+```bash
+# Basic use — reads the latest iteration's grading.json, writes diff + sidecar.
+clauditor suggest .claude/skills/my-skill/SKILL.md
+
+# Preview in CI-friendly JSON form (sidecar still written on disk).
+clauditor suggest .claude/skills/my-skill/SKILL.md --json
+
+# Target an older iteration explicitly.
+clauditor suggest .claude/skills/my-skill/SKILL.md --from-iteration 3
+
+# Include transcripts for more context when grading-only signals are thin.
+clauditor suggest .claude/skills/my-skill/SKILL.md --with-transcripts
+
+# Apply a proposed diff.
+git apply .clauditor/suggestions/my-skill-<timestamp>.diff
+```
+
+### Sidecar layout
+
+Each invocation that reaches the write step produces two sibling files under `.clauditor/suggestions/`:
+
+- `<skill>-<timestamp>.diff` — a unified diff you can feed to `git apply` (or hand-edit).
+- `<skill>-<timestamp>.json` — the structured `SuggestReport` envelope with `schema_version: 1` as the first key. Fields: `skill_name`, `model`, `generated_at` (UTC ISO), `source_iteration`, `source_grading_path`, `input_tokens`, `output_tokens`, `duration_seconds`, `summary_rationale`, `edit_proposals` (list of `{id, anchor, replacement, rationale, confidence, motivated_by, applies_to_file}`), `validation_errors`, `parse_error`, `api_error`.
+
+Timestamps are microsecond-precision UTC (`%Y%m%dT%H%M%S%fZ`); two invocations in the same microsecond would collide (acceptable for v1).
+
+### Exit codes
+
+Mirrors the DEC-008 contract in `src/clauditor/cli/suggest.py`:
+
+| Code | Meaning |
+| ---- | ------- |
+| `0` | Success — diff (or `--json` envelope) printed to stdout, sidecar written to `.clauditor/suggestions/`. Also `0` when the latest iteration has zero failing signals: Sonnet is NOT called, a stderr note is printed, no sidecar is written (DEC-008 row 2). |
+| `1` | Load-time or parse-layer failure: no prior `grading.json` under `.clauditor/`, unreadable SKILL.md, unparseable proposer response, OS error writing the sidecar. No sidecar is written for these branches. |
+| `2` | Anchor-validation failure — one or more proposals named an `anchor` that does not appear exactly once in the current SKILL.md. Errors printed on stderr, no sidecar written. Also `2` when no usable authentication is available (neither `ANTHROPIC_API_KEY` nor an authenticated `claude` CLI). |
+| `3` | Anthropic API error — auth failure, rate-limit exhaustion, connection error, or any non-retriable SDK error surfaced by `clauditor._anthropic.call_anthropic`. No sidecar written. |
+
+### Relationship to `grade`
+
+`clauditor grade` is the prerequisite: `suggest` has no standalone mode and no LLM call if no failing signals exist in the discovered iteration. If no `grading.json` exists under `.clauditor/`, the command exits 1 with a hint to run `clauditor grade` first. The bundled `/clauditor` slash command wires this handoff automatically — see [docs/skill-usage.md#proposing-skill-improvements](skill-usage.md#proposing-skill-improvements) for the full walkthrough.
+
 ## badge
 
 Generate a [shields.io](https://shields.io)-compatible endpoint JSON from a skill's latest iteration sidecars. `clauditor badge <skill.md>` reads the most recent `.clauditor/iteration-N/<skill>/assertions.json` (L1) and, when present, `grading.json` (L3) / `variance.json`, classifies color and message per the project's rules, and writes the result to `.clauditor/badges/<skill>.json` (or a path passed to `--output`). Point any shields.io endpoint URL at the raw JSON and the rendered SVG updates whenever the JSON changes.

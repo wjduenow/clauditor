@@ -15,7 +15,7 @@ Auditor for AgentSkills.io skills and Claude Integrations. Catches when your ski
 <details>
 <summary>Contents</summary>
 
-[Install](#install) · [Why clauditor?](#why-clauditor) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Eval Spec Format](#eval-spec-format) · [Authentication](#authentication-and-api-keys) · [Reference docs](#reference-docs)
+[Install](#install) · [Why clauditor?](#why-clauditor) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [Suggest](#llm-assisted-skill-improvement-clauditor-suggest) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Eval Spec Format](#eval-spec-format) · [Authentication](#authentication-and-api-keys) · [Reference docs](#reference-docs)
 
 </details>
 
@@ -100,6 +100,20 @@ L1 catches shape regressions for free, L2 uses Haiku to validate structured fiel
 ```
 
 Full reference: [docs/layers.md](https://github.com/wjduenow/clauditor/blob/dev/docs/layers.md).
+
+## LLM-assisted skill improvement (`clauditor suggest`)
+
+When `clauditor grade` returns failing L3 criteria, `clauditor suggest` reads that iteration's `grading.json`, asks Sonnet to propose minimal SKILL.md edits keyed to the failing criterion ids, and writes a unified diff plus a JSON sidecar with `motivated_by`, `anchor`, `confidence`, and per-edit rationale. Every proposal is hard-validated so its `anchor` appears exactly once in the target SKILL.md before anything lands on disk — no silent drift, no blind patches.
+
+```bash
+clauditor grade .claude/skills/my-skill/SKILL.md      # produces grading.json
+clauditor suggest .claude/skills/my-skill/SKILL.md    # reads latest grading.json
+# → unified diff on stdout; sidecar at .clauditor/suggestions/my-skill-<ts>.{diff,json}
+```
+
+Review, `git apply` (or hand-edit), then re-run `clauditor grade` to measure the score delta. The sidecar is stable (`schema_version: 1`) for downstream tooling.
+
+**Covered in the full reference:** traceability via `motivated_by`, the anchor-safety contract, sidecar field-by-field reference, `--from-iteration`, `--with-transcripts`, `--model`, `--json`, and the full worked walkthrough. Full reference: [docs/skill-usage.md#proposing-skill-improvements](https://github.com/wjduenow/clauditor/blob/dev/docs/skill-usage.md#proposing-skill-improvements).
 
 ## CLI Reference
 
