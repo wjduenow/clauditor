@@ -271,7 +271,7 @@ class EvalSpec:
     # DEC-002 / DEC-003 / DEC-008 / DEC-014 of #64: optional per-spec
     # runner timeout (seconds). ``None`` means "unset" — the runner
     # falls back to the CLI override if present, else to its own
-    # ``self.timeout`` default (180s). Positive int only; bool is
+    # ``self.timeout`` default (300s). Positive int only; bool is
     # explicitly rejected at load time per
     # ``.claude/rules/constant-with-type-info.md``.
     timeout: int | None = None

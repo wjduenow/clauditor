@@ -53,7 +53,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         metavar="SECONDS",
         help=(
             "Override the runner timeout (seconds); must be > 0. "
-            "Defaults to SkillRunner's 180s default."
+            "Defaults to SkillRunner's 300s default."
         ),
     )
     p_capture.add_argument(

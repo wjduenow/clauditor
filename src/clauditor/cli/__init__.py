@@ -360,7 +360,10 @@ _CATEGORY_HINTS: dict[str, str] = {
         "before polling — claude -p does not poll background tasks, "
         "so output is likely truncated"
     ),
-    "timeout": "Hint: skill exceeded the run timeout",
+    "timeout": (
+        "Hint: skill exceeded the run timeout — "
+        "increase the timeout with --timeout SECONDS (e.g. --timeout 600)"
+    ),
     "subprocess": (
         "Hint: the claude CLI itself errored — see stream_events"
     ),
