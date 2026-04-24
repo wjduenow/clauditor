@@ -7,7 +7,6 @@ then validates the extracted data against the eval spec's schema.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 
 from clauditor.assertions import AssertionResult, AssertionSet
@@ -247,16 +246,18 @@ def build_extraction_report(
 
                     format_passed: bool | None = None
                     if field_req.format and has_value:
+                        # Registry-only (#99). Load-time validation in
+                        # ``FieldRequirement.__post_init__`` guarantees
+                        # ``get_format`` returns non-None for any
+                        # format value that made it this far.
                         fmt = get_format(field_req.format)
-                        if fmt is not None:
-                            format_passed = (
-                                fmt.pattern.fullmatch(value) is not None
-                            )
-                        else:
-                            format_passed = (
-                                re.fullmatch(field_req.format, value)
-                                is not None
-                            )
+                        assert fmt is not None, (
+                            f"format {field_req.format!r} passed load-time "
+                            f"validation but is missing from FORMAT_REGISTRY"
+                        )
+                        format_passed = (
+                            fmt.pattern.fullmatch(value) is not None
+                        )
 
                     # Required presence is what drives pass/fail for
                     # optional fields: optional + missing still "passes"
@@ -615,18 +616,15 @@ def grade_extraction(extracted: ExtractedOutput, eval_spec: EvalSpec) -> Asserti
                     )
 
                     if field_req.format:
+                        # Registry-only (#99). Load-time validation
+                        # guarantees ``get_format`` returns non-None.
                         fmt = get_format(field_req.format)
-                        if fmt is not None:
-                            matched = fmt.pattern.fullmatch(value) is not None
-                            label = f"format '{field_req.format}'"
-                        else:
-                            # DEC-007: format fell through to inline regex.
-                            # FieldRequirement validated compilability at
-                            # construction, so this compile always succeeds.
-                            matched = (
-                                re.fullmatch(field_req.format, value) is not None
-                            )
-                            label = f"regex /{field_req.format}/"
+                        assert fmt is not None, (
+                            f"format {field_req.format!r} passed load-time "
+                            f"validation but is missing from FORMAT_REGISTRY"
+                        )
+                        matched = fmt.pattern.fullmatch(value) is not None
+                        label = f"format '{field_req.format}'"
                         results.results.append(
                             AssertionResult(
                                 name=f"{base}:format",

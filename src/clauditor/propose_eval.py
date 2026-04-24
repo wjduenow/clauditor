@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from clauditor._frontmatter import parse_frontmatter
+from clauditor.formats import list_formats
 from clauditor.paths import SKILL_NAME_RE
 from clauditor.schemas import ASSERTION_TYPE_REQUIRED_KEYS, EvalSpec
 from clauditor.transcripts import redact
@@ -433,7 +434,7 @@ def build_propose_eval_prompt(propose_input: ProposeEvalInput) -> str:
     parts.append('              "id": "<unique id>",')
     parts.append('              "name": "<field name>",')
     parts.append('              "required": <bool>,')
-    parts.append('              "format": "<registry key or regex>"')
+    parts.append('              "format": "<registry key — see list below>"')
     parts.append("            }")
     parts.append("          ]")
     parts.append("        }")
@@ -469,6 +470,23 @@ def build_propose_eval_prompt(propose_input: ProposeEvalInput) -> str:
             optional_str = ", ".join(sorted(spec.optional))
             row += f" · optional: {optional_str}"
         parts.append(row)
+
+    # Format-name enumeration for L1 ``has_format.format`` and L2
+    # ``fields[].format`` (#99). Both accept ONLY keys from the
+    # built-in registry. Custom patterns must be authored as an L1
+    # ``type: regex`` assertion. Rendered from ``list_formats()`` so
+    # a new registry entry lands here automatically.
+    parts.append("")
+    parts.append(
+        "Registered `format` values (for `has_format.format` "
+        "and section `fields[].format`) — registry-only, no regex:"
+    )
+    for fmt_name in list_formats():
+        parts.append(f"- {fmt_name}")
+    parts.append(
+        "If no registry key fits, author the check as an L1 "
+        "`type: regex` assertion instead."
+    )
 
     prompt = "\n".join(parts) + "\n"
 

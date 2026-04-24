@@ -6,7 +6,6 @@ Loads eval.json files that define what a skill's output should look like.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -131,10 +130,14 @@ _ASSERTION_DRIFT_HINTS: dict[str, dict[str, str]] = {
 class FieldRequirement:
     """A required field in a structured entry (venue, event, etc.).
 
-    The ``format`` field does double duty (DEC-007): it accepts either a
-    registered format name (e.g. ``"phone_us"``, ``"domain"``) or an inline
-    regex. Registry lookup wins when both could apply. Invalid values raise
-    ``ValueError`` at construction time.
+    The ``format`` field accepts a registered format name
+    (e.g. ``"phone_us"``, ``"domain"``) from
+    :data:`clauditor.formats.FORMAT_REGISTRY`. Unknown names raise
+    ``ValueError`` at construction time. When no registry entry fits,
+    author the invariant as an L1 ``type: regex`` assertion instead —
+    the registry-only contract keeps format names as stable
+    identifiers across history so trend reports don't churn when a
+    pattern changes. (Reversal of DEC-007, see #99.)
 
     ``id`` is a stable identifier scoped to the enclosing skill (DEC-001,
     ticket #25). It is required on all fields loaded from disk via
@@ -144,7 +147,7 @@ class FieldRequirement:
 
     name: str
     required: bool = True
-    format: str | None = None  # Registry key or inline regex (DEC-007)
+    format: str | None = None  # Registry key only — see FORMAT_REGISTRY
     id: str = ""  # Stable id, required via from_file() (DEC-001)
 
     def __post_init__(self) -> None:
@@ -156,16 +159,14 @@ class FieldRequirement:
                 f"an empty string (use None to disable format validation)."
             )
         from clauditor.formats import FORMAT_REGISTRY
-        if self.format in FORMAT_REGISTRY:
-            return
-        try:
-            re.compile(self.format)
-        except re.error as e:
+        if self.format not in FORMAT_REGISTRY:
             raise ValueError(
                 f"FieldRequirement(name={self.name!r}): format "
-                f"{self.format!r} is neither a registered format name "
-                f"({sorted(FORMAT_REGISTRY)}) nor a valid regex: {e}"
-            ) from e
+                f"{self.format!r} is not a registered format name. "
+                f"Valid formats: {sorted(FORMAT_REGISTRY)}. "
+                f"For custom patterns, use an L1 'regex' assertion "
+                f"instead (see #99)."
+            )
 
 
 @dataclass
@@ -523,6 +524,28 @@ class EvalSpec:
                         f"(type={type_val!r}): key {key!r} must be "
                         f"{expected.__name__}, got "
                         f"{type(val).__name__} {val!r}"
+                    )
+            # (e) ``has_format.format`` must be a known registry key
+            # (#99). Catches doomed-at-runtime regex values that
+            # would otherwise fail late with "Unknown format: <regex>"
+            # after the skill already spent tokens producing output.
+            # Mirrors the FieldRequirement.__post_init__ contract so
+            # L1 and L2 share one contract.
+            if type_val == "has_format":
+                from clauditor.formats import FORMAT_REGISTRY
+
+                fmt_val = entry.get("format")
+                if (
+                    isinstance(fmt_val, str)
+                    and fmt_val not in FORMAT_REGISTRY
+                ):
+                    raise ValueError(
+                        f"EvalSpec(skill_name={skill_name!r}): {ctx} "
+                        f"(type='has_format'): format {fmt_val!r} is "
+                        f"not a registered format name. Valid "
+                        f"formats: {sorted(FORMAT_REGISTRY)}. For "
+                        f"custom patterns, use an L1 'regex' "
+                        f"assertion instead (see #99)."
                     )
 
         raw_assertions = data.get("assertions", [])

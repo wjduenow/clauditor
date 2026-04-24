@@ -93,20 +93,21 @@ The eval spec defines what fields each section should have:
 
 ### Field validation (`format`)
 
-Each field can declare a `format` that validates the extracted value. The `format` key accepts **either** a registered format name **or** an inline regex — clauditor looks up the string in `FORMAT_REGISTRY` first and falls back to compiling it as a regex if there's no match.
+Each field can declare a `format` that validates the extracted value. The `format` key accepts **only** a registered format name from `FORMAT_REGISTRY` — inline regex is no longer accepted (#99). Unknown names raise `ValueError` at spec load time, so typos fail fast before any skill run.
 
 Decision tree:
 
 - Is there a registered name in `FORMAT_REGISTRY` that fits? Use it (e.g. `"format": "phone_us"`).
-- Need something custom? Put a regex string directly in `format` (e.g. `"format": "^[a-z0-9-]+$"`).
-- Lookup is **registry-first, regex-fallback**. Invalid regexes raise `ValueError` at spec construction time, so typos fail fast.
+- Need a custom pattern? Author it as an **L1 `type: regex` assertion** instead — the registry-only contract keeps format names stable across history so trend reports don't churn when a pattern changes.
 
 ```json
 {"name": "phone", "format": "phone_us"}
 ```
 
+The same contract applies to L1 `has_format.format`:
+
 ```json
-{"name": "slug", "format": "^[a-z0-9-]+$"}
+{"id": "five-phones", "type": "has_format", "format": "phone_us", "count": 5}
 ```
 
 See [`FORMAT_REGISTRY` in `src/clauditor/formats.py`](../src/clauditor/formats.py) for the full list of registered names (common entries: `phone_us`, `phone_intl`, `email`, `url`, `domain`, `date_iso`, `zip_us`, `uuid`).

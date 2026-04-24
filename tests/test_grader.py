@@ -834,7 +834,7 @@ class TestExtractAndGrade:
 
 
 def _make_format_spec() -> EvalSpec:
-    """Spec exercising both registry formats and inline-regex formats (DEC-007)."""
+    """Spec exercising registry-only ``format`` values (#99)."""
     return EvalSpec(
         skill_name="test-skill",
         sections=[
@@ -849,7 +849,7 @@ def _make_format_spec() -> EvalSpec:
                             FieldRequirement(
                                 name="phone",
                                 required=True,
-                                format=r"\(\d{3}\) \d{3}-\d{4}",  # inline regex
+                                format="phone_us",  # registry
                             ),
                             FieldRequirement(
                                 name="website",
@@ -870,9 +870,9 @@ def _make_format_spec() -> EvalSpec:
 
 
 class TestFormatEnforcement:
-    """DEC-007: format field does registry-lookup-then-regex-fallback."""
+    """Registry-only ``format`` values (#99, reversal of DEC-007)."""
 
-    def test_inline_regex_match(self):
+    def test_registry_format_match(self):
         extracted = ExtractedOutput(
             sections={
                 "Restaurants": {
@@ -894,7 +894,7 @@ class TestFormatEnforcement:
         ]
         assert all(r.passed for r in format_results)
 
-    def test_inline_regex_mismatch(self):
+    def test_registry_format_mismatch_on_phone(self):
         extracted = ExtractedOutput(
             sections={
                 "Restaurants": {
@@ -918,7 +918,7 @@ class TestFormatEnforcement:
         assert len(failing) == 1
         assert "phone" in failing[0].name
         assert failing[0].evidence == "call for hours"
-        assert "regex" in failing[0].message.lower()
+        assert "phone_us" in failing[0].message
 
     def test_registry_format_mismatch(self):
         extracted = ExtractedOutput(
@@ -945,9 +945,11 @@ class TestFormatEnforcement:
         assert "website" in failing[0].name
         assert "url" in failing[0].message
 
-    def test_unknown_format_not_valid_regex_raises_at_construction(self):
-        """DEC-011: an unknown format that is also invalid regex fails loud."""
-        with pytest.raises(ValueError, match="nor a valid regex"):
+    def test_unknown_format_raises_at_construction(self):
+        """#99: an unknown format name fails loud (no regex fallback)."""
+        with pytest.raises(
+            ValueError, match="not a registered format name"
+        ):
             FieldRequirement(name="val", format="[invalid")
 
     def test_optional_field_missing_skips_format_check(self):
@@ -975,21 +977,21 @@ class TestFormatEnforcement:
         assert len(email_format) == 0
 
     def test_non_string_field_value_coerced(self):
-        """Non-string values (e.g. int from LLM) are coerced to str for format check."""
+        """Non-string values (e.g. float) are coerced to str for format check."""
         spec = EvalSpec(
             skill_name="test",
             sections=[
                 SectionRequirement(
-                    name="Items",
+                    name="Coords",
                     tiers=[
                         TierRequirement(
                             label="default",
                             min_entries=1,
                             fields=[
                                 FieldRequirement(
-                                    name="count",
+                                    name="lat",
                                     required=True,
-                                    format=r"\d+",
+                                    format="latitude",
                                 ),
                             ],
                         ),
@@ -999,9 +1001,9 @@ class TestFormatEnforcement:
         )
         extracted = ExtractedOutput(
             sections={
-                "Items": {
+                "Coords": {
                     "default": [
-                        ExtractedEntry(fields={"count": 42}),
+                        ExtractedEntry(fields={"lat": 37.3382}),
                     ]
                 }
             }
@@ -1012,7 +1014,7 @@ class TestFormatEnforcement:
         ]
         assert len(format_r) == 1
         assert format_r[0].passed
-        assert format_r[0].evidence == "42"
+        assert format_r[0].evidence == "37.3382"
 
 
 class TestExtractionReport:

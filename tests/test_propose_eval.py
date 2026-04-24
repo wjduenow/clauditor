@@ -497,6 +497,31 @@ class TestBuildProposeEvalPrompt:
         # old-alias migration nudge).
         assert 'e.g. "value", "pattern"' not in prompt
 
+    def test_prompt_format_section_is_registry_only(self) -> None:
+        """#99: prompt enumerates registry format keys and tells the
+        LLM regex is NOT accepted. Catches the drift where the prompt
+        claimed ``"<registry key or regex>"`` but the impl rejected
+        anything that wasn't a registry name.
+        """
+        from clauditor.formats import list_formats
+
+        pi = _make_propose_input()
+        prompt = build_propose_eval_prompt(pi)
+
+        # The placeholder line must no longer claim regex is valid.
+        assert "<registry key or regex>" not in prompt
+        assert "<registry key" in prompt
+
+        # Every registry entry must be present as a bulleted line.
+        for fmt_name in list_formats():
+            assert f"- {fmt_name}" in prompt, (
+                f"registry format {fmt_name!r} missing from prompt"
+            )
+
+        # Escape-hatch text pointing at the L1 regex assertion.
+        assert "regex" in prompt.lower()
+        assert "registry-only" in prompt.lower()
+
     def test_prompt_table_is_rendered_from_constant(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

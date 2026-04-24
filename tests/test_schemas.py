@@ -131,14 +131,18 @@ class TestFieldRequirement:
         f = FieldRequirement(name="phone", format="phone_us")
         assert f.format == "phone_us"
 
-    def test_with_inline_regex_format(self):
-        """DEC-007: format accepts an inline regex when no registry match."""
-        f = FieldRequirement(name="phone", format=r"\(\d{3}\)\s\d{3}-\d{4}")
-        assert f.format == r"\(\d{3}\)\s\d{3}-\d{4}"
+    def test_inline_regex_format_rejected(self):
+        """#99: inline regex is no longer accepted — registry-only contract."""
+        with pytest.raises(
+            ValueError, match="not a registered format name"
+        ):
+            FieldRequirement(name="phone", format=r"\(\d{3}\)\s\d{3}-\d{4}")
 
     def test_invalid_format_raises_value_error(self):
-        """DEC-011: bad format (not registry, not compilable regex) fails loud."""
-        with pytest.raises(ValueError, match="nor a valid regex"):
+        """#99: any non-registry value raises at construction."""
+        with pytest.raises(
+            ValueError, match="not a registered format name"
+        ):
             FieldRequirement(name="phone", format="[invalid")
 
     def test_empty_string_format_raises(self):
@@ -385,7 +389,7 @@ FULL_EVAL_DATA = {
                             "id": "p_zip",
                             "name": "zip",
                             "required": False,
-                            "format": r"^\d{5}$",
+                            "format": "zip_us",
                         },
                     ],
                 }
@@ -430,7 +434,7 @@ class TestFromFile:
         assert tier.label == "default"
         assert tier.min_entries == 2
         assert len(tier.fields) == 3
-        assert tier.fields[2].format == r"^\d{5}$"
+        assert tier.fields[2].format == "zip_us"
         assert tier.fields[2].required is False
         assert spec.grading_criteria == [
             {"id": "c_relevant", "criterion": "Are results relevant?"},
@@ -739,7 +743,7 @@ class TestToDict:
         assert tier["min_entries"] == 2
         assert len(tier["fields"]) == 3
         # Format included only where present (pattern field removed)
-        assert tier["fields"][2]["format"] == r"^\d{5}$"
+        assert tier["fields"][2]["format"] == "zip_us"
         assert "format" not in tier["fields"][0]
         assert "pattern" not in tier["fields"][2]
         # Trigger tests
@@ -2207,12 +2211,19 @@ def _minimal_assertion_entry(atype: str, aid: str = "a1") -> dict:
     #67 the loader also type-checks each required key against
     ``spec.field_types``, so this helper emits a value of the
     declared native type (``"1"`` for ``str``, ``1`` for ``int``).
+
+    Per #99, ``has_format.format`` is additionally required to be a
+    known registry key — the `"1"` placeholder won't pass load-time
+    validation, so substitute a real registry entry for that key.
     """
     spec = ASSERTION_TYPE_REQUIRED_KEYS[atype]
     entry: dict = {"id": aid, "type": atype}
     for key in spec.required:
         expected = spec.field_types.get(key, str)
-        entry[key] = 1 if expected is int else "1"
+        if atype == "has_format" and key == "format":
+            entry[key] = "phone_us"
+        else:
+            entry[key] = 1 if expected is int else "1"
     return entry
 
 
@@ -2526,3 +2537,73 @@ class TestRequireAssertionKeys:
         msg = str(ei.value)
         assert "key 'count' must be int" in msg
         assert "bool" in msg
+
+
+class TestHasFormatRegistryValidation:
+    """#99: ``has_format.format`` must be a registered format name.
+
+    Catches the doc/impl drift where the propose-eval prompt claimed
+    regex was accepted but ``assert_has_format`` only consults the
+    registry — authors (and LLMs) writing a regex for ``format`` used
+    to see the failure at validate-runtime with "Unknown format: <regex>"
+    after the skill already spent tokens. This test class pins the
+    load-time rejection so the feedback comes before any API spend.
+    """
+
+    def test_registry_key_accepted(self, tmp_path):
+        entry = {
+            "id": "a1",
+            "type": "has_format",
+            "format": "phone_us",
+            "count": 3,
+        }
+        data = {"skill_name": "s", "assertions": [entry]}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.assertions[0]["format"] == "phone_us"
+
+    def test_regex_rejected(self, tmp_path):
+        """An inline regex in ``format`` raises at load with a clear error."""
+        entry = {
+            "id": "a1",
+            "type": "has_format",
+            "format": r"\(\d{3}\) \d{3}-\d{4}",
+            "count": 3,
+        }
+        data = {"skill_name": "s", "assertions": [entry]}
+        with pytest.raises(ValueError) as ei:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(ei.value)
+        assert "has_format" in msg
+        assert "not a registered format name" in msg
+        assert "regex" in msg.lower()  # mentions the regex escape hatch
+
+    def test_unknown_name_rejected(self, tmp_path):
+        """A typo'd registry key (not a valid registry entry) raises."""
+        entry = {
+            "id": "a1",
+            "type": "has_format",
+            "format": "phone_US",  # wrong case
+        }
+        data = {"skill_name": "s", "assertions": [entry]}
+        with pytest.raises(
+            ValueError, match="not a registered format name"
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_error_lists_available_formats(self, tmp_path):
+        """Error message enumerates valid registry keys so authors
+        can self-correct without consulting external docs.
+        """
+        entry = {
+            "id": "a1",
+            "type": "has_format",
+            "format": "unknown_format",
+        }
+        data = {"skill_name": "s", "assertions": [entry]}
+        with pytest.raises(ValueError) as ei:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(ei.value)
+        # Spot-check a handful of known registry keys are present.
+        assert "phone_us" in msg
+        assert "email" in msg
+        assert "url" in msg
