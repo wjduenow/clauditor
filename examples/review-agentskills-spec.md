@@ -121,6 +121,13 @@ to match the new shape or treat the divergence as a real regression.
    (`[tool.pytest.ini_options].markers`) so pytest does not emit
    "unknown marker" warnings.
 
-See `examples/.claude/commands/example-skill.eval.json` for a denser
-eval spec that exercises Layer 2 sections and L3 grading criteria in
-addition to L1.
+See `examples/.claude/skills/find-kid-activities/` for a runnable,
+agentskills.io-conformant example: a `SKILL.md` (frontmatter +
+workflow), a sibling `SKILL.eval.json` exercising L1 assertions, L2
+section extraction, L3 grading criteria, trigger tests, and a
+variance budget, plus a realistic `assets/sample-input.txt` referenced
+via `input_files`. Verify it conforms with:
+
+```bash
+uv run clauditor lint examples/.claude/skills/find-kid-activities/SKILL.md
+```

@@ -10,7 +10,7 @@
 [![License](https://img.shields.io/github/license/wjduenow/clauditor)](https://github.com/wjduenow/clauditor/blob/dev/LICENSE)
 [![codecov](https://codecov.io/gh/wjduenow/clauditor/branch/dev/graph/badge.svg)](https://codecov.io/gh/wjduenow/clauditor)
 
-Automated quality checks for [Claude Code skills](https://agentskills.io). A skill is a reusable instruction file (`SKILL.md`) that tells Claude how to do a task. clauditor answers three questions about every run: **Did it run?** **Did it return the right structure?** **Was the answer actually good?** First two checks cost pennies and run in CI; the third is for release gates.
+Automated quality checks for [Agent Skills](https://agentskills.io). A skill is a reusable instruction file (`SKILL.md`) that tells Claude how to do a task. clauditor answers three questions about every run: **Did it run?** **Did it return the right structure?** **Was the answer actually good?** First two checks cost pennies and run in CI; the third is for release gates.
 
 <details>
 <summary>Contents</summary>
