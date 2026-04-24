@@ -95,7 +95,7 @@ Run a skill via `claude -p` and save its output to a file. The primary use case 
 ```bash
 clauditor capture <skill>           # save to tests/eval/captured/<skill>.txt
 clauditor capture <skill> -- args   # pass initial context to the skill
-clauditor capture <skill> --no-api-key --timeout 300  # subscription auth, 5-min watchdog
+clauditor capture <skill> --no-api-key --timeout 600  # subscription auth, 10-min watchdog
 ```
 
 ### Required inputs
@@ -290,8 +290,8 @@ Four skill-invoking commands share two flags that control the `claude -p` subpro
 When `claude -p` emits an `apiKeySource` value on its stream-json `init` event, the runner captures it on `SkillResult.api_key_source` and prints one stderr info line of the form `clauditor.runner: apiKeySource=<value>`. Values are labels (`"ANTHROPIC_API_KEY"`, `"claude.ai"`, `"none"`), not secrets. Older `claude` builds that omit the field leave `api_key_source` at `None` and suppress the stderr line — absence is the signal. See [`docs/stream-json-schema.md`](stream-json-schema.md#type-system) for the parser contract.
 
 ```bash
-# Force subscription auth, raise the watchdog to five minutes.
-clauditor grade .claude/commands/deep-research.md --no-api-key --timeout 300
+# Force subscription auth, raise the watchdog to ten minutes.
+clauditor grade .claude/commands/deep-research.md --no-api-key --timeout 600
 
 # Pro/Max operator running a fast-failing CI check — CLI wins over spec.
 clauditor validate .claude/commands/my-skill.md --no-api-key --timeout 30

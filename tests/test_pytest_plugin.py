@@ -178,7 +178,7 @@ class TestPluginFunctionsDirect:
         request.config.getoption.side_effect = (
             lambda opt: {
                 "--clauditor-project-dir": None,
-                "--clauditor-timeout": 180,
+                "--clauditor-timeout": 300,
                 "--clauditor-claude-bin": "claude",
                 "--clauditor-no-api-key": False,
             }[opt]
@@ -238,7 +238,7 @@ class TestPluginFunctionsDirect:
         request.config.getoption.side_effect = (
             lambda opt: {
                 "--clauditor-project-dir": None,
-                "--clauditor-timeout": 180,
+                "--clauditor-timeout": 300,
                 "--clauditor-claude-bin": "claude",
                 "--clauditor-no-api-key": False,
             }[opt]
@@ -268,7 +268,7 @@ class TestClauditorSpecInputFiles:
         request.config.getoption.side_effect = (
             lambda opt: {
                 "--clauditor-project-dir": None,
-                "--clauditor-timeout": 180,
+                "--clauditor-timeout": 300,
                 "--clauditor-claude-bin": "claude",
                 "--clauditor-no-api-key": False,
             }[opt]
@@ -302,7 +302,7 @@ class TestClauditorSpecInputFiles:
         request.config.getoption.side_effect = (
             lambda opt: {
                 "--clauditor-project-dir": None,
-                "--clauditor-timeout": 180,
+                "--clauditor-timeout": 300,
                 "--clauditor-claude-bin": "claude",
                 "--clauditor-no-api-key": False,
             }[opt]
@@ -422,7 +422,7 @@ def _blind_compare_factory(tmp_path: Path, *, cli_model: str | None = None):
     request.config.getoption.side_effect = (
         lambda opt: {
             "--clauditor-project-dir": None,
-            "--clauditor-timeout": 180,
+            "--clauditor-timeout": 300,
             "--clauditor-claude-bin": "claude",
             "--clauditor-model": cli_model,
             "--clauditor-no-api-key": False,
@@ -739,7 +739,7 @@ class TestClauditorNoApiKeyOption:
         request.config.getoption.side_effect = (
             lambda opt: {
                 "--clauditor-project-dir": None,
-                "--clauditor-timeout": 180,
+                "--clauditor-timeout": 300,
                 "--clauditor-claude-bin": "claude",
                 "--clauditor-no-api-key": no_api_key,
             }[opt]
@@ -961,7 +961,7 @@ class TestClauditorFixturesAuthGuard:
         request.config.getoption.side_effect = (
             lambda opt: {
                 "--clauditor-project-dir": None,
-                "--clauditor-timeout": 180,
+                "--clauditor-timeout": 300,
                 "--clauditor-claude-bin": "claude",
                 "--clauditor-model": None,
                 "--clauditor-no-api-key": False,
@@ -1013,7 +1013,7 @@ class TestPytestFixturesStrictMode:
         request.config.getoption.side_effect = (
             lambda opt: {
                 "--clauditor-project-dir": None,
-                "--clauditor-timeout": 180,
+                "--clauditor-timeout": 300,
                 "--clauditor-claude-bin": "claude",
                 "--clauditor-model": None,
                 "--clauditor-no-api-key": False,

@@ -362,7 +362,7 @@ _CATEGORY_HINTS: dict[str, str] = {
     ),
     "timeout": (
         "Hint: skill exceeded the run timeout — "
-        "raise with --timeout SECONDS (e.g. --timeout 600)"
+        "increase the timeout with --timeout SECONDS (e.g. --timeout 600)"
     ),
     "subprocess": (
         "Hint: the claude CLI itself errored — see stream_events"
