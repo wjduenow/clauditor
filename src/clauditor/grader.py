@@ -380,11 +380,20 @@ class ExtractionParseError:
 
     ``kind`` is one of:
 
-    - ``"json"`` — the response body could not be parsed as JSON.
+    - ``"json"`` — the response body could not be parsed as JSON (or
+      was empty after fence-stripping). Retry-worthy: transient model
+      decode failure.
+    - ``"shape"`` — the response parsed as valid JSON but with the
+      wrong top-level type (e.g. a list/string/number where a
+      section-keyed dict was expected). NOT retry-worthy: model-
+      protocol bug. Gated separately from ``"json"`` so
+      :func:`_extract_call_with_retry` can treat decode-vs-shape
+      failures differently (clauditor-6cf / #94 Copilot feedback).
     - ``"flat_list"`` — a spec-declared section came back as a flat list
       instead of the expected tier-grouped dict. ``section`` names the
       offending section; ``raw`` carries the full parsed response so the
       CLI layer can attach it to its ``grader:parse:<section>`` assertion.
+      NOT retry-worthy: model-protocol bug.
     """
 
     kind: str
@@ -493,13 +502,16 @@ def parse_extraction_response(
     # The prompt asks for a top-level JSON object keyed by section name.
     # A misbehaving model can return a bare list/string/number — iterating
     # ``.items()`` on that would raise AttributeError mid-parse. Fail
-    # explicitly with a structured parse error instead.
+    # explicitly with a structured parse error instead. ``kind="shape"``
+    # (not ``"json"``) so :func:`_extract_call_with_retry` does not
+    # retry — a response that decodes as valid JSON but with the wrong
+    # top-level type is a model-protocol bug, not a transient hiccup.
     if not isinstance(raw, dict):
         return ExtractionParseResult(
             extracted=ExtractedOutput(),
             parse_errors=[
                 ExtractionParseError(
-                    kind="json",
+                    kind="shape",
                     message=(
                         f"Expected JSON object at top level, got "
                         f"{type(raw).__name__}: {text[:200]}"
@@ -754,7 +766,13 @@ def build_extraction_report_from_text(
         )
 
     parse = parse_extraction_response(response_text, eval_spec)
-    if any(err.kind == "json" for err in parse.parse_errors):
+    # Short-circuit to empty-results on both "json" (decode) and
+    # "shape" (wrong top-level type) — neither leaves us with a
+    # usable ``ExtractedOutput.sections`` to grade. Flat-list
+    # section failures proceed into ``build_extraction_report``
+    # so the per-field schema check still attaches to the other
+    # sections.
+    if any(err.kind in ("json", "shape") for err in parse.parse_errors):
         return ExtractionReport(
             skill_name=skill_name,
             model=model,
@@ -788,8 +806,10 @@ async def _extract_call_with_retry(
 
     Returns ``(response_text, source, input_tokens, output_tokens)`` — the
     final attempt's response text, the transport source, and cumulative
-    token counts across attempts. One retry on JSON decode failure per
-    clauditor-6cf / #94; no retry on flat-list / shape failures, which
+    token counts across attempts. One retry on ``kind == "json"`` (true
+    decode failures + empty-after-fence-strip) per clauditor-6cf / #94;
+    no retry on ``kind == "shape"`` (valid JSON, wrong top-level type)
+    or ``kind == "flat_list"`` (section tiering missing) — both
     indicate a model-protocol bug rather than a transient hiccup.
     """
     from clauditor._anthropic import call_anthropic

@@ -1119,17 +1119,33 @@ async def grade_quality(
             api_result.text_blocks[0] if api_result.text_blocks else ""
         )
         # Decide retry based on the parse outcome, not the final
-        # GradingReport — alignment failures raise ValueError below
-        # and must NOT be retried. Pass-through on success; retry on
-        # JSON / shape / empty-text failures when attempts remain.
+        # GradingReport. Mirrors :func:`_call_blind_side_with_retry` so
+        # the L3 grader has consistent retry semantics across
+        # grade_quality and blind_compare:
+        # - Alignment failure (ValueError): NOT retry-worthy — the
+        #   judge returned a structurally valid but positionally-
+        #   misaligned result set; a retry won't fix a prompt-design
+        #   bug. Let ``build_grading_report`` classify it.
+        # - True decode failure (``parse_error is not None``): retry-
+        #   worthy — transient model hiccup.
+        # - Empty response (``last_response_text == ""``): retry-
+        #   worthy — transient; the model may just have dropped the
+        #   text block.
+        # - Shape failure (valid JSON but top-level not a list:
+        #   ``parse_error is None`` and ``results == []`` and
+        #   ``last_response_text != ""``): NOT retry-worthy — model-
+        #   protocol bug, same rationale as blind_compare and
+        #   ``_extract_call_with_retry``.
         try:
-            results, _ = _parse_grading_response_verbose(
+            results, parse_error = _parse_grading_response_verbose(
                 last_response_text, eval_spec.grading_criteria
             )
         except ValueError:
             break  # alignment failure — let build_grading_report classify
-        if last_response_text and results:
+        if results:
             break  # success
+        if last_response_text and parse_error is None:
+            break  # shape failure — model-protocol bug, not transient
         if attempt < _GRADER_PARSE_RETRY_LIMIT - 1:
             _emit_parse_retry_notice(
                 "grade_quality", attempt + 2, _GRADER_PARSE_RETRY_LIMIT

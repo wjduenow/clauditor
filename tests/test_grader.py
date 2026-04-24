@@ -1388,6 +1388,29 @@ class TestExtractAndReportParseRetry:
         assert mock_client.messages.create.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_extract_and_report_no_retry_on_shape_failure(self):
+        """Parse retry (clauditor-6cf / #94, Copilot feedback on PR #98):
+        a response that decodes as valid JSON but with the wrong top-
+        level type (list/string/number instead of section-keyed dict)
+        is tagged ``kind="shape"`` and must NOT be retried. Mirrors
+        ``grade_quality``'s shape-vs-decode split."""
+        from clauditor.grader import extract_and_report
+
+        spec = self._minimal_spec()
+        # Valid JSON, but a bare list where a dict was expected.
+        resp = MagicMock(usage=MagicMock(input_tokens=50, output_tokens=10))
+        resp.content = [MagicMock(type="text", text='["not", "a", "dict"]')]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=resp)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await extract_and_report("out", spec, skill_name="s")
+        assert mock_client.messages.create.await_count == 1
+        assert report.parse_errors
+        assert any(
+            "top level" in err.lower() for err in report.parse_errors
+        )
+
+    @pytest.mark.asyncio
     async def test_extract_and_report_both_attempts_fail(self):
         from clauditor.grader import extract_and_report
 
@@ -2028,13 +2051,19 @@ class TestParseExtractionResponse:
         structured parse error, not crash with AttributeError on
         ``raw.items()``. Guards against a misbehaving grader that
         returns a bare list/string/number/bool/null.
+
+        ``kind == "shape"`` (not ``"json"``) so
+        :func:`_extract_call_with_retry` does not retry — the response
+        decoded cleanly; the top-level type is wrong, which is a
+        model-protocol bug (clauditor-6cf / #94 Copilot feedback on
+        PR #98).
         """
         spec = _make_spec()
         result = parse_extraction_response(payload, spec)
         assert not result.success
         assert len(result.parse_errors) == 1
         err = result.parse_errors[0]
-        assert err.kind == "json"
+        assert err.kind == "shape"
         assert "Expected JSON object at top level" in err.message
         assert err.evidence == payload[:200]
 

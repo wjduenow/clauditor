@@ -1045,6 +1045,28 @@ class TestGradeQuality:
         assert "misalignment" in report.results[0].reasoning.lower()
 
     @pytest.mark.asyncio
+    async def test_grade_quality_does_not_retry_on_shape_failure(self):
+        """Parse retry (clauditor-6cf / #94, Copilot feedback on PR #98):
+        a response that is valid JSON but has the wrong top-level type
+        (e.g. a dict where a list was expected) is a model-protocol bug,
+        not a transient hiccup — must NOT be retried. Mirrors
+        ``_call_blind_side_with_retry``'s shape-vs-decode split."""
+        spec = _make_spec()
+        # Valid JSON, top-level dict instead of list → verbose parser
+        # returns ``([], None)`` (shape failure, no decode error).
+        resp = MagicMock(usage=MagicMock(input_tokens=50, output_tokens=10))
+        resp.content = [
+            MagicMock(type="text", text='{"not": "a list"}')
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=resp)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await grade_quality("output", spec)
+        # Exactly one API call — shape failure must not retry.
+        assert mock_client.messages.create.await_count == 1
+        assert report.results[0].criterion == "parse_response"
+
+    @pytest.mark.asyncio
     async def test_grade_quality_both_attempts_fail(self):
         """Parse retry (clauditor-6cf / #94): both attempts return
         malformed JSON → final failure report with cumulative tokens
