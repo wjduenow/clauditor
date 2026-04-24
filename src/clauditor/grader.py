@@ -483,21 +483,6 @@ def parse_extraction_response(
                 )
             ],
         )
-    except IndexError:
-        return ExtractionParseResult(
-            extracted=ExtractedOutput(),
-            parse_errors=[
-                ExtractionParseError(
-                    kind="json",
-                    message=(
-                        f"Failed to parse grader response as JSON "
-                        f"(empty or truncated after fence strip): "
-                        f"{text[:200]}"
-                    ),
-                    evidence=text[:200],
-                )
-            ],
-        )
 
     # The prompt asks for a top-level JSON object keyed by section name.
     # A misbehaving model can return a bare list/string/number — iterating

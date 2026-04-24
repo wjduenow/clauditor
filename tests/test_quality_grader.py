@@ -2093,6 +2093,42 @@ class TestBlindCompare:
         assert report.position_agreement is False
         assert "run-2" in report.reasoning
 
+    @pytest.mark.asyncio
+    async def test_blind_compare_no_retry_on_shape_failure(self):
+        """Parse retry (clauditor-6cf / #94, Copilot feedback on PR #98):
+        a blind judge response that is valid JSON but missing required
+        keys (shape failure) must NOT be retried — covers the
+        ``_call_blind_side_with_retry`` ``parse_err is None`` break
+        branch. Mirrors ``grade_quality``'s shape-vs-decode split."""
+        # Valid JSON dict, but missing required fields (no "preference").
+        shape_bad = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        shape_bad.content = [
+            MagicMock(type="text", text='{"wrong": "keys"}')
+        ]
+        ok = _blind_response("1", confidence=0.8, score_1=0.9, score_2=0.3)
+
+        async def dispatcher(**kwargs):
+            prompt = kwargs["messages"][0]["content"]
+            r1_block = prompt.split("<response_1>", 1)[1].split(
+                "</response_1>", 1
+            )[0]
+            # Seed 1, run-1 "ab->12": a-text in response_1 slot → shape_bad.
+            if "a-text" in r1_block:
+                return shape_bad
+            return ok
+
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=dispatcher)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await blind_compare(
+                "q", "a-text", "b-text", rng=random.Random(1)
+            )
+        # Shape failure must NOT retry — exactly 2 calls total (one per
+        # side, no retry on side1 despite its shape failure).
+        assert mock_client.messages.create.await_count == 2
+        # Run-1 side failed shape, run-2 parsed — partial-parse path.
+        assert report.position_agreement is False
+
 
 class TestParseBlindResponse:
     def _full(self, **overrides):

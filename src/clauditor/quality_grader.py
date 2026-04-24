@@ -333,11 +333,6 @@ def _parse_blind_response_verbose(
         data = json.loads(json_str.strip())
     except json.JSONDecodeError as exc:
         return None, describe_json_parse_failure(text, exc)
-    except IndexError:
-        return None, (
-            "Failed to parse blind judge response as JSON "
-            f"(empty after fence strip): response was {len(text)} chars"
-        )
 
     if not isinstance(data, dict):
         return None, None
@@ -865,11 +860,6 @@ def _parse_grading_response_verbose(
         data = json.loads(json_str.strip())
     except json.JSONDecodeError as exc:
         return [], describe_json_parse_failure(text, exc)
-    except IndexError:
-        return [], (
-            "Failed to parse grader response as JSON "
-            f"(empty after fence strip): response was {len(text)} chars"
-        )
 
     if not isinstance(data, list):
         return [], None
