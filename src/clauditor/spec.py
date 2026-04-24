@@ -12,7 +12,7 @@ from pathlib import Path
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.conformance import check_conformance, format_issue_line
 from clauditor.paths import derive_project_dir, derive_skill_name
-from clauditor.runner import SkillResult, SkillRunner
+from clauditor.runner import SkillResult, SkillRunner, env_with_sync_tasks
 from clauditor.schemas import EvalSpec
 from clauditor.workspace import stage_inputs
 
@@ -128,6 +128,7 @@ class SkillSpec:
         run_dir: Path | None = None,
         timeout_override: int | None = None,
         env_override: dict[str, str] | None = None,
+        sync_tasks_override: bool | None = None,
     ) -> SkillResult:
         """Run the skill and return captured output.
 
@@ -172,13 +173,30 @@ class SkillSpec:
                 else None
             )
         )
+        # Tier 1.5 of GitHub #103: sync_tasks precedence is
+        # CLI > spec > default False. When effective, mutate the
+        # outgoing ``env_override`` to add
+        # ``CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`` so the subprocess
+        # runs Task(run_in_background=true) synchronously. Composes
+        # with the existing ``env_override`` (e.g. from --no-api-key):
+        # both effects apply.
+        effective_sync_tasks: bool
+        if sync_tasks_override is not None:
+            effective_sync_tasks = sync_tasks_override
+        elif self.eval_spec is not None:
+            effective_sync_tasks = self.eval_spec.sync_tasks
+        else:
+            effective_sync_tasks = False
+        effective_env = env_override
+        if effective_sync_tasks:
+            effective_env = env_with_sync_tasks(effective_env)
         result = self.runner.run(
             self.skill_name,
             run_args,
             cwd=effective_cwd,
             allow_hang_heuristic=allow_hang_heuristic,
             timeout=effective_timeout,
-            env=env_override,
+            env=effective_env,
         )
 
         # Read output from files if eval spec specifies file-based output

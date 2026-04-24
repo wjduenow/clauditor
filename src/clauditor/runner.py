@@ -30,6 +30,15 @@ from typing import Literal
 # (DEC-016).
 _API_KEY_ENV_VARS = frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"})
 
+# Documented Anthropic env var that forces ``Task(run_in_background=true)``
+# spawns to run synchronously (see
+# https://docs.claude.com/en/docs/claude-code/sub-agents — "Run
+# subagents in foreground or background"). Setting this to ``"1"`` in
+# the subprocess env makes the parent agent wait for each sub-agent
+# before emitting its ``result`` message. Tier 1.5 workaround for
+# GitHub #103 (see ``docs/adr/transport-research-103.md``).
+_SYNC_TASKS_ENV_VAR = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+
 
 def env_without_api_key(
     base_env: dict[str, str] | None = None,
@@ -45,6 +54,25 @@ def env_without_api_key(
     """
     source = base_env if base_env is not None else os.environ
     return {k: v for k, v in source.items() if k not in _API_KEY_ENV_VARS}
+
+
+def env_with_sync_tasks(
+    base_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a new env dict with ``CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1``.
+
+    Pure, non-mutating helper per
+    ``.claude/rules/non-mutating-scrub.md``. When ``base_env`` is
+    ``None``, reads from ``os.environ``. Always returns a new dict
+    (never mutates the input). Forces ``Task(run_in_background=true)``
+    calls synchronous in the ``claude -p`` subprocess. Composes with
+    :func:`env_without_api_key`: callers chain ``env_with_sync_tasks(
+    env_without_api_key())`` (or the reverse) to get both effects.
+    """
+    source = base_env if base_env is not None else os.environ
+    new_env = {k: v for k, v in source.items()}
+    new_env[_SYNC_TASKS_ENV_VAR] = "1"
+    return new_env
 
 
 @dataclass
@@ -782,8 +810,15 @@ def _invoke_claude_cli(
         # is classified as interactive-hang even if it also launched
         # background tasks). Same shape as interactive-hang: warning
         # prefix + category, no error text, output/exit_code preserved.
+        # Suppressed when ``CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`` is
+        # set in the subprocess env: the caller forced sync mode, so
+        # detecting the pattern is expected and not a user concern
+        # (Tier 1.5 of GitHub #103).
+        _effective_env = env if env is not None else os.environ
+        _sync_tasks_forced = _effective_env.get(_SYNC_TASKS_ENV_VAR) == "1"
         if (
             allow_hang_heuristic
+            and not _sync_tasks_forced
             and stream_json_error_text is None
             and stream_json_error_category is None
             and _detect_background_task_noncompletion(stream_events, final_text)

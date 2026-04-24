@@ -18,7 +18,11 @@ from clauditor._anthropic import (
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.benchmark import Benchmark, compute_benchmark
 from clauditor.paths import resolve_clauditor_dir
-from clauditor.runner import SkillResult, env_without_api_key
+from clauditor.runner import (
+    SkillResult,
+    env_with_sync_tasks,
+    env_without_api_key,
+)
 from clauditor.spec import SkillSpec
 from clauditor.workspace import (
     InvalidSkillNameError,
@@ -182,6 +186,20 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "Strip ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN from the "
             "subprocess environment to force subscription auth."
+        ),
+    )
+    p_grade.add_argument(
+        "--sync-tasks",
+        action="store_true",
+        help=(
+            "Force Task(run_in_background=true) spawns to run "
+            "synchronously by setting "
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 in the "
+            "subprocess env. Overrides the skill's async behavior "
+            "for evaluation only; see "
+            "docs/adr/transport-research-103.md for the fidelity "
+            "caveats. Applies to primary, variance, and baseline "
+            "arms."
         ),
     )
     p_grade.add_argument(
@@ -452,6 +470,9 @@ def _run_skill_variants(
     if should_announce:
         announce_implicit_no_api_key()
     timeout_override = getattr(args, "timeout", None)
+    sync_tasks_override: bool | None = (
+        True if getattr(args, "sync_tasks", False) else None
+    )
 
     run_outputs: list[tuple[str, list[dict]]] = []
     # Parallel list of SkillResult objects — None entries correspond to
@@ -481,6 +502,7 @@ def _run_skill_variants(
             run_dir=workspace.tmp_path / "run-0",
             timeout_override=timeout_override,
             env_override=env_override,
+            sync_tasks_override=sync_tasks_override,
         )
         if not primary_skill_result.succeeded_cleanly:
             print(
@@ -512,6 +534,7 @@ def _run_skill_variants(
             run_dir=variance_run_dir,
             timeout_override=timeout_override,
             env_override=env_override,
+            sync_tasks_override=sync_tasks_override,
         )
         if not variance_result.succeeded_cleanly:
             print(
@@ -646,6 +669,14 @@ def _write_workspace_sidecars(
         # deliberately ignored here — the primary arm already fired the
         # notice (and the helper is idempotent per US-002 regardless).
         env_override, _ = _resolve_grade_env_override(args)
+        # Tier 1.5 of GitHub #103: when --sync-tasks fires, the
+        # baseline arm must also run synchronously so the delta
+        # compares like-for-like. spec.runner.run_raw (used by the
+        # baseline) has no spec-field awareness — the CLI composes
+        # the env var directly here, mirroring the --no-api-key
+        # wiring above.
+        if getattr(args, "sync_tasks", False):
+            env_override = env_with_sync_tasks(env_override)
         timeout_override = getattr(args, "timeout", None)
         return _write_baseline_and_benchmark(
             spec=spec,

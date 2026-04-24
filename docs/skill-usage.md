@@ -172,3 +172,85 @@ older run explicitly.
   written; retry once the upstream issue clears.
 
 Full flag reference: [`cli-reference.md#suggest`](cli-reference.md#suggest).
+
+## Skill compatibility
+
+clauditor invokes skills through `claude -p` (non-interactive, print
+mode). This transport is a strict subset of the interactive Claude
+Code runtime — some patterns that work in the TUI do not work under
+`claude -p`. Known compatibility today:
+
+| Pattern | Status |
+| --- | --- |
+| Sequential `Task` calls (no `run_in_background`) | ✅ Works |
+| Parallel tool calls in the parent (multiple `tool_use` blocks per turn) | ✅ Works |
+| `WebSearch` / `WebFetch` / `Bash` / `Read` / `Write` / `Edit` | ✅ Works |
+| `Task(run_in_background=true)` (background sub-agents) | ⚠️ Loud warning — parent exits before children complete; output truncated 5-10× (see [GitHub #97](https://github.com/wjduenow/clauditor/issues/97)) |
+| `AskUserQuestion` / interactive prompts | ⚠️ Loud warning — interactive-hang detector fires (no input channel in print mode) |
+
+### `--sync-tasks`: force Task mode synchronous at eval time
+
+For skills that use `Task(run_in_background=true)` purely for
+**latency-reduction fanout** (e.g. "launch 3 sub-agents to research
+different sources in parallel, then synthesize"), clauditor can
+force them synchronous during evaluation without modifying the
+skill. Pass `--sync-tasks` on `validate`, `grade`, `capture`, or
+`run`; clauditor sets
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in the `claude -p`
+subprocess env, which is a [documented Anthropic control](https://docs.claude.com/en/docs/claude-code/sub-agents).
+
+```bash
+clauditor validate my-skill.md --sync-tasks
+clauditor grade my-skill.md --sync-tasks --baseline
+```
+
+Equivalent spec-level opt-in (per-skill, commits alongside the
+skill's eval spec):
+
+```json
+{
+  "skill_name": "my-skill",
+  "sync_tasks": true,
+  "assertions": [...]
+}
+```
+
+CLI flag wins over the spec field per the standard
+CLI > spec > default precedence.
+
+**Fidelity caveats — read before relying on `--sync-tasks`:**
+
+- You are evaluating a **different execution model** than what
+  ships. The skill runs async in production; `--sync-tasks` tests
+  sync. Results are equivalent only when the skill's sync and
+  async output is functionally identical.
+- **Async-specific logic is not exercised.** Race conditions,
+  late-arriving-result handling, "while sub-agents run, emit a
+  progress message" branches, and completion-order dedup/merge
+  logic all go untested under `--sync-tasks`.
+- **Timing/cost metrics skew.** Three parallel sub-agents at ~30s
+  each take ~30s in production but ~90s under `--sync-tasks`.
+  Latency and turn-based-pricing cost metrics are unrealistic.
+
+For skills where async semantics are load-bearing
+(correctness-sensitive, not just latency-sensitive), the async
+fidelity gap cannot be closed until upstream Claude Code gains
+headless background-task polling — tracked in
+[anthropics/claude-code#52917](https://github.com/anthropics/claude-code/issues/52917)
+and catalogued in [`docs/adr/transport-research-103.md`](adr/transport-research-103.md).
+When in doubt, file a GitHub issue rather than rely on
+`--sync-tasks` results.
+
+### Refactoring recipes (alternative to `--sync-tasks`)
+
+If you do not want to keep `run_in_background=true` in production
+and `--sync-tasks` at eval time, two in-skill refactors cover the
+same cases:
+
+- **Recipe A — drop `run_in_background: true`.** Sub-agents run
+  sequentially. Preserves context isolation; increases wall-clock
+  latency.
+- **Recipe B — replace `Task` with parallel tool calls in the
+  parent.** Emit multiple `tool_use` blocks per turn directly.
+  Shorter latency than Recipe A; loses the sub-agent's isolated
+  context window.

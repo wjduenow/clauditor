@@ -7,7 +7,11 @@ import sys
 from pathlib import Path
 
 from clauditor.capture_provenance import write_capture_provenance
-from clauditor.runner import SkillRunner, env_without_api_key
+from clauditor.runner import (
+    SkillRunner,
+    env_with_sync_tasks,
+    env_without_api_key,
+)
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -45,6 +49,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "Strip ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN from the "
             "subprocess environment to force subscription auth."
+        ),
+    )
+    p_capture.add_argument(
+        "--sync-tasks",
+        action="store_true",
+        help=(
+            "Force Task(run_in_background=true) spawns to run "
+            "synchronously by setting "
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 in the "
+            "subprocess env. See "
+            "docs/adr/transport-research-103.md for fidelity "
+            "caveats."
         ),
     )
     p_capture.add_argument(
@@ -92,11 +108,13 @@ def cmd_capture(args: argparse.Namespace) -> int:
     runner = SkillRunner(claude_bin=args.claude_bin or "claude")
     # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags through
     # to the runner. Defaults are both None (today's behavior).
-    env_override = (
+    env_override: dict[str, str] | None = (
         env_without_api_key()
         if getattr(args, "no_api_key", False)
         else None
     )
+    if getattr(args, "sync_tasks", False):
+        env_override = env_with_sync_tasks(env_override)
     print(f"Running /{skill_name} {skill_args}...", file=sys.stderr)
     result = runner.run(
         skill_name,
