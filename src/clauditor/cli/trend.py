@@ -23,7 +23,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``trend`` subparser."""
     p_trend = subparsers.add_parser(
         "trend",
-        help="Print a trend line (TSV + ASCII sparkline) from grade history",
+        help="Print a trend line (TSV) from grade history",
     )
     p_trend.add_argument("skill_name", help="Skill name to trend")
     p_trend_group = p_trend.add_mutually_exclusive_group(required=True)
@@ -55,7 +55,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def cmd_trend(args: argparse.Namespace) -> int:
-    """Render a trend line (TSV + ASCII sparkline) for a skill metric."""
+    """Render a trend line (TSV) for a skill metric."""
     records = history.read_records(skill=args.skill_name)
     if not records:
         print(
@@ -126,5 +126,4 @@ def cmd_trend(args: argparse.Namespace) -> int:
 
     for ts, v in zip(timestamps, values):
         print(f"{ts}\t{v}")
-    print(history.sparkline(values))
     return 0

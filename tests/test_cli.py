@@ -4352,14 +4352,12 @@ class TestCmdTrend:
         out = capsys.readouterr().out
         assert "0.5" in out
         assert "0.7" in out
-        # Sparkline line present (non-empty last line)
+        # stdout ends with the last data row's newline — every non-empty
+        # line must be a TSV data row (#106).
         lines = [ln for ln in out.splitlines() if ln]
         assert lines
-        # Sparkline should use only glyphs from SPARK_GLYPHS
-        from clauditor.history import SPARK_GLYPHS
-
-        spark = lines[-1]
-        assert all(c in SPARK_GLYPHS for c in spark)
+        for ln in lines:
+            assert "\t" in ln, f"non-data trailing line on stdout: {ln!r}"
 
     def test_metric_in_metrics_dict(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
@@ -4385,6 +4383,28 @@ class TestCmdTrend:
         assert rc == 1
         err = capsys.readouterr().err
         assert "no history" in err.lower() or "no records" in err.lower()
+
+    def test_stdout_ends_with_last_data_row_no_sparkline_artifact(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Regression for #106: stdout must end with the last data row's
+        newline — no trailing sparkline/artifact line. Users piping the
+        output to awk/jq otherwise get a non-parseable trailing line."""
+        monkeypatch.chdir(tmp_path)
+        self._seed(tmp_path / ".clauditor" / "history.jsonl", n=2)
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [ln for ln in out.splitlines() if ln]
+        assert len(lines) == 2, (
+            f"expected only data rows, got {len(lines)} lines: {lines!r}"
+        )
+        for ln in lines:
+            assert "\t" in ln, (
+                f"non-TSV trailing line on stdout: {ln!r} — "
+                "sparkline/artifact regression"
+            )
 
     def test_last_n_truncates(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
@@ -4572,12 +4592,8 @@ class TestCmdTrendDottedPath:
         assert "500" in out
         assert "600" in out
         assert "700" in out
-        # Sparkline line present
-        from clauditor.history import SPARK_GLYPHS
-
-        spark = out.splitlines()[-1]
-        assert spark
-        assert all(c in SPARK_GLYPHS for c in spark)
+        # stdout ends with the last data row — no trailing artifact (#106).
+        assert "\t" in out.splitlines()[-1]
 
 
 class TestCmdTrendListMetrics:
