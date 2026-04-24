@@ -306,6 +306,55 @@ class TestImplicitNoApiKeyCoupling:
 
         assert captured.err.count(_IMPLICIT_NO_API_KEY_ANNOUNCEMENT) == 1
 
+    # --- Baseline arm: implicit coupling mirrored without double-announce -
+
+    def test_baseline_arm_mirrors_implicit_strip_without_double_announce(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """#95 US-003 baseline-arm coverage gap (code-review pass 1).
+
+        ``--baseline --transport cli`` + API key set: the baseline subprocess
+        env override must have the keys stripped too (otherwise the baseline
+        half bypasses the strip the primary arm just applied), AND the
+        one-time notice must still fire only once total (the baseline arm
+        must not re-announce — ``announce_implicit_no_api_key`` is idempotent
+        per US-002, but the wiring must not accidentally bypass that
+        idempotence).
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDITOR_TRANSPORT", raising=False)
+
+        captured_env = {}
+
+        def _capture_env(**kwargs):
+            captured_env["env_override"] = kwargs.get("env_override")
+            return None
+
+        with patch(
+            "clauditor.cli.grade._write_baseline_and_benchmark",
+            side_effect=_capture_env,
+        ):
+            rc, _, primary_env = self._run_grade(
+                ["grade", "skill.md", "--transport", "cli", "--baseline"]
+            )
+
+        assert rc == 0
+        # Primary arm stripped the key.
+        self._assert_env_stripped(primary_env)
+        # Baseline arm received the same stripped env.
+        assert "env_override" in captured_env, (
+            "_write_baseline_and_benchmark was not called — the baseline "
+            "arm did not run"
+        )
+        self._assert_env_stripped(captured_env["env_override"])
+        # Notice fired exactly once — baseline arm did not double-announce.
+        from clauditor._anthropic import _IMPLICIT_NO_API_KEY_ANNOUNCEMENT
+
+        captured = capsys.readouterr()
+        assert captured.err.count(_IMPLICIT_NO_API_KEY_ANNOUNCEMENT) == 1
+
 
 class TestGradeTransportHelpMentionsCoupling:
     """DEC-010: --transport --help must mention the implicit coupling."""
