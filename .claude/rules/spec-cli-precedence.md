@@ -335,6 +335,44 @@ the same `{api,cli,auto}` vocabulary but thread to different seams.
 Traces to DEC-003, DEC-008, DEC-012, DEC-017 of
 `plans/super/86-claude-cli-transport.md`.
 
+### Implicit coupling at the operator-intent layers
+
+An adjacent pattern to the precedence rule: when a CLI flag (or its
+env-var sibling) implicitly sets a *related* runner-config flag, the
+coupling must fire only on the **operator-intent** precedence layers
+(CLI flag + env var). It must NOT fire on `EvalSpec.*` (author-intent:
+the skill author does not know the user's env and cannot make the
+coupling decision correctly) and must NOT fire on auto-resolution
+(would surprise users who happen to have the underlying tool on PATH
+but maintain an API key for production).
+
+Tie-breaker: the explicit user flag always wins over the implicit
+coupling. If the user passed the explicit equivalent themselves, the
+implicit path does NOT re-fire its one-time stderr notice — the notice
+exists to surface the *implicit* decision to surprised users, not to
+re-announce what the user just typed.
+
+Canonical implementation: `should_strip_api_key_for_skill_subprocess`
+in `src/clauditor/cli/__init__.py` — a pure sibling helper next to
+`_resolve_grader_transport` that reads `args.transport == "cli"` and
+`os.environ.get("CLAUDITOR_TRANSPORT", "").strip() == "cli"` and
+returns a bool. Does NOT consult `eval_spec`; does NOT resolve auto.
+
+Call site: the `env_override` computation in
+`src/clauditor/cli/grade.py::cmd_grade` (and the parallel computation
+in the `--baseline` arm, so both sides of the delta share the same
+auth posture). The site reads the helper, combines with an
+`explicit_strip = args.no_api_key` check for the tie-breaker, and
+calls `announce_implicit_no_api_key()` from `clauditor._anthropic`
+when the implicit path fired AND a key was actually present.
+
+Traces to DEC-001, DEC-002, DEC-006, DEC-007, DEC-008, DEC-009,
+DEC-011 of `plans/super/95-subscription-auth-flag.md`. Companion
+rules: `.claude/rules/centralized-sdk-call.md` (the announcement-
+family seam these notices live on) and
+`.claude/rules/pure-compute-vs-io-split.md` (the pure-helper shape
+the coupling decision follows).
+
 ## When this rule applies
 
 Any future runner-adjacent knob that an operator may want to

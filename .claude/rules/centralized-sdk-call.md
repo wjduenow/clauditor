@@ -152,6 +152,32 @@ handled each call. `BlindReport.transport_source` propagates this through
 blind-compare; when the two parallel calls disagree (unlikely in practice),
 the report stamps `"mixed"` (DEC-018).
 
+### Implicit-coupling announcements — an emerging family
+
+One-time-per-process stderr notices are an emerging family co-located
+in `src/clauditor/_anthropic.py`. Each member is a module-level bool
+flag paired with a `Final[str]` announcement constant and a public
+helper that prints-and-flips. Two members today:
+
+- `_announced_cli_transport` / `_CLI_AUTO_ANNOUNCEMENT` (#86) — fires
+  on auto→cli transport resolution. Public emitter:
+  `_announce_cli_transport()` (called from inside `call_anthropic`
+  when auto resolves to cli for the first time in a process).
+- `_announced_implicit_no_api_key` / `_IMPLICIT_NO_API_KEY_ANNOUNCEMENT`
+  (#95, US-002) — fires when `--transport cli` (or
+  `CLAUDITOR_TRANSPORT=cli`) implicitly strips `ANTHROPIC_API_KEY` /
+  `ANTHROPIC_AUTH_TOKEN` from a skill subprocess env. Public emitter:
+  `announce_implicit_no_api_key()` (called from the `env_override`
+  computation in `cli/grade.py::cmd_grade`; see
+  `.claude/rules/spec-cli-precedence.md` "Implicit coupling at the
+  operator-intent layers" for the call-site contract).
+
+New announcement flags belong in the same module (DEC-009 of
+`plans/super/95-subscription-auth-flag.md`). Reset mechanism for tests
+is the `monkeypatch.setattr(..., False)` autouse fixture pattern — see
+`tests/test_anthropic.py::TestStderrAnnouncement` and
+`TestAnnounceImplicitNoApiKey` for the shape.
+
 ## When this rule applies
 
 Any new clauditor feature that needs to call Anthropic — a new
