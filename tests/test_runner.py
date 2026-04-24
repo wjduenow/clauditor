@@ -2560,6 +2560,80 @@ class TestApiKeySourceParsing:
         ]
         assert matching == ["clauditor.runner: apiKeySource=none"]
 
+    def test_stderr_line_sanitizes_subject_newlines_and_length(self, capsys):
+        # Copilot PR #114 review: ``subject`` is free-form, so a
+        # caller that accidentally passes a multi-line string or an
+        # unbounded value must not break the "one line per run"
+        # invariant that log scrapers rely on. Sanitization replaces
+        # CR/LF with spaces, strips, and caps at 200 chars.
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "apiKeySource": "none",
+            },
+        )
+        hostile = "  L2\nextraction\rwith   " + ("x" * 500) + "  "
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            _invoke_claude_cli(
+                "prompt",
+                cwd=None,
+                env=None,
+                timeout=180,
+                claude_bin="claude",
+                subject=hostile,
+            )
+        captured = capsys.readouterr()
+        matching = [
+            line
+            for line in captured.err.splitlines()
+            if "apiKeySource=" in line
+        ]
+        # One line only — embedded \n did not split the output.
+        assert len(matching) == 1, captured.err
+        line = matching[0]
+        assert "\n" not in line and "\r" not in line
+        # Leading/trailing whitespace stripped; CR/LF replaced with spaces.
+        expected_prefix = (
+            "clauditor.runner: apiKeySource=none (L2 extraction with "
+        )
+        assert line.startswith(expected_prefix)
+        # 200-char cap applied to the sanitized subject body.
+        start = line.index("(") + 1
+        end = line.rindex(")")
+        assert end - start <= 200
+
+    def test_stderr_line_omits_suffix_when_subject_whitespace_only(
+        self, capsys
+    ):
+        # A whitespace-only subject strips to empty and must not emit
+        # a trailing ``()`` suffix — degrade to the unlabeled format.
+        fake = make_fake_skill_stream(
+            "hello",
+            init_message={
+                "type": "system",
+                "subtype": "init",
+                "apiKeySource": "none",
+            },
+        )
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            _invoke_claude_cli(
+                "prompt",
+                cwd=None,
+                env=None,
+                timeout=180,
+                claude_bin="claude",
+                subject="   \n\r ",
+            )
+        captured = capsys.readouterr()
+        matching = [
+            line
+            for line in captured.err.splitlines()
+            if "apiKeySource=" in line
+        ]
+        assert matching == ["clauditor.runner: apiKeySource=none"]
+
     def test_stderr_line_suppressed_when_init_missing_field(self, capsys):
         # init present but apiKeySource absent → no stderr line (DEC-012).
         fake = make_fake_skill_stream(

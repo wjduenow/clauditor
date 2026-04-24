@@ -740,9 +740,21 @@ def _invoke_claude_cli(
         # proposer) append ``" (<subject>)"`` so operators running
         # ``grade --transport cli`` can attribute each line to a
         # specific internal LLM call instead of seeing identical
-        # lines from multiple grader subprocesses.
+        # lines from multiple grader subprocesses. Sanitize any
+        # embedded newlines / carriage returns and cap the length so
+        # a hostile or buggy caller cannot break the "one line per
+        # run" invariant that log-scraping tools rely on.
         if api_key_source is not None:
-            suffix = f" ({subject})" if subject else ""
+            sanitized_subject = None
+            if subject:
+                sanitized_subject = (
+                    subject.replace("\r", " ").replace("\n", " ").strip()
+                )
+                if sanitized_subject:
+                    sanitized_subject = sanitized_subject[:200]
+            suffix = (
+                f" ({sanitized_subject})" if sanitized_subject else ""
+            )
             print(
                 f"clauditor.runner: apiKeySource={api_key_source}{suffix}",
                 file=sys.stderr,
