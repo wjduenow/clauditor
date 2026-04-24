@@ -99,13 +99,15 @@ entry point before running validate/grade.
    uv run clauditor suggest <skill-path>
    ```
 
-   Writes `<skill>-<timestamp>.diff` and `<skill>-<timestamp>.json`
-   under `.clauditor/suggestions/`. Show the user the diff plus the
-   `motivated_by` criterion ids and `confidence` from the JSON
-   sidecar. Do NOT auto-apply — let the user `git apply` the diff
-   (or hand-edit) and re-run `validate` / `grade` to measure the
-   score delta. See `docs/cli-reference.md#suggest` for the full
-   flag reference.
+   Writes `<skill-name>-<timestamp>.diff` and
+   `<skill-name>-<timestamp>.json` under `.clauditor/suggestions/`,
+   where `<skill-name>` is the skill's derived identity (frontmatter
+   `name:` or parent-directory name, NOT the file stem). Show the
+   user the diff plus the `motivated_by` criterion ids and
+   `confidence` from the JSON sidecar. Do NOT auto-apply — let the
+   user `git apply` the diff (or hand-edit) and re-run `validate` /
+   `grade` to measure the score delta. See `docs/cli-reference.md`
+   for the full flag reference.
 
 7. **Report concisely.** Surface:
    - Which layers ran (L1 / L2 / L3)
@@ -124,6 +126,6 @@ entry point before running validate/grade.
   criterion needs a unique string `id`. Edit the spec and re-run.
 - **`no project root found`** — `clauditor` expects to run inside a
   project with `.git/` or `.claude/`. Use `--project-dir` or `cd` first.
-- **`no iteration under ... contains <skill>/grading.json`** —
+- **`no iteration under ... contains <skill-name>/grading.json`** —
   `clauditor suggest` requires a prior `clauditor grade` run. Run
   Step 5 first, then retry.
