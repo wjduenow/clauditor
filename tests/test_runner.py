@@ -24,6 +24,7 @@ from clauditor.runner import (  # noqa: E402
     _detect_background_task_noncompletion,
     _detect_interactive_hang,
     _invoke_claude_cli,
+    env_with_sync_tasks,
     env_without_api_key,
 )
 from tests.conftest import (  # noqa: E402
@@ -2740,6 +2741,73 @@ class TestEnvWithoutApiKey:
         assert result is not base
 
 
+class TestEnvWithSyncTasks:
+    """Pure-unit tests for :func:`clauditor.runner.env_with_sync_tasks`.
+
+    Tier 1.5 of GitHub #103. Covers: sets
+    ``CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1``, preserves every other
+    key, reads ``os.environ`` when ``base_env`` is ``None``, is
+    non-mutating, and composes cleanly with
+    :func:`env_without_api_key` (both directions).
+    """
+
+    def test_sets_disable_background_tasks(self):
+        base = {"PATH": "/usr/bin"}
+        result = env_with_sync_tasks(base)
+        assert result["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+        assert result["PATH"] == "/usr/bin"
+
+    def test_preserves_other_vars(self):
+        base = {
+            "ANTHROPIC_API_KEY": "sk-key",
+            "ANTHROPIC_BASE_URL": "https://proxy.example.com",
+            "PATH": "/usr/bin",
+        }
+        result = env_with_sync_tasks(base)
+        assert result["ANTHROPIC_API_KEY"] == "sk-key"
+        assert result["ANTHROPIC_BASE_URL"] == "https://proxy.example.com"
+        assert result["PATH"] == "/usr/bin"
+        assert result["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+
+    def test_default_reads_os_environ(self):
+        fake_env = {"PATH": "/usr/bin", "MARKER": "present"}
+        with patch.dict("os.environ", fake_env, clear=True):
+            result = env_with_sync_tasks()
+        assert result["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+        assert result["PATH"] == "/usr/bin"
+        assert result["MARKER"] == "present"
+
+    def test_is_non_mutating(self):
+        base = {"PATH": "/usr/bin"}
+        original = dict(base)
+        result = env_with_sync_tasks(base)
+        assert base == original
+        assert result is not base
+
+    def test_overrides_preexisting_value(self):
+        """If the caller's env already has the var set to something
+        unexpected (e.g. ``"0"``), the helper still forces ``"1"``."""
+        base = {"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "0", "PATH": "/usr/bin"}
+        result = env_with_sync_tasks(base)
+        assert result["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+
+    def test_composes_with_env_without_api_key(self):
+        """Both effects apply when the helpers are chained — the order
+        does not matter because neither touches the other's concern."""
+        base = {
+            "ANTHROPIC_API_KEY": "sk-key",
+            "ANTHROPIC_AUTH_TOKEN": "tok",
+            "PATH": "/usr/bin",
+        }
+        left = env_with_sync_tasks(env_without_api_key(base))
+        right = env_without_api_key(env_with_sync_tasks(base))
+        for result in (left, right):
+            assert "ANTHROPIC_API_KEY" not in result
+            assert "ANTHROPIC_AUTH_TOKEN" not in result
+            assert result["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+            assert result["PATH"] == "/usr/bin"
+
+
 # ---------------------------------------------------------------------------
 # US-001 (#86): Regression smoke + fixture-replay for the extraction
 # ---------------------------------------------------------------------------
@@ -3517,6 +3585,55 @@ class TestBackgroundTaskNoncompletionIntegration:
             for w in result.warnings
         ), result.warnings
         assert result.succeeded_cleanly is True
+
+    def test_sync_tasks_env_var_suppresses_warning(self):
+        """Tier 1.5 of GitHub #103: when the caller set
+        ``CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`` in the subprocess
+        env (typically via ``--sync-tasks``), the background-task
+        detector is suppressed — spawning a Task with
+        ``run_in_background=True`` under that env forces it sync, so
+        warning the user is spurious.
+        """
+        fake = make_fake_background_task_stream(
+            text="Waiting on editorial agent.",
+            launches=3,
+            num_turns=3,
+        )
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        env = {
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+            "PATH": "/usr/bin",
+        }
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            result = runner.run("skill", env=env)
+        assert result.error_category is None
+        assert not any(
+            w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
+        assert result.succeeded_cleanly is True
+
+    def test_sync_tasks_env_var_zero_does_not_suppress(self):
+        """Only the literal string ``"1"`` suppresses — any other
+        value (``"0"``, ``"false"``, missing) leaves the detector on.
+        """
+        fake = make_fake_background_task_stream(
+            text="Waiting on editorial agent.",
+            launches=3,
+            num_turns=3,
+        )
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        env = {
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "0",
+            "PATH": "/usr/bin",
+        }
+        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+            result = runner.run("skill", env=env)
+        assert result.error_category == "background-task"
+        assert any(
+            w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
+            for w in result.warnings
+        ), result.warnings
 
     def test_interactive_hang_wins_when_both_would_fire(self):
         """Precedence guard: if a stream matches both interactive-hang

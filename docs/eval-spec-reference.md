@@ -247,6 +247,18 @@ A few `EvalSpec` fields tune specific code paths and are safe to omit:
   the runner falls back to its 300-second default. Load-time
   validation rejects non-int values (including `true`/`false`) and
   values `<= 0`.
+- **`sync_tasks`** (bool, default `false`) — when `true`, clauditor
+  sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in the `claude -p`
+  subprocess env, forcing `Task(run_in_background=true)` spawns to
+  run synchronously. Skill authors who ship with background sub-
+  agents for parallel fanout but want clauditor to evaluate the
+  full transcript set this to `true` in the spec. Precedence:
+  `--sync-tasks` on the CLI wins; otherwise this field wins;
+  otherwise the default `false` applies. Load-time validation
+  rejects non-bool values. **Read the fidelity caveats in
+  [`docs/skill-usage.md#--sync-tasks-force-task-mode-synchronous-at-eval-time`](skill-usage.md#--sync-tasks-force-task-mode-synchronous-at-eval-time)
+  before enabling this field — evaluating sync is not equivalent to
+  evaluating async.**
 
 ## Schema history
 

@@ -50,6 +50,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     p_validate.add_argument(
+        "--sync-tasks",
+        action="store_true",
+        help=(
+            "Force Task(run_in_background=true) spawns to run "
+            "synchronously by setting "
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 in the "
+            "subprocess env. Overrides the skill's async behavior "
+            "for evaluation only; see "
+            "docs/adr/transport-research-103.md for the fidelity "
+            "caveats."
+        ),
+    )
+    p_validate.add_argument(
         "--timeout",
         type=_positive_int,
         default=None,
@@ -160,6 +173,9 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 run_dir=workspace.tmp_path / "run-0",
                 timeout_override=getattr(args, "timeout", None),
                 env_override=env_override,
+                sync_tasks_override=(
+                    True if getattr(args, "sync_tasks", False) else None
+                ),
             )
             if not skill_result.succeeded_cleanly:
                 print(

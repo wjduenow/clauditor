@@ -6,7 +6,12 @@ import argparse
 import sys
 from pathlib import Path
 
-from clauditor.runner import SkillRunner, env_without_api_key
+from clauditor.capture_provenance import write_capture_provenance
+from clauditor.runner import (
+    SkillRunner,
+    env_with_sync_tasks,
+    env_without_api_key,
+)
 
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -44,6 +49,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help=(
             "Strip ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN from the "
             "subprocess environment to force subscription auth."
+        ),
+    )
+    p_capture.add_argument(
+        "--sync-tasks",
+        action="store_true",
+        help=(
+            "Force Task(run_in_background=true) spawns to run "
+            "synchronously by setting "
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 in the "
+            "subprocess env. See "
+            "docs/adr/transport-research-103.md for fidelity "
+            "caveats."
         ),
     )
     p_capture.add_argument(
@@ -91,11 +108,13 @@ def cmd_capture(args: argparse.Namespace) -> int:
     runner = SkillRunner(claude_bin=args.claude_bin or "claude")
     # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags through
     # to the runner. Defaults are both None (today's behavior).
-    env_override = (
+    env_override: dict[str, str] | None = (
         env_without_api_key()
         if getattr(args, "no_api_key", False)
         else None
     )
+    if getattr(args, "sync_tasks", False):
+        env_override = env_with_sync_tasks(env_override)
     print(f"Running /{skill_name} {skill_args}...", file=sys.stderr)
     result = runner.run(
         skill_name,
@@ -112,7 +131,66 @@ def cmd_capture(args: argparse.Namespace) -> int:
         )
         return 1
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(result.output, encoding="utf-8")
-    print(f"Captured {len(result.output)} chars to {out_path}", file=sys.stderr)
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(
+            f"ERROR: could not create capture directory "
+            f"{out_path.parent}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Write the sidecar BEFORE the .txt so any .txt file on disk is
+    # guaranteed to have a companion sidecar (review nit, #117). The
+    # reverse order would leave a window where a crash between the two
+    # writes publishes a .txt that looks legacy to propose-eval. The
+    # sidecar records the ``skill_args`` that produced this capture so
+    # ``propose-eval`` can thread them into the proposed ``test_args``
+    # verbatim. Always written, even for empty args — the "no-args
+    # capture" case is a first-class shape, and the sidecar's presence
+    # is what tells propose-eval "you know the args, use them"
+    # vs absence (legacy capture from before #117) → "unknown, fall
+    # back to shape-only test_args".
+    #
+    # Copilot review on PR #118: both writes are guarded by try/except
+    # OSError so a disk-full / permission failure surfaces as a clean
+    # exit 1 instead of a raw traceback. If the ``.txt`` write fails
+    # AFTER the sidecar is on disk, we unlink the orphan sidecar so
+    # the next run is not confused by a stale one claiming args for a
+    # capture that was never written.
+    try:
+        sidecar = write_capture_provenance(
+            out_path, skill_name=skill_name, skill_args=skill_args
+        )
+    except OSError as exc:
+        print(
+            f"ERROR: could not write capture provenance sidecar: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        out_path.write_text(result.output, encoding="utf-8")
+    except OSError as exc:
+        # Unlink the orphan sidecar best-effort. ``missing_ok=True`` so
+        # a sidecar-already-gone race (from e.g. concurrent cleanup) is
+        # not a second failure layer.
+        try:
+            sidecar.unlink(missing_ok=True)
+        except OSError:
+            # Pragmatic: if we cannot remove the sidecar, surface the
+            # primary error rather than stacking a second one.
+            pass
+        print(
+            f"ERROR: could not write capture file {out_path}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(
+        f"Captured {len(result.output)} chars to {out_path} "
+        f"(provenance: {sidecar.name})",
+        file=sys.stderr,
+    )
     return 0

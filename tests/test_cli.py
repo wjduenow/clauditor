@@ -3700,6 +3700,214 @@ class TestCmdCapture:
         assert rc == 1
         assert "boom" in capsys.readouterr().err
 
+    def test_capture_writes_provenance_sidecar(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """#117: capture writes a sibling .capture.json with skill_args."""
+        import json as _json
+
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
+            rc = main([
+                "capture", "find-restaurants", "--",
+                "La Jolla, CA", "--depth", "quick",
+            ])
+        assert rc == 0
+        sidecar = tmp_path / (
+            "tests/eval/captured/find-restaurants.capture.json"
+        )
+        assert sidecar.exists()
+        data = _json.loads(sidecar.read_text())
+        assert data["schema_version"] == 1
+        assert data["skill_name"] == "find-restaurants"
+        assert data["skill_args"] == "La Jolla, CA --depth quick"
+        # stderr banner mentions the sidecar name.
+        err = capsys.readouterr().err
+        assert "find-restaurants.capture.json" in err
+
+    def test_capture_writes_empty_args_sidecar(self, tmp_path, monkeypatch):
+        """#117: capture with no args still writes the sidecar."""
+        import json as _json
+
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "find-restaurants"])
+        assert rc == 0
+        sidecar = tmp_path / (
+            "tests/eval/captured/find-restaurants.capture.json"
+        )
+        assert sidecar.exists()
+        data = _json.loads(sidecar.read_text())
+        assert data["skill_args"] == ""
+
+    def test_capture_txt_write_failure_unlinks_sidecar(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Copilot review on PR #118: if the .txt write fails AFTER the
+        sidecar is on disk, the orphan sidecar is unlinked and the CLI
+        exits 1 with a clean stderr error — not a raw traceback."""
+        from pathlib import Path as _Path
+
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+
+        real_write_text = _Path.write_text
+
+        def _selective_write_text(self, *a, **kw):
+            # Fail ONLY the .txt write. Sidecar json write proceeds.
+            # ``cmd_capture`` constructs ``out_path`` as a relative Path
+            # (``tests/eval/captured/<skill>.txt``), so compare by name.
+            if self.name == "find-restaurants.txt":
+                raise OSError("disk full")
+            return real_write_text(self, *a, **kw)
+
+        with (
+            patch(
+                "clauditor.cli.capture.SkillRunner",
+                return_value=mock_runner,
+            ),
+            patch.object(_Path, "write_text", new=_selective_write_text),
+        ):
+            rc = main(["capture", "find-restaurants"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "could not write capture file" in err
+        assert "disk full" in err
+        # Orphan sidecar must have been unlinked.
+        sidecar = tmp_path / (
+            "tests/eval/captured/find-restaurants.capture.json"
+        )
+        assert not sidecar.exists()
+        # The .txt must not exist either (write failed).
+        out_path = tmp_path / "tests/eval/captured/find-restaurants.txt"
+        assert not out_path.exists()
+
+    def test_capture_sidecar_write_failure_exits_1(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Copilot review on PR #118: sidecar write failure exits 1 with
+        a clean stderr error rather than a raw traceback."""
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+
+        with (
+            patch(
+                "clauditor.cli.capture.SkillRunner",
+                return_value=mock_runner,
+            ),
+            patch(
+                "clauditor.cli.capture.write_capture_provenance",
+                side_effect=OSError("permission denied"),
+            ),
+        ):
+            rc = main(["capture", "find-restaurants"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "could not write capture provenance sidecar" in err
+        assert "permission denied" in err
+        # No .txt either — sidecar-first invariant means we bailed before
+        # reaching the .txt write.
+        assert not (
+            tmp_path / "tests/eval/captured/find-restaurants.txt"
+        ).exists()
+
+    def test_capture_mkdir_failure_exits_1(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``out_path.parent.mkdir`` OSError surfaces as clean exit 1.
+
+        Covers the ``except OSError`` branch around the mkdir call
+        (codecov gap on PR #118): a permission-denied / read-only-fs
+        failure on the parent dir must produce a stderr ``ERROR:`` and
+        exit 1 instead of a raw traceback, before any sidecar or .txt
+        write is attempted.
+        """
+        from pathlib import Path as _Path
+
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+
+        real_mkdir = _Path.mkdir
+
+        def _selective_mkdir(self, *a, **kw):
+            # Fail ONLY the capture-output parent dir. Other mkdir
+            # calls (e.g. beads housekeeping) proceed normally.
+            if self.name == "captured":
+                raise OSError("read-only file system")
+            return real_mkdir(self, *a, **kw)
+
+        with (
+            patch(
+                "clauditor.cli.capture.SkillRunner",
+                return_value=mock_runner,
+            ),
+            patch.object(_Path, "mkdir", new=_selective_mkdir),
+        ):
+            rc = main(["capture", "find-restaurants"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "could not create capture directory" in err
+        assert "read-only file system" in err
+        # Neither sidecar nor .txt should exist.
+        assert not (
+            tmp_path / "tests/eval/captured/find-restaurants.capture.json"
+        ).exists()
+        assert not (
+            tmp_path / "tests/eval/captured/find-restaurants.txt"
+        ).exists()
+
+    def test_capture_orphan_sidecar_unlink_failure_is_tolerated(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """When .txt write fails AND the subsequent sidecar.unlink also
+        fails, the primary .txt error surfaces (the unlink failure is
+        swallowed). Covers the nested ``except OSError: pass`` block
+        (codecov gap on PR #118).
+        """
+        from pathlib import Path as _Path
+
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+
+        real_write_text = _Path.write_text
+
+        def _selective_write_text(self, *a, **kw):
+            if self.name == "find-restaurants.txt":
+                raise OSError("disk full")
+            return real_write_text(self, *a, **kw)
+
+        def _unlink_fails(self, *a, **kw):
+            raise OSError("cannot remove")
+
+        with (
+            patch(
+                "clauditor.cli.capture.SkillRunner",
+                return_value=mock_runner,
+            ),
+            patch.object(_Path, "write_text", new=_selective_write_text),
+            patch.object(_Path, "unlink", new=_unlink_fails),
+        ):
+            rc = main(["capture", "find-restaurants"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        # Primary error surfaces — the nested unlink OSError is
+        # swallowed rather than stacking a second failure layer.
+        assert "could not write capture file" in err
+        assert "disk full" in err
+        assert "cannot remove" not in err
+
 
 class TestNoApiKeyFlag:
     """US-006: --no-api-key strips both auth env vars on every skill-invoking CLI.
@@ -3856,6 +4064,173 @@ class TestNoApiKeyFlag:
         kwargs = spec.runner.run_raw.call_args.kwargs
         self._assert_env_stripped(kwargs.get("env"))
         assert kwargs.get("timeout") == 60
+
+
+class TestSyncTasksFlag:
+    """Tier 1.5 of GitHub #103: ``--sync-tasks`` on validate / grade /
+    capture / run threads ``sync_tasks_override=True`` (for spec-
+    routed commands) or directly mutates the env dict (for
+    runner-routed commands).
+    """
+
+    _VAR = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+
+    def test_validate_sync_tasks_threads_override(
+        self, tmp_path, monkeypatch
+    ):
+        """validate --sync-tasks → SkillSpec.run(sync_tasks_override=True)."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--sync-tasks"])
+        assert rc == 0
+        assert (
+            spec.run.call_args.kwargs.get("sync_tasks_override") is True
+        )
+
+    def test_validate_without_sync_tasks_threads_none(
+        self, tmp_path, monkeypatch
+    ):
+        """Without --sync-tasks, sync_tasks_override stays None."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+        assert rc == 0
+        assert (
+            spec.run.call_args.kwargs.get("sync_tasks_override") is None
+        )
+
+    def test_grade_sync_tasks_threads_override(
+        self, tmp_path, monkeypatch
+    ):
+        """grade --sync-tasks → SkillSpec.run(sync_tasks_override=True)."""
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.return_value = make_skill_result(
+            output="primary output",
+            duration_seconds=0.5,
+            input_tokens=10,
+            output_tokens=5,
+        )
+        report = make_grading_report(passed=True)
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--sync-tasks"])
+        assert rc == 0
+        assert (
+            spec.run.call_args.kwargs.get("sync_tasks_override") is True
+        )
+
+    def test_capture_sync_tasks_sets_env_var(self, tmp_path, monkeypatch):
+        """capture --sync-tasks → runner.run(env={...DISABLE...=1})."""
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="captured stdout",
+            skill_name="find-restaurants",
+            duration_seconds=0.5,
+        )
+        with patch(
+            "clauditor.cli.capture.SkillRunner", return_value=mock_runner
+        ):
+            rc = main(
+                ["capture", "find-restaurants", "--sync-tasks"]
+            )
+        assert rc == 0
+        env = mock_runner.run.call_args.kwargs.get("env")
+        assert env is not None
+        assert env[self._VAR] == "1"
+
+    def test_run_sync_tasks_sets_env_var(self, monkeypatch):
+        """run --sync-tasks → runner.run(env={...DISABLE...=1})."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="skill output",
+            skill_name="my-skill",
+            duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--sync-tasks"])
+        assert rc == 0
+        env = mock_runner.run.call_args.kwargs.get("env")
+        assert env is not None
+        assert env[self._VAR] == "1"
+
+    def test_run_no_api_key_plus_sync_tasks_composes(self, monkeypatch):
+        """--no-api-key and --sync-tasks compose: env has the sync var
+        AND the auth keys are stripped."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "token")
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="ok", skill_name="my-skill", duration_seconds=0.5,
+        )
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(
+                ["run", "my-skill", "--no-api-key", "--sync-tasks"]
+            )
+        assert rc == 0
+        env = mock_runner.run.call_args.kwargs.get("env")
+        assert env is not None
+        assert env[self._VAR] == "1"
+        assert "ANTHROPIC_API_KEY" not in env
+        assert "ANTHROPIC_AUTH_TOKEN" not in env
+
+    def test_grade_baseline_sync_tasks_threads_to_run_raw(
+        self, tmp_path, monkeypatch
+    ):
+        """grade --baseline --sync-tasks threads the env var to
+        run_raw so both arms of the baseline delta share sync mode."""
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        spec.run.return_value = make_skill_result(
+            output="primary output",
+            duration_seconds=0.5,
+            input_tokens=10,
+            output_tokens=5,
+        )
+        spec.runner = MagicMock()
+        spec.runner.run_raw.return_value = make_skill_result(
+            output="baseline output",
+            duration_seconds=0.3,
+            input_tokens=8,
+            output_tokens=4,
+            skill_name="__baseline__",
+        )
+        report = make_grading_report(passed=True)
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                ["grade", "skill.md", "--baseline", "--sync-tasks"]
+            )
+        assert rc == 0
+        spec.runner.run_raw.assert_called_once()
+        env = spec.runner.run_raw.call_args.kwargs.get("env")
+        assert env is not None
+        assert env[self._VAR] == "1"
 
 
 class TestTimeoutFlag:
