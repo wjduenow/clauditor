@@ -488,22 +488,29 @@ def build_propose_eval_prompt(propose_input: ProposeEvalInput) -> str:
         "`type: regex` assertion instead."
     )
     # URL-vs-domain selection rule (#105). The `url` format requires
-    # an `https?://` scheme; `domain` matches bare `<host>.<tld>`.
-    # Inspect how URL-shaped values actually appear in the skill
-    # output (or how SKILL.md describes them) and pick accordingly.
-    # Picking `url` when the skill's primary rendering omits the
-    # scheme causes a deterministic L2 cascade: Haiku extracts the
-    # bare values, which the `url` format then rejects wholesale.
+    # an `https?://` scheme; `domain` matches a bare `<host>.<tld>`
+    # with NO scheme. They are disjoint under `re.fullmatch` — neither
+    # accepts values in the other's shape. Picking `url` when the
+    # skill's primary rendering omits the scheme causes a
+    # deterministic L2 cascade: Haiku extracts the bare values, which
+    # the `url` format then rejects wholesale. Mixed-rendering fields
+    # cannot be covered by an L2 `format` at all (L2 has no union);
+    # point those at L1 instead.
     parts.append("")
     parts.append(
         "Choosing between `url` and `domain` for URL-shaped fields: "
-        "pick `domain` if the skill's primary rendering of URL values "
-        "omits the `https?://` scheme (e.g. `marineroom.com`). Pick "
-        "`url` only when every URL-shaped value the skill emits "
+        "the `url` format requires a scheme (`https?://...`); the "
+        "`domain` format requires a bare host with NO scheme. They "
+        "are disjoint — neither accepts values in the other's shape. "
+        "Pick `domain` when the skill's primary rendering of the "
+        "field's values is scheme-free (e.g. `marineroom.com`). Pick "
+        "`url` only when every value the skill emits into that field "
         "includes a scheme (e.g. `https://marineroom.com/`). If the "
-        "rendering is mixed, prefer `domain` — it accepts both shapes "
-        "when paired with an L1 `has_urls` or `type: regex` check for "
-        "scheme presence where that matters."
+        "skill emits a mix of both shapes into the same field, drop "
+        "the L2 `format` constraint for that field and cover the URL "
+        "shape at L1 with a `has_urls` or `type: regex` assertion "
+        "instead — L2 formats cannot express a union of bare and "
+        "schemed URLs."
     )
 
     prompt = "\n".join(parts) + "\n"

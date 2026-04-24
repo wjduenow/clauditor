@@ -543,7 +543,16 @@ class TestBuildProposeEvalPrompt:
         assert "`url` and `domain`" in prompt
         assert "`domain`" in prompt
         assert "`url`" in prompt
-        assert "`https?://`" in prompt or "https?://" in prompt
+        assert "https?://" in prompt
+
+        # The two formats must be described as disjoint (Copilot PR
+        # review, #112): an earlier draft claimed `domain` "accepts
+        # both shapes" on mixed rendering, which is false —
+        # `fullmatch` on the `domain` pattern rejects any value with
+        # a scheme. Pin the anti-claim so future edits don't
+        # reintroduce it.
+        assert "disjoint" in prompt
+        assert "cannot express a union" in prompt
 
     def test_prompt_table_is_rendered_from_constant(
         self, monkeypatch: pytest.MonkeyPatch
