@@ -5441,6 +5441,46 @@ class TestCmdSuggest:
         assert len(jsons) == 1
         assert len(diffs) == 1
 
+    def test_modern_layout_locates_iteration_by_parent_dir_name(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Regression for #100: modern-layout ``<dir>/SKILL.md`` must
+        derive ``skill_name`` from the parent dir (or frontmatter
+        ``name:``), not from ``skill_path.stem`` which returns the
+        literal ``"SKILL"``. Pre-fix this test errored with
+        "no iteration under ... contains SKILL/grading.json"."""
+        (tmp_path / ".git").mkdir()
+        skill_dir_src = tmp_path / ".claude" / "skills" / "my-skill"
+        skill_dir_src.mkdir(parents=True)
+        skill_md = skill_dir_src / "SKILL.md"
+        skill_md.write_text(
+            "---\n"
+            "name: my-skill\n"
+            "description: does things\n"
+            "---\n"
+            "\n"
+            "# My Skill\n"
+            "\n"
+            "This skill does things.\n"
+        )
+        iteration_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        self._write_grading_json(iteration_dir, all_pass=False)
+        self._write_failing_assertions(iteration_dir)
+        monkeypatch.chdir(tmp_path)
+
+        report = self._fake_report()
+        with patch(
+            "clauditor.cli.suggest.propose_edits",
+            new=AsyncMock(return_value=report),
+        ):
+            rc = main(["suggest", ".claude/skills/my-skill/SKILL.md"])
+
+        err = capsys.readouterr().err
+        assert "SKILL/grading.json" not in err, (
+            f"suggest used literal SKILL stem as skill_name: {err!r}"
+        )
+        assert rc == 0, f"expected exit 0, got {rc}; stderr={err!r}"
+
     def test_json_flag_prints_sidecar_json_to_stdout(
         self, tmp_path, monkeypatch, capsys
     ):
