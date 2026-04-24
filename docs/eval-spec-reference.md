@@ -163,9 +163,11 @@ extracted value. `format` does double duty:
 
 1. **Registered format name** — a shorthand for a built-in regex in the
    format registry. Run `python -c "from clauditor.formats import list_formats; print(list_formats())"`
-   to see the full list. Common entries: `phone_us`, `phone_intl`,
-   `email`, `url`, `domain`, `date_iso`, `date_us`, `currency_usd`,
-   `zip_us`, `percentage`, `ipv4`, `uuid`.
+   to see the full list (20 registered formats as of writing).
+   The full list: `currency_eur`, `currency_usd`, `date_iso`,
+   `date_us`, `domain`, `email`, `hex_color`, `ipv4`, `latitude`,
+   `longitude`, `percentage`, `phone_intl`, `phone_us`, `star_rating`,
+   `time_12h`, `time_24h`, `url`, `uuid`, `zip_uk`, `zip_us`.
 2. **Inline regex** — any string that isn't a registered name is
    compiled with `re.compile` and used as an anchored `fullmatch` against
    the value. Invalid regexes raise `ValueError` at spec load time.

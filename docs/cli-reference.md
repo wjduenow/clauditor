@@ -350,6 +350,145 @@ Non-LLM 0/1/2 taxonomy per `.claude/rules/llm-cli-exit-code-taxonomy.md` (the "d
 
 See also [docs/badges.md](./badges.md) for placement guidance (README vs SKILL.md vs catalog page), the full color-logic table, and a CI integration stub.
 
+## Other commands
+
+The remaining subcommands are documented compactly here. Each accepts `--help` for the live argparse output, which is the canonical source.
+
+### `init`
+
+Generate a starter `eval.json` next to a `SKILL.md`. Reads the skill's frontmatter to infer `skill_name`, then writes a minimal eval spec with no assertions or criteria. Run this once when adopting clauditor for an existing skill, then iterate via `propose-eval`, `validate`, and `grade`.
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--force` | Overwrite an existing `eval.json` next to the skill. Default behavior is to refuse and exit 1 to protect hand-tuned specs. |
+
+### `validate`
+
+Run Layer 1 deterministic assertions against a skill's output. Spawns the skill via `claude -p`, captures stdout, then evaluates each assertion in `eval.json`. No LLM call on the clauditor side.
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--eval PATH` | Path to `eval.json`; auto-discovered alongside the skill file if omitted. |
+| `--output PATH` | Path to a pre-captured output file. Skips running the skill — useful when iterating on assertions against a single capture. |
+| `--json` | Emit results as JSON instead of the human-readable summary. |
+| `--no-transcript` | Skip writing per-run stream-json transcripts to disk. |
+| `-v / --verbose` | On assertion failure, print the last 5 assistant text blocks to stderr. |
+
+Also accepts the [shared runner flags](#shared-runner-flags-validate-grade-capture-run): `--no-api-key`, `--sync-tasks`, `--timeout`.
+
+### `grade`
+
+Run Layer 3 LLM-graded quality scoring. Auto-increments the iteration slot (`.clauditor/iteration-N/<skill>/`) so historical comparisons stay coherent.
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--eval PATH` | Path to `eval.json`; auto-discovered if omitted. |
+| `--output PATH` | Path to pre-captured output; skips running the skill. |
+| `--model MODEL` | Override the grading model (default `claude-sonnet-4-6` or `EvalSpec.grading_model`). |
+| `--json` | Emit grading report as JSON. |
+| `--dry-run` | Print the grading prompt without making any API call. Cost-free preview. |
+| `--variance N` | Run the skill `N` times and grade each; reports cross-run stability. |
+| `--iteration N` | Write to a specific iteration slot (default: auto-increment). |
+| `--force` | With `--iteration N`, overwrite an existing iteration directory. |
+| `--diff` | Compare against the previous iteration's `grading.json`. |
+| `--baseline` | After grading, also run `test_args` through Claude **without** the skill prefix and capture baseline L1/L2/L3 sidecars. Roughly doubles LLM cost. |
+| `--min-baseline-delta FLOAT` | Gate on the with-skill-vs-baseline pass-rate delta. Exit 1 when the skill underperforms its baseline by more than this margin. |
+| `--only-criterion SUBSTRING` | Run only criteria whose name contains the substring (repeatable). Skips the history append. |
+| `--transport {api,cli,auto}` | Override the Anthropic call backend. See [transport architecture](#transport-architecture). |
+
+Also accepts the shared runner flags: `--no-api-key`, `--sync-tasks`, `--timeout`, `-v`, `--no-transcript`.
+
+### `run`
+
+Run a skill via `claude -p` and print its output to stdout. The thinnest of the skill-invoking commands — no eval, no assertions, no grading.
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--args STRING` | Arguments to pass to the skill command. |
+| `--project-dir PATH` | Override project-root detection (default: cwd). |
+| `--timeout SECONDS`, `--no-api-key`, `--sync-tasks` | Shared runner flags. |
+
+### `extract`
+
+Run Layer 2 schema extraction. Sends the skill output to a small LLM (default Haiku) along with the `sections` schema declared in `eval.json`, then validates the extracted JSON against per-tier field requirements. Produces the `extraction.json` sidecar.
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--eval PATH` | Path to `eval.json`; auto-discovered if omitted. |
+| `--output PATH` | Pre-captured output path; skips the skill subprocess. |
+| `--model MODEL` | Override the extraction model. |
+| `--json` | Emit results as JSON. |
+| `--dry-run` | Print the extraction prompt without making an API call. |
+| `-v / --verbose` | Print raw model JSON under failing assertions when available. |
+| `--transport {api,cli,auto}` | Override the Anthropic call backend. |
+
+### `triggers`
+
+Test trigger precision: send each `should_trigger` and `should_not_trigger` query in `eval.json` to a small LLM judge that decides whether your skill *should* have fired for that query. Catches over-/under-triggering before users do.
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--eval PATH` | Path to `eval.json`; auto-discovered if omitted. |
+| `--model MODEL` | Override the judge model. |
+| `--json` | Emit results as JSON. |
+| `--dry-run` | Print sample trigger prompts. |
+| `--transport {api,cli,auto}` | Override the Anthropic call backend. |
+
+### `compare`
+
+Diff two iterations or two captured outputs. Three modes:
+
+- `clauditor compare --skill <skill> --from N --to M` — diff iteration `N` vs `M` for a skill (resolves directories under `.clauditor/iteration-*`).
+- `clauditor compare <iter-dir-1> <iter-dir-2>` — diff two iteration directories directly.
+- `clauditor compare before.txt after.txt --spec <skill.md>` — re-grade two captured outputs and show the delta.
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--spec PATH` | Path to the skill `.md`; required when diffing `.txt` files. |
+| `--eval PATH` | Path to `eval.json`; auto-discovered if omitted. |
+| `--skill NAME`, `--from N`, `--to N` | Skill name + iteration numbers (alternative to positional iteration dirs). |
+| `--blind` | Run a blind A/B LLM judge over the two outputs and print a preference verdict. Requires `--spec` and `EvalSpec.user_prompt`. |
+| `--transport {api,cli,auto}` | Backend selector; only used with `--blind`. |
+
+Exits 1 when a regression is detected (assertion that previously passed now fails, or grading score drops below threshold).
+
+### `audit`
+
+Aggregate per-assertion pass rates across the most recent N iteration workspaces. Surfaces assertions that are flaky, never fire, or fail to discriminate between the with-skill and baseline arms.
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--last N` | Consider the last `N` iteration directories (default 20). |
+| `--min-fail-rate FLOAT` | Flag assertions whose fail rate is at least this value (0.0–1.0). |
+| `--min-discrimination FLOAT` | Flag assertions whose with-vs-baseline pass-rate delta is below this value. |
+| `--json` | Emit a machine-readable JSON report instead of the table. |
+| `--output-dir PATH` | Directory to write audit reports. |
+
+### `trend`
+
+Print a tab-separated history of a metric across iterations, with an ASCII sparkline. Reads `.clauditor/history.jsonl`.
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--metric PATH` | Metric to trend: `pass_rate`, `mean_score`, or a dotted path into `metrics` (e.g. `total.total`, `grader.input_tokens`). Required unless `--list-metrics` is used. |
+| `--list-metrics` | List every available metric path in history for the skill. |
+| `--command {grade,extract,validate,all}` | Filter records by subcommand (default `grade`). |
+| `--last N` | Show the last `N` records (default 20, must be ≥ 1). |
+
+### `setup`
+
+Install the bundled `/clauditor` slash command by symlinking `.claude/skills/clauditor` → the package's bundled SKILL.md. Idempotent; refuses to overwrite unrelated files or symlinks pointing elsewhere.
+
+| Flag | Purpose |
+| ---- | ------- |
+| `--unlink` | Remove a previously-installed `/clauditor` symlink. Only removes our own symlinks; refuses to touch unrelated entries. |
+| `--force` | Overwrite an existing file or symlink at `.claude/skills/clauditor`. No effect under `--unlink`. |
+| `--project-dir PATH` | Override project-root detection; use this directory as the cwd for `.claude/` resolution. |
+
+### `doctor`
+
+Print environment diagnostics: clauditor version, `claude` CLI presence and version, Anthropic SDK version, auth state (API key present? CLI cached creds?), and any common misconfiguration. Takes no flags. Run this first when something feels wrong.
+
 ## Shared runner flags (`validate`, `grade`, `capture`, `run`)
 
 Four skill-invoking commands share three flags that control the `claude -p` subprocess the runner spawns. All default to "not set" so today's behavior is unchanged when none are passed.
