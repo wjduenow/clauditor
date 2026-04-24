@@ -3819,6 +3819,95 @@ class TestCmdCapture:
             tmp_path / "tests/eval/captured/find-restaurants.txt"
         ).exists()
 
+    def test_capture_mkdir_failure_exits_1(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``out_path.parent.mkdir`` OSError surfaces as clean exit 1.
+
+        Covers the ``except OSError`` branch around the mkdir call
+        (codecov gap on PR #118): a permission-denied / read-only-fs
+        failure on the parent dir must produce a stderr ``ERROR:`` and
+        exit 1 instead of a raw traceback, before any sidecar or .txt
+        write is attempted.
+        """
+        from pathlib import Path as _Path
+
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+
+        real_mkdir = _Path.mkdir
+
+        def _selective_mkdir(self, *a, **kw):
+            # Fail ONLY the capture-output parent dir. Other mkdir
+            # calls (e.g. beads housekeeping) proceed normally.
+            if self.name == "captured":
+                raise OSError("read-only file system")
+            return real_mkdir(self, *a, **kw)
+
+        with (
+            patch(
+                "clauditor.cli.capture.SkillRunner",
+                return_value=mock_runner,
+            ),
+            patch.object(_Path, "mkdir", new=_selective_mkdir),
+        ):
+            rc = main(["capture", "find-restaurants"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "could not create capture directory" in err
+        assert "read-only file system" in err
+        # Neither sidecar nor .txt should exist.
+        assert not (
+            tmp_path / "tests/eval/captured/find-restaurants.capture.json"
+        ).exists()
+        assert not (
+            tmp_path / "tests/eval/captured/find-restaurants.txt"
+        ).exists()
+
+    def test_capture_orphan_sidecar_unlink_failure_is_tolerated(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """When .txt write fails AND the subsequent sidecar.unlink also
+        fails, the primary .txt error surfaces (the unlink failure is
+        swallowed). Covers the nested ``except OSError: pass`` block
+        (codecov gap on PR #118).
+        """
+        from pathlib import Path as _Path
+
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+
+        real_write_text = _Path.write_text
+
+        def _selective_write_text(self, *a, **kw):
+            if self.name == "find-restaurants.txt":
+                raise OSError("disk full")
+            return real_write_text(self, *a, **kw)
+
+        def _unlink_fails(self, *a, **kw):
+            raise OSError("cannot remove")
+
+        with (
+            patch(
+                "clauditor.cli.capture.SkillRunner",
+                return_value=mock_runner,
+            ),
+            patch.object(_Path, "write_text", new=_selective_write_text),
+            patch.object(_Path, "unlink", new=_unlink_fails),
+        ):
+            rc = main(["capture", "find-restaurants"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        # Primary error surfaces — the nested unlink OSError is
+        # swallowed rather than stacking a second failure layer.
+        assert "could not write capture file" in err
+        assert "disk full" in err
+        assert "cannot remove" not in err
+
 
 class TestNoApiKeyFlag:
     """US-006: --no-api-key strips both auth env vars on every skill-invoking CLI.
