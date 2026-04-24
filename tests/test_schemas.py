@@ -1944,6 +1944,53 @@ class TestAllowHangHeuristic:
         assert spec.allow_hang_heuristic is True
 
 
+class TestSyncTasks:
+    """Tier 1.5 of GitHub #103: ``EvalSpec.sync_tasks`` parsing in
+    ``from_dict``.
+
+    Default ``False`` preserves back-compat; explicit True/False
+    round-trips; non-bool values raise the documented ``ValueError``.
+    Bool-guard is load-bearing per
+    ``.claude/rules/constant-with-type-info.md``.
+    """
+
+    def _dump(self, tmp_path, payload) -> str:
+        path = tmp_path / "spec.eval.json"
+        path.write_text(json.dumps(payload))
+        return str(path)
+
+    def test_default_is_false_when_absent(self, tmp_path):
+        path = self._dump(tmp_path, {"skill_name": "s"})
+        spec = EvalSpec.from_file(path)
+        assert spec.sync_tasks is False
+
+    def test_explicit_true_round_trips(self, tmp_path):
+        path = self._dump(tmp_path, {"skill_name": "s", "sync_tasks": True})
+        spec = EvalSpec.from_file(path)
+        assert spec.sync_tasks is True
+        # to_dict emits non-default only
+        assert spec.to_dict()["sync_tasks"] is True
+
+    def test_explicit_false_round_trips(self, tmp_path):
+        path = self._dump(tmp_path, {"skill_name": "s", "sync_tasks": False})
+        spec = EvalSpec.from_file(path)
+        assert spec.sync_tasks is False
+        # Default value is omitted from to_dict output.
+        assert "sync_tasks" not in spec.to_dict()
+
+    @pytest.mark.parametrize("bad_value", ["true", "false", 0, 1, None, []])
+    def test_non_bool_raises(self, tmp_path, bad_value):
+        path = self._dump(
+            tmp_path,
+            {"skill_name": "s", "sync_tasks": bad_value},
+        )
+        with pytest.raises(
+            ValueError,
+            match="'sync_tasks' must be a bool",
+        ):
+            EvalSpec.from_file(path)
+
+
 class TestEvalSpecTransport:
     """DEC-012 of #86: ``EvalSpec.transport`` parsing in ``from_dict``.
 
