@@ -1221,13 +1221,23 @@ class TestExtractAndReportEmptyResponse:
             ],
         )
 
-        fake_response = MagicMock()
-        fake_response.content = []
-        fake_response.usage.input_tokens = 10
-        fake_response.usage.output_tokens = 3
+        # Parse retry (clauditor-6cf / #94): empty content triggers one
+        # retry. Provide 2 empty responses; the final report should
+        # still carry the "no text blocks" parse error and sum tokens
+        # across attempts.
+        empty_a = MagicMock()
+        empty_a.content = []
+        empty_a.usage.input_tokens = 10
+        empty_a.usage.output_tokens = 3
+        empty_b = MagicMock()
+        empty_b.content = []
+        empty_b.usage.input_tokens = 11
+        empty_b.usage.output_tokens = 4
 
         fake_client = MagicMock()
-        fake_client.messages.create = AsyncMock(return_value=fake_response)
+        fake_client.messages.create = AsyncMock(
+            side_effect=[empty_a, empty_b]
+        )
 
         with patch(
             "anthropic.AsyncAnthropic", return_value=fake_client
@@ -1239,8 +1249,8 @@ class TestExtractAndReportEmptyResponse:
         assert report.parse_errors
         assert "no text blocks" in report.parse_errors[0]
         assert report.results == []
-        assert report.input_tokens == 10
-        assert report.output_tokens == 3
+        assert report.input_tokens == 21
+        assert report.output_tokens == 7
 
     @pytest.mark.asyncio
     async def test_extract_and_grade_handles_empty_content(self) -> None:
@@ -1282,6 +1292,119 @@ class TestExtractAndReportEmptyResponse:
         assert result.results
         assert result.results[0].name == "grader:parse"
         assert "no text blocks" in result.results[0].message
+
+
+class TestExtractAndReportParseRetry:
+    """Parse retry (clauditor-6cf / #94): L2 orchestrators retry once on
+    JSON decode failure. Parallel to
+    :class:`tests.test_quality_grader.TestGradeQuality`'s retry tests."""
+
+    def _minimal_spec(self) -> EvalSpec:
+        return EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[
+                                FieldRequirement(
+                                    name="venue_name", id="v1"
+                                )
+                            ],
+                        )
+                    ],
+                )
+            ],
+        )
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_retries_on_malformed_json(self, capsys):
+        from clauditor.grader import extract_and_report
+
+        spec = self._minimal_spec()
+        good_payload = {
+            "Venues": {"primary": [{"venue_name": "A"}]}
+        }
+        bad = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        bad.content = [MagicMock(type="text", text="definitely not json")]
+        good = MagicMock(usage=MagicMock(input_tokens=100, output_tokens=50))
+        good.content = [
+            MagicMock(type="text", text=json.dumps(good_payload))
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[bad, good])
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await extract_and_report("out", spec, skill_name="s")
+        # Retry succeeded → parse_errors empty, tokens accumulated.
+        assert report.parse_errors == []
+        assert report.input_tokens == 110
+        assert report.output_tokens == 55
+        # Stderr records the retry.
+        captured = capsys.readouterr()
+        assert "extract_and_report" in captured.err
+        assert "retrying" in captured.err.lower()
+
+    @pytest.mark.asyncio
+    async def test_extract_and_grade_retries_on_malformed_json(self, capsys):
+        from clauditor.grader import extract_and_grade
+
+        spec = self._minimal_spec()
+        good_payload = {
+            "Venues": {"primary": [{"venue_name": "A"}]}
+        }
+        bad = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        bad.content = [MagicMock(type="text", text="oh no not json")]
+        good = MagicMock(usage=MagicMock(input_tokens=100, output_tokens=50))
+        good.content = [
+            MagicMock(type="text", text=json.dumps(good_payload))
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[bad, good])
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            result = await extract_and_grade("out", spec)
+        # Retry succeeded → no grader:parse failure assertion.
+        assert not any(r.name == "grader:parse" for r in result.results)
+        assert result.input_tokens == 110
+        assert result.output_tokens == 55
+        captured = capsys.readouterr()
+        assert "extract_and_grade" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_no_retry_on_success(self):
+        from clauditor.grader import extract_and_report
+
+        spec = self._minimal_spec()
+        good_payload = {"Venues": {"primary": [{"venue_name": "A"}]}}
+        good = MagicMock(usage=MagicMock(input_tokens=100, output_tokens=50))
+        good.content = [
+            MagicMock(type="text", text=json.dumps(good_payload))
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(return_value=good)
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            await extract_and_report("out", spec, skill_name="s")
+        assert mock_client.messages.create.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_both_attempts_fail(self):
+        from clauditor.grader import extract_and_report
+
+        spec = self._minimal_spec()
+        bad_a = MagicMock(usage=MagicMock(input_tokens=10, output_tokens=5))
+        bad_a.content = [MagicMock(type="text", text="junk")]
+        bad_b = MagicMock(usage=MagicMock(input_tokens=11, output_tokens=6))
+        bad_b.content = [MagicMock(type="text", text="still junk")]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=[bad_a, bad_b])
+        with patch("anthropic.AsyncAnthropic", return_value=mock_client):
+            report = await extract_and_report("out", spec, skill_name="s")
+        assert report.parse_errors
+        # C: the detailed error message (line/col/ends-with) propagates.
+        assert any("at line" in err for err in report.parse_errors)
+        assert report.input_tokens == 21
+        assert report.output_tokens == 11
 
 
 class TestExtractAndReportHappyPath:
@@ -1723,6 +1846,60 @@ class TestStripMarkdownFence:
         # Only a single ``` with no closing partner: fallback to input.
         text = 'hello ``` world'
         assert _strip_markdown_fence(text) == text
+
+
+class TestDescribeJsonParseFailure:
+    """Pure helper: grader JSON parse failure → operator-readable string.
+
+    C (clauditor-6cf / #94): this is the shared error-description helper
+    used by both ``clauditor.grader`` and ``clauditor.quality_grader``.
+    """
+
+    def test_includes_decoder_position_and_length(self):
+        from clauditor.grader import describe_json_parse_failure
+
+        text = '{"broken": '  # trailing
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
+            msg = describe_json_parse_failure(text, exc)
+        assert "at line" in msg
+        assert "col" in msg
+        assert f"{len(text)} chars" in msg
+        assert "ends with" in msg
+
+    def test_tail_visible_for_malformed_but_complete(self):
+        """The tail should expose the final bytes so a reader can tell
+        malformed-JSON (tail is ``]`` / ``}``) from true truncation
+        (tail is mid-content)."""
+        from clauditor.grader import describe_json_parse_failure
+
+        # JSON array closed but with unescaped interior quote — the
+        # tail must include the closing bracket so the reader knows
+        # this wasn't truncated.
+        text = '[{"k":"v with "bad" quote"}]'
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
+            msg = describe_json_parse_failure(text, exc)
+        assert "]" in msg  # closing bracket surfaces in tail
+
+    def test_tail_truncated_for_long_responses(self):
+        """Long responses should only show a trailing window, not the
+        whole text, so the error stays one line of readable output."""
+        from clauditor.grader import describe_json_parse_failure
+
+        # 2KB of whitespace followed by broken JSON.
+        filler = " " * 2000
+        text = filler + "{"
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
+            msg = describe_json_parse_failure(text, exc)
+        # The full text's length is recorded …
+        assert f"{len(text)} chars" in msg
+        # … but the rendered message itself is not 2KB long.
+        assert len(msg) < 500
 
 
 class TestBuildExtractionPromptWithOutput:

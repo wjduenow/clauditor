@@ -14,6 +14,13 @@ from clauditor.assertions import AssertionResult, AssertionSet
 from clauditor.formats import get_format
 from clauditor.schemas import EvalSpec
 
+# Grader-orchestrator parse retry (clauditor-6cf / #94). See module
+# docstring of :mod:`clauditor.quality_grader` for the rationale and
+# distinction from transport-layer retries; mirrored here so the L2
+# extract_and_grade / extract_and_report paths inherit the same
+# recovery shape as L3 grade_quality / blind_compare.
+_GRADER_PARSE_RETRY_LIMIT = 2
+
 
 @dataclass
 class ExtractedEntry:
@@ -422,6 +429,25 @@ def _strip_markdown_fence(text: str) -> str:
     return text
 
 
+def describe_json_parse_failure(
+    text: str, exc: json.JSONDecodeError
+) -> str:
+    """Format a grader-response JSON parse failure for operator eyes.
+
+    Includes the decoder's message, position, response length, and a
+    short tail of the bytes so a reader can distinguish malformed-JSON
+    (tail looks like ``]`` / ``}``) from true truncation (tail is
+    mid-content). Used by both :mod:`clauditor.grader` and
+    :mod:`clauditor.quality_grader`. See bead ``clauditor-6cf`` / #94.
+    """
+    tail = text[-120:] if len(text) > 120 else text
+    return (
+        f"Failed to parse grader response as JSON: {exc.msg} "
+        f"at line {exc.lineno} col {exc.colno}. "
+        f"Response was {len(text)} chars; ends with: {tail!r}"
+    )
+
+
 def parse_extraction_response(
     text: str, eval_spec: EvalSpec
 ) -> ExtractionParseResult:
@@ -437,14 +463,26 @@ def parse_extraction_response(
     json_str = _strip_markdown_fence(text)
     try:
         raw = json.loads(json_str.strip())
-    except (json.JSONDecodeError, IndexError):
+    except json.JSONDecodeError as exc:
+        return ExtractionParseResult(
+            extracted=ExtractedOutput(),
+            parse_errors=[
+                ExtractionParseError(
+                    kind="json",
+                    message=describe_json_parse_failure(text, exc),
+                    evidence=text[:200],
+                )
+            ],
+        )
+    except IndexError:
         return ExtractionParseResult(
             extracted=ExtractedOutput(),
             parse_errors=[
                 ExtractionParseError(
                     kind="json",
                     message=(
-                        f"Failed to parse grader response as JSON: "
+                        f"Failed to parse grader response as JSON "
+                        f"(empty or truncated after fence strip): "
                         f"{text[:200]}"
                     ),
                     evidence=text[:200],
@@ -738,6 +776,58 @@ def build_extraction_report_from_text(
     )
 
 
+async def _extract_call_with_retry(
+    prompt: str,
+    eval_spec: EvalSpec,
+    *,
+    model: str,
+    transport: str,
+    ctx: str,
+) -> tuple[str, str, int, int]:
+    """Issue the extraction Anthropic call with parse retry.
+
+    Returns ``(response_text, source, input_tokens, output_tokens)`` — the
+    final attempt's response text, the transport source, and cumulative
+    token counts across attempts. One retry on JSON decode failure per
+    clauditor-6cf / #94; no retry on flat-list / shape failures, which
+    indicate a model-protocol bug rather than a transient hiccup.
+    """
+    from clauditor._anthropic import call_anthropic
+    from clauditor.quality_grader import _emit_parse_retry_notice
+
+    total_input = 0
+    total_output = 0
+    last_text = ""
+    last_source = "api"
+    for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
+        api_result = await call_anthropic(
+            prompt, model=model, max_tokens=4096, transport=transport
+        )
+        total_input += api_result.input_tokens
+        total_output += api_result.output_tokens
+        last_source = api_result.source
+        last_text = (
+            api_result.text_blocks[0] if api_result.text_blocks else ""
+        )
+        if not last_text:
+            # Empty response — retry-worthy.
+            if attempt < _GRADER_PARSE_RETRY_LIMIT - 1:
+                _emit_parse_retry_notice(
+                    ctx, attempt + 2, _GRADER_PARSE_RETRY_LIMIT
+                )
+                continue
+            break
+        parse = parse_extraction_response(last_text, eval_spec)
+        has_json_error = any(err.kind == "json" for err in parse.parse_errors)
+        if not has_json_error:
+            break
+        if attempt < _GRADER_PARSE_RETRY_LIMIT - 1:
+            _emit_parse_retry_notice(
+                ctx, attempt + 2, _GRADER_PARSE_RETRY_LIMIT
+            )
+    return last_text, last_source, total_input, total_output
+
+
 async def extract_and_grade(
     output: str,
     eval_spec: EvalSpec,
@@ -746,22 +836,23 @@ async def extract_and_grade(
 ) -> AssertionSet:
     """Layer 2: Extract structured data with Haiku, then validate against schema.
 
-    Thin async wrapper: builds a prompt, issues one Anthropic call, parses
-    the response, and returns an :class:`AssertionSet`. All verdict logic
+    Thin async wrapper: builds a prompt, issues up to
+    :data:`_GRADER_PARSE_RETRY_LIMIT` Anthropic calls (one retry on
+    malformed-JSON response — see clauditor-6cf / #94), parses the
+    response, and returns an :class:`AssertionSet`. All verdict logic
     lives in the pure helpers :func:`build_extraction_prompt`,
     :func:`parse_extraction_response`, :func:`grade_extraction`, and
     :func:`build_extraction_assertion_set`.
 
     Requires the 'grader' extra: pip install clauditor[grader]
     """
-    from clauditor._anthropic import call_anthropic
-
     prompt = build_extraction_prompt(eval_spec, output)
-    api_result = await call_anthropic(
-        prompt, model=model, max_tokens=4096, transport=transport
-    )
-    response_text = (
-        api_result.text_blocks[0] if api_result.text_blocks else ""
+    response_text, _source, input_tokens, output_tokens = (
+        await _extract_call_with_retry(
+            prompt, eval_spec,
+            model=model, transport=transport,
+            ctx="extract_and_grade",
+        )
     )
     # Note: AssertionSet does not carry transport_source — extract_and_grade's
     # sidecar (``assertions.json``) is unaffected by US-006. The transport
@@ -770,8 +861,8 @@ async def extract_and_grade(
     return build_extraction_assertion_set(
         response_text,
         eval_spec,
-        input_tokens=api_result.input_tokens,
-        output_tokens=api_result.output_tokens,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
     )
 
 
@@ -785,8 +876,10 @@ async def extract_and_report(
 ) -> ExtractionReport:
     """Layer 2 wrapper that returns a field-id-keyed :class:`ExtractionReport`.
 
-    Thin async wrapper: builds a prompt, issues one Anthropic call, parses
-    the response, and aggregates an :class:`ExtractionReport`. All verdict
+    Thin async wrapper: builds a prompt, issues up to
+    :data:`_GRADER_PARSE_RETRY_LIMIT` Anthropic calls (one retry on
+    malformed-JSON response — see clauditor-6cf / #94), parses the
+    response, and aggregates an :class:`ExtractionReport`. All verdict
     logic lives in the pure helpers :func:`build_extraction_prompt`,
     :func:`parse_extraction_response`, :func:`build_extraction_report`, and
     :func:`build_extraction_report_from_text`.
@@ -794,21 +887,20 @@ async def extract_and_report(
     Used by ``cmd_grade`` (US-003) to persist per-field extraction results to
     ``iteration-N/<skill>/extraction.json``.
     """
-    from clauditor._anthropic import call_anthropic
-
     prompt = build_extraction_prompt(eval_spec, output)
-    api_result = await call_anthropic(
-        prompt, model=model, max_tokens=4096, transport=transport
-    )
-    response_text = (
-        api_result.text_blocks[0] if api_result.text_blocks else ""
+    response_text, source, input_tokens, output_tokens = (
+        await _extract_call_with_retry(
+            prompt, eval_spec,
+            model=model, transport=transport,
+            ctx="extract_and_report",
+        )
     )
     return build_extraction_report_from_text(
         response_text,
         eval_spec,
         skill_name=skill_name,
         model=model,
-        input_tokens=api_result.input_tokens,
-        output_tokens=api_result.output_tokens,
-        transport_source=api_result.source,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        transport_source=source,
     )
