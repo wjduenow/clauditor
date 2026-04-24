@@ -268,6 +268,7 @@ Running `clauditor grade <skill> --transport cli` is the one-liner for subscript
 - [`docs/eval-spec-reference.md`](docs/eval-spec-reference.md) — complete `.eval.json` schema
 - [`docs/pytest-plugin.md`](docs/pytest-plugin.md) — pytest fixtures and options
 - [`docs/skill-usage.md`](docs/skill-usage.md) — using `/clauditor` in Claude Code
+- [`docs/skills.md`](docs/skills.md) — catalog of skills shipped with this repo, with live badge status
 - [`docs/badges.md`](docs/badges.md) — shields.io badges from iteration sidecars (`clauditor badge`)
 - [`docs/stream-json-schema.md`](docs/stream-json-schema.md) — `claude` stream-json parser contract
 - [`docs/transport-architecture.md`](docs/transport-architecture.md) — CLI vs SDK transport, auth-state matrix, precedence, migration
