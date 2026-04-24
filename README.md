@@ -53,9 +53,9 @@ uv sync --dev
 
 ## One-minute example
 
-A skill lives in `.claude/skills/<name>/SKILL.md` (modern layout) or `.claude/commands/<name>.md` (older layout). Either works. If you don't know which you have, run `ls .claude/` from your project root to check.
+Both paths below assume you already have a `SKILL.md` — clauditor checks skills, it doesn't write them. A skill lives in `.claude/skills/<name>/SKILL.md` (modern layout) or `.claude/commands/<name>.md` (older layout); run `ls .claude/` from your project root if you're not sure which you have.
 
-**I'm starting from scratch** — no SKILL.md yet, or one that has no eval spec next to it:
+**I want a minimal eval spec I'll fill in myself.** `clauditor init` reads your SKILL.md and writes a bare-bones `eval.json` next to it — no LLM call, no tokens spent. You add assertions and grading criteria from there.
 
 ```bash
 clauditor init .claude/skills/my-skill/SKILL.md       # generate a starter eval spec
@@ -69,7 +69,7 @@ Expected output:
 4/4 assertions passed (100%)
 ```
 
-**I already have a SKILL.md and want clauditor to write a richer eval spec for me:**
+**I want clauditor to write a richer eval spec for me.** `clauditor propose-eval` sends your SKILL.md (and optionally a captured real-world run) to an LLM and gets back a populated `eval.json` with assertions, sections, and grading criteria already drafted.
 
 ```bash
 clauditor propose-eval .claude/skills/my-skill/SKILL.md --dry-run  # preview the prompt — no tokens spent
