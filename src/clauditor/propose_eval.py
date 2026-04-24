@@ -122,6 +122,14 @@ class ProposeEvalInput:
     # and the CLI layer surfaces a one-line stderr note so the user
     # knows to edit ``test_args`` before running ``validate``.
     captured_skill_args: str | None = None
+    # Absolute path to the capture ``.txt`` actually used (either
+    # discovered via DEC-001 or pointed at by ``--from-capture`` /
+    # ``--from-iteration``). The CLI layer uses it to distinguish
+    # "no sidecar on disk" (warn about shape-only placeholder) from
+    # "sidecar present but rejected" (``read_capture_provenance``
+    # already emitted its own warning — do NOT double-warn). See
+    # Copilot review on PR #118.
+    capture_path: Path | None = None
 
 
 @dataclass
@@ -298,7 +306,13 @@ def load_propose_eval_input(
         # a shape-only ``test_args`` and the CLI surfaces a stderr
         # note. Skip-and-warn on schema-mismatch / malformed sidecar
         # is handled inside :func:`read_capture_provenance`.
-        provenance = read_capture_provenance(chosen)
+        # Copilot review on PR #118: pass ``expected_skill_name`` so a
+        # sidecar produced by a *different* skill is rejected with a
+        # stderr warning instead of silently threading unrelated args
+        # into ``test_args``.
+        provenance = read_capture_provenance(
+            chosen, expected_skill_name=skill_name
+        )
         if provenance is not None:
             captured_skill_args = provenance.skill_args
 
@@ -310,6 +324,7 @@ def load_propose_eval_input(
         capture_text=capture_text,
         capture_source=capture_source,
         captured_skill_args=captured_skill_args,
+        capture_path=chosen,
     )
 
 

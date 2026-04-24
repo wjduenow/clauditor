@@ -3744,6 +3744,81 @@ class TestCmdCapture:
         data = _json.loads(sidecar.read_text())
         assert data["skill_args"] == ""
 
+    def test_capture_txt_write_failure_unlinks_sidecar(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Copilot review on PR #118: if the .txt write fails AFTER the
+        sidecar is on disk, the orphan sidecar is unlinked and the CLI
+        exits 1 with a clean stderr error — not a raw traceback."""
+        from pathlib import Path as _Path
+
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+
+        real_write_text = _Path.write_text
+
+        def _selective_write_text(self, *a, **kw):
+            # Fail ONLY the .txt write. Sidecar json write proceeds.
+            # ``cmd_capture`` constructs ``out_path`` as a relative Path
+            # (``tests/eval/captured/<skill>.txt``), so compare by name.
+            if self.name == "find-restaurants.txt":
+                raise OSError("disk full")
+            return real_write_text(self, *a, **kw)
+
+        with (
+            patch(
+                "clauditor.cli.capture.SkillRunner",
+                return_value=mock_runner,
+            ),
+            patch.object(_Path, "write_text", new=_selective_write_text),
+        ):
+            rc = main(["capture", "find-restaurants"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "could not write capture file" in err
+        assert "disk full" in err
+        # Orphan sidecar must have been unlinked.
+        sidecar = tmp_path / (
+            "tests/eval/captured/find-restaurants.capture.json"
+        )
+        assert not sidecar.exists()
+        # The .txt must not exist either (write failed).
+        out_path = tmp_path / "tests/eval/captured/find-restaurants.txt"
+        assert not out_path.exists()
+
+    def test_capture_sidecar_write_failure_exits_1(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Copilot review on PR #118: sidecar write failure exits 1 with
+        a clean stderr error rather than a raw traceback."""
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+
+        with (
+            patch(
+                "clauditor.cli.capture.SkillRunner",
+                return_value=mock_runner,
+            ),
+            patch(
+                "clauditor.cli.capture.write_capture_provenance",
+                side_effect=OSError("permission denied"),
+            ),
+        ):
+            rc = main(["capture", "find-restaurants"])
+
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "could not write capture provenance sidecar" in err
+        assert "permission denied" in err
+        # No .txt either — sidecar-first invariant means we bailed before
+        # reaching the .txt write.
+        assert not (
+            tmp_path / "tests/eval/captured/find-restaurants.txt"
+        ).exists()
+
 
 class TestNoApiKeyFlag:
     """US-006: --no-api-key strips both auth env vars on every skill-invoking CLI.

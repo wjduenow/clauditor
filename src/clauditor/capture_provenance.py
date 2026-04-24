@@ -132,10 +132,12 @@ def write_capture_provenance(
 
 def read_capture_provenance(
     capture_txt_path: Path,
+    *,
+    expected_skill_name: str | None = None,
 ) -> CaptureProvenance | None:
     """Return the sidecar for a capture file, or ``None`` if missing/invalid.
 
-    Tolerates three failure modes without raising:
+    Tolerates four failure modes without raising:
 
     * Sidecar does not exist → ``None`` silently.
     * Sidecar exists but has the wrong ``schema_version`` → ``None``
@@ -143,6 +145,11 @@ def read_capture_provenance(
       :func:`clauditor.audit._check_schema_version`).
     * Sidecar exists but is malformed JSON, missing keys, or has
       wrong-typed values → ``None`` with a stderr warning.
+    * ``expected_skill_name`` is set AND the sidecar's ``skill_name``
+      disagrees → ``None`` with a stderr warning naming both values.
+      This guards against pointing ``--from-capture`` at a sidecar
+      produced by a different skill (which would otherwise silently
+      override ``test_args`` with unrelated args).
 
     The tolerance is deliberate: a corrupt sidecar should degrade
     ``propose-eval`` to the pre-#117 shape-only behavior (plus a
@@ -206,6 +213,26 @@ def read_capture_provenance(
     # empty string so callers can treat it as "unknown".
     if not isinstance(captured_at, str):
         captured_at = ""
+
+    # Skill-name mismatch check (Copilot review, #118): when the caller
+    # knows which skill they expect, reject sidecars authored by a
+    # different skill rather than silently threading unrelated args into
+    # ``test_args``. A mismatch implies the user pointed at a stale or
+    # copy-pasted capture; degrade to shape-only behavior with a clear
+    # stderr warning naming both values so they can re-capture or point
+    # at the right file.
+    if (
+        expected_skill_name is not None
+        and skill_name != expected_skill_name
+    ):
+        print(
+            f"clauditor.capture_provenance: {sidecar} is for skill "
+            f"{skill_name!r}, expected {expected_skill_name!r} — "
+            "skipping (re-run `clauditor capture` for this skill to "
+            "produce a matching sidecar)",
+            file=sys.stderr,
+        )
+        return None
 
     return CaptureProvenance(
         skill_name=skill_name,

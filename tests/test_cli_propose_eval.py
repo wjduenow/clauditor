@@ -398,6 +398,99 @@ class TestCmdProposeEval:
         err = capsys.readouterr().err
         assert "shape-only placeholder" not in err
 
+    def test_from_capture_skill_name_mismatch_warns_and_no_override(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """Copilot review on PR #118: --from-capture pointed at a sidecar
+        for a different skill emits the inner warning + leaves
+        captured_skill_args=None. The CLI-level 'shape-only placeholder'
+        warning does NOT fire (sidecar file exists; inner warning is
+        sufficient)."""
+        from clauditor.capture_provenance import write_capture_provenance
+
+        skill_md = _write_skill(tmp_path, name="greeter")
+        monkeypatch.chdir(tmp_path)
+
+        capture = tmp_path / "stale.txt"
+        capture.write_text("Hello\n")
+        write_capture_provenance(
+            capture,
+            skill_name="find-restaurants",
+            skill_args="--near SF",
+        )
+
+        captured = {}
+
+        async def _fake(propose_input, **kwargs):
+            captured["captured_skill_args"] = (
+                propose_input.captured_skill_args
+            )
+            return _make_report()
+
+        with patch("clauditor.cli.propose_eval.propose_eval", new=_fake):
+            rc = main([
+                "propose-eval", str(skill_md),
+                "--from-capture", str(capture),
+            ])
+
+        assert rc == 0
+        # Mismatched sidecar → captured_skill_args stays None.
+        assert captured["captured_skill_args"] is None
+
+        err = capsys.readouterr().err
+        # Inner warning from read_capture_provenance fires.
+        assert "find-restaurants" in err
+        assert "greeter" in err
+        # CLI-level "shape-only placeholder" warning must NOT fire —
+        # the sidecar exists on disk, just got rejected. Firing both
+        # would be duplicative and mis-attributed.
+        assert "shape-only placeholder" not in err
+        assert "no .capture.json sidecar" not in err
+
+    def test_from_capture_malformed_sidecar_no_double_warn(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """Copilot review on PR #118: when the sidecar file exists but is
+        schema-mismatched/malformed, ``read_capture_provenance`` already
+        emitted its specific warning — the CLI-level 'shape-only
+        placeholder' warning should NOT fire too."""
+        import json as _json
+
+        skill_md = _write_skill(tmp_path, name="greeter")
+        monkeypatch.chdir(tmp_path)
+
+        capture = tmp_path / "cap.txt"
+        capture.write_text("Hello\n")
+        # Schema-mismatched sidecar next to the capture.
+        (tmp_path / "cap.capture.json").write_text(
+            _json.dumps(
+                {
+                    "schema_version": 99,
+                    "skill_name": "greeter",
+                    "skill_args": "x",
+                    "captured_at": "2026-04-24T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch(
+            "clauditor.cli.propose_eval.propose_eval",
+            new=AsyncMock(return_value=_make_report()),
+        ):
+            rc = main([
+                "propose-eval", str(skill_md),
+                "--from-capture", str(capture),
+            ])
+
+        assert rc == 0
+        err = capsys.readouterr().err
+        # Inner warning from read_capture_provenance fires.
+        assert "schema_version" in err
+        # CLI-level warning must NOT fire — sidecar file exists.
+        assert "shape-only placeholder" not in err
+        assert "no .capture.json sidecar" not in err
+
     def test_from_capture_without_sidecar_emits_warning(
         self, tmp_path: Path, monkeypatch, capsys
     ):

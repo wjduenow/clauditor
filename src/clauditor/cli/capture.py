@@ -113,7 +113,16 @@ def cmd_capture(args: argparse.Namespace) -> int:
         )
         return 1
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(
+            f"ERROR: could not create capture directory "
+            f"{out_path.parent}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
     # Write the sidecar BEFORE the .txt so any .txt file on disk is
     # guaranteed to have a companion sidecar (review nit, #117). The
     # reverse order would leave a window where a crash between the two
@@ -125,10 +134,42 @@ def cmd_capture(args: argparse.Namespace) -> int:
     # is what tells propose-eval "you know the args, use them"
     # vs absence (legacy capture from before #117) → "unknown, fall
     # back to shape-only test_args".
-    sidecar = write_capture_provenance(
-        out_path, skill_name=skill_name, skill_args=skill_args
-    )
-    out_path.write_text(result.output, encoding="utf-8")
+    #
+    # Copilot review on PR #118: both writes are guarded by try/except
+    # OSError so a disk-full / permission failure surfaces as a clean
+    # exit 1 instead of a raw traceback. If the ``.txt`` write fails
+    # AFTER the sidecar is on disk, we unlink the orphan sidecar so
+    # the next run is not confused by a stale one claiming args for a
+    # capture that was never written.
+    try:
+        sidecar = write_capture_provenance(
+            out_path, skill_name=skill_name, skill_args=skill_args
+        )
+    except OSError as exc:
+        print(
+            f"ERROR: could not write capture provenance sidecar: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        out_path.write_text(result.output, encoding="utf-8")
+    except OSError as exc:
+        # Unlink the orphan sidecar best-effort. ``missing_ok=True`` so
+        # a sidecar-already-gone race (from e.g. concurrent cleanup) is
+        # not a second failure layer.
+        try:
+            sidecar.unlink(missing_ok=True)
+        except OSError:
+            # Pragmatic: if we cannot remove the sidecar, surface the
+            # primary error rather than stacking a second one.
+            pass
+        print(
+            f"ERROR: could not write capture file {out_path}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+
     print(
         f"Captured {len(result.output)} chars to {out_path} "
         f"(provenance: {sidecar.name})",

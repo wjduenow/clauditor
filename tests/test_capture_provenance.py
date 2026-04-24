@@ -163,6 +163,56 @@ class TestReadCaptureProvenance:
         assert read_capture_provenance(tmp_path / "greeter.txt") is None
         assert "could not read" in capsys.readouterr().err
 
+    def test_skip_and_warn_on_skill_name_mismatch(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Copilot review on PR #118: ``expected_skill_name`` kwarg guards
+        against silently threading args from a *different* skill's sidecar.
+        """
+        out = tmp_path / "greeter.txt"
+        write_capture_provenance(
+            out, skill_name="find-restaurants", skill_args="--near SF"
+        )
+        # Caller expects ``greeter`` but the sidecar is for
+        # ``find-restaurants`` → skip with a clear warning.
+        record = read_capture_provenance(
+            out, expected_skill_name="greeter"
+        )
+        assert record is None
+        err = capsys.readouterr().err
+        assert "find-restaurants" in err
+        assert "greeter" in err
+
+    def test_expected_skill_name_match_returns_record(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Copilot review on PR #118: matching ``expected_skill_name``
+        returns the record (and emits no warning)."""
+        out = tmp_path / "greeter.txt"
+        write_capture_provenance(
+            out, skill_name="greeter", skill_args="hi"
+        )
+        record = read_capture_provenance(
+            out, expected_skill_name="greeter"
+        )
+        assert record is not None
+        assert record.skill_name == "greeter"
+        assert capsys.readouterr().err == ""
+
+    def test_expected_skill_name_none_skips_check(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Default ``expected_skill_name=None`` preserves back-compat —
+        the mismatch check only fires when the caller opts in."""
+        out = tmp_path / "greeter.txt"
+        write_capture_provenance(
+            out, skill_name="whatever", skill_args="x"
+        )
+        # No expected_skill_name passed → record returned unconditionally.
+        record = read_capture_provenance(out)
+        assert record is not None
+        assert record.skill_name == "whatever"
+
     def test_accepts_missing_captured_at(self, tmp_path: Path) -> None:
         # ``captured_at`` is informational — a record missing it should
         # still load (with captured_at coerced to "").

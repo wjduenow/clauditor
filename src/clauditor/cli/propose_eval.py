@@ -33,7 +33,10 @@ from clauditor._anthropic import (
     AnthropicAuthMissingError,
     check_any_auth_available,
 )
-from clauditor.capture_provenance import read_capture_provenance
+from clauditor.capture_provenance import (
+    read_capture_provenance,
+    sidecar_path_for,
+)
 from clauditor.propose_eval import (
     DEFAULT_PROPOSE_EVAL_MODEL,
     build_propose_eval_prompt,
@@ -186,13 +189,20 @@ def _apply_from_capture_override(
         propose_input.capture_source = str(rel)
     except (ValueError, OSError):
         propose_input.capture_source = str(capture_path)
+    propose_input.capture_path = capture_path
 
     # #117: load the sibling ``.capture.json`` sidecar, if present, so
     # the proposer can override ``test_args`` with the args the capture
     # was produced with. Override the field on ``propose_input`` (the
     # loader already set it via DEC-001 discovery, but the caller's
     # explicit ``--from-capture`` / ``--from-iteration`` path wins).
-    provenance = read_capture_provenance(capture_path)
+    # Copilot review on PR #118: pass ``expected_skill_name`` so a
+    # capture pointed at a *different* skill is rejected with a stderr
+    # warning instead of silently threading unrelated args into
+    # ``test_args``.
+    provenance = read_capture_provenance(
+        capture_path, expected_skill_name=propose_input.skill_name
+    )
     propose_input.captured_skill_args = (
         provenance.skill_args if provenance is not None else None
     )
@@ -304,15 +314,28 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
         )
 
     # #117: surface a one-line stderr note (always — not verbose-gated)
-    # when a capture was resolved but no provenance sidecar was found.
-    # In that case ``test_args`` in the proposed spec is shape-only and
-    # the user must edit it before running ``validate`` or the skill
-    # will re-run under different conditions than the capture. Captures
-    # produced by a pre-#117 ``clauditor capture`` run are the primary
-    # trigger; the note tells users to re-capture to get the sidecar.
+    # when a capture was resolved but no provenance sidecar file exists
+    # on disk. In that case ``test_args`` in the proposed spec is
+    # shape-only and the user must edit it before running ``validate``
+    # or the skill will re-run under different conditions than the
+    # capture. Captures produced by a pre-#117 ``clauditor capture``
+    # run are the primary trigger; the note tells users to re-capture
+    # to get the sidecar.
+    #
+    # Copilot review on PR #118: disambiguate "sidecar truly absent"
+    # from "sidecar present but rejected". In the rejected case
+    # (schema mismatch, malformed JSON, skill_name mismatch)
+    # ``read_capture_provenance`` already emitted its own specific
+    # warning naming the reason — firing this CLI-level warning too
+    # would both duplicate the message and mis-attribute the cause
+    # ("no sidecar" when one is in fact on disk). Use ``capture_path``
+    # (new field on ``ProposeEvalInput`` for this exact check) +
+    # ``sidecar_path_for`` to discriminate.
     if (
         propose_input.capture_source is not None
         and propose_input.captured_skill_args is None
+        and propose_input.capture_path is not None
+        and not sidecar_path_for(propose_input.capture_path).is_file()
     ):
         print(
             "WARNING: capture has no .capture.json sidecar — proposed "

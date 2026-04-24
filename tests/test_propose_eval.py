@@ -255,6 +255,40 @@ class TestLoadProposeEvalInput:
         result = load_propose_eval_input(skill_md, project_dir)
         assert result.captured_skill_args == "--name Alice --formal"
 
+    def test_captured_skill_args_none_on_skill_name_mismatch(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Copilot review on PR #118: auto-discovered sidecar authored by
+        a *different* skill → emit warning, leave captured_skill_args=None.
+        """
+        from clauditor.capture_provenance import write_capture_provenance
+
+        project_dir = tmp_path
+        skill_dir = project_dir / ".claude" / "skills" / "greeter"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            "---\nname: greeter\n---\n# Greeter\n\nSay hi.\n"
+        )
+
+        captured_dir = project_dir / "tests" / "eval" / "captured"
+        captured_dir.mkdir(parents=True)
+        capture_path = captured_dir / "greeter.txt"
+        capture_path.write_text("Hello\n")
+        # Sidecar authored by a DIFFERENT skill — stale / copy-paste.
+        write_capture_provenance(
+            capture_path,
+            skill_name="find-restaurants",
+            skill_args="--near SF",
+        )
+
+        result = load_propose_eval_input(skill_md, project_dir)
+        assert result.capture_text is not None
+        assert result.captured_skill_args is None
+        err = capsys.readouterr().err
+        assert "find-restaurants" in err
+        assert "greeter" in err
+
     def test_captured_skill_args_none_when_no_sidecar(
         self, tmp_path: Path
     ) -> None:
