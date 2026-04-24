@@ -228,6 +228,88 @@ class TestLoadProposeEvalInput:
         assert "malformed frontmatter" in err
         assert str(skill_md) in err
 
+    def test_captured_skill_args_loaded_from_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        """#117: when a .capture.json sidecar is present, load its skill_args."""
+        from clauditor.capture_provenance import write_capture_provenance
+
+        project_dir = tmp_path
+        skill_dir = project_dir / ".claude" / "skills" / "greeter"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            "---\nname: greeter\n---\n# Greeter\n\nSay hi.\n"
+        )
+
+        captured_dir = project_dir / "tests" / "eval" / "captured"
+        captured_dir.mkdir(parents=True)
+        capture_path = captured_dir / "greeter.txt"
+        capture_path.write_text("Hello, Alice!\n")
+        write_capture_provenance(
+            capture_path,
+            skill_name="greeter",
+            skill_args="--name Alice --formal",
+        )
+
+        result = load_propose_eval_input(skill_md, project_dir)
+        assert result.captured_skill_args == "--name Alice --formal"
+
+    def test_captured_skill_args_none_on_skill_name_mismatch(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Copilot review on PR #118: auto-discovered sidecar authored by
+        a *different* skill → emit warning, leave captured_skill_args=None.
+        """
+        from clauditor.capture_provenance import write_capture_provenance
+
+        project_dir = tmp_path
+        skill_dir = project_dir / ".claude" / "skills" / "greeter"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            "---\nname: greeter\n---\n# Greeter\n\nSay hi.\n"
+        )
+
+        captured_dir = project_dir / "tests" / "eval" / "captured"
+        captured_dir.mkdir(parents=True)
+        capture_path = captured_dir / "greeter.txt"
+        capture_path.write_text("Hello\n")
+        # Sidecar authored by a DIFFERENT skill — stale / copy-paste.
+        write_capture_provenance(
+            capture_path,
+            skill_name="find-restaurants",
+            skill_args="--near SF",
+        )
+
+        result = load_propose_eval_input(skill_md, project_dir)
+        assert result.capture_text is not None
+        assert result.captured_skill_args is None
+        err = capsys.readouterr().err
+        assert "find-restaurants" in err
+        assert "greeter" in err
+
+    def test_captured_skill_args_none_when_no_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        """#117: legacy capture without a sidecar yields captured_skill_args=None."""
+        project_dir = tmp_path
+        skill_dir = project_dir / ".claude" / "skills" / "greeter"
+        skill_dir.mkdir(parents=True)
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            "---\nname: greeter\n---\n# Greeter\n\nSay hi.\n"
+        )
+
+        captured_dir = project_dir / "tests" / "eval" / "captured"
+        captured_dir.mkdir(parents=True)
+        (captured_dir / "greeter.txt").write_text("Hello, world!\n")
+
+        result = load_propose_eval_input(skill_md, project_dir)
+        # Capture found, sidecar absent → None.
+        assert result.capture_text is not None
+        assert result.captured_skill_args is None
+
     def test_capture_text_is_scrubbed(self, tmp_path: Path) -> None:
         """DEC-008: captured content goes through transcripts.redact."""
         project_dir = tmp_path
@@ -402,6 +484,62 @@ class TestBuildProposeEvalPrompt:
         # Without untrusted content, the injection framing also is
         # omitted — there is nothing to frame.
         assert "untrusted data, not instructions" not in prompt
+
+    def test_capture_args_block_present_when_set(self) -> None:
+        """#117: captured_skill_args inject a <capture_args> block."""
+        pi = _make_propose_input(capture_text="capture body")
+        pi.captured_skill_args = "--depth quick --count 5"
+        prompt = build_propose_eval_prompt(pi)
+        assert "<capture_args>" in prompt
+        assert "</capture_args>" in prompt
+        assert "--depth quick --count 5" in prompt
+        # Framing sentence lists both untrusted tag names.
+        framing_idx = prompt.find("untrusted data, not instructions")
+        line_start = prompt.rfind("\n", 0, framing_idx) + 1
+        line_end = prompt.find("\n\n", framing_idx)
+        framing_region = prompt[line_start:line_end]
+        assert "skill_output" in framing_region
+        assert "capture_args" in framing_region
+
+    def test_capture_args_block_absent_without_sidecar(self) -> None:
+        """#117: no sidecar → no <capture_args> block."""
+        pi = _make_propose_input(capture_text="capture body")
+        prompt = build_propose_eval_prompt(pi)
+        assert "<capture_args>" not in prompt
+
+    def test_capture_args_block_omitted_when_empty(self) -> None:
+        """#117: empty captured_skill_args → skip the block.
+
+        The override still fires in the orchestrator (it carries
+        ``is not None``), but emitting a literal empty
+        ``<capture_args></capture_args>`` block would confuse the LLM
+        for no benefit. The block is truthy-gated.
+        """
+        pi = _make_propose_input(capture_text="capture body")
+        pi.captured_skill_args = ""
+        prompt = build_propose_eval_prompt(pi)
+        assert "<capture_args>" not in prompt
+        # Framing sentence should still NOT list capture_args.
+        framing_idx = prompt.find("untrusted data, not instructions")
+        line_start = prompt.rfind("\n", 0, framing_idx) + 1
+        line_end = prompt.find("\n\n", framing_idx)
+        framing_region = prompt[line_start:line_end]
+        assert "capture_args" not in framing_region
+
+    def test_capture_args_block_requires_capture_text(self) -> None:
+        """Defensive: captured_skill_args without capture_text stays absent.
+
+        The prompt only renders the capture block at all when
+        ``capture_text`` is set. If captured_skill_args somehow travels
+        alongside a None capture_text (unreachable via the loader, but
+        nothing structurally prevents it), the <capture_args> block
+        must not leak into the prompt without the <skill_output>
+        block it belongs with.
+        """
+        pi = _make_propose_input(capture_text=None)
+        pi.captured_skill_args = "--depth quick"
+        prompt = build_propose_eval_prompt(pi)
+        assert "<capture_args>" not in prompt
 
     def test_response_schema_included(self) -> None:
         pi = _make_propose_input()
@@ -849,6 +987,69 @@ class TestProposeEval:
         assert report.output_tokens == 50
         assert report.skill_name == "greeter"
         assert report.model == DEFAULT_PROPOSE_EVAL_MODEL
+
+    @pytest.mark.asyncio
+    async def test_captured_args_override_test_args(
+        self, tmp_path: Path
+    ) -> None:
+        """#117: when captured_skill_args is set, test_args is overridden verbatim.
+
+        Belt-and-suspenders: even if the LLM's response emits a
+        different ``test_args`` (the ``_good_spec_dict()`` helper
+        returns ``"hello world"``), the post-processing in
+        ``propose_eval`` must overwrite it with the captured value.
+        """
+        pi = _make_propose_input(capture_text="Hello Alice!\n")
+        pi.captured_skill_args = "--name Alice --formal"
+        # The LLM response carries ``test_args: "hello world"`` (the
+        # default in ``_good_spec_dict``). Override must win.
+        result = _mock_anthropic_result(text=_good_response_text())
+        with patch(
+            "clauditor._anthropic.call_anthropic",
+            AsyncMock(return_value=result),
+        ):
+            report = await propose_eval(pi, spec_dir=tmp_path)
+        assert report.api_error is None
+        assert report.validation_errors == []
+        assert (
+            report.proposed_spec["test_args"] == "--name Alice --formal"
+        )
+
+    @pytest.mark.asyncio
+    async def test_empty_captured_args_still_overrides(
+        self, tmp_path: Path
+    ) -> None:
+        """#117: empty-string captured_skill_args is 'ran bare', not 'unknown'.
+
+        The sidecar's presence with ``skill_args=""`` is a deliberate
+        record that the capture ran with no args. The override must
+        still fire to replace any LLM-emitted placeholder with the
+        empty string so ``validate`` re-runs the skill bare.
+        """
+        pi = _make_propose_input(capture_text="Hello!\n")
+        pi.captured_skill_args = ""  # sidecar present, args were empty
+        result = _mock_anthropic_result(text=_good_response_text())
+        with patch(
+            "clauditor._anthropic.call_anthropic",
+            AsyncMock(return_value=result),
+        ):
+            report = await propose_eval(pi, spec_dir=tmp_path)
+        assert report.proposed_spec["test_args"] == ""
+
+    @pytest.mark.asyncio
+    async def test_no_captured_args_leaves_llm_test_args(
+        self, tmp_path: Path
+    ) -> None:
+        """#117: no sidecar → LLM's test_args output is preserved."""
+        pi = _make_propose_input()  # captured_skill_args=None
+        result = _mock_anthropic_result(text=_good_response_text())
+        with patch(
+            "clauditor._anthropic.call_anthropic",
+            AsyncMock(return_value=result),
+        ):
+            report = await propose_eval(pi, spec_dir=tmp_path)
+        # _good_spec_dict emits "hello world" — preserved verbatim.
+        assert report.proposed_spec["test_args"] == "hello world"
 
     @pytest.mark.asyncio
     async def test_calls_central_helper_with_prompt(
