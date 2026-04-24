@@ -357,6 +357,113 @@ class TestCmdProposeEval:
         assert captured["capture_source"] is not None
         assert "my-capture.txt" in captured["capture_source"]
 
+    def test_from_capture_loads_sidecar_provenance(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """#117: --from-capture reads a sibling .capture.json sidecar."""
+        from clauditor.capture_provenance import write_capture_provenance
+
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        capture = tmp_path / "my-capture.txt"
+        capture.write_text("Hello Alice!\n")
+        write_capture_provenance(
+            capture,
+            skill_name="greeter",
+            skill_args="--name Alice --formal",
+        )
+
+        captured = {}
+
+        async def _fake(propose_input, **kwargs):
+            captured["captured_skill_args"] = (
+                propose_input.captured_skill_args
+            )
+            return _make_report()
+
+        with patch(
+            "clauditor.cli.propose_eval.propose_eval", new=_fake
+        ):
+            rc = main([
+                "propose-eval", str(skill_md),
+                "--from-capture", str(capture),
+            ])
+
+        assert rc == 0
+        assert (
+            captured["captured_skill_args"] == "--name Alice --formal"
+        )
+        # No "shape-only placeholder" warning — sidecar was found.
+        err = capsys.readouterr().err
+        assert "shape-only placeholder" not in err
+
+    def test_from_capture_without_sidecar_emits_warning(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """#117: legacy capture (no sidecar) → stderr warning."""
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        capture = tmp_path / "legacy.txt"
+        capture.write_text("Hello!\n")
+        # Intentionally no write_capture_provenance — legacy shape.
+
+        with patch(
+            "clauditor.cli.propose_eval.propose_eval",
+            new=AsyncMock(return_value=_make_report()),
+        ):
+            rc = main([
+                "propose-eval", str(skill_md),
+                "--from-capture", str(capture),
+            ])
+
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "no .capture.json sidecar" in err
+        assert "shape-only placeholder" in err
+        assert "Edit the resulting eval spec" in err
+
+    def test_autodiscovered_capture_without_sidecar_emits_warning(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """#117: warning fires on DEC-001 discovery when no sidecar."""
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        # Legacy capture discovered via DEC-001 primary path.
+        captured_dir = tmp_path / "tests" / "eval" / "captured"
+        captured_dir.mkdir(parents=True)
+        (captured_dir / "greeter.txt").write_text("hi\n")
+
+        with patch(
+            "clauditor.cli.propose_eval.propose_eval",
+            new=AsyncMock(return_value=_make_report()),
+        ):
+            rc = main(["propose-eval", str(skill_md)])
+
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "no .capture.json sidecar" in err
+
+    def test_no_capture_no_warning(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """#117: no capture at all → no warning (nothing to warn about)."""
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        with patch(
+            "clauditor.cli.propose_eval.propose_eval",
+            new=AsyncMock(return_value=_make_report()),
+        ):
+            rc = main(["propose-eval", str(skill_md)])
+
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "no .capture.json sidecar" not in err
+        assert "shape-only placeholder" not in err
+
     def test_from_capture_missing_file_exits_2(
         self, tmp_path: Path, monkeypatch, capsys
     ):

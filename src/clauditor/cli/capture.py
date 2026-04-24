@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from clauditor.capture_provenance import write_capture_provenance
 from clauditor.runner import SkillRunner, env_without_api_key
 
 
@@ -113,6 +114,24 @@ def cmd_capture(args: argparse.Namespace) -> int:
         return 1
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # Write the sidecar BEFORE the .txt so any .txt file on disk is
+    # guaranteed to have a companion sidecar (review nit, #117). The
+    # reverse order would leave a window where a crash between the two
+    # writes publishes a .txt that looks legacy to propose-eval. The
+    # sidecar records the ``skill_args`` that produced this capture so
+    # ``propose-eval`` can thread them into the proposed ``test_args``
+    # verbatim. Always written, even for empty args — the "no-args
+    # capture" case is a first-class shape, and the sidecar's presence
+    # is what tells propose-eval "you know the args, use them"
+    # vs absence (legacy capture from before #117) → "unknown, fall
+    # back to shape-only test_args".
+    sidecar = write_capture_provenance(
+        out_path, skill_name=skill_name, skill_args=skill_args
+    )
     out_path.write_text(result.output, encoding="utf-8")
-    print(f"Captured {len(result.output)} chars to {out_path}", file=sys.stderr)
+    print(
+        f"Captured {len(result.output)} chars to {out_path} "
+        f"(provenance: {sidecar.name})",
+        file=sys.stderr,
+    )
     return 0

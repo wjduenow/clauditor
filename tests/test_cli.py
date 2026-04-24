@@ -3700,6 +3700,50 @@ class TestCmdCapture:
         assert rc == 1
         assert "boom" in capsys.readouterr().err
 
+    def test_capture_writes_provenance_sidecar(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """#117: capture writes a sibling .capture.json with skill_args."""
+        import json as _json
+
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
+            rc = main([
+                "capture", "find-restaurants", "--",
+                "La Jolla, CA", "--depth", "quick",
+            ])
+        assert rc == 0
+        sidecar = tmp_path / (
+            "tests/eval/captured/find-restaurants.capture.json"
+        )
+        assert sidecar.exists()
+        data = _json.loads(sidecar.read_text())
+        assert data["schema_version"] == 1
+        assert data["skill_name"] == "find-restaurants"
+        assert data["skill_args"] == "La Jolla, CA --depth quick"
+        # stderr banner mentions the sidecar name.
+        err = capsys.readouterr().err
+        assert "find-restaurants.capture.json" in err
+
+    def test_capture_writes_empty_args_sidecar(self, tmp_path, monkeypatch):
+        """#117: capture with no args still writes the sidecar."""
+        import json as _json
+
+        monkeypatch.chdir(tmp_path)
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = self._mock_result()
+        with patch("clauditor.cli.capture.SkillRunner", return_value=mock_runner):
+            rc = main(["capture", "find-restaurants"])
+        assert rc == 0
+        sidecar = tmp_path / (
+            "tests/eval/captured/find-restaurants.capture.json"
+        )
+        assert sidecar.exists()
+        data = _json.loads(sidecar.read_text())
+        assert data["skill_args"] == ""
+
 
 class TestNoApiKeyFlag:
     """US-006: --no-api-key strips both auth env vars on every skill-invoking CLI.

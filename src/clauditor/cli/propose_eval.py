@@ -33,6 +33,7 @@ from clauditor._anthropic import (
     AnthropicAuthMissingError,
     check_any_auth_available,
 )
+from clauditor.capture_provenance import read_capture_provenance
 from clauditor.propose_eval import (
     DEFAULT_PROPOSE_EVAL_MODEL,
     build_propose_eval_prompt,
@@ -186,6 +187,16 @@ def _apply_from_capture_override(
     except (ValueError, OSError):
         propose_input.capture_source = str(capture_path)
 
+    # #117: load the sibling ``.capture.json`` sidecar, if present, so
+    # the proposer can override ``test_args`` with the args the capture
+    # was produced with. Override the field on ``propose_input`` (the
+    # loader already set it via DEC-001 discovery, but the caller's
+    # explicit ``--from-capture`` / ``--from-iteration`` path wins).
+    provenance = read_capture_provenance(capture_path)
+    propose_input.captured_skill_args = (
+        provenance.skill_args if provenance is not None else None
+    )
+
     if verbose:
         print(
             f"[propose-eval] capture: {propose_input.capture_source} "
@@ -289,6 +300,25 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
     elif args.verbose:
         print(
             "[propose-eval] capture: (none — no capture file found)",
+            file=sys.stderr,
+        )
+
+    # #117: surface a one-line stderr note (always — not verbose-gated)
+    # when a capture was resolved but no provenance sidecar was found.
+    # In that case ``test_args`` in the proposed spec is shape-only and
+    # the user must edit it before running ``validate`` or the skill
+    # will re-run under different conditions than the capture. Captures
+    # produced by a pre-#117 ``clauditor capture`` run are the primary
+    # trigger; the note tells users to re-capture to get the sidecar.
+    if (
+        propose_input.capture_source is not None
+        and propose_input.captured_skill_args is None
+    ):
+        print(
+            "WARNING: capture has no .capture.json sidecar — proposed "
+            "`test_args` will be a shape-only placeholder. Edit the "
+            "resulting eval spec before running `validate`, or re-run "
+            "`clauditor capture` to write the sidecar automatically.",
             file=sys.stderr,
         )
 
