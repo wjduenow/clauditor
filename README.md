@@ -70,7 +70,7 @@ Edits under `.claude/skills/clauditor/` are [hot-reloaded](https://code.claude.c
 
 ## Using /clauditor in Claude Code
 
-Invoke the slash command with a skill path — Claude locates the eval spec, runs L1, and asks before spending tokens on L3; if no sibling `<skill>.eval.json` exists, Claude offers `clauditor propose-eval` as an LLM-assisted bootstrap (with a cost-free `--dry-run` preview) before grading.
+Invoke the slash command with a skill path — Claude locates the eval spec, runs L1, and asks before spending tokens on L3; if no sibling `<skill>.eval.json` exists, Claude offers `clauditor propose-eval` as an LLM-assisted bootstrap (with a cost-free `--dry-run` preview) before grading. If L3 reports failing criteria, Claude offers `clauditor suggest` to propose a unified diff of SKILL.md edits motivated by the specific failing criterion ids.
 
 ```text
 /clauditor .claude/commands/my-skill.md

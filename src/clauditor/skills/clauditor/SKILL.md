@@ -6,7 +6,7 @@ metadata:
   clauditor-version: "0.0.0-dev"
 argument-hint: "[skill-path]"
 disable-model-invocation: true
-allowed-tools: Bash(clauditor *), Bash(clauditor propose-eval *), Bash(uv run clauditor *)
+allowed-tools: Bash(clauditor *), Bash(clauditor propose-eval *), Bash(clauditor suggest *), Bash(uv run clauditor *)
 ---
 
 # /clauditor — Validate and grade a Claude Code skill
@@ -90,11 +90,30 @@ entry point before running validate/grade.
    Report the overall `pass_rate`, any failing criterion ids, and the
    path to the sidecar for follow-up.
 
-6. **Report concisely.** Surface:
+6. **If L3 reports failing criteria, offer `clauditor suggest`.** Ask
+   the user to confirm — this costs Sonnet tokens. `suggest` reads
+   the grade's `grading.json` and proposes a unified diff of SKILL.md
+   edits motivated by the failing criterion ids.
+
+   ```bash
+   uv run clauditor suggest <skill-path>
+   ```
+
+   Writes `<skill>-<timestamp>.diff` and `<skill>-<timestamp>.json`
+   under `.clauditor/suggestions/`. Show the user the diff plus the
+   `motivated_by` criterion ids and `confidence` from the JSON
+   sidecar. Do NOT auto-apply — let the user `git apply` the diff
+   (or hand-edit) and re-run `validate` / `grade` to measure the
+   score delta. See `docs/cli-reference.md#suggest` for the full
+   flag reference.
+
+7. **Report concisely.** Surface:
    - Which layers ran (L1 / L2 / L3)
    - Pass/fail counts per layer
    - Sidecar paths the user can open to inspect full results
-   - One-line next step (re-run, inspect transcript, tighten rubric)
+   - If `suggest` ran: the diff path + motivated-by ids
+   - One-line next step (re-run, inspect transcript, tighten rubric,
+     apply the suggested diff)
 
 ## Common errors
 
@@ -105,3 +124,6 @@ entry point before running validate/grade.
   criterion needs a unique string `id`. Edit the spec and re-run.
 - **`no project root found`** — `clauditor` expects to run inside a
   project with `.git/` or `.claude/`. Use `--project-dir` or `cd` first.
+- **`no iteration under ... contains <skill>/grading.json`** —
+  `clauditor suggest` requires a prior `clauditor grade` run. Run
+  Step 5 first, then retry.
