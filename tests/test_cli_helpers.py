@@ -82,18 +82,23 @@ class TestShouldStripApiKeyForSkillSubprocess:
         args = argparse.Namespace(transport="auto")
         assert should_strip_api_key_for_skill_subprocess(args) is False
 
-    def test_whitespace_env_cli_returns_true(self, monkeypatch):
-        """``CLAUDITOR_TRANSPORT='  cli  '`` → True (strips before compare).
+    def test_whitespace_env_cli_returns_false(self, monkeypatch):
+        """``CLAUDITOR_TRANSPORT='  cli  '`` → False (exact match only).
 
-        Matches the whitespace-normalization discipline used by
-        ``_resolve_grader_transport`` per
-        ``.claude/rules/spec-cli-precedence.md``.
+        The env-var value is NOT whitespace-normalized here: it must be
+        exactly ``"cli"``. A whitespace-padded value is rejected
+        downstream by :func:`resolve_transport` with ``SystemExit(2)``;
+        treating it as ``"cli"`` in this helper would silently strip
+        the skill-subprocess key right before the grader call exits,
+        which is worse UX than a single clear error. Addresses PR #96
+        Copilot feedback (drift between helper and
+        ``_resolve_grader_transport`` / ``resolve_transport``).
         """
         monkeypatch.setenv("CLAUDITOR_TRANSPORT", "  cli  ")
         from clauditor.cli import should_strip_api_key_for_skill_subprocess
 
         args = argparse.Namespace(transport=None)
-        assert should_strip_api_key_for_skill_subprocess(args) is True
+        assert should_strip_api_key_for_skill_subprocess(args) is False
 
     def test_empty_env_returns_false(self, monkeypatch):
         """``CLAUDITOR_TRANSPORT=''`` (empty) + no flag → False."""

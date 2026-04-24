@@ -101,13 +101,18 @@ def should_strip_api_key_for_skill_subprocess(
     Returns True when **either** operator-intent layer named CLI:
 
     - ``args.transport == "cli"`` (explicit ``--transport cli`` flag), OR
-    - ``os.environ["CLAUDITOR_TRANSPORT"].strip() == "cli"`` (env var).
+    - ``os.environ["CLAUDITOR_TRANSPORT"] == "cli"`` (env var, exact
+      match — see whitespace note below).
 
     Returns False otherwise, including:
 
     - ``args.transport`` is missing, ``None``, ``"api"``, or ``"auto"``.
-    - ``CLAUDITOR_TRANSPORT`` is unset, empty, whitespace-only, or any
-      value other than ``"cli"`` (after ``.strip()``).
+    - ``CLAUDITOR_TRANSPORT`` is unset, empty, or any value other than
+      exactly ``"cli"`` (whitespace-padded values like ``"  cli  "``
+      are rejected downstream by :func:`_resolve_grader_transport`
+      with exit 2, so treating them as "cli" here would silently
+      strip the skill-subprocess key right before the grader call
+      exits — worse UX than a single clear error).
     - ``EvalSpec.transport == "cli"`` — **NOT** consulted here.
       Author-intent does not know the operator's env and must not
       trigger the strip (DEC-002 of
@@ -123,17 +128,19 @@ def should_strip_api_key_for_skill_subprocess(
     resolver stays purely about transport, and this helper owns the
     coupling decision (DEC-006).
 
-    Whitespace normalization on the env var matches the discipline
-    used by :func:`_resolve_grader_transport` per
-    ``.claude/rules/spec-cli-precedence.md``.
+    Env-var value semantics match :func:`_resolve_grader_transport` /
+    :func:`clauditor._anthropic.resolve_transport`: exact ``"cli"``
+    only, no whitespace normalization. Keeping the two in lockstep
+    prevents the "helper accepts ``'  cli  '`` but resolver rejects
+    it" split-brain that would leak a stripped-key subprocess run
+    before a SystemExit(2) from the grader path.
     """
     import os
 
     flag = getattr(args, "transport", None)
     if flag == "cli":
         return True
-    env = os.environ.get("CLAUDITOR_TRANSPORT", "")
-    return env.strip() == "cli"
+    return os.environ.get("CLAUDITOR_TRANSPORT") == "cli"
 
 
 def _append_validate_history(

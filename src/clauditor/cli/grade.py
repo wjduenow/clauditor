@@ -31,6 +31,49 @@ if TYPE_CHECKING:
     from clauditor.quality_grader import GradingReport, VarianceReport
 
 
+def _resolve_grade_env_override(
+    args: argparse.Namespace,
+) -> tuple[dict[str, str] | None, bool]:
+    """Decide the skill-subprocess env override and notice-firing bit.
+
+    Single source of truth for the primary and ``--baseline`` arms of
+    ``cmd_grade`` — both arms must compute ``env_override`` identically,
+    so the coupling decision lives in one pure helper. Addresses PR #96
+    Copilot feedback on primary/baseline duplication and whitespace
+    drift vs :func:`clauditor._anthropic._api_key_is_set`.
+
+    Returns ``(env_override, should_announce)`` where:
+
+    - ``env_override`` is the dict passed to ``spec.run(env_override=...)``.
+      ``None`` means "inherit the parent env" (status quo). A dict means
+      ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_AUTH_TOKEN`` have been stripped.
+    - ``should_announce`` is ``True`` iff the implicit path fired AND a
+      non-whitespace auth key was present — i.e. the caller should call
+      :func:`announce_implicit_no_api_key`. Callers that must not
+      double-announce (the baseline arm) ignore this bit.
+
+    Whitespace-only env values are treated as absent (matching
+    :func:`clauditor._anthropic._api_key_is_set`).
+    """
+    from clauditor.cli import should_strip_api_key_for_skill_subprocess
+
+    explicit_strip = bool(getattr(args, "no_api_key", False))
+    implicit_strip = (
+        not explicit_strip
+        and should_strip_api_key_for_skill_subprocess(args)
+    )
+    api_key = os.environ.get("ANTHROPIC_API_KEY") or ""
+    auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
+    key_was_present = bool(api_key.strip() or auth_token.strip())
+    env_override = (
+        env_without_api_key()
+        if (explicit_strip or implicit_strip)
+        else None
+    )
+    should_announce = implicit_strip and key_was_present
+    return env_override, should_announce
+
+
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``grade`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
@@ -390,10 +433,7 @@ def _run_skill_variants(
     """
     # Shared helpers live in ``clauditor.cli`` (package __init__). Import
     # lazily to avoid a circular import at module load.
-    from clauditor.cli import (
-        _render_skill_error,
-        should_strip_api_key_for_skill_subprocess,
-    )
+    from clauditor.cli import _render_skill_error
 
     # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout/transport flags
     # through to every ``spec.run`` invocation (primary + variance).
@@ -402,32 +442,14 @@ def _run_skill_variants(
     # #95 US-003: --transport cli (or CLAUDITOR_TRANSPORT=cli) implicitly
     # strips ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN from the skill
     # subprocess env so the subscription-auth guarantee extends end-to-end
-    # (grader AND skill subprocess). Traces to DEC-001, DEC-003, DEC-006,
-    # DEC-007, DEC-008, DEC-009 of plans/super/95-subscription-auth-flag.md.
-    #
-    # DEC-007: explicit --no-api-key does NOT fire the implicit notice —
-    # the user typed the flag themselves, so the strip is not a surprise.
-    # DEC-003: the notice fires only when the implicit path triggered AND
-    # at least one auth key was actually present; otherwise the strip is
-    # a no-op and surfacing it would be noise.
-    # DEC-008: emit the notice from this call site (co-located with the
-    # decision). announce_implicit_no_api_key() owns the once-per-process
-    # idempotence via its module-level flag.
-    explicit_strip = bool(getattr(args, "no_api_key", False))
-    implicit_strip = (
-        not explicit_strip
-        and should_strip_api_key_for_skill_subprocess(args)
-    )
-    key_was_present = bool(
-        os.environ.get("ANTHROPIC_API_KEY")
-        or os.environ.get("ANTHROPIC_AUTH_TOKEN")
-    )
-    env_override = (
-        env_without_api_key()
-        if (explicit_strip or implicit_strip)
-        else None
-    )
-    if implicit_strip and key_was_present:
+    # (grader AND skill subprocess). The coupling decision and notice
+    # gating live in :func:`_resolve_grade_env_override` so the primary
+    # and ``--baseline`` arms share one implementation (addresses PR #96
+    # Copilot feedback on duplication). Traces to DEC-001, DEC-003,
+    # DEC-006, DEC-007, DEC-008, DEC-009 of
+    # plans/super/95-subscription-auth-flag.md.
+    env_override, should_announce = _resolve_grade_env_override(args)
+    if should_announce:
         announce_implicit_no_api_key()
     timeout_override = getattr(args, "timeout", None)
 
@@ -618,21 +640,12 @@ def _write_workspace_sidecars(
         # #95 US-003: also mirror the implicit --transport cli coupling
         # so both arms of the baseline delta share the same auth posture;
         # otherwise the baseline would bypass the strip that the primary
-        # arm just applied. No notice emission here — the primary arm
-        # already called announce_implicit_no_api_key() upstream (which
-        # is idempotent per US-002).
-        from clauditor.cli import should_strip_api_key_for_skill_subprocess
-
-        explicit_strip = bool(getattr(args, "no_api_key", False))
-        implicit_strip = (
-            not explicit_strip
-            and should_strip_api_key_for_skill_subprocess(args)
-        )
-        env_override = (
-            env_without_api_key()
-            if (explicit_strip or implicit_strip)
-            else None
-        )
+        # arm just applied. The coupling decision lives in
+        # :func:`_resolve_grade_env_override` so both arms stay in
+        # lockstep by construction. The ``should_announce`` return is
+        # deliberately ignored here — the primary arm already fired the
+        # notice (and the helper is idempotent per US-002 regardless).
+        env_override, _ = _resolve_grade_env_override(args)
         timeout_override = getattr(args, "timeout", None)
         return _write_baseline_and_benchmark(
             spec=spec,
