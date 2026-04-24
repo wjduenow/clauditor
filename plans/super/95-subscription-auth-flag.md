@@ -5,7 +5,7 @@
 - **Ticket:** [#95](https://github.com/wjduenow/clauditor/issues/95) — "Add combined flag for subscription auth end-to-end"
 - **Branch:** `feature/95-subscription-auth-flag`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/95-subscription-auth-flag`
-- **Phase:** devolved (PR [#96](https://github.com/wjduenow/clauditor/pull/96))
+- **Phase:** complete (PR [#96](https://github.com/wjduenow/clauditor/pull/96) — all 7 stories closed; Quality Gate 4/4 clean)
 - **Sessions:** 1 (2026-04-23)
 - **Base:** dev @ eb1a75d
 
@@ -417,14 +417,14 @@ Applied to this breakdown, each applicable rule from Phase 1:
 
 | ID | Story | Depends on | Status |
 |----|-------|------------|--------|
-| `clauditor-zo9` | Epic — #95 Subscription auth combined flag | — | open |
-| `clauditor-ops` | US-001 — Pure helper `should_strip_api_key_for_skill_subprocess` | — | **ready** |
-| `clauditor-aoo` | US-002 — Announcement flag + constant + helper in `_anthropic.py` | — | **ready** |
-| `clauditor-e9h` | US-003 — Wire implicit coupling into `cmd_grade` | US-001, US-002 | blocked |
-| `clauditor-1dl` | US-004 — Docs sync (cli-reference + README + SKILL.md triangle) | US-003 | blocked |
-| `clauditor-865` | US-005 — Rule refresh (spec-cli-precedence + centralized-sdk-call) | US-003 | blocked |
-| `clauditor-2w4` | Quality Gate — code-reviewer x4 + CodeRabbit | US-001..US-005 | blocked |
-| `clauditor-60r` | Patterns & Memory | Quality Gate | blocked |
+| `clauditor-zo9` | Epic — #95 Subscription auth combined flag | — | closed |
+| `clauditor-ops` | US-001 — Pure helper `should_strip_api_key_for_skill_subprocess` | — | closed |
+| `clauditor-aoo` | US-002 — Announcement flag + constant + helper in `_anthropic.py` | — | closed |
+| `clauditor-e9h` | US-003 — Wire implicit coupling into `cmd_grade` | US-001, US-002 | closed |
+| `clauditor-1dl` | US-004 — Docs sync (cli-reference + README + SKILL.md triangle) | US-003 | closed |
+| `clauditor-865` | US-005 — Rule refresh (spec-cli-precedence + centralized-sdk-call) | US-003 | closed |
+| `clauditor-2w4` | Quality Gate — code-reviewer x4 + CodeRabbit | US-001..US-005 | closed |
+| `clauditor-60r` | Patterns & Memory | Quality Gate | closed |
 
 
 ## Session Notes
@@ -433,3 +433,13 @@ Applied to this breakdown, each applicable rule from Phase 1:
 - Read ticket #95 + parallel research via codebase-scout and convention-checker subagents.
 - Key finding: ticket says "all six LLM-mediated commands uniformly" but the bug only manifests in `grade` (the sole command that both spawns a skill subprocess AND uses the grader transport). Surfacing this in scoping Q1 — user should decide whether to keep the "uniform" framing or scope to the actual failure surface.
 - Second finding: the one-time `_announced_cli_transport` pattern in `_anthropic.py` today fires **only** on auto→cli resolution, not on explicit `--transport cli` (by design — explicit intent shouldn't surprise). New implicit-coupling notice is a separate concern and needs its own gating decision (Q3).
+
+**2026-04-23 (session 2 — ralph execution + quality gate):**
+- All 5 implementation stories landed (commits `0d5d03e`, `bc9e94f`, `b989673`, `abdd575`, `a6c6be4`). Worker for US-003 proactively caught and patched the `--baseline` arm's parallel `env_override` computation (the plan had specified only the primary arm — good defensive work).
+- Quality Gate pass 1 (code-reviewer): flagged missing baseline-arm test — fixed with `test_baseline_arm_mirrors_implicit_strip_without_double_announce` (commit `36d1300`).
+- Quality Gate pass 2: rule-text accuracy in `centralized-sdk-call.md` (the #86 `_CLI_AUTO_ANNOUNCEMENT` is a plain `str` inlined at the call site, not a `Final[str]` with a public emitter — rule rewrite distinguishes the inlined #86 shape from the public-helper #95 shape); cli-reference wording clarified (the strip is unconditional on the implicit path; the notice is gated on key presence). Commit `7f5f457`.
+- Quality Gate passes 3 + 4: 0 blockers, 0 concerns, only skip/follow-up nits. No fixes required.
+- CodeRabbit not configured on this repo; skipped.
+- Patterns & Memory decision: no new rule or memory warranted. The implicit-coupling pattern is appropriately a sub-section of `spec-cli-precedence.md`, not a standalone rule (it's an extension of the four-layer precedence concept). The announcement-family pattern is appropriately a sub-section of `centralized-sdk-call.md` (announcements live on the centralized SDK seam). All named symbols verified present via grep.
+- Residual follow-up (non-blocking, not filed): Pass 3 nit 4 suggests extracting a `_compute_skill_env_override(args)` helper to deduplicate the primary/baseline coupling decision. Worth a small follow-up bead if the pattern accretes more logic (e.g. the hypothetical `DEC-004 escape hatch`); skip until that happens.
+- Final state: 2456 tests passing, 98.33% coverage, ruff clean, 7 beads closed.
