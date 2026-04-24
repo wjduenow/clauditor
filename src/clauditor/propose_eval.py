@@ -749,7 +749,11 @@ async def _single_propose_attempt(
 
     try:
         result = await call_anthropic(
-            prompt, model=model, max_tokens=max_tokens, transport=transport
+            prompt,
+            model=model,
+            max_tokens=max_tokens,
+            transport=transport,
+            subject="propose-eval",
         )
     except Exception as exc:  # noqa: BLE001 — never raise out of propose_eval
         return _AttemptResult(

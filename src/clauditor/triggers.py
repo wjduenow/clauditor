@@ -192,7 +192,11 @@ async def classify_query(
 
     try:
         result = await call_anthropic(
-            prompt, model=model, max_tokens=1024, transport=transport
+            prompt,
+            model=model,
+            max_tokens=1024,
+            transport=transport,
+            subject="triggers judge",
         )
     except AnthropicHelperError as exc:
         # Graceful degradation: a single API failure (auth, 5xx

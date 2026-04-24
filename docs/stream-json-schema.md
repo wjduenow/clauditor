@@ -58,7 +58,13 @@ is parsed for its `apiKeySource` field (when present).
   that case `api_key_source` stays `None` and no stderr line is
   emitted (absence is the signal, per DEC-012 of
   `plans/super/64-runner-auth-timeout.md`). Subsequent `system/init`
-  messages are ignored — first init wins, per DEC-015.
+  messages are ignored — first init wins, per DEC-015. When the
+  caller threads a `subject` through `call_anthropic` (grader call
+  sites — L2 extraction, L3 grading, L3 blind compare side1/side2,
+  triggers judge, suggest proposer, propose-eval) the stderr line
+  gains a ` (<subject>)` suffix so operators can attribute
+  multi-subprocess runs (e.g. `grade --transport cli`) to specific
+  internal LLM calls (issue #107).
 
 All `system/*` messages (every subtype) are appended to
 `raw_messages` and `stream_events` for downstream tooling

@@ -596,7 +596,11 @@ async def _call_blind_side_with_retry(
     parsed: dict | None = None
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
         r = await call_anthropic(
-            prompt, model=model, max_tokens=2048, transport=transport
+            prompt,
+            model=model,
+            max_tokens=2048,
+            transport=transport,
+            subject=f"L3 blind compare {side_label}",
         )
         total_input += r.input_tokens
         total_output += r.output_tokens
@@ -1100,7 +1104,11 @@ async def grade_quality(
     last_source = "api"
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
         api_result = await call_anthropic(
-            prompt, model=model, max_tokens=4096, transport=transport
+            prompt,
+            model=model,
+            max_tokens=4096,
+            transport=transport,
+            subject="L3 grading",
         )
         total_input_tokens += api_result.input_tokens
         total_output_tokens += api_result.output_tokens

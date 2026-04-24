@@ -804,7 +804,11 @@ async def _extract_call_with_retry(
     last_source = "api"
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
         api_result = await call_anthropic(
-            prompt, model=model, max_tokens=4096, transport=transport
+            prompt,
+            model=model,
+            max_tokens=4096,
+            transport=transport,
+            subject="L2 extraction",
         )
         total_input += api_result.input_tokens
         total_output += api_result.output_tokens

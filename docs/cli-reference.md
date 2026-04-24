@@ -289,6 +289,8 @@ Four skill-invoking commands share two flags that control the `claude -p` subpro
 
 When `claude -p` emits an `apiKeySource` value on its stream-json `init` event, the runner captures it on `SkillResult.api_key_source` and prints one stderr info line of the form `clauditor.runner: apiKeySource=<value>`. Values are labels (`"ANTHROPIC_API_KEY"`, `"claude.ai"`, `"none"`), not secrets. Older `claude` builds that omit the field leave `api_key_source` at `None` and suppress the stderr line — absence is the signal. See [`docs/stream-json-schema.md`](stream-json-schema.md#type-system) for the parser contract.
 
+Under `--transport cli`, each grader subprocess call also emits its own `apiKeySource` line. To distinguish them, the line carries a `(<subject>)` suffix naming the internal LLM call — e.g. `clauditor.runner: apiKeySource=none (L2 extraction)` and `clauditor.runner: apiKeySource=none (L3 grading)` for a `grade` run with tiered sections. Known subjects today: `L2 extraction`, `L3 grading`, `L3 blind compare side1` / `L3 blind compare side2`, `triggers judge`, `suggest proposer`, `propose-eval`. Skill-run subprocesses emit the line without a suffix.
+
 ```bash
 # Force subscription auth, raise the watchdog to ten minutes.
 clauditor grade .claude/commands/deep-research.md --no-api-key --timeout 600
