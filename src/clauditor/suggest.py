@@ -334,6 +334,7 @@ def load_suggest_input(
     clauditor_dir: Path,
     *,
     skill_md_path: Path,
+    skill_md_text: str | None = None,
     with_transcripts: bool = False,
     from_iteration: int | None = None,
 ) -> SuggestInput:
@@ -343,6 +344,15 @@ def load_suggest_input(
     from the user-facing skill name and for short-circuiting on the
     DEC-008 row 2 "no failing signals" path. This loader returns a
     valid (possibly empty) :class:`SuggestInput` either way.
+
+    ``skill_md_text`` is an optional pre-read copy of ``skill_md_path``.
+    When the CLI already read the file (e.g. to run ``derive_skill_name``
+    against the frontmatter per #100), it can pass the text through to
+    avoid a second disk read and eliminate the tiny TOCTOU window
+    between the two reads. When ``None``, the loader reads from disk.
+    CRLF normalization is performed here either way so every caller
+    lands on the canonical LF substrate downstream anchor validation,
+    sequential apply, and unified-diff rendering depend on.
     """
     iteration, skill_dir = find_latest_grading(
         clauditor_dir, skill, from_iteration=from_iteration
@@ -356,17 +366,18 @@ def load_suggest_input(
         _load_transcript_events(skill_dir) if with_transcripts else None
     )
 
+    if skill_md_text is None:
+        skill_md_text = skill_md_path.read_text(encoding="utf-8")
+
     return SuggestInput(
         skill_name=skill,
         source_iteration=iteration,
         source_grading_path=_repo_relative(clauditor_dir, grading_path),
-        # Normalize CRLF → LF at load so downstream anchor validation,
-        # sequential apply, and unified-diff rendering all agree on the
-        # canonical LF substrate. Sonnet's replacement strings will be
-        # LF-only regardless of the source file's line endings.
-        skill_md_text=skill_md_path.read_text(encoding="utf-8")
-        .replace("\r\n", "\n")
-        .replace("\r", "\n"),
+        # Normalize CRLF → LF so downstream anchor validation, sequential
+        # apply, and unified-diff rendering all agree on the canonical
+        # LF substrate. Sonnet's replacement strings will be LF-only
+        # regardless of the source file's line endings.
+        skill_md_text=skill_md_text.replace("\r\n", "\n").replace("\r", "\n"),
         failing_assertions=failing_assertions,
         failing_grading_criteria=failing_grading_criteria,
         output_slices=output_slices,

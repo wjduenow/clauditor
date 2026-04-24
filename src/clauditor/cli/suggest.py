@@ -132,6 +132,11 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
             with_transcripts=args.with_transcripts,
             from_iteration=args.from_iteration,
             skill_md_path=skill_path,
+            # Thread the text we already read for ``derive_skill_name``
+            # so the loader skips its second read. Eliminates the tiny
+            # TOCTOU window where the file could change between the two
+            # reads.
+            skill_md_text=skill_md_text,
         )
     except NoPriorGradeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
