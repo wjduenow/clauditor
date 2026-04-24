@@ -247,6 +247,17 @@ A few `EvalSpec` fields tune specific code paths and are safe to omit:
   the runner falls back to its 300-second default. Load-time
   validation rejects non-int values (including `true`/`false`) and
   values `<= 0`.
+- **`transport`** (string, default `"auto"`) — selects the backend used
+  for LLM-mediated grader calls (Layer 2 extraction, Layer 3 rubric
+  grading, blind compare, trigger judge, suggest proposer,
+  propose-eval). One of `"api"` (Anthropic SDK over HTTP), `"cli"`
+  (subprocess to the local `claude` binary, reuses the user's cached
+  auth), or `"auto"` (prefers `cli` when `claude` is on PATH, falls
+  back to `api`). Precedence: `--transport` on the CLI wins, then
+  `CLAUDITOR_TRANSPORT` env var, then this field, then the `auto`
+  default. Load-time validation rejects values outside the three-
+  choice set. See [`docs/transport-architecture.md`](transport-architecture.md)
+  for the full backend matrix.
 - **`sync_tasks`** (bool, default `false`) — when `true`, clauditor
   sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in the `claude -p`
   subprocess env, forcing `Task(run_in_background=true)` spawns to

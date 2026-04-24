@@ -100,7 +100,7 @@ clauditor capture <skill> --no-api-key --timeout 600  # subscription auth, 10-mi
 
 ### Required inputs
 
-- `<skill>` (positional) — skill name (leading slash optional, e.g. `review-agentskills-spec` or `/review-agentskills-spec`). Resolved against the project's `.claude/skills/` and `.claude/commands/` directories the same way `clauditor validate` does.
+- `<skill>` (positional) — skill name (leading slash optional, e.g. `find-restaurants` or `/find-restaurants`). Resolved against the project's `.claude/skills/` and `.claude/commands/` directories the same way `clauditor validate` does.
 
 ### Flags
 
@@ -475,6 +475,6 @@ clauditor uses structured exit codes so scripts and CI pipelines can distinguish
 | `0`  | Success. The command completed and, where applicable, the skill passed its gate (all assertions satisfied, all criteria above threshold, no regression detected, no trigger miss). |
 | `1`  | Signal failed. The tool ran fine, but the skill did not meet its bar: an L1 assertion failed, an L3 criterion scored below threshold, `clauditor compare` detected a regression relative to baseline, or a trigger classification was wrong. The on-disk artifacts are complete and valid; the skill needs fixing, not the tool. |
 | `2`  | Input error. A user-supplied argument was missing, malformed, or incompatible with another flag (e.g. `--iteration` without an integer value, a skill `.md` file that does not exist, an eval spec that fails schema validation). The command exited before doing work; re-run with corrected arguments. |
-| `3`  | Anthropic API error. `clauditor suggest` and `clauditor propose-eval`. The Anthropic SDK returned a non-retriable failure (auth, malformed request, exhausted retries). No sidecar is written; re-run once the upstream issue is resolved. |
+| `3`  | Anthropic API error. The Anthropic SDK (or `claude` CLI transport) returned a non-retriable failure — auth error, malformed request, exhausted retries, 5xx, or connection failure. No sidecar is written; re-run once the upstream issue is resolved. |
 
-Commands that only invoke the Anthropic API transiently (`extract`, `grade`, `triggers`) funnel API failures through the same retry policy as `suggest` but surface them as exit 1 with an `ERROR:` line on stderr rather than a distinct code.
+All six LLM-mediated commands — `grade`, `extract`, `triggers`, `suggest`, `propose-eval`, and `compare --blind` — emit exit 3 on non-retriable Anthropic failures. Pre-call input errors (missing `ANTHROPIC_API_KEY`, oversize token budget) route to exit 2 instead, so CI pipelines can distinguish "fix the input" from "retry later."
