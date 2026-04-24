@@ -811,10 +811,11 @@ async def _call_via_sdk(
         return result
 
 
-# CLI-transport default timeout. Matches :class:`SkillRunner`'s own
-# default and is ample for a grading call (per the bead's "If you
-# identify a better cwd choice ..." guidance — 180 s aligns with the
-# rest of the codebase).
+# CLI-transport default timeout. A single grading call should not
+# legitimately exceed this; skills that need longer run budgets use
+# :class:`SkillRunner`'s separate (and larger, 300 s) default. The
+# grader budget is intentionally tighter — if a grading call is
+# taking minutes, something is wrong with the prompt or the model.
 _CLI_TRANSPORT_TIMEOUT = 180
 
 

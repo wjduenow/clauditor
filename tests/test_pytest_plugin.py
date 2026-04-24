@@ -791,7 +791,7 @@ class TestClauditorNoApiKeyOption:
         """
         request = self._request(no_api_key=False)
         # Override the timeout to a distinct non-default value so a
-        # regression that reverts to the default 180 would be visible.
+        # regression that reverts to the default 300 would be visible.
         request.config.getoption.side_effect = (
             lambda opt: {
                 "--clauditor-project-dir": None,

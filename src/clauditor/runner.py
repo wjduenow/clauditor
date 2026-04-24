@@ -888,7 +888,7 @@ class SkillRunner:
     def __init__(
         self,
         project_dir: str | Path | None = None,
-        timeout: int = 180,
+        timeout: int = 300,
         claude_bin: str = "claude",
     ):
         self.project_dir = Path(project_dir) if project_dir else Path.cwd()

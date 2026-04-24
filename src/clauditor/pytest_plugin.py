@@ -56,8 +56,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     group.addoption(
         "--clauditor-timeout",
         type=int,
-        default=180,
-        help="Timeout for skill execution in seconds (default: 180)",
+        default=300,
+        help="Timeout for skill execution in seconds (default: 300)",
     )
     group.addoption(
         "--clauditor-no-api-key",

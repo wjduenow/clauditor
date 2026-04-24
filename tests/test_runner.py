@@ -402,10 +402,14 @@ class TestSkillRunnerEnvAndTimeout:
 
         assert captured["interval"] == 42
 
-    def test_init_timeout_default_180_unchanged(self):
-        """``SkillRunner()`` with no kwargs keeps ``self.timeout == 180``."""
+    def test_init_timeout_default_300(self):
+        """``SkillRunner()`` with no kwargs defaults ``self.timeout == 300``.
+
+        Bumped from 180 to 300 per #104 — real-world subscription-backed
+        runs routinely exceed 180 s.
+        """
         runner = SkillRunner()
-        assert runner.timeout == 180
+        assert runner.timeout == 300
 
     def test_existing_call_site_unaffected(self):
         """A ``runner.run("skill", args="")`` call with no new kwargs still

@@ -20,7 +20,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_run.add_argument("--args", help="Arguments to pass to the skill")
     p_run.add_argument("--project-dir", help="Project directory (default: cwd)")
     # DEC-014: default shifts from 180 to None so the precedence chain
-    # (CLI > spec > runner's 180s default) can kick in. ``_positive_int``
+    # (CLI > spec > runner's 300s default) can kick in. ``_positive_int``
     # rejects <= 0 at parse time with exit 2.
     p_run.add_argument(
         "--timeout",
@@ -29,7 +29,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         metavar="SECONDS",
         help=(
             "Timeout in seconds; must be > 0. Defaults to SkillRunner's "
-            "180s default."
+            "300s default."
         ),
     )
     p_run.add_argument(
@@ -54,7 +54,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     )
     # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags through
     # to the runner. Defaults are both None (today's behavior; runner
-    # falls back to its own ``self.timeout`` default of 180s).
+    # falls back to its own ``self.timeout`` default of 300s).
     env_override = (
         env_without_api_key()
         if getattr(args, "no_api_key", False)

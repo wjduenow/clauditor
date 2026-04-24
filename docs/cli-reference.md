@@ -110,7 +110,7 @@ clauditor capture <skill> --no-api-key --timeout 300  # subscription auth, 5-min
 | `--out PATH` | Write captured output to a custom path instead of the default `tests/eval/captured/<skill>.txt`. |
 | `--versioned` | Append `-YYYY-MM-DD` to the output file stem (e.g. `my-skill-2026-04-22.txt`). Useful when keeping a dated history of captures. |
 | `--no-api-key` | Strip `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the subprocess environment. Falls back to subscription auth cached in `~/.claude/`. Useful for skills that exhaust the API-tier rate limit. |
-| `--timeout SECONDS` | Override the default 180-second watchdog. Long-running skills (research, multi-step workflows) frequently need 300–600 s. |
+| `--timeout SECONDS` | Override the default 300-second watchdog. Long-running skills (deep research, multi-step workflows) may still need 600 s or more. |
 | `--claude-bin PATH` | Path to the `claude` CLI (default: `claude` on PATH). |
 
 ### Default output path
@@ -285,7 +285,7 @@ Four skill-invoking commands share two flags that control the `claude -p` subpro
 | Flag | Purpose |
 | ---- | ------- |
 | `--no-api-key` | Strip both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the subprocess environment before invoking `claude -p`. The child then falls back to whatever auth is cached in `~/.claude/` — typically a Pro/Max subscription, which carries a much higher throughput ceiling than the API-key tier. Useful for research-heavy skills (multi-agent, deep-research) that exhaust the free API tier in a single run. Non-auth Anthropic env vars such as `ANTHROPIC_BASE_URL` are preserved. Also implied by `--transport cli` on `grade` (see `--transport`). |
-| `--timeout SECONDS` | Override the runner's 180-second watchdog for a single invocation. Must be a positive integer; `--timeout 0`, `--timeout -5`, and `--timeout foo` exit `2` at argparse time. Precedence: the CLI flag wins when passed explicitly; otherwise the `EvalSpec.timeout` field wins when set; otherwise the built-in 180s default applies. See [`docs/eval-spec-reference.md#optional-top-level-fields`](eval-spec-reference.md#optional-top-level-fields) for the spec-field side of the contract. |
+| `--timeout SECONDS` | Override the runner's 300-second watchdog for a single invocation. Must be a positive integer; `--timeout 0`, `--timeout -5`, and `--timeout foo` exit `2` at argparse time. Precedence: the CLI flag wins when passed explicitly; otherwise the `EvalSpec.timeout` field wins when set; otherwise the built-in 300s default applies. See [`docs/eval-spec-reference.md#optional-top-level-fields`](eval-spec-reference.md#optional-top-level-fields) for the spec-field side of the contract. |
 
 When `claude -p` emits an `apiKeySource` value on its stream-json `init` event, the runner captures it on `SkillResult.api_key_source` and prints one stderr info line of the form `clauditor.runner: apiKeySource=<value>`. Values are labels (`"ANTHROPIC_API_KEY"`, `"claude.ai"`, `"none"`), not secrets. Older `claude` builds that omit the field leave `api_key_source` at `None` and suppress the stderr line — absence is the signal. See [`docs/stream-json-schema.md`](stream-json-schema.md#type-system) for the parser contract.
 
