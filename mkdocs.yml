@@ -1,5 +1,5 @@
 site_name: clauditor
-site_description: Auditor for AgentSkills.io skills and Claude Integrations
+site_description: Automated quality checks for Agent Skills (agentskills.io)
 site_url: https://wjduenow.github.io/clauditor/
 repo_url: https://github.com/wjduenow/clauditor
 repo_name: wjduenow/clauditor
