@@ -1,6 +1,6 @@
 # clauditor
 
-Auditor for AgentSkills.io skills and Claude Integrations. Catches when your skill produces the wrong shape, not just the wrong answer — layered evaluation from free deterministic assertions through LLM-graded quality rubrics.
+Automated quality checks for [Agent Skills](https://agentskills.io). Catches when your skill produces the wrong shape, not just the wrong answer — layered evaluation from free deterministic assertions through LLM-graded quality rubrics.
 
 ## Install
 
@@ -17,7 +17,7 @@ Layer 1 (deterministic assertions) works without an `ANTHROPIC_API_KEY`. Layers 
 - [CLI Reference](cli-reference.md) — every subcommand, flag, and exit code
 - [Eval Spec Format](eval-spec-reference.md) — complete `.eval.json` schema
 - [Pytest Integration](pytest-plugin.md) — fixtures and options
-- [Using /clauditor](skill-usage.md) — the bundled Claude Code skill
+- [Using /clauditor](skill-usage.md) — the bundled Agent Skill
 
 ## Source
 

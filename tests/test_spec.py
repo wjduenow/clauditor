@@ -1036,7 +1036,12 @@ class TestTimeoutPrecedence:
 # the class and any future regression tests can reference it.
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLE_EVAL_JSON = (
-    _REPO_ROOT / "examples" / ".claude" / "commands" / "example-skill.eval.json"
+    _REPO_ROOT
+    / "examples"
+    / ".claude"
+    / "skills"
+    / "find-kid-activities"
+    / "SKILL.eval.json"
 )
 
 

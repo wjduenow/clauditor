@@ -1,0 +1,9 @@
+# Seed venues — fed via input_files so the skill has known fixtures
+# to enrich rather than starting from a blank web search every run.
+# Real evals would use this for deterministic ground truth.
+
+Cupertino Memorial Park | 21121 Stevens Creek Blvd, Cupertino, CA 95014 | All ages | Free
+Blackberry Farm | 21979 San Fernando Ave, Cupertino, CA 95014 | All ages | $
+Rancho San Antonio Preserve | 22500 Cristo Rey Dr, Cupertino, CA 95014 | All ages | Free
+Sunnyvale Community Center | 550 E Remington Dr, Sunnyvale, CA 94087 | 0-12 | Free
+Happy Hollow Park & Zoo | 748 Story Rd, San Jose, CA 95112 | 2-10 | $$

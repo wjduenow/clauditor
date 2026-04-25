@@ -84,14 +84,7 @@ uv run python scripts/bench_cli_transport.py --runs 20 --model claude-haiku-4-5
 
 Per DEC-016: single machine, ≥10 runs per transport, report mean + p95 + stddev, distinguish cold (first call in process) vs warm (steady state).
 
-**Representative numbers** — see `scripts/bench_cli_transport.py`; run to generate actual numbers on your hardware. The table below is a placeholder until the benchmark is run against a real Claude CLI binary and API endpoint:
-
-| Transport | Phase | n | mean | median | p95 | stddev |
-| --------- | ----- | - | ---- | ------ | --- | ------ |
-| `api` | cold | 1 | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| `api` | warm | 10 | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| `cli` | cold | 1 | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
-| `cli` | warm | 10 | _TBD_ | _TBD_ | _TBD_ | _TBD_ |
+**Representative numbers** — see `scripts/bench_cli_transport.py`. Run it on a dedicated machine to generate actual numbers for your hardware; the script reports mean, median, p95, and stddev for both transports across cold (first call in process) and warm (steady state) phases.
 
 The relevant derived metric is the **CLI warm overhead vs SDK warm** — the mean-delta and p95-delta an operator should expect when routing many calls through the CLI path. A small positive overhead (CLI > API by a fraction of a second on warm calls) is the expected shape; any larger gap is worth investigating (network issues, stale subscription auth, an unusually slow `claude` binary path).
 
@@ -131,3 +124,4 @@ The two transports have intentional observability gaps that callers should know 
 - **CLI transport ignores `max_tokens`, but does forward `model`.** `call_anthropic(prompt, model=..., max_tokens=..., transport="cli")` accepts the same signature for parity, but only `model` is forwarded to the `claude -p` subprocess (as `--model <value>`); `max_tokens` is not currently passed through — the CLI binary retains its own response-length handling. Callers that need a specific model for a specific call can use the CLI transport; callers that need per-call `max_tokens` control must force `--transport api`.
 - **No streaming on either transport surface.** Both branches return a fully-assembled `AnthropicResult` once the response (or subprocess) completes; neither yields chunks. Streaming is out of scope for `call_anthropic` — the clauditor callers that consume the result all need the full text before doing anything useful.
 - **Subprocess timeout is fixed at 180 s for the CLI transport.** Unlike `SkillRunner.run`, which threads the resolved timeout through `_invoke_claude_cli`, the `call_anthropic` CLI branch uses a hardcoded 180 s default. (Note: `SkillRunner`'s own default is 300 s as of #104 — the CLI-transport grader budget is intentionally tighter because a single grading call should not legitimately take that long.) A per-call override is not currently wired. Callers that routinely exceed 180 s on a grading call should force `--transport api` or, if that is also slow, split the prompt across multiple calls.
+- **`Task(run_in_background=true)` is not awaited under `claude -p`.** The print-mode parent agent emits its `result` message before background sub-agents finish, truncating the captured transcript. Detected and warned-about by the [#97](https://github.com/wjduenow/clauditor/issues/97) heuristic; force-syncable via the `--sync-tasks` flag (sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in the subprocess env). The flag closes the *capture* gap for parallel-fanout skills but does NOT evaluate async semantics — the skill's sync execution is a different model than what ships. True async-fidelity evaluation is blocked on upstream Claude Code gaining headless background-task polling (filed at [anthropics/claude-code#52917](https://github.com/anthropics/claude-code/issues/52917); decision record at [`docs/adr/transport-research-103.md`](adr/transport-research-103.md)).

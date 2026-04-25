@@ -1,0 +1,75 @@
+{
+  "skill_name": "find-kid-activities",
+  "description": "Validates /find-kid-activities produces venues and events with required fields",
+  "user_prompt": "Find free or low-cost kid activities in Cupertino, CA today within 15 miles for ages 4-6.",
+  "test_args": "\"Cupertino, CA\" --dates today --distance 15mi --ages 4-6 --cost \"Free, $\" --type both --count 5",
+  "input_files": [
+    "assets/sample-input.txt"
+  ],
+  "assertions": [
+    {"id": "contains_venues", "type": "contains", "needle": "Venues"},
+    {"id": "contains_events", "type": "contains", "needle": "Events"},
+    {"id": "has_entries_3", "type": "has_entries", "count": 3},
+    {"id": "has_urls_3", "type": "has_urls", "count": 3},
+    {"id": "min_length_500", "type": "min_length", "length": 500},
+    {"id": "no_ask_user_question", "type": "not_contains", "needle": "AskUserQuestion"},
+    {"id": "regex_numbered_bold", "type": "regex", "pattern": "\\*\\*\\d+\\.\\s+"},
+    {"id": "regex_url", "type": "regex", "pattern": "https?://[^\\s]+"}
+  ],
+  "sections": [
+    {
+      "name": "Venues",
+      "tiers": [
+        {
+          "label": "default",
+          "min_entries": 2,
+          "fields": [
+            {"id": "venue_name", "name": "name", "required": true},
+            {"id": "venue_address", "name": "address", "required": true},
+            {"id": "venue_hours", "name": "hours", "required": true},
+            {"id": "venue_website", "name": "website", "required": true},
+            {"id": "venue_phone", "name": "phone", "required": false},
+            {"id": "venue_cost", "name": "cost", "required": true},
+            {"id": "venue_ages", "name": "ages", "required": true}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Events",
+      "tiers": [
+        {
+          "label": "default",
+          "min_entries": 0,
+          "fields": [
+            {"id": "event_name", "name": "name", "required": true},
+            {"id": "event_date", "name": "date", "required": true},
+            {"id": "event_time", "name": "time", "required": true},
+            {"id": "event_event_url", "name": "event_url", "required": true},
+            {"id": "event_ages", "name": "ages", "required": true}
+          ]
+        }
+      ]
+    }
+  ],
+  "grading_criteria": [
+    {"id": "distance_match", "criterion": "Are all venues within the specified distance?"},
+    {"id": "age_appropriate", "criterion": "Are venues appropriate for the specified age range?"},
+    {"id": "events_on_target_date", "criterion": "Are events actually happening on the target date?"},
+    {"id": "cost_tier_match", "criterion": "Do cost tiers match the specified budget filter?"}
+  ],
+  "trigger_tests": {
+    "should_trigger": [
+      "Find kid activities in Cupertino",
+      "What are some things to do with kids near me this weekend?"
+    ],
+    "should_not_trigger": [
+      "What's the weather today?",
+      "Help me write a Python script"
+    ]
+  },
+  "variance": {
+    "n_runs": 5,
+    "min_stability": 0.8
+  }
+}
