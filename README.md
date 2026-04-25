@@ -12,7 +12,7 @@
 
 Automated quality checks for [Agent Skills](https://agentskills.io). A skill is a reusable instruction file (`SKILL.md`) that tells Claude how to do a task. clauditor answers three questions about every run: **Did it run?** **Did it return the right structure?** **Was the answer actually good?** First two checks cost pennies and run in CI; the third is for release gates.
 
-<details>
+<details markdown="1">
 <summary>Contents</summary>
 
 [Why clauditor?](#why-clauditor) · [Install](#install) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [Suggest](#llm-assisted-skill-improvement-clauditor-suggest) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Eval Spec Format](#eval-spec-format) · [Skill compatibility](#skill-compatibility) · [Authentication](#authentication-and-api-keys) · [Reference docs](#reference-docs)
@@ -38,7 +38,7 @@ clauditor --version
 
 Layer 1 works without any LLM credentials. Layers 2 & 3 and `propose-eval` need either an Anthropic API key (`ANTHROPIC_API_KEY`) or the `claude` CLI installed and signed in to a Claude Pro/Max subscription — see [Authentication](#authentication-and-api-keys).
 
-<details>
+<details markdown="1">
 <summary>Installing from source (for contributors)</summary>
 
 ```bash
@@ -87,7 +87,7 @@ If you use [Claude Code](https://claude.com/claude-code) interactively, you can 
 
 From your project root, `uv run clauditor setup` creates a symlink at `.claude/skills/clauditor` pointing at the bundled Claude Code skill; `pip install --upgrade clauditor` then picks up skill updates automatically. Restart Claude Code once if `.claude/skills/` did not exist before.
 
-<details><summary>Flags and details</summary>
+<details markdown="1"><summary>Flags and details</summary>
 
 - `--unlink` — remove the `/clauditor` symlink. Refuses symlinks not pointing at the installed clauditor package, so it won't touch user-authored skills.
 - `--force` — overwrite an existing file or symlink at `.claude/skills/clauditor`.
@@ -211,7 +211,7 @@ Optional blocks (`input_files`, `output_files`, `variance`, `trigger_tests`) add
 
 **Covered in the full reference:** the full eval-spec JSON shape, `input_files` staging rules, `output_file` / `output_files` capture, and the `format` validation DSL (`phone_us`, `url`, `domain`, … or inline regex). Full reference: [docs/eval-spec-reference.md](https://github.com/wjduenow/clauditor/blob/dev/docs/eval-spec-reference.md).
 
-<details><summary>Alignment with agentskills.io</summary>
+<details markdown="1"><summary>Alignment with agentskills.io</summary>
 
 clauditor implements (and extends) the workflow at [agentskills.io/skill-creation/evaluating-skills](https://agentskills.io/skill-creation/evaluating-skills):
 
@@ -235,10 +235,10 @@ Note: `--no-api-key` only affects the subprocess; the six LLM-mediated commands 
 clauditor works for most skills out of the box. A few patterns need a workaround or aren't supported yet:
 
 - **Skills with parallel sub-tasks** (the `Task(run_in_background=true)` pattern): pass `--sync-tasks` to force them to run sequentially. Output capture works correctly, but the *async behavior itself* (race conditions, late-arriving results) is not tested — you're evaluating a slightly different execution model than what ships.
-- **Skills that ask the user mid-run** (e.g. `AskUserQuestion` to clarify intent): not supported directly — clauditor runs skills non-interactively, so the question never gets an answer and the run hangs. The fix is usually to take all parameters in the initial prompt; see the worked before/after example and the `not_contains AskUserQuestion` regression assertion in [`docs/skill-usage.md#recipe-skills-that-ask-the-user-mid-run`](docs/skill-usage.md#recipe-skills-that-ask-the-user-mid-run), with [`examples/.claude/commands/example-skill.eval.json`](examples/.claude/commands/example-skill.eval.json) as the canonical anchor.
+- **Skills that ask the user mid-run** (e.g. `AskUserQuestion` to clarify intent): not supported directly — clauditor runs skills non-interactively, so the question never gets an answer and the run hangs. The fix is usually to take all parameters in the initial prompt; see the worked before/after example and the `not_contains AskUserQuestion` regression assertion in [`docs/skill-usage.md#recipe-skills-that-ask-the-user-mid-run`](docs/skill-usage.md#recipe-skills-that-ask-the-user-mid-run), with [`examples/.claude/skills/find-kid-activities/SKILL.eval.json`](examples/.claude/skills/find-kid-activities/SKILL.eval.json) as the canonical anchor.
 - **Skills whose correctness depends on async timing**: cannot be tested accurately yet. Blocked on an upstream Claude Code feature.
 
-<details>
+<details markdown="1">
 <summary>Technical detail and upstream tracking</summary>
 
 clauditor invokes skills through `claude -p` (non-interactive print mode), which is a strict subset of the interactive Claude Code runtime. **Works**: sequential `Task` calls, parallel tool calls in the parent turn, every standard tool (`WebSearch`, `WebFetch`, `Bash`, `Read`, `Write`, `Edit`). **Works with `--sync-tasks`**: skills using `Task(run_in_background=true)` — the flag sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in the subprocess env, resolving the [#97](https://github.com/wjduenow/clauditor/issues/97) output-truncation case. **Loud failure today**: skills whose correctness depends on true async semantics — blocked on upstream Claude Code gaining headless background-task polling, tracked in [anthropics/claude-code#52917](https://github.com/anthropics/claude-code/issues/52917) and catalogued in [`docs/adr/transport-research-103.md`](docs/adr/transport-research-103.md).
