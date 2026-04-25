@@ -1,0 +1,3286 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Automated quality checks for Agent Skills (agentskills.io)">
+      
+      
+      
+        <link rel="canonical" href="https://wjduenow.github.io/clauditor/cli-reference/">
+      
+      
+        <link rel="prev" href="../layers/">
+      
+      
+        <link rel="next" href="../eval-spec-reference/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>CLI Reference - clauditor</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#cli-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="clauditor" class="md-header__button md-logo" aria-label="clauditor" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            clauditor
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              CLI Reference
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/wjduenow/clauditor" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    wjduenow/clauditor
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../quick-start/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Quick Start
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../layers/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Three Layers
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  CLI Reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../eval-spec-reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Eval Spec
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../pytest-plugin/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Pytest Plugin
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../skill-usage/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Using /clauditor
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../skills/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Skills
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../badges/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Badges
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../architecture/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Architecture
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../stream-json-schema/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Stream JSON
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="clauditor" class="md-nav__button md-logo" aria-label="clauditor" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    clauditor
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/wjduenow/clauditor" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    wjduenow/clauditor
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../layers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Three Layers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#lint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        lint
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="lint">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required-inputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required inputs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exit-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#claude-code-extension-allowlist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Claude Code extension allowlist
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#soft-warn-hook-on-every-skill-load" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Soft-warn hook on every skill load
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See also
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#capture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        capture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="capture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required-inputs_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required inputs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#flags_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#default-output-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Default output path
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#interactive-skills" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interactive skills
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#relationship-to-propose-eval-and-validate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationship to propose-eval and validate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exit-codes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#propose-eval" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        propose-eval
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="propose-eval">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required-inputs_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required inputs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#flags_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#examples_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exit-codes_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#capture-discovery-dec-001" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capture discovery (DEC-001)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#token-budget-dec-005-dec-011" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token budget (DEC-005 / DEC-011)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#security-scrubbing-dec-008" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security / scrubbing (DEC-008)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#relationship-to-init-and-capture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationship to init and capture
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#suggest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        suggest
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="suggest">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-suggest-exists" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why suggest exists
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#required-inputs_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required inputs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#flags_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#examples_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sidecar-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sidecar layout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exit-codes_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#relationship-to-grade" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationship to grade
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#badge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        badge
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="badge">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required-inputs_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required inputs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#flags_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#examples_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exit-codes_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#other-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Other commands
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Other commands">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#init" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        init
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        validate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#grade" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        grade
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#extract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        extract
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#triggers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        triggers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        compare
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#audit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        audit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        trend
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        setup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#doctor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        doctor
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shared-runner-flags-validate-grade-capture-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shared runner flags (validate, grade, capture, run)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#authentication-and-api-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Authentication and API Keys
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Authentication and API Keys">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#feature-impact-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature-impact matrix
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#error-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Error behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#transport-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transport architecture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#persistent-metric-history" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Persistent metric history
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exit-codes_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../eval-spec-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Eval Spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pytest-plugin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pytest Plugin
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skill-usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using /clauditor
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../badges/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Badges
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../stream-json-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stream JSON
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#lint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        lint
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="lint">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required-inputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required inputs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#flags" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#examples" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exit-codes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#claude-code-extension-allowlist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Claude Code extension allowlist
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#soft-warn-hook-on-every-skill-load" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Soft-warn hook on every skill load
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See also
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#capture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        capture
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="capture">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required-inputs_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required inputs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#flags_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#default-output-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Default output path
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#interactive-skills" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Interactive skills
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#relationship-to-propose-eval-and-validate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationship to propose-eval and validate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exit-codes_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#propose-eval" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        propose-eval
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="propose-eval">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required-inputs_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required inputs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#flags_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#examples_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exit-codes_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#capture-discovery-dec-001" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Capture discovery (DEC-001)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#token-budget-dec-005-dec-011" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Token budget (DEC-005 / DEC-011)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#security-scrubbing-dec-008" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security / scrubbing (DEC-008)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#relationship-to-init-and-capture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationship to init and capture
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#suggest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        suggest
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="suggest">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-suggest-exists" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why suggest exists
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#required-inputs_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required inputs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#flags_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#examples_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sidecar-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sidecar layout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exit-codes_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#relationship-to-grade" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationship to grade
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#badge" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        badge
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="badge">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#required-inputs_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Required inputs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#flags_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Flags
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#examples_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Examples
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#exit-codes_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#other-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Other commands
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Other commands">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#init" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        init
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        validate
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#grade" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        grade
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#extract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        extract
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#triggers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        triggers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compare" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        compare
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#audit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        audit
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#trend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        trend
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        setup
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#doctor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        doctor
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#shared-runner-flags-validate-grade-capture-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shared runner flags (validate, grade, capture, run)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#authentication-and-api-keys" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Authentication and API Keys
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Authentication and API Keys">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#feature-impact-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Feature-impact matrix
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#error-behavior" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Error behavior
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#transport-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transport architecture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#persistent-metric-history" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Persistent metric history
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#exit-codes_5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Exit codes
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="cli-reference">CLI Reference</h1>
+<p>Full reference for every <code>clauditor</code> subcommand: arguments, flags, the persistent metric history, and the exit codes scripts can key off of. Read this when you need to look up a specific option or wire clauditor into CI, not for the conceptual overview of the three-layer framework.</p>
+<blockquote>
+<p>Returning from the <a href="../README.md">root README</a>. This doc is the full reference; the README has a summary with code examples.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code>clauditor<span class="w"> </span>init<span class="w"> </span>&lt;skill.md&gt;<span class="w">              </span><span class="c1"># Generate starter eval.json</span>
+clauditor<span class="w"> </span>lint<span class="w"> </span>&lt;skill.md&gt;<span class="w">              </span><span class="c1"># Static agentskills.io spec conformance</span>
+clauditor<span class="w"> </span>lint<span class="w"> </span>&lt;skill.md&gt;<span class="w"> </span>--strict<span class="w">     </span><span class="c1"># Treat warnings as exit-2 failures</span>
+clauditor<span class="w"> </span>lint<span class="w"> </span>&lt;skill.md&gt;<span class="w"> </span>--json<span class="w">       </span><span class="c1"># JSON envelope for CI</span>
+clauditor<span class="w"> </span>validate<span class="w"> </span>&lt;skill.md&gt;<span class="w">          </span><span class="c1"># Run Layer 1 assertions</span>
+clauditor<span class="w"> </span>validate<span class="w"> </span>&lt;skill.md&gt;<span class="w"> </span>--json<span class="w">   </span><span class="c1"># JSON output for CI</span>
+clauditor<span class="w"> </span>run<span class="w"> </span>&lt;skill-name&gt;<span class="w"> </span>--args<span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="w">  </span><span class="c1"># Run skill, print output</span>
+clauditor<span class="w"> </span>extract<span class="w"> </span>&lt;skill.md&gt;<span class="w">           </span><span class="c1"># Layer 2 schema extraction</span>
+clauditor<span class="w"> </span>extract<span class="w"> </span>&lt;skill.md&gt;<span class="w"> </span>--dry-run<span class="w"> </span><span class="c1"># Print extraction prompt only</span>
+clauditor<span class="w"> </span>grade<span class="w"> </span>&lt;skill.md&gt;<span class="w">                             </span><span class="c1"># Layer 3 quality grading (auto-increments iteration)</span>
+clauditor<span class="w"> </span>grade<span class="w"> </span>&lt;skill.md&gt;<span class="w"> </span>--variance<span class="w"> </span><span class="m">3</span><span class="w">                </span><span class="c1"># Variance measurement</span>
+clauditor<span class="w"> </span>grade<span class="w"> </span>&lt;skill.md&gt;<span class="w"> </span>--only-criterion<span class="w"> </span>clarity<span class="w">    </span><span class="c1"># Run a subset (repeatable, substring match)</span>
+clauditor<span class="w"> </span>grade<span class="w"> </span>&lt;skill.md&gt;<span class="w"> </span>--iteration<span class="w"> </span><span class="m">5</span><span class="w">               </span><span class="c1"># Write to .clauditor/iteration-5/&lt;skill&gt;/</span>
+clauditor<span class="w"> </span>grade<span class="w"> </span>&lt;skill.md&gt;<span class="w"> </span>--iteration<span class="w"> </span><span class="m">5</span><span class="w"> </span>--force<span class="w">       </span><span class="c1"># Overwrite an existing iteration-5/</span>
+clauditor<span class="w"> </span>grade<span class="w"> </span>&lt;skill.md&gt;<span class="w"> </span>--diff<span class="w">                      </span><span class="c1"># Compare against prior iteration</span>
+clauditor<span class="w"> </span>compare<span class="w"> </span>--skill<span class="w"> </span>&lt;skill&gt;<span class="w"> </span>--from<span class="w"> </span><span class="m">1</span><span class="w"> </span>--to<span class="w"> </span><span class="m">2</span><span class="w">      </span><span class="c1"># Diff two iterations by number</span>
+clauditor<span class="w"> </span>compare<span class="w"> </span>.clauditor/iteration-1/&lt;skill&gt;<span class="w"> </span>.clauditor/iteration-2/&lt;skill&gt;<span class="w">  </span><span class="c1"># Diff by directory</span>
+clauditor<span class="w"> </span>compare<span class="w"> </span>before.txt<span class="w"> </span>after.txt<span class="w"> </span>--spec<span class="w"> </span>&lt;skill.md&gt;<span class="w">  </span><span class="c1"># Re-grade two captures</span>
+clauditor<span class="w"> </span>trend<span class="w"> </span>&lt;skill&gt;<span class="w"> </span>--metric<span class="w"> </span>total.total<span class="w">     </span><span class="c1"># Tab-separated history + ASCII sparkline</span>
+clauditor<span class="w"> </span>trend<span class="w"> </span>&lt;skill&gt;<span class="w"> </span>--list-metrics<span class="w">           </span><span class="c1"># List available metric paths</span>
+clauditor<span class="w"> </span>trend<span class="w"> </span>&lt;skill&gt;<span class="w"> </span>--metric<span class="w"> </span>grader.input_tokens<span class="w"> </span>--command<span class="w"> </span>extract<span class="w">  </span><span class="c1"># Filter by subcommand</span>
+clauditor<span class="w"> </span>triggers<span class="w"> </span>&lt;skill.md&gt;<span class="w">          </span><span class="c1"># Trigger precision testing</span>
+clauditor<span class="w"> </span>capture<span class="w"> </span>&lt;skill&gt;<span class="w"> </span>--<span class="w"> </span><span class="s2">&quot;args&quot;</span><span class="w">    </span><span class="c1"># Run skill, save stdout to tests/eval/captured/</span>
+clauditor<span class="w"> </span>audit<span class="w"> </span>&lt;skill&gt;<span class="w">                </span><span class="c1"># Aggregate per-assertion pass rates across iterations</span>
+clauditor<span class="w"> </span>suggest<span class="w"> </span>&lt;skill.md&gt;<span class="w">           </span><span class="c1"># Propose SKILL.md edits from prior failing iterations</span>
+clauditor<span class="w"> </span>propose-eval<span class="w"> </span>&lt;skill.md&gt;<span class="w">      </span><span class="c1"># LLM-assisted EvalSpec bootstrap (SKILL.md + optional capture)</span>
+clauditor<span class="w"> </span>badge<span class="w"> </span>&lt;skill.md&gt;<span class="w">             </span><span class="c1"># Shields.io endpoint JSON from latest iteration sidecars</span>
+clauditor<span class="w"> </span>setup<span class="w">                        </span><span class="c1"># Install the bundled /clauditor slash command symlink</span>
+clauditor<span class="w"> </span>doctor<span class="w">                       </span><span class="c1"># Report environment diagnostics</span>
+</code></pre></div>
+<h2 id="lint">lint</h2>
+<p>Static conformance check against the <a href="https://agentskills.io/specification">agentskills.io specification</a>. <code>clauditor lint &lt;SKILL.md&gt;</code> reads the file, parses its YAML frontmatter via the project's <code>_frontmatter.parse_frontmatter</code> helper, and runs every rule from the spec (required/optional frontmatter keys, name-vs-parent-dir match, body-line budget, layout expectations) through the pure <code>check_conformance</code> helper in <code>src/clauditor/conformance.py</code>. The command is <strong>non-LLM</strong> — no tokens spent, no network calls — so it is safe to run on every commit, in CI, and as a pre-publish check before uploading a skill to a registry.</p>
+<h3 id="required-inputs">Required inputs</h3>
+<ul>
+<li><code>&lt;skill_md&gt;</code> (positional) — path to the SKILL.md file to lint. Absolute paths are accepted; symlinks are followed to their real target; directories, sockets, and missing paths exit 1.</li>
+</ul>
+<h3 id="flags">Flags</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--strict</code></td>
+<td>Treat warnings as failures (exit 2). Errors always exit 2 regardless. Parse failures (<code>AGENTSKILLS_FRONTMATTER_INVALID_YAML</code>) always exit 1 even under <code>--strict</code> — <code>--strict</code> never escalates load-layer parse failures.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>Emit a JSON envelope to stdout instead of the human-readable text. Exit codes are identical to the human-output path. <code>schema_version: 1</code> is the first key in the payload.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="examples">Examples</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Basic conformance check — exits 0 on pass with a success line.</span>
+clauditor<span class="w"> </span>lint<span class="w"> </span>.claude/skills/my-skill/SKILL.md
+
+<span class="c1"># Strict mode — warnings promoted to exit 2 (pre-publish gate).</span>
+clauditor<span class="w"> </span>lint<span class="w"> </span>--strict<span class="w"> </span>.claude/skills/my-skill/SKILL.md
+
+<span class="c1"># JSON envelope for CI — pipe through jq for programmatic checks.</span>
+clauditor<span class="w"> </span>lint<span class="w"> </span>--json<span class="w"> </span>.claude/skills/my-skill/SKILL.md<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>.passed
+</code></pre></div>
+<h3 id="exit-codes">Exit codes</h3>
+<p>Non-LLM 0/1/2 taxonomy per <code>.claude/rules/llm-cli-exit-code-taxonomy.md</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td>Pass — no issues, OR warning-only result without <code>--strict</code>. Success line printed to stdout.</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td>Load/parse failure — path does not resolve to a regular file, file is unreadable (OSError / UnicodeDecodeError), or frontmatter is malformed YAML (<code>AGENTSKILLS_FRONTMATTER_INVALID_YAML</code>). Never escalated by <code>--strict</code>.</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td>Conformance failure — one or more error-severity issues, OR warnings with <code>--strict</code> set. Issues rendered on stderr as <code>clauditor.conformance: &lt;CODE&gt;: &lt;message&gt;</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="claude-code-extension-allowlist">Claude Code extension allowlist</h3>
+<p>The agentskills.io spec defines the frontmatter keys <code>name</code>, <code>description</code>, <code>license</code>, <code>compatibility</code>, <code>metadata</code>, and <code>allowed-tools</code>. Unknown keys normally trigger <code>AGENTSKILLS_FRONTMATTER_UNKNOWN_KEY</code> (warning). Two Claude Code extension keys are allowlisted and do NOT trigger the warning: <code>argument-hint</code> and <code>disable-model-invocation</code>. <code>argument-hint</code> is a Claude Code UI hint (shows in slash-command autocomplete, e.g. <code>argument-hint: "[skill-path]"</code>) but is <strong>not part of the agentskills.io spec</strong> — there is currently no spec-level standard for declaring skill arguments. The allowlist is maintained by the maintainer-only <code>/review-agentskills-spec</code> skill, which periodically diffs Claude Code's published frontmatter documentation against the <code>KNOWN_CLAUDE_CODE_EXTENSION_KEYS</code> constant in <code>src/clauditor/conformance.py</code> (per DEC-009 and DEC-013 of <code>plans/super/71-agentskills-lint.md</code>).</p>
+<p>Unquoted <code>:</code> (space-colon-space) inside a frontmatter scalar value triggers <code>AGENTSKILLS_FRONTMATTER_UNQUOTED_COLON_IN_SCALAR</code> (error, exit 2) — strict YAML parsers (PyYAML, GitHub's renderer) treat such values as nested mappings while clauditor's permissive reader accepts them silently. Wrap the value in double quotes to silence it (per DEC-003 and DEC-007 of <code>plans/super/80-strict-frontmatter-yaml.md</code>).</p>
+<h3 id="soft-warn-hook-on-every-skill-load">Soft-warn hook on every skill load</h3>
+<p>Beyond the standalone <code>lint</code> command, <code>SkillSpec.from_file</code> calls <code>check_conformance</code> on every skill load and emits <strong>warnings only</strong> to stderr with the <code>clauditor.conformance:</code> prefix. Errors are silent at that seam — they surface when the user runs <code>clauditor lint</code>. The hook never blocks <code>from_file</code>; a skill that would fail <code>lint</code> today still loads for <code>validate</code>, <code>grade</code>, and downstream commands (per DEC-003).</p>
+<h3 id="see-also">See also</h3>
+<ul>
+<li><strong><code>/review-agentskills-spec</code></strong> — the maintainer-only sibling skill (lives at repo-root <code>.claude/skills/</code>, not shipped in the wheel, not installed by <code>clauditor setup</code>). <strong><code>clauditor lint</code></strong> checks a user's skill against the spec; <strong><code>/review-agentskills-spec</code></strong> audits the upstream spec itself (and Claude Code's frontmatter documentation) for drift against clauditor's enforcement. Two sides of the same check: one catches user skills that drift from the spec, the other catches clauditor's enforcement drifting from the spec.</li>
+</ul>
+<h2 id="capture">capture</h2>
+<p>Run a skill via <code>claude -p</code> and save its output to a file. The primary use case is grounding <code>clauditor propose-eval</code> in real skill output before bootstrapping the eval spec — a proposer that sees what the skill actually emits writes much tighter assertions than one working from the SKILL.md alone.</p>
+<div class="highlight"><pre><span></span><code>clauditor<span class="w"> </span>capture<span class="w"> </span>&lt;skill&gt;<span class="w">           </span><span class="c1"># save to tests/eval/captured/&lt;skill&gt;.txt</span>
+clauditor<span class="w"> </span>capture<span class="w"> </span>&lt;skill&gt;<span class="w"> </span>--<span class="w"> </span>args<span class="w">   </span><span class="c1"># pass initial context to the skill</span>
+clauditor<span class="w"> </span>capture<span class="w"> </span>&lt;skill&gt;<span class="w"> </span>--no-api-key<span class="w"> </span>--timeout<span class="w"> </span><span class="m">600</span><span class="w">  </span><span class="c1"># subscription auth, 10-min watchdog</span>
+</code></pre></div>
+<h3 id="required-inputs_1">Required inputs</h3>
+<ul>
+<li><code>&lt;skill&gt;</code> (positional) — skill name (leading slash optional, e.g. <code>find-restaurants</code> or <code>/find-restaurants</code>). Resolved against the project's <code>.claude/skills/</code> and <code>.claude/commands/</code> directories the same way <code>clauditor validate</code> does.</li>
+</ul>
+<h3 id="flags_1">Flags</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-- &lt;args&gt;</code></td>
+<td>Arguments passed to the skill command as initial context, appended to the <code>-p</code> prompt: <code>claude -p "/&lt;skill&gt; &lt;args&gt;"</code>. The only injection point before the skill runs — see <a href="#interactive-skills">Interactive skills</a> below.</td>
+</tr>
+<tr>
+<td><code>--out PATH</code></td>
+<td>Write captured output to a custom path instead of the default <code>tests/eval/captured/&lt;skill&gt;.txt</code>.</td>
+</tr>
+<tr>
+<td><code>--versioned</code></td>
+<td>Append <code>-YYYY-MM-DD</code> to the output file stem (e.g. <code>my-skill-2026-04-22.txt</code>). Useful when keeping a dated history of captures.</td>
+</tr>
+<tr>
+<td><code>--no-api-key</code></td>
+<td>Strip <code>ANTHROPIC_API_KEY</code> and <code>ANTHROPIC_AUTH_TOKEN</code> from the subprocess environment. Falls back to subscription auth cached in <code>~/.claude/</code>. Useful for skills that exhaust the API-tier rate limit.</td>
+</tr>
+<tr>
+<td><code>--timeout SECONDS</code></td>
+<td>Override the default 300-second watchdog. Long-running skills (deep research, multi-step workflows) may still need 600 s or more.</td>
+</tr>
+<tr>
+<td><code>--claude-bin PATH</code></td>
+<td>Path to the <code>claude</code> CLI (default: <code>claude</code> on PATH).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="default-output-path">Default output path</h3>
+<p><code>tests/eval/captured/&lt;skill&gt;.txt</code> — the same directory <code>clauditor propose-eval</code> checks first during <a href="./#capture-discovery-dec-001">capture discovery</a>. Running <code>capture</code> before <code>propose-eval</code> is all it takes; the proposer picks up the file automatically.</p>
+<h3 id="interactive-skills">Interactive skills</h3>
+<p><code>clauditor capture</code> runs <code>claude -p "/&lt;skill&gt; &lt;args&gt;"</code> — a <strong>strictly single-turn, non-interactive</strong> invocation. There is no stdin, no multi-turn conversation, and no way to inject answers to mid-run questions. If the skill asks the user a question mid-run (e.g. "Confirm? yes/no"), Claude emits the question and exits. The runner detects this via the <strong>interactive-hang heuristic</strong> (trailing <code>?</code> on the output, or an <code>AskUserQuestion</code> tool-use block in the stream-json) and surfaces:</p>
+<div class="highlight"><pre><span></span><code>WARNING: interactive-hang: skill may have asked for input
+         — ensure all parameters are in test_args (heuristic)
+</code></pre></div>
+<p>The output file is still written with whatever the skill produced before the hang.</p>
+<p><strong>For eval-friendly skills:</strong> put all decision context in <code>-- args</code> (passed upfront) rather than in mid-run prompts. In the eval spec, mirror this via the <code>test_args</code> field — <code>clauditor validate</code> and <code>clauditor grade</code> use <code>test_args</code> as the same initial argument string.</p>
+<p><strong>No spec-level args standard exists yet.</strong> Claude Code adds an <code>argument-hint</code> frontmatter key (e.g. <code>argument-hint: "[test|full]"</code>) that displays a hint in the slash-command autocomplete UI, but this is a Claude Code extension — it is not in the <a href="https://agentskills.io/specification">agentskills.io specification</a>, carries no validation, and does not distinguish required from optional args. clauditor allowlists it to suppress a spurious lint warning (see <a href="#lint"><code>lint</code></a>). A proper <code>arguments</code> declaration in the agentskills.io spec — covering name, required/optional, type, and default — is tracked in <a href="https://github.com/wjduenow/clauditor/issues/93">issue #93</a>.</p>
+<h3 id="relationship-to-propose-eval-and-validate">Relationship to <code>propose-eval</code> and <code>validate</code></h3>
+<div class="highlight"><pre><span></span><code>clauditor capture my-skill -- &quot;initial context&quot;    # 1. capture real output
+clauditor propose-eval my-skill.md                 # 2. bootstrap eval from SKILL.md + capture
+clauditor validate my-skill.md                     # 3. tighten and verify L1 assertions
+</code></pre></div>
+<p><code>propose-eval</code> reads the capture automatically from <code>tests/eval/captured/</code>; no flag needed. See <a href="#capture-discovery-dec-001">Capture discovery</a>.</p>
+<h3 id="exit-codes_1">Exit codes</h3>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td>Skill ran and output was written (even if the skill itself reported an error — the capture records whatever the skill emitted).</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td>Skill subprocess failed to start, timed out, or the runner encountered a fatal stream-json error. Output file is not written.</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td>Input-validation failure — skill name not found, <code>--out</code> parent directory does not exist.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="propose-eval">propose-eval</h2>
+<p>LLM-assisted EvalSpec bootstrap. <code>clauditor propose-eval &lt;skill.md&gt;</code> reads the SKILL.md file and (optionally) a captured skill run, asks Sonnet to propose a full three-layer EvalSpec (L1 assertions, L2 tiered extraction, L3 rubric), validates the proposal through <code>EvalSpec.from_dict</code>, and writes a sibling <code>&lt;skill&gt;.eval.json</code> next to the SKILL.md (the same path <code>SkillSpec.from_file</code> and <code>clauditor init</code> auto-discover). Use it to skip the blank-spec drudgery when onboarding a new skill.</p>
+<p>Requires authentication: <code>ANTHROPIC_API_KEY</code> for API transport, or an authenticated <code>claude</code> CLI for CLI transport. See <a href="#authentication-and-api-keys">Authentication and API Keys</a>.</p>
+<h3 id="required-inputs_2">Required inputs</h3>
+<ul>
+<li><code>&lt;skill_md&gt;</code> (positional) — path to the SKILL.md file. The generated spec is written to the sibling <code>&lt;skill_stem&gt;.eval.json</code> (e.g. <code>foo.md</code> → <code>foo.eval.json</code>, <code>SKILL.md</code> → <code>SKILL.eval.json</code>).</li>
+</ul>
+<h3 id="flags_2">Flags</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--from-capture PATH</code></td>
+<td>Override capture discovery with an explicit file. Wins over <code>--from-iteration</code>.</td>
+</tr>
+<tr>
+<td><code>--from-iteration N</code></td>
+<td>Load the capture from <code>.clauditor/runs/iteration-N/&lt;skill&gt;/run-0/output.txt</code> (N must be a positive integer).</td>
+</tr>
+<tr>
+<td><code>--force</code></td>
+<td>Overwrite an existing sibling <code>&lt;skill&gt;.eval.json</code>. Without it, the command refuses with exit 1.</td>
+</tr>
+<tr>
+<td><code>--dry-run</code></td>
+<td>Print the built proposer prompt to stdout and exit; do not call Anthropic and do not write a file. Cost-free preview.</td>
+</tr>
+<tr>
+<td><code>--model MODEL</code></td>
+<td>Override the proposer model (default: <code>claude-sonnet-4-6</code>).</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>Emit the full <code>ProposeEvalReport</code> JSON envelope on stdout (includes <code>schema_version</code>, tokens, duration, validation errors).</td>
+</tr>
+<tr>
+<td><code>-v, --verbose</code></td>
+<td>Log capture source, redaction count, model, and token estimates to stderr.</td>
+</tr>
+<tr>
+<td><code>--project-dir PATH</code></td>
+<td>Override project root (default: cwd). Used for capture discovery and relative-path reporting.</td>
+</tr>
+<tr>
+<td><code>--transport {api,cli,auto}</code></td>
+<td>Route the Anthropic call through the HTTP SDK (<code>api</code>), the <code>claude -p</code> subprocess (<code>cli</code>), or the default auto-resolution (<code>auto</code> — picks CLI when available). Precedence: this flag &gt; <code>CLAUDITOR_TRANSPORT</code> env &gt; <code>EvalSpec.transport</code> &gt; default <code>auto</code>. Full reference: <a href="../transport-architecture/">docs/transport-architecture.md</a>. Same flag on <code>grade</code>, <code>extract</code>, <code>propose-eval</code>, <code>suggest</code>, <code>triggers</code>, <code>compare --blind</code>. On <code>grade</code>, <code>--transport cli</code> (explicit flag or <code>CLAUDITOR_TRANSPORT=cli</code> env var) implies <code>--no-api-key</code> for the skill subprocess so the skill subprocess and grader both use subscription auth end-to-end. When <code>ANTHROPIC_API_KEY</code> or <code>ANTHROPIC_AUTH_TOKEN</code> was actually present, a one-time stderr notice announces the strip; with no key in env, the strip is a silent no-op. Pass <code>--transport api</code> to keep the keys.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="examples_1">Examples</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Basic bootstrap — uses DEC-001 capture discovery, writes eval.json</span>
+clauditor<span class="w"> </span>propose-eval<span class="w"> </span>.claude/commands/my-skill.md
+
+<span class="c1"># Preview the built proposer prompt (no Anthropic call)</span>
+clauditor<span class="w"> </span>propose-eval<span class="w"> </span>.claude/commands/my-skill.md<span class="w"> </span>--dry-run
+
+<span class="c1"># Bootstrap from an explicit capture file (takes precedence over discovery)</span>
+clauditor<span class="w"> </span>propose-eval<span class="w"> </span>.claude/commands/my-skill.md<span class="w"> </span>--from-capture<span class="w"> </span>tests/eval/captured/my-skill.txt
+
+<span class="c1"># Overwrite an existing eval.json</span>
+clauditor<span class="w"> </span>propose-eval<span class="w"> </span>.claude/commands/my-skill.md<span class="w"> </span>--force
+</code></pre></div>
+<h3 id="exit-codes_2">Exit codes</h3>
+<p>Mirrors the DEC-006 contract in <code>src/clauditor/cli/propose_eval.py</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td>Success — prompt printed (<code>--dry-run</code>), report envelope printed (<code>--json</code>), or spec written to <code>eval.json</code>.</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td>Response-parse failure from the proposer (malformed JSON, missing top-level shape) OR collision: <code>eval.json</code> already exists and <code>--force</code> was not passed.</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td>Spec-validation failure OR pre-call input error — the proposed dict did not survive <code>EvalSpec.from_dict</code> (missing required fields, duplicate ids, invalid <code>format</code> strings, …), OR the prompt exceeded the token budget, OR <code>--from-capture</code>/<code>--from-iteration</code> pointed at a missing/invalid target. Errors printed on stderr.</td>
+</tr>
+<tr>
+<td><code>3</code></td>
+<td>Anthropic API error — auth failure, rate-limit exhaustion, connection error, or any non-retriable SDK error surfaced by <code>clauditor._anthropic.call_anthropic</code>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="capture-discovery-dec-001">Capture discovery (DEC-001)</h3>
+<p>When neither <code>--from-capture</code> nor <code>--from-iteration</code> is provided, the loader looks for a capture file in this order and uses the first match:</p>
+<ol>
+<li><code>&lt;project_dir&gt;/tests/eval/captured/&lt;skill_name&gt;.txt</code> (primary — the same directory <code>clauditor capture</code> writes to).</li>
+<li><code>&lt;project_dir&gt;/.clauditor/captures/&lt;skill_name&gt;.txt</code> (fallback).</li>
+</ol>
+<p>The <code>&lt;skill_name&gt;</code> is resolved from the SKILL.md frontmatter's <code>name</code> field, falling back to the containing directory's basename, and finally to the literal string <code>"skill"</code> if neither source matches the security regex (<code>^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$</code>). This clamp blocks path-traversal attempts via a malicious <code>name:</code> field (e.g. <code>"../../etc/passwd"</code>). If no capture is found, the proposer runs against the SKILL.md alone — the quality of the generated spec will be lower, but the command does not error out. Malformed frontmatter emits a stderr warning and falls through to treating the whole file as body.</p>
+<h3 id="token-budget-dec-005-dec-011">Token budget (DEC-005 / DEC-011)</h3>
+<p>The prompt is pre-checked against a <strong>50,000-token cap</strong> via a <code>len(prompt) / 4</code> heuristic before the Anthropic call. This is a coarse safety rail that prevents a mid-stream 413 when a SKILL.md + capture is pathologically large. Oversize inputs fail fast with an <code>ERROR:</code> line on stderr and exit code <strong>2</strong> (pre-call input error per DEC-006) before any Anthropic call is made.</p>
+<h3 id="security-scrubbing-dec-008">Security / scrubbing (DEC-008)</h3>
+<p>Captured skill output is scrubbed through <code>clauditor.transcripts.redact</code> before it lands in the prompt OR the sidecar. The redaction is non-mutating (per <code>.claude/rules/non-mutating-scrub.md</code>): secret-shaped substrings (Anthropic keys, GitHub PATs, Bearer tokens) are replaced in a new copy while the caller's in-memory representation — if any — stays untouched. Both CLI-override paths (<code>--from-capture</code>, <code>--from-iteration</code>) apply the same scrub; the loader-discovered path is scrubbed by the loader itself.</p>
+<h3 id="relationship-to-init-and-capture">Relationship to <code>init</code> and <code>capture</code></h3>
+<ul>
+<li><code>clauditor init</code> writes a <strong>skill stub</strong> (<code>SKILL.md</code> + starter <code>eval.json</code>) for a brand-new skill. Use it first when the skill itself does not yet exist.</li>
+<li><code>clauditor propose-eval</code> fills in an <code>eval.json</code> for a skill whose <strong>SKILL.md already exists</strong>. It does not write a skill stub and does not regenerate SKILL.md.</li>
+<li><code>clauditor capture &lt;skill&gt; -- "args"</code> produces the captured run that <code>propose-eval</code> reads as grounding context. Capturing before <code>propose-eval</code> typically lifts the quality of the generated spec (the proposer sees what real output looks like).</li>
+</ul>
+<h2 id="suggest">suggest</h2>
+<p>LLM-assisted skill improvement. <code>clauditor suggest &lt;skill.md&gt;</code> reads the latest <code>.clauditor/iteration-N/&lt;skill&gt;/grading.json</code>, asks Sonnet to propose minimal SKILL.md edits keyed to the failing L3 criteria (and any failing L1 assertions captured in the same iteration), hard-validates every proposal's <code>anchor</code> as a once-only substring of the current SKILL.md, and writes a unified diff plus a JSON sidecar under <code>.clauditor/suggestions/</code>. Use it to close the loop from "grader produced a verdict" to "tool produced an applicable, motivated, anchor-validated edit proposal."</p>
+<p>Requires authentication: <code>ANTHROPIC_API_KEY</code> for API transport, or an authenticated <code>claude</code> CLI for CLI transport. See <a href="#authentication-and-api-keys">Authentication and API Keys</a>.</p>
+<h3 id="why-suggest-exists">Why <code>suggest</code> exists</h3>
+<p>Three guarantees you can't get from a hand-written or free-form-LLM patch:</p>
+<ul>
+<li><strong>Traceability</strong> — every proposed edit carries <code>motivated_by: [criterion_id, ...]</code>, tying the SKILL.md change back to the specific grader signals that motivated it. The proposer rejects at parse time any <code>motivated_by</code> id that does not appear in the input's failing-signal lists.</li>
+<li><strong>Anchor safety</strong> — each <code>edit_proposal.anchor</code> is validated to appear <strong>exactly once</strong> in the on-disk SKILL.md (sequentially, so later edits see the mutated buffer earlier edits produced). Any failure aborts the run before writing either file; no partial diffs, no blind replacement.</li>
+<li><strong>Structured output</strong> — diff + JSON sidecar with <code>motivated_by</code>, <code>anchor</code>, <code>replacement</code>, <code>rationale</code>, <code>confidence</code>, model/timestamp, <code>source_iteration</code>, and <code>schema_version: 1</code> for downstream tooling consumers.</li>
+</ul>
+<h3 id="required-inputs_3">Required inputs</h3>
+<ul>
+<li><code>&lt;skill_md&gt;</code> (positional) — path to the SKILL.md file. The command reads the latest iteration under <code>.clauditor/</code> that contains <code>&lt;skill&gt;/grading.json</code> (skill identity is derived from the SKILL.md via the canonical <code>derive_skill_name</code> helper — frontmatter <code>name:</code> first, parent-directory name as fallback).</li>
+</ul>
+<h3 id="flags_3">Flags</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--from-iteration N</code></td>
+<td>Override latest-iteration discovery. Loads the grade run from <code>.clauditor/iteration-N/&lt;skill&gt;/grading.json</code> (N must be a positive integer).</td>
+</tr>
+<tr>
+<td><code>--with-transcripts</code></td>
+<td>Include per-run stream-json transcripts in the proposer prompt. Increases token spend; useful when grading-only signals are ambiguous about the failure mode.</td>
+</tr>
+<tr>
+<td><code>--model MODEL</code></td>
+<td>Override the proposer model (default: <code>claude-sonnet-4-6</code>).</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>Print the full <code>SuggestReport</code> JSON envelope to stdout instead of the unified diff. The sidecar file is still written regardless.</td>
+</tr>
+<tr>
+<td><code>-v, --verbose</code></td>
+<td>Log bundle size, token counts, duration, and sidecar paths to stderr.</td>
+</tr>
+<tr>
+<td><code>--transport {api,cli,auto}</code></td>
+<td>Route the Anthropic call through the HTTP SDK (<code>api</code>), the <code>claude -p</code> subprocess (<code>cli</code>), or the default auto-resolution (<code>auto</code> — picks CLI when available). Precedence: this flag &gt; <code>CLAUDITOR_TRANSPORT</code> env &gt; <code>EvalSpec.transport</code> &gt; default <code>auto</code>. Full reference: <a href="../transport-architecture/">docs/transport-architecture.md</a>.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="examples_2">Examples</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Basic use — reads the latest iteration&#39;s grading.json, writes diff + sidecar.</span>
+clauditor<span class="w"> </span>suggest<span class="w"> </span>.claude/skills/my-skill/SKILL.md
+
+<span class="c1"># Preview in CI-friendly JSON form (sidecar still written on disk).</span>
+clauditor<span class="w"> </span>suggest<span class="w"> </span>.claude/skills/my-skill/SKILL.md<span class="w"> </span>--json
+
+<span class="c1"># Target an older iteration explicitly.</span>
+clauditor<span class="w"> </span>suggest<span class="w"> </span>.claude/skills/my-skill/SKILL.md<span class="w"> </span>--from-iteration<span class="w"> </span><span class="m">3</span>
+
+<span class="c1"># Include transcripts for more context when grading-only signals are thin.</span>
+clauditor<span class="w"> </span>suggest<span class="w"> </span>.claude/skills/my-skill/SKILL.md<span class="w"> </span>--with-transcripts
+
+<span class="c1"># Apply a proposed diff.</span>
+git<span class="w"> </span>apply<span class="w"> </span>.clauditor/suggestions/my-skill-&lt;timestamp&gt;.diff
+</code></pre></div>
+<h3 id="sidecar-layout">Sidecar layout</h3>
+<p>Each invocation that reaches the write step produces two sibling files under <code>.clauditor/suggestions/</code>:</p>
+<ul>
+<li><code>&lt;skill&gt;-&lt;timestamp&gt;.diff</code> — a unified diff you can feed to <code>git apply</code> (or hand-edit).</li>
+<li><code>&lt;skill&gt;-&lt;timestamp&gt;.json</code> — the structured <code>SuggestReport</code> envelope with <code>schema_version: 1</code> as the first key. Fields: <code>skill_name</code>, <code>model</code>, <code>generated_at</code> (UTC ISO), <code>source_iteration</code>, <code>source_grading_path</code>, <code>input_tokens</code>, <code>output_tokens</code>, <code>duration_seconds</code>, <code>summary_rationale</code>, <code>edit_proposals</code> (list of <code>{id, anchor, replacement, rationale, confidence, motivated_by, applies_to_file}</code>), <code>validation_errors</code>, <code>parse_error</code>, <code>api_error</code>.</li>
+</ul>
+<p>Timestamps are microsecond-precision UTC (<code>%Y%m%dT%H%M%S%fZ</code>); two invocations in the same microsecond would collide (acceptable for v1).</p>
+<h3 id="exit-codes_3">Exit codes</h3>
+<p>Mirrors the DEC-008 contract in <code>src/clauditor/cli/suggest.py</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td>Success — diff (or <code>--json</code> envelope) printed to stdout, sidecar written to <code>.clauditor/suggestions/</code>. Also <code>0</code> when the latest iteration has zero failing signals: Sonnet is NOT called, a stderr note is printed, no sidecar is written (DEC-008 row 2).</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td>Load-time or parse-layer failure: no prior <code>grading.json</code> under <code>.clauditor/</code>, unreadable SKILL.md, unparseable proposer response, or OS error while writing the sidecar. For the load/parse branches no sidecar is written; for OS write failures, partial sidecar artifacts may remain if one sidecar file (JSON or diff) was written before the error occurred (<code>write_sidecar</code> writes the two sibling files sequentially, not atomically).</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td>Anchor-validation failure — one or more proposals named an <code>anchor</code> that does not appear exactly once in the current SKILL.md. Errors printed on stderr, no sidecar written. Also <code>2</code> when no usable authentication is available (neither <code>ANTHROPIC_API_KEY</code> nor an authenticated <code>claude</code> CLI).</td>
+</tr>
+<tr>
+<td><code>3</code></td>
+<td>Anthropic API error — auth failure, rate-limit exhaustion, connection error, or any non-retriable SDK error surfaced by <code>clauditor._anthropic.call_anthropic</code>. No sidecar written.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="relationship-to-grade">Relationship to <code>grade</code></h3>
+<p><code>clauditor grade</code> is the prerequisite: <code>suggest</code> has no standalone mode and no LLM call if no failing signals exist in the discovered iteration. If no <code>grading.json</code> exists under <code>.clauditor/</code>, the command exits 1 with a hint to run <code>clauditor grade</code> first. The bundled <code>/clauditor</code> slash command wires this handoff automatically — see <a href="../skill-usage/#proposing-skill-improvements">docs/skill-usage.md#proposing-skill-improvements</a> for the full walkthrough.</p>
+<h2 id="badge">badge</h2>
+<p>Generate a <a href="https://shields.io">shields.io</a>-compatible endpoint JSON from a skill's latest iteration sidecars. <code>clauditor badge &lt;skill.md&gt;</code> reads the most recent <code>.clauditor/iteration-N/&lt;skill&gt;/assertions.json</code> (L1) and, when present, <code>grading.json</code> (L3) / <code>variance.json</code>, classifies color and message per the project's rules, and writes the result to <code>.clauditor/badges/&lt;skill&gt;.json</code> (or a path passed to <code>--output</code>). Point any shields.io endpoint URL at the raw JSON and the rendered SVG updates whenever the JSON changes.</p>
+<p>The command is a <strong>read-only aggregator</strong> — it does NOT run the skill and does NOT call Anthropic. Run <code>clauditor validate</code> (for L1 coverage) and <code>clauditor grade</code> (for L3 coverage) first; the badge surfaces whatever those iterations already produced. When no iteration exists, the command writes a <code>lightgrey</code> "no data" placeholder and exits 0 (DEC-001), so CI pipelines that always run <code>clauditor badge</code> keep a persistent placeholder even before the first grade.</p>
+<h3 id="required-inputs_4">Required inputs</h3>
+<ul>
+<li><code>&lt;skill_md&gt;</code> (positional) — path to the SKILL.md file. The skill name is derived via the same <code>skill-identity-from-frontmatter</code> helper <code>clauditor validate</code> and <code>clauditor grade</code> use, so the iteration lookup matches what those commands wrote.</li>
+</ul>
+<h3 id="flags_4">Flags</h3>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--from-iteration N</code></td>
+<td>latest</td>
+<td>Read sidecars from <code>.clauditor/iteration-N/&lt;skill&gt;/</code> instead of the latest. N must be a positive integer. A missing N exits 1 with the available-iterations list on stderr (DEC-016).</td>
+</tr>
+<tr>
+<td><code>--output PATH</code></td>
+<td><code>.clauditor/badges/&lt;skill&gt;.json</code></td>
+<td>Write the badge JSON to PATH. Absolute paths are accepted (DEC-005 — common for GitHub Pages dirs outside the repo). Parent directory must already exist (DEC-022). Mutually exclusive with <code>--url-only</code>.</td>
+</tr>
+<tr>
+<td><code>--url-only</code></td>
+<td>off</td>
+<td>Print the Markdown image line to stdout instead of writing JSON. Mutually exclusive with <code>--output</code>.</td>
+</tr>
+<tr>
+<td><code>--force</code></td>
+<td>off</td>
+<td>Overwrite an existing badge JSON file. Without it, a collision exits 1 (DEC-011). The DEC-001 lightgrey placeholder write honors <code>--force</code> too — it does not silently clobber a "real" badge.</td>
+</tr>
+<tr>
+<td><code>--repo USER/REPO</code></td>
+<td>git auto-detect</td>
+<td>Override the origin-slug auto-detect used by <code>--url-only</code> (DEC-002). Falls back to the literal placeholder <code>USER/REPO</code> with a stderr warning when auto-detect fails and no override is supplied.</td>
+</tr>
+<tr>
+<td><code>--branch NAME</code></td>
+<td>git auto-detect</td>
+<td>Override the default-branch auto-detect used by <code>--url-only</code> (DEC-002). Falls back to <code>main</code> with a stderr warning when auto-detect fails.</td>
+</tr>
+<tr>
+<td><code>--label TEXT</code></td>
+<td><code>"clauditor"</code></td>
+<td>Shields.io badge label text (the left side of the rendered SVG). Rejects <code>[</code>, <code>]</code>, <code>(</code>, <code>)</code>, and newlines (would break the Markdown <code>![alt](url)</code> syntax) and empty/whitespace values with exit 2.</td>
+</tr>
+<tr>
+<td><code>--style KEY=VALUE</code></td>
+<td>none</td>
+<td>Shields.io style passthrough; repeatable. Whitelist: <code>style</code>, <code>logoSvg</code>, <code>logoColor</code>, <code>labelColor</code>, <code>cacheSeconds</code>, <code>link</code> (DEC-015). Unknown keys emit a stderr warning but still land in the JSON (shields.io silently ignores what it does not know). Values are rejected on control characters or length &gt;512 (DEC-023). <code>cacheSeconds</code> is coerced to <code>int</code>; non-numeric input exits 2.</td>
+</tr>
+<tr>
+<td><code>-v, --verbose</code></td>
+<td>off</td>
+<td>On success, print a stderr info line naming the written path and iteration (<code>clauditor.badge: wrote &lt;path&gt; (iteration N)</code>) per DEC-018.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="examples_3">Examples</h3>
+<div class="highlight"><pre><span></span><code><span class="c1"># Basic: populate an iteration first, then generate the badge JSON.</span>
+clauditor<span class="w"> </span>grade<span class="w"> </span>.claude/skills/my-skill/SKILL.md
+clauditor<span class="w"> </span>badge<span class="w"> </span>.claude/skills/my-skill/SKILL.md
+<span class="c1"># → writes .clauditor/badges/my-skill.json (brightgreen &quot;8/8 · L3 92%&quot;)</span>
+
+<span class="c1"># --url-only: get a Markdown image line for pasting into a README.</span>
+clauditor<span class="w"> </span>badge<span class="w"> </span>.claude/skills/my-skill/SKILL.md<span class="w"> </span>--url-only
+<span class="c1"># → ![clauditor](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/USER/REPO/main/.clauditor/badges/my-skill.json)</span>
+
+<span class="c1"># Advanced: shields.io style passthrough, custom label, force-overwrite.</span>
+clauditor<span class="w"> </span>badge<span class="w"> </span>.claude/skills/my-skill/SKILL.md<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--style<span class="w"> </span><span class="nv">cacheSeconds</span><span class="o">=</span><span class="m">300</span><span class="w"> </span>--style<span class="w"> </span><span class="nv">style</span><span class="o">=</span>flat-square<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--label<span class="w"> </span><span class="s2">&quot;my skill&quot;</span><span class="w"> </span>--force
+</code></pre></div>
+<h3 id="exit-codes_4">Exit codes</h3>
+<p>Non-LLM 0/1/2 taxonomy per <code>.claude/rules/llm-cli-exit-code-taxonomy.md</code> (the "does not apply" clause — no Anthropic call, so no exit 3):</p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td>Success. Badge JSON written or <code>--url-only</code> Markdown image line printed. The DEC-001 / DEC-007 lightgrey placeholder writes (no iteration found, or iteration present but spec declares zero L1 assertions) also return 0.</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td>Runtime failure. Corrupt iteration — iteration dir exists but <code>assertions.json</code> is missing (DEC-008). Existing badge JSON without <code>--force</code> (DEC-011). <code>--from-iteration N</code> referring to a missing iteration (DEC-016). OS-level disk I/O error on write.</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td>Input-validation failure. Mutually exclusive <code>--url-only</code> + <code>--output</code> both passed (DEC-014). <code>--output</code> parent dir does not exist (DEC-022). <code>--style</code> malformed (missing <code>=</code>, empty key) or value rejected (control characters / length &gt;512) (DEC-015, DEC-023). Skill path missing, not a regular file, or <code>SkillSpec.from_file</code> fails to load.</td>
+</tr>
+</tbody>
+</table>
+<p>See also <a href="../badges/">docs/badges.md</a> for placement guidance (README vs SKILL.md vs catalog page), the full color-logic table, and a CI integration stub.</p>
+<h2 id="other-commands">Other commands</h2>
+<p>The remaining subcommands are documented compactly here. Each accepts <code>--help</code> for the live argparse output, which is the canonical source.</p>
+<h3 id="init"><code>init</code></h3>
+<p>Generate a starter <code>eval.json</code> next to a <code>SKILL.md</code>. Reads the skill's frontmatter to infer <code>skill_name</code>, then writes a minimal eval spec with no assertions or criteria. Run this once when adopting clauditor for an existing skill, then iterate via <code>propose-eval</code>, <code>validate</code>, and <code>grade</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--force</code></td>
+<td>Overwrite an existing <code>eval.json</code> next to the skill. Default behavior is to refuse and exit 1 to protect hand-tuned specs.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="validate"><code>validate</code></h3>
+<p>Run Layer 1 deterministic assertions against a skill's output. Spawns the skill via <code>claude -p</code>, captures stdout, then evaluates each assertion in <code>eval.json</code>. No LLM call on the clauditor side.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--eval PATH</code></td>
+<td>Path to <code>eval.json</code>; auto-discovered alongside the skill file if omitted.</td>
+</tr>
+<tr>
+<td><code>--output PATH</code></td>
+<td>Path to a pre-captured output file. Skips running the skill — useful when iterating on assertions against a single capture.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>Emit results as JSON instead of the human-readable summary.</td>
+</tr>
+<tr>
+<td><code>--no-transcript</code></td>
+<td>Skip writing per-run stream-json transcripts to disk.</td>
+</tr>
+<tr>
+<td><code>-v / --verbose</code></td>
+<td>On assertion failure, print the last 5 assistant text blocks to stderr.</td>
+</tr>
+</tbody>
+</table>
+<p>Also accepts the <a href="#shared-runner-flags-validate-grade-capture-run">shared runner flags</a>: <code>--no-api-key</code>, <code>--sync-tasks</code>, <code>--timeout</code>.</p>
+<h3 id="grade"><code>grade</code></h3>
+<p>Run Layer 3 LLM-graded quality scoring. Auto-increments the iteration slot (<code>.clauditor/iteration-N/&lt;skill&gt;/</code>) so historical comparisons stay coherent.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--eval PATH</code></td>
+<td>Path to <code>eval.json</code>; auto-discovered if omitted.</td>
+</tr>
+<tr>
+<td><code>--output PATH</code></td>
+<td>Path to pre-captured output; skips running the skill.</td>
+</tr>
+<tr>
+<td><code>--model MODEL</code></td>
+<td>Override the grading model (default <code>claude-sonnet-4-6</code> or <code>EvalSpec.grading_model</code>).</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>Emit grading report as JSON.</td>
+</tr>
+<tr>
+<td><code>--dry-run</code></td>
+<td>Print the grading prompt without making any API call. Cost-free preview.</td>
+</tr>
+<tr>
+<td><code>--variance N</code></td>
+<td>Run the skill <code>N</code> times and grade each; reports cross-run stability.</td>
+</tr>
+<tr>
+<td><code>--iteration N</code></td>
+<td>Write to a specific iteration slot (default: auto-increment).</td>
+</tr>
+<tr>
+<td><code>--force</code></td>
+<td>With <code>--iteration N</code>, overwrite an existing iteration directory.</td>
+</tr>
+<tr>
+<td><code>--diff</code></td>
+<td>Compare against the previous iteration's <code>grading.json</code>.</td>
+</tr>
+<tr>
+<td><code>--baseline</code></td>
+<td>After grading, also run <code>test_args</code> through Claude <strong>without</strong> the skill prefix and capture baseline L1/L2/L3 sidecars. Roughly doubles LLM cost.</td>
+</tr>
+<tr>
+<td><code>--min-baseline-delta FLOAT</code></td>
+<td>Gate on the with-skill-vs-baseline pass-rate delta. Exit 1 when the skill underperforms its baseline by more than this margin.</td>
+</tr>
+<tr>
+<td><code>--only-criterion SUBSTRING</code></td>
+<td>Run only criteria whose name contains the substring (repeatable). Skips the history append.</td>
+</tr>
+<tr>
+<td><code>--transport {api,cli,auto}</code></td>
+<td>Override the Anthropic call backend. See <a href="#transport-architecture">transport architecture</a>.</td>
+</tr>
+</tbody>
+</table>
+<p>Also accepts the shared runner flags: <code>--no-api-key</code>, <code>--sync-tasks</code>, <code>--timeout</code>, <code>-v</code>, <code>--no-transcript</code>.</p>
+<h3 id="run"><code>run</code></h3>
+<p>Run a skill via <code>claude -p</code> and print its output to stdout. The thinnest of the skill-invoking commands — no eval, no assertions, no grading.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--args STRING</code></td>
+<td>Arguments to pass to the skill command.</td>
+</tr>
+<tr>
+<td><code>--project-dir PATH</code></td>
+<td>Override project-root detection (default: cwd).</td>
+</tr>
+<tr>
+<td><code>--timeout SECONDS</code>, <code>--no-api-key</code>, <code>--sync-tasks</code></td>
+<td>Shared runner flags.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="extract"><code>extract</code></h3>
+<p>Run Layer 2 schema extraction. Sends the skill output to a small LLM (default Haiku) along with the <code>sections</code> schema declared in <code>eval.json</code>, then validates the extracted JSON against per-tier field requirements. Produces the <code>extraction.json</code> sidecar.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--eval PATH</code></td>
+<td>Path to <code>eval.json</code>; auto-discovered if omitted.</td>
+</tr>
+<tr>
+<td><code>--output PATH</code></td>
+<td>Pre-captured output path; skips the skill subprocess.</td>
+</tr>
+<tr>
+<td><code>--model MODEL</code></td>
+<td>Override the extraction model.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>Emit results as JSON.</td>
+</tr>
+<tr>
+<td><code>--dry-run</code></td>
+<td>Print the extraction prompt without making an API call.</td>
+</tr>
+<tr>
+<td><code>-v / --verbose</code></td>
+<td>Print raw model JSON under failing assertions when available.</td>
+</tr>
+<tr>
+<td><code>--transport {api,cli,auto}</code></td>
+<td>Override the Anthropic call backend.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="triggers"><code>triggers</code></h3>
+<p>Test trigger precision: send each <code>should_trigger</code> and <code>should_not_trigger</code> query in <code>eval.json</code> to a small LLM judge that decides whether your skill <em>should</em> have fired for that query. Catches over-/under-triggering before users do.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--eval PATH</code></td>
+<td>Path to <code>eval.json</code>; auto-discovered if omitted.</td>
+</tr>
+<tr>
+<td><code>--model MODEL</code></td>
+<td>Override the judge model.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>Emit results as JSON.</td>
+</tr>
+<tr>
+<td><code>--dry-run</code></td>
+<td>Print sample trigger prompts.</td>
+</tr>
+<tr>
+<td><code>--transport {api,cli,auto}</code></td>
+<td>Override the Anthropic call backend.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="compare"><code>compare</code></h3>
+<p>Diff two iterations or two captured outputs. Three modes:</p>
+<ul>
+<li><code>clauditor compare --skill &lt;skill&gt; --from N --to M</code> — diff iteration <code>N</code> vs <code>M</code> for a skill (resolves directories under <code>.clauditor/iteration-*</code>).</li>
+<li><code>clauditor compare &lt;iter-dir-1&gt; &lt;iter-dir-2&gt;</code> — diff two iteration directories directly.</li>
+<li><code>clauditor compare before.txt after.txt --spec &lt;skill.md&gt;</code> — re-grade two captured outputs and show the delta.</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--spec PATH</code></td>
+<td>Path to the skill <code>.md</code>; required when diffing <code>.txt</code> files.</td>
+</tr>
+<tr>
+<td><code>--eval PATH</code></td>
+<td>Path to <code>eval.json</code>; auto-discovered if omitted.</td>
+</tr>
+<tr>
+<td><code>--skill NAME</code>, <code>--from N</code>, <code>--to N</code></td>
+<td>Skill name + iteration numbers (alternative to positional iteration dirs).</td>
+</tr>
+<tr>
+<td><code>--blind</code></td>
+<td>Run a blind A/B LLM judge over the two outputs and print a preference verdict. Requires <code>--spec</code> and <code>EvalSpec.user_prompt</code>.</td>
+</tr>
+<tr>
+<td><code>--transport {api,cli,auto}</code></td>
+<td>Backend selector; only used with <code>--blind</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Exits 1 when a regression is detected (assertion that previously passed now fails, or grading score drops below threshold).</p>
+<h3 id="audit"><code>audit</code></h3>
+<p>Aggregate per-assertion pass rates across the most recent N iteration workspaces. Surfaces assertions that are flaky, never fire, or fail to discriminate between the with-skill and baseline arms.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--last N</code></td>
+<td>Consider the last <code>N</code> iteration directories (default 20).</td>
+</tr>
+<tr>
+<td><code>--min-fail-rate FLOAT</code></td>
+<td>Flag assertions whose fail rate is at least this value (0.0–1.0).</td>
+</tr>
+<tr>
+<td><code>--min-discrimination FLOAT</code></td>
+<td>Flag assertions whose with-vs-baseline pass-rate delta is below this value.</td>
+</tr>
+<tr>
+<td><code>--json</code></td>
+<td>Emit a machine-readable JSON report instead of the table.</td>
+</tr>
+<tr>
+<td><code>--output-dir PATH</code></td>
+<td>Directory to write audit reports.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="trend"><code>trend</code></h3>
+<p>Print a tab-separated history of a metric across iterations, with an ASCII sparkline. Reads <code>.clauditor/history.jsonl</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--metric PATH</code></td>
+<td>Metric to trend: <code>pass_rate</code>, <code>mean_score</code>, or a dotted path into <code>metrics</code> (e.g. <code>total.total</code>, <code>grader.input_tokens</code>). Required unless <code>--list-metrics</code> is used.</td>
+</tr>
+<tr>
+<td><code>--list-metrics</code></td>
+<td>List every available metric path in history for the skill.</td>
+</tr>
+<tr>
+<td><code>--command {grade,extract,validate,all}</code></td>
+<td>Filter records by subcommand (default <code>grade</code>).</td>
+</tr>
+<tr>
+<td><code>--last N</code></td>
+<td>Show the last <code>N</code> records (default 20, must be ≥ 1).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="setup"><code>setup</code></h3>
+<p>Install the bundled <code>/clauditor</code> slash command by symlinking <code>.claude/skills/clauditor</code> → the package's bundled SKILL.md. Idempotent; refuses to overwrite unrelated files or symlinks pointing elsewhere.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--unlink</code></td>
+<td>Remove a previously-installed <code>/clauditor</code> symlink. Only removes our own symlinks; refuses to touch unrelated entries.</td>
+</tr>
+<tr>
+<td><code>--force</code></td>
+<td>Overwrite an existing file or symlink at <code>.claude/skills/clauditor</code>. No effect under <code>--unlink</code>.</td>
+</tr>
+<tr>
+<td><code>--project-dir PATH</code></td>
+<td>Override project-root detection; use this directory as the cwd for <code>.claude/</code> resolution.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="doctor"><code>doctor</code></h3>
+<p>Print environment diagnostics: clauditor version, <code>claude</code> CLI presence and version, Anthropic SDK version, auth state (API key present? CLI cached creds?), and any common misconfiguration. Takes no flags. Run this first when something feels wrong.</p>
+<h2 id="shared-runner-flags-validate-grade-capture-run">Shared runner flags (<code>validate</code>, <code>grade</code>, <code>capture</code>, <code>run</code>)</h2>
+<p>Four skill-invoking commands share three flags that control the <code>claude -p</code> subprocess the runner spawns. All default to "not set" so today's behavior is unchanged when none are passed.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--no-api-key</code></td>
+<td>Strip both <code>ANTHROPIC_API_KEY</code> and <code>ANTHROPIC_AUTH_TOKEN</code> from the subprocess environment before invoking <code>claude -p</code>. The child then falls back to whatever auth is cached in <code>~/.claude/</code> — typically a Pro/Max subscription, which carries a much higher throughput ceiling than the API-key tier. Useful for research-heavy skills (multi-agent, deep-research) that exhaust the free API tier in a single run. Non-auth Anthropic env vars such as <code>ANTHROPIC_BASE_URL</code> are preserved. Also implied by <code>--transport cli</code> on <code>grade</code> (see <code>--transport</code>).</td>
+</tr>
+<tr>
+<td><code>--timeout SECONDS</code></td>
+<td>Override the runner's 300-second watchdog for a single invocation. Must be a positive integer; <code>--timeout 0</code>, <code>--timeout -5</code>, and <code>--timeout foo</code> exit <code>2</code> at argparse time. Precedence: the CLI flag wins when passed explicitly; otherwise the <code>EvalSpec.timeout</code> field wins when set; otherwise the built-in 300s default applies. See <a href="../eval-spec-reference/#optional-top-level-fields"><code>docs/eval-spec-reference.md#optional-top-level-fields</code></a> for the spec-field side of the contract.</td>
+</tr>
+<tr>
+<td><code>--sync-tasks</code></td>
+<td>Set <code>CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1</code> in the subprocess env, forcing <code>Task(run_in_background=true)</code> spawns to run synchronously. Resolves the output-truncation failure mode for skills that use background sub-agents for parallel fanout. Also suppresses the <code>background-task:</code> warning from the <a href="https://github.com/wjduenow/clauditor/issues/97">#97</a> detector under that env. Precedence: CLI flag &gt; <code>EvalSpec.sync_tasks</code> &gt; default <code>False</code>. On <code>grade --baseline</code>, applies to both primary and baseline arms so the delta compares like-for-like. Synchronous Tasks roughly double wall time vs the parallel default — non-trivial skills routinely land in the 300-400s range and exhaust the built-in 300s watchdog; pair <code>--sync-tasks</code> with <code>--timeout 600</code> (or higher) to avoid first-run timeouts. <strong>Read the fidelity caveats in <a href="../skill-usage/#--sync-tasks-force-task-mode-synchronous-at-eval-time"><code>docs/skill-usage.md#--sync-tasks-force-task-mode-synchronous-at-eval-time</code></a> before relying on <code>--sync-tasks</code> — you are evaluating a different execution model than what ships.</strong> Full decision record: <a href="../adr/transport-research-103/"><code>docs/adr/transport-research-103.md</code></a>.</td>
+</tr>
+</tbody>
+</table>
+<p>When <code>claude -p</code> emits an <code>apiKeySource</code> value on its stream-json <code>init</code> event, the runner captures it on <code>SkillResult.api_key_source</code> and prints one stderr info line of the form <code>clauditor.runner: apiKeySource=&lt;value&gt;</code>. Values are labels (<code>"ANTHROPIC_API_KEY"</code>, <code>"claude.ai"</code>, <code>"none"</code>), not secrets. Older <code>claude</code> builds that omit the field leave <code>api_key_source</code> at <code>None</code> and suppress the stderr line — absence is the signal. See <a href="../stream-json-schema/#type-system"><code>docs/stream-json-schema.md</code></a> for the parser contract.</p>
+<p>Under <code>--transport cli</code>, each grader subprocess call also emits its own <code>apiKeySource</code> line. To distinguish them, the line carries a <code>(&lt;subject&gt;)</code> suffix naming the internal LLM call — e.g. <code>clauditor.runner: apiKeySource=none (L2 extraction)</code> and <code>clauditor.runner: apiKeySource=none (L3 grading)</code> for a <code>grade</code> run with tiered sections. Known subjects today: <code>L2 extraction</code>, <code>L3 grading</code>, <code>L3 blind compare side1</code> / <code>L3 blind compare side2</code>, <code>triggers judge</code>, <code>suggest proposer</code>, <code>propose-eval</code>. Skill-run subprocesses emit the line without a suffix.</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Force subscription auth, raise the watchdog to ten minutes.</span>
+clauditor<span class="w"> </span>grade<span class="w"> </span>.claude/commands/deep-research.md<span class="w"> </span>--no-api-key<span class="w"> </span>--timeout<span class="w"> </span><span class="m">600</span>
+
+<span class="c1"># Pro/Max operator running a fast-failing CI check — CLI wins over spec.</span>
+clauditor<span class="w"> </span>validate<span class="w"> </span>.claude/commands/my-skill.md<span class="w"> </span>--no-api-key<span class="w"> </span>--timeout<span class="w"> </span><span class="m">30</span>
+</code></pre></div>
+<p>Pytest integration: <code>--clauditor-no-api-key</code> is the plugin-option counterpart to <code>--no-api-key</code> on the CLI. It threads the same env scrub through the <code>clauditor_spec</code> fixture's <code>env_override</code>. The existing <code>--clauditor-timeout</code> pytest option continues to control the per-runner default (constructor <code>timeout=...</code>); per-invocation overrides flow through the fixture factory just like the CLI path. See <a href="../pytest-plugin/"><code>docs/pytest-plugin.md</code></a>.</p>
+<h2 id="authentication-and-api-keys">Authentication and API Keys</h2>
+<p>Anthropic exposes two distinct auth modes, and clauditor commands split cleanly along that line:</p>
+<ul>
+<li><strong>API key</strong> — pay-per-token, set via the <code>ANTHROPIC_API_KEY</code> environment variable. Required by any clauditor command that calls the Anthropic API from the Python process.</li>
+<li><strong>Claude Pro/Max subscription</strong> — flat-rate plan, credentials cached under <code>~/.claude/</code> by the <code>claude</code> CLI. Works for commands that only spawn the <code>claude -p</code> skill subprocess.</li>
+</ul>
+<p>The Python <code>anthropic</code> SDK is API-only: it does not read subscription credentials from <code>~/.claude/</code>. That is why the LLM-mediated commands below (<code>grade</code>, <code>propose-eval</code>, <code>suggest</code>, <code>triggers</code>, <code>extract</code>, and <code>compare --blind</code>) require <code>ANTHROPIC_API_KEY</code> even when the user is signed in to Claude Pro/Max. Commands that only run the skill subprocess work under either auth mode.</p>
+<h3 id="feature-impact-matrix">Feature-impact matrix</h3>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th style="text-align: center;">Works without API key?</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>clauditor validate</code></td>
+<td style="text-align: center;">✓</td>
+<td>L1 deterministic assertions; no LLM call on the clauditor side.</td>
+</tr>
+<tr>
+<td><code>clauditor capture</code></td>
+<td style="text-align: center;">✓</td>
+<td>Runs the skill subprocess only.</td>
+</tr>
+<tr>
+<td><code>clauditor run</code></td>
+<td style="text-align: center;">✓</td>
+<td>Runs the skill subprocess only.</td>
+</tr>
+<tr>
+<td><code>clauditor lint</code></td>
+<td style="text-align: center;">✓</td>
+<td>Static conformance check, no LLM.</td>
+</tr>
+<tr>
+<td><code>clauditor init</code></td>
+<td style="text-align: center;">✓</td>
+<td>Eval-spec scaffold, no LLM.</td>
+</tr>
+<tr>
+<td><code>clauditor badge</code></td>
+<td style="text-align: center;">✓</td>
+<td>Reads persisted sidecars, no LLM.</td>
+</tr>
+<tr>
+<td><code>clauditor audit</code></td>
+<td style="text-align: center;">✓</td>
+<td>Reads persisted sidecars.</td>
+</tr>
+<tr>
+<td><code>clauditor trend</code></td>
+<td style="text-align: center;">✓</td>
+<td>Reads persisted sidecars.</td>
+</tr>
+<tr>
+<td><code>clauditor grade</code></td>
+<td style="text-align: center;">✓ (with caveat)</td>
+<td>Routes through the <code>claude -p</code> CLI transport when available. Requires <code>claude</code> on PATH + subscription auth; else <code>ANTHROPIC_API_KEY</code>.</td>
+</tr>
+<tr>
+<td><code>clauditor grade --variance N</code></td>
+<td style="text-align: center;">✓ (with caveat)</td>
+<td>Same as <code>grade</code> — each variance rep routes through the selected transport.</td>
+</tr>
+<tr>
+<td><code>clauditor propose-eval</code></td>
+<td style="text-align: center;">✓ (with caveat)</td>
+<td>Routes through the CLI transport when available (subscription auth); else <code>ANTHROPIC_API_KEY</code>.</td>
+</tr>
+<tr>
+<td><code>clauditor suggest</code></td>
+<td style="text-align: center;">✓ (with caveat)</td>
+<td>Routes through the CLI transport when available (subscription auth); else <code>ANTHROPIC_API_KEY</code>.</td>
+</tr>
+<tr>
+<td><code>clauditor triggers</code></td>
+<td style="text-align: center;">✓ (with caveat)</td>
+<td>Routes through the CLI transport when available (subscription auth); else <code>ANTHROPIC_API_KEY</code>.</td>
+</tr>
+<tr>
+<td><code>clauditor extract</code></td>
+<td style="text-align: center;">✓ (with caveat)</td>
+<td>Routes through the CLI transport when available (subscription auth); else <code>ANTHROPIC_API_KEY</code>.</td>
+</tr>
+<tr>
+<td><code>clauditor compare --blind</code></td>
+<td style="text-align: center;">✓ (with caveat)</td>
+<td>Routes the blind A/B judge through the CLI transport when available; else <code>ANTHROPIC_API_KEY</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>The "with caveat" rows resolve through the four-layer precedence (CLI flag &gt; env &gt; spec &gt; default <code>auto</code>). The <code>auto</code> default picks CLI when <code>claude</code> is on PATH, else API. Pytest fixtures keep the strict API-key guard unless <code>CLAUDITOR_FIXTURE_ALLOW_CLI=1</code> is set. Full details: <a href="../transport-architecture/">docs/transport-architecture.md</a>.</p>
+<h3 id="error-behavior">Error behavior</h3>
+<p>When neither <code>ANTHROPIC_API_KEY</code> is set nor the <code>claude</code> CLI is on PATH, the relaxed pre-flight guard (<code>check_any_auth_available</code>) fires at exit <code>2</code> with an actionable stderr message naming the offending subcommand and both auth paths:</p>
+<div class="highlight"><pre><span></span><code>ERROR: No usable authentication found.
+clauditor grade needs either:
+  1. ANTHROPIC_API_KEY exported (API key from https://console.anthropic.com/), OR
+  2. claude CLI installed and authenticated (Claude Pro/Max subscription)
+Commands that don&#39;t need authentication: validate, capture, run, lint, init,
+badge, audit, trend.
+</code></pre></div>
+<p>The exit code (<code>2</code>) matches the pre-call input-validation category in the <a href="#exit-codes">four-exit-code taxonomy</a> — the guard fires before any API call is made, so no tokens are spent and no sidecar is written. Pytest fixtures use a strict variant of the guard (<code>check_api_key_only</code>) that still requires <code>ANTHROPIC_API_KEY</code> unless <code>CLAUDITOR_FIXTURE_ALLOW_CLI=1</code> is set — see <a href="../transport-architecture/#auth-state-matrix">docs/transport-architecture.md</a> for the full matrix.</p>
+<h2 id="transport-architecture">Transport architecture</h2>
+<p>The six LLM-mediated commands above route their Anthropic call through one of two transports: an HTTP SDK path (the <code>anthropic</code> Python SDK) or a subprocess path that shells out to the <code>claude</code> CLI. The default <code>auto</code> resolution picks CLI when <code>claude</code> is on PATH (so a Pro/Max subscription alone suffices); operators can force a specific path per-invocation, per-shell, or per-skill.</p>
+<div class="highlight"><pre><span></span><code><span class="c1"># Per-invocation: force API path for this one grade (e.g. CI consistency).</span>
+clauditor<span class="w"> </span>grade<span class="w"> </span>.claude/skills/my-skill/SKILL.md<span class="w"> </span>--transport<span class="w"> </span>api
+
+<span class="c1"># Per-shell / per-CI-job: export CLAUDITOR_TRANSPORT=cli for this session.</span>
+<span class="nb">export</span><span class="w"> </span><span class="nv">CLAUDITOR_TRANSPORT</span><span class="o">=</span>cli
+clauditor<span class="w"> </span>propose-eval<span class="w"> </span>.claude/skills/my-skill/SKILL.md
+
+<span class="c1"># Per-skill: add &quot;transport&quot;: &quot;api&quot; to eval.json for every invocation.</span>
+</code></pre></div>
+<p><strong>Covered in the full reference:</strong> the two-axis auth-state matrix (API-key × CLI-on-PATH), the four-layer precedence resolution (CLI &gt; env &gt; spec &gt; default), per-category retry ladders and error templates (<code>rate_limit</code>, <code>auth</code>, <code>api</code>, <code>transport</code>), the spawn-overhead benchmark (cold vs warm), migration notes for operators who had both transports, and the known limitations (<code>raw_message=None</code> under CLI, no cache-token accounting under CLI, <code>api_key_source</code> only populated under CLI). Full reference: <a href="../transport-architecture/">docs/transport-architecture.md</a>.</p>
+<h2 id="persistent-metric-history">Persistent metric history</h2>
+<p>Every <code>clauditor grade</code>, <code>extract</code>, and <code>validate</code> run appends a JSON line to <code>.clauditor/history.jsonl</code>. Each record carries a <code>command</code> discriminator, a nested <code>metrics</code> dict, and (for <code>grade</code>) the <code>iteration</code> slot and on-disk <code>workspace_path</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;command&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;grade&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;ts&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-13T15:00:00+00:00&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;skill&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;find-restaurants&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;iteration&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;workspace_path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;.clauditor/iteration-4/find-restaurants&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;pass_rate&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.83</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;mean_score&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.75</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;metrics&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nt">&quot;skill&quot;</span><span class="p">:</span><span class="w">   </span><span class="p">{</span><span class="nt">&quot;input_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1200</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;output_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">800</span><span class="p">},</span>
+<span class="w">    </span><span class="nt">&quot;quality&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;input_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">900</span><span class="p">,</span><span class="w">  </span><span class="nt">&quot;output_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">350</span><span class="p">},</span>
+<span class="w">    </span><span class="nt">&quot;total&quot;</span><span class="p">:</span><span class="w">   </span><span class="p">{</span><span class="nt">&quot;input_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2100</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;output_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1150</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;total&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3250</span><span class="p">},</span>
+<span class="w">    </span><span class="nt">&quot;duration_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">12.3</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>Token buckets: <code>skill</code> (subprocess), <code>grader</code> (Layer 2 extract), <code>quality</code> (Layer 3 rubric), <code>triggers</code> (trigger precision). Buckets are <strong>absent</strong> when the command doesn't invoke them — e.g. <code>extract</code> records have <code>skill</code> + <code>grader</code>, <code>validate</code> records have <code>skill</code> only. <code>total</code> aggregates across all present buckets.</p>
+<p>Use <code>clauditor trend &lt;skill&gt; --metric &lt;dotted.path&gt;</code> to view a series. Paths walk the nested <code>metrics</code> dict (<code>total.total</code>, <code>skill.output_tokens</code>, <code>quality.input_tokens</code>, <code>duration_seconds</code> for grade records; <code>grader.input_tokens</code> for extract records) with <code>pass_rate</code> and <code>mean_score</code> as top-level shortcuts. <code>--command {grade,extract,validate,all}</code> filters by subcommand (default <code>grade</code>); pass <code>--command extract</code> to surface <code>grader.*</code> paths. <code>--list-metrics</code> prints every resolvable metric path for the skill.</p>
+<p>Runs with <code>--only-criterion</code> skip the history append to keep longitudinal data comparable.</p>
+<h2 id="exit-codes_5">Exit codes</h2>
+<p>clauditor uses structured exit codes so scripts and CI pipelines can distinguish "the tool itself failed" from "the tool ran fine but the skill under test failed its gate."</p>
+<table>
+<thead>
+<tr>
+<th>Code</th>
+<th>Meaning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>0</code></td>
+<td>Success. The command completed and, where applicable, the skill passed its gate (all assertions satisfied, all criteria above threshold, no regression detected, no trigger miss).</td>
+</tr>
+<tr>
+<td><code>1</code></td>
+<td>Signal failed. The tool ran fine, but the skill did not meet its bar: an L1 assertion failed, an L3 criterion scored below threshold, <code>clauditor compare</code> detected a regression relative to baseline, or a trigger classification was wrong. The on-disk artifacts are complete and valid; the skill needs fixing, not the tool.</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td>Input error. A user-supplied argument was missing, malformed, or incompatible with another flag (e.g. <code>--iteration</code> without an integer value, a skill <code>.md</code> file that does not exist, an eval spec that fails schema validation). The command exited before doing work; re-run with corrected arguments.</td>
+</tr>
+<tr>
+<td><code>3</code></td>
+<td>Anthropic API error. The Anthropic SDK (or <code>claude</code> CLI transport) returned a non-retriable failure — auth error, malformed request, exhausted retries, 5xx, or connection failure. No sidecar is written; re-run once the upstream issue is resolved.</td>
+</tr>
+</tbody>
+</table>
+<p>All six LLM-mediated commands — <code>grade</code>, <code>extract</code>, <code>triggers</code>, <code>suggest</code>, <code>propose-eval</code>, and <code>compare --blind</code> — emit exit 3 on non-retriable Anthropic failures. Pre-call input errors (missing <code>ANTHROPIC_API_KEY</code>, oversize token budget) route to exit 2 instead, so CI pipelines can distinguish "fix the input" from "retry later."</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.top", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
