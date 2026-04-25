@@ -3,7 +3,7 @@ name: release-manager
 description: Cut a clauditor-eval release. Test releases run from dev (→ TestPyPI); full releases run from main (→ PyPI).
 compatibility: "Requires: uv, gh CLI, git. Must be run from the clauditor repo root."
 metadata:
-  clauditor-version: "0.0.0-dev"
+  clauditor-version: "0.1.0"
 disable-model-invocation: true
 allowed-tools: Bash(git *), Bash(gh *), Bash(uv *), Bash(uvx *), Bash(grep *), Bash(cat *), Bash(sleep *), Bash(pip *), Bash(curl *), Read, Edit
 ---
@@ -34,7 +34,9 @@ Run these checks and STOP if any fail — report the problem clearly and do not 
 - **Full release**: `git branch --show-current` must return `main`
 
 **Checks for both modes:**
-1. **Clean working tree**: `git status --porcelain` must be empty
+1. **Clean working tree**: `git status --porcelain` must be empty.
+   - If the output contains modified/staged entries (`M`, `A`, `D`, `R`), STOP and report — these are real changes the user must resolve.
+   - If the output contains ONLY untracked entries (`??` prefix), do NOT auto-stop. List them and ask the user how to proceed: stash (`git stash push -u`), add to `.gitignore`, commit, or inspect first. After the release completes, pop the stash if one was created.
 2. **Up to date with origin**:
    - Test: `git fetch origin dev && git status` must show "up to date"
    - Full: `git fetch origin main && git status` must show "up to date"
@@ -135,8 +137,13 @@ Report: TestPyPI URL `https://test.pypi.org/project/clauditor-eval/{release_vers
 
 ## Full release workflow
 
+> **Note:** `main` has GitHub branch protection — direct pushes are rejected. The release-version commit and the next-dev bump both ship via PR.
+
 ### Step 1 — Bump to release version
-Edit `pyproject.toml`: set `version = "{release_version}"`.
+Edit `pyproject.toml`: set `version = "{release_version}"`. Then refresh the lock file so `uv.lock` matches:
+```bash
+uv sync
+```
 
 ### Step 2 — Build and verify
 ```bash
@@ -146,16 +153,28 @@ uvx twine check dist/*
 ```
 Both artifacts must show `PASSED`. Stop and report if either fails.
 
-### Step 3 — Commit, tag, push
+### Step 3 — Open release PR
+Push the version bump on a release branch and open a PR — direct push to `main` is blocked by branch protection.
 ```bash
-git add pyproject.toml
+git checkout -b release/{release_version}
+git add pyproject.toml uv.lock
 git commit -m "chore: release {release_version}"
-git tag v{release_version}
-git push origin main
+git push -u origin release/{release_version}
+gh pr create --base main --head release/{release_version} \
+  --title "chore: release {release_version}" \
+  --body "Cuts v{release_version} to PyPI. Pre-flight tests pass; \`uv build\` + \`uvx twine check\` PASSED on both wheel and sdist."
+```
+Stop and ask the user to merge the PR via GitHub. Once merged, continue.
+
+### Step 4 — Pull main, tag, push tag
+```bash
+git checkout main
+git pull origin main
+git tag v{release_version}      # tags origin/main HEAD (the merge commit)
 git push origin v{release_version}
 ```
 
-### Step 4 — Create GitHub Release
+### Step 5 — Create GitHub Release
 ```bash
 gh release create v{release_version} \
   --title "v{release_version}" \
@@ -164,26 +183,46 @@ gh release create v{release_version} \
 ```
 No `--prerelease` flag — this routes to PyPI.
 
-### Step 5 — Monitor publish workflow
+### Step 6 — Monitor publish workflow
 ```bash
 gh run watch --repo wjduenow/clauditor
 ```
 Wait for the `publish-pypi` job to complete. Report any failures.
 
-### Step 6 — Verify on PyPI
+### Step 7 — Verify on PyPI
 ```bash
-sleep 30
-pip index versions clauditor-eval 2>/dev/null | head -3
+curl -sf "https://pypi.org/pypi/clauditor-eval/{release_version}/json" \
+  | python3 -c "import json,sys; d=json.load(sys.stdin); print('version:', d['info']['version'])"
 ```
 Confirm `{release_version}` appears.
 
-### Step 7 — Bump to next dev version
-Edit `pyproject.toml`: set `version = "{next_dev_version}"`.
+### Step 8 — Open next-dev bump PR
+Edit `pyproject.toml`: set `version = "{next_dev_version}"`. Refresh the lock, then push via PR:
 ```bash
-git add pyproject.toml
+uv sync
+git checkout -b chore/begin-{next_dev_version}
+git add pyproject.toml uv.lock
 git commit -m "chore: begin {next_dev_version}"
-git push origin main
+git push -u origin chore/begin-{next_dev_version}
+gh pr create --base main --head chore/begin-{next_dev_version} \
+  --title "chore: begin {next_dev_version}" \
+  --body "Bumps version to {next_dev_version} after the v{release_version} release."
 ```
+Ask the user to merge.
+
+### Step 9 — Backmerge main → dev
+After both PRs are merged, sync `dev` with the new `main` so the next test release starts from the bumped version. Open a backmerge PR:
+```bash
+git checkout dev
+git pull origin dev
+git checkout -b chore/sync-main-into-dev
+git merge origin/main
+git push -u origin chore/sync-main-into-dev
+gh pr create --base dev --head chore/sync-main-into-dev \
+  --title "chore: sync main into dev after {release_version} release" \
+  --body "Brings the release commits and the {next_dev_version} bump back to dev."
+```
+If `dev` allows direct push and the merge fast-forwards cleanly, you may instead `git push origin dev` after the merge — check repo rules first.
 
 ---
 
@@ -192,4 +231,5 @@ git push origin main
 Report a summary including:
 - Release type and version
 - PyPI or TestPyPI URL
-- For full releases: remind the user to merge `main` back into `dev` to pick up the version bump commit
+- For full releases: confirm the next-dev bump PR (Step 8) and the backmerge PR (Step 9) are open or merged
+- If a stash was created during pre-flight, run `git stash pop` and confirm the file came back cleanly
