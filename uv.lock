@@ -174,7 +174,7 @@ wheels = [
 
 [[package]]
 name = "clauditor-eval"
-version = "0.1.0.dev6"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
