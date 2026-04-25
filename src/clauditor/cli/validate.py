@@ -57,7 +57,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "synchronously by setting "
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 in the "
             "subprocess env. Overrides the skill's async behavior "
-            "for evaluation only; see "
+            "for evaluation only. Synchronous Tasks roughly double "
+            "wall time vs the parallel default; consider "
+            "--timeout 600 for non-trivial skills. See "
             "docs/adr/transport-research-103.md for the fidelity "
             "caveats."
         ),
