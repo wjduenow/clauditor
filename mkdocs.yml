@@ -25,7 +25,12 @@ theme:
 exclude_docs: |
   temp/
 
+plugins:
+  - search
+  - include-markdown
+
 markdown_extensions:
+  - md_in_html
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
