@@ -5,7 +5,7 @@ compatibility: "Requires: uv, gh CLI, git. Must be run from the clauditor repo r
 metadata:
   clauditor-version: "0.0.0-dev"
 disable-model-invocation: true
-allowed-tools: Bash(git *), Bash(gh *), Bash(uv *), Bash(uvx *), Bash(grep *), Bash(cat *), Bash(sleep *), Bash(pip *), Read, Edit
+allowed-tools: Bash(git *), Bash(gh *), Bash(uv *), Bash(uvx *), Bash(grep *), Bash(cat *), Bash(sleep *), Bash(pip *), Bash(curl *), Read, Edit
 ---
 
 # /release-manager — Cut a clauditor-eval release
@@ -57,8 +57,19 @@ Then continue to "Determine version" (on all-PASS) or STOP with the failing chec
 Read `pyproject.toml` and extract the current version.
 
 **For a test release:** version must have a pre-release suffix (`.devN`, `aN`, `bN`, `rcN`).
-If the current version is already a pre-release (e.g. `0.1.0.dev3`), use it as-is.
+If the current version is already a pre-release (e.g. `0.1.0.dev3`), use it as the candidate.
 If it is a clean version (e.g. `0.1.0`), stop and tell the user to bump to a dev version first.
+
+Then check TestPyPI to make sure the candidate has not already been published — TestPyPI rejects re-uploads of the same version, and discovering this after the GitHub release tag is pushed is painful:
+
+```bash
+candidate=$(grep '^version' pyproject.toml | cut -d'"' -f2)
+if curl -sf "https://test.pypi.org/pypi/clauditor-eval/${candidate}/json" >/dev/null; then
+  echo "Version ${candidate} already on TestPyPI — bump required"
+fi
+```
+
+If the candidate already exists on TestPyPI, propose the next `.devN` bump (e.g. `0.1.0.dev5` → `0.1.0.dev6`) and ask the user to confirm. On confirmation, edit `pyproject.toml` to set `version = "{next_dev_version}"` and re-run the TestPyPI check against the new candidate (in case that one was also published). If the candidate does **not** exist on TestPyPI, use it as-is — no edit needed.
 
 **For a full release:** strip the pre-release suffix from the current version.
 If the current version is already clean (e.g. `0.1.0`), use it as-is.
