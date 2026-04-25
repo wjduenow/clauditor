@@ -51,7 +51,9 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "Force Task(run_in_background=true) spawns to run "
             "synchronously by setting "
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 in the "
-            "subprocess env. See "
+            "subprocess env. Synchronous Tasks roughly double wall "
+            "time vs the parallel default; consider --timeout 600 "
+            "for non-trivial skills. See "
             "docs/adr/transport-research-103.md for fidelity "
             "caveats."
         ),

@@ -33,6 +33,10 @@ Explicitly NOT covered:
   audit history, not examples users copy-paste.
 * ``CHANGELOG.md`` — may legitimately cite the old shape when
   describing the ``#67`` rename.
+* ``docs/temp/**/*.md`` — gitignored research drafts. Not part of
+  the human-facing doc triangle, and routinely contain pasted-in
+  external API examples (Discord, OpenAPI, etc.) whose ``"type":``
+  / ``"value":`` keys collide with this scan as false positives.
 """
 
 from __future__ import annotations
@@ -51,10 +55,23 @@ DOCS_DIR = REPO_ROOT / "docs"
 SKILL_MD = REPO_ROOT / "src" / "clauditor" / "skills" / "clauditor" / "SKILL.md"
 
 
+_TEMP_DIR = DOCS_DIR / "temp"
+
+
 def _doc_files() -> list[Path]:
-    """Return every in-scope doc file under the repository."""
+    """Return every in-scope doc file under the repository.
+
+    ``docs/temp/`` is gitignored draft material (research notes,
+    pasted-in external API examples) and is not part of the
+    human-facing doc triangle — exclude it so a foreign ``"type":`` /
+    ``"value":`` snippet does not register as a false positive.
+    """
     files = [README, SKILL_MD]
-    files.extend(sorted(DOCS_DIR.glob("**/*.md")))
+    files.extend(
+        p
+        for p in sorted(DOCS_DIR.glob("**/*.md"))
+        if _TEMP_DIR not in p.parents
+    )
     return [p for p in files if p.is_file()]
 
 

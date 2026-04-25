@@ -20,7 +20,7 @@ RESET=$'\033[0m'
 # Claude Code's prompt marker), indenting only the first row of the image.
 if command -v chafa &>/dev/null && [[ -f "$LOGO" ]]; then
     echo ""
-    chafa --size 60x30 "$LOGO"
+    chafa --size 60x30 -f symbols "$LOGO"
 fi
 
 skills=()
