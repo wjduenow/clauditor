@@ -1106,3 +1106,203 @@ class TestWalkerDefensiveGuards:
             "---\nname: foo\ncolonless line\nbar: baz\n---\n"
         )
         assert issues == []
+
+
+# ---------------------------------------------------------------------------
+# Reference-depth validation
+# ---------------------------------------------------------------------------
+
+
+class TestReferenceDepth:
+    """Validate ``AGENTSKILLS_REFERENCE_DEPTH_TOO_DEEP`` checks.
+
+    The agentskills.io spec recommends keeping file references one
+    level deep from SKILL.md. Same-directory and one-subdirectory
+    references are accepted; two or more directory hops and parent
+    escapes are flagged with severity warning.
+    """
+
+    _CODE = "AGENTSKILLS_REFERENCE_DEPTH_TOO_DEEP"
+
+    def test_sibling_reference_accepted(self):
+        body = "See [details](reference.md) for more.\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
+
+    def test_one_subdirectory_accepted(self):
+        body = "See [details](references/api.md) for more.\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
+
+    def test_dot_slash_prefix_does_not_inflate_depth(self):
+        body = "See [details](./refs/api.md) and [other](./sibling.md).\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
+
+    def test_two_subdirectories_flagged(self):
+        body = "See [details](references/api/v2.md) for more.\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE in _codes(issues)
+        issue = _by_code(issues, self._CODE)[0]
+        assert issue.severity == "warning"
+        assert "references/api/v2.md" in issue.message
+        assert "2 directories deep" in issue.message
+
+    def test_three_subdirectories_flagged(self):
+        body = "Deep: [x](a/b/c/file.md).\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        issue = _by_code(issues, self._CODE)[0]
+        assert "3 directories deep" in issue.message
+
+    def test_parent_escape_flagged(self):
+        body = "See [up](../shared/util.md) for more.\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE in _codes(issues)
+        issue = _by_code(issues, self._CODE)[0]
+        assert "escapes the skill directory" in issue.message
+        assert "`..`" in issue.message
+
+    def test_parent_escape_in_middle_flagged(self):
+        body = "See [up](sub/../../other.md) for more.\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE in _codes(issues)
+
+    def test_image_target_flagged(self):
+        body = "![diagram](img/sub/diagram.png)\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE in _codes(issues)
+
+    def test_reference_style_definition_flagged(self):
+        body = "See [the docs][docs].\n\n[docs]: refs/sub/page.md\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE in _codes(issues)
+        issue = _by_code(issues, self._CODE)[0]
+        assert "refs/sub/page.md" in issue.message
+
+    def test_external_url_skipped(self):
+        body = (
+            "Visit [home](https://example.com/a/b/c) and "
+            "[mail](mailto:foo@example.com) and "
+            "[ftp](ftp://files.example.com/x/y/z).\n"
+        )
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
+
+    def test_anchor_only_skipped(self):
+        body = "See [section](#deep-section) for more.\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
+
+    def test_absolute_path_skipped(self):
+        body = "See [system](/etc/foo/bar) for more.\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
+
+    def test_anchor_suffix_stripped_before_depth(self):
+        # ``refs/api.md#section`` is depth 1, not depth 2.
+        body = "See [details](refs/api.md#section) for more.\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
+
+    def test_query_suffix_stripped_before_depth(self):
+        body = "See [details](refs/api.md?ver=2) for more.\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
+
+    def test_link_inside_fenced_code_block_ignored(self):
+        body = (
+            "Here is a code example:\n"
+            "```\n"
+            "[doc](a/b/c/d.md)\n"
+            "```\n"
+            "End.\n"
+        )
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
+
+    def test_link_inside_tilde_fence_ignored(self):
+        body = (
+            "Example:\n"
+            "~~~\n"
+            "[doc](a/b/c/d.md)\n"
+            "~~~\n"
+        )
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
+
+    def test_duplicate_target_only_flagged_once(self):
+        body = (
+            "First [a](deep/nested/page.md). "
+            "Second [b](deep/nested/page.md). "
+            "Third [c](deep/nested/page.md).\n"
+        )
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        flagged = _by_code(issues, self._CODE)
+        assert len(flagged) == 1
+
+    def test_distinct_deep_targets_each_flagged(self):
+        body = "[a](x/y/z.md) and [b](p/q/r.md).\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        flagged = _by_code(issues, self._CODE)
+        assert len(flagged) == 2
+
+    def test_link_with_title_target_extracted(self):
+        body = '[doc](deep/nested/page.md "Title goes here")\n'
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE in _codes(issues)
+        issue = _by_code(issues, self._CODE)[0]
+        assert "deep/nested/page.md" in issue.message
+
+    def test_empty_body_silent(self):
+        text = _build_skill(body="")
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
+
+    def test_body_without_links_silent(self):
+        body = "Just some prose, no links here.\n"
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
+
+    def test_dedup_collapses_syntactic_variants(self):
+        # ``./a/b/c.md``, ``a/b/c.md``, and ``a/b/c.md#sec`` all
+        # resolve to the same underlying file — produce one warning.
+        body = (
+            "[a](./a/b/c.md) and [b](a/b/c.md) and [c](a/b/c.md#sec).\n"
+        )
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        flagged = _by_code(issues, self._CODE)
+        assert len(flagged) == 1
+
+    def test_ref_def_inside_fenced_code_block_ignored(self):
+        # Reference-style link definitions inside a fenced block are
+        # example syntax, not real definitions — must not be flagged.
+        body = (
+            "Example of a ref-style link:\n"
+            "```markdown\n"
+            "[label]: deep/nested/page.md\n"
+            "```\n"
+        )
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
