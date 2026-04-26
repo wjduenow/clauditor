@@ -365,3 +365,116 @@ All six tasks are linked under the epic via `parent-child`. US-005 has four `blo
 - Phase 5 publish: plan committed, branch pushed, draft PR #136 opened.
 - Phase 6 approved: user signed off on the plan.
 - Phase 7 devolve: epic `clauditor-0jy` + 6 tasks created in beads with full dep graph; four implementation tasks ready in parallel.
+
+## Patterns & Memory decision (US-006 / clauditor-9n8, 2026-04-25)
+
+Two evaluations under the bead's acceptance criteria. Both default
+to "no infrastructure change"; rationale captured here so a future
+contributor can audit the call.
+
+### Decision A — No new packaging-hygiene rule (yet)
+
+**Question:** Should `.claude/rules/maintainer-only-artifact-wheel-exclusion.md`
+(or similar) codify the "ship maintainer-only artifacts to source-tree
+only, exclude from wheel" pattern?
+
+**Decision:** No rule yet. Document the second-instance trigger here.
+
+**Reasoning:**
+
+- The repo has *two* loosely-related instances of "keep maintainer-
+  only artifacts out of the user-visible wheel surface":
+  - **#75** (`plans/super/75-move-review-skill.md`) — moved
+    `review-agentskills-spec` from `src/clauditor/skills/` to
+    `.claude/skills/` so the `src/`-anchored include glob no longer
+    reached it. Solved at the **layout** level (relocate the file
+    out of the glob's reach). DEC-005 of #75 added an empirical
+    `uv build` + grep gate in Quality Gate.
+  - **#134** (this plan, DEC-001/DEC-002/DEC-008) — added an
+    explicit `exclude = ["src/clauditor/skills/**/assets/**"]`
+    glob to keep `assets/clauditor.eval.json` (the maintainer
+    dogfood eval per DEC-007 of `plans/super/43-setup-slash-command.md`)
+    in-tree but out of the wheel. Solved at the **exclude-glob**
+    level. DEC-002 + DEC-008 added two regression-guard tests
+    pinning the exclusion (`test_wheel_excludes_assets_dir` broad
+    + `test_wheel_excludes_bundled_eval_json` narrow).
+- The two instances share the *concern* ("don't ship maintainer
+  artifacts to users") but differ in *mechanism* (move out of glob
+  vs add explicit exclude). A unified rule would have to either
+  (a) describe both mechanisms generically, watering down the
+  prescriptive value, or (b) pick one mechanism, leaving the other
+  uncovered.
+- The current safety net is structural and durable without a rule:
+  - `tests/test_packaging.py::test_wheel_contains_bundled_skill_md`
+    is the positive-control regression guard.
+  - `tests/test_packaging.py::test_wheel_excludes_assets_dir` +
+    `test_wheel_excludes_bundled_eval_json` are the absence guards
+    for the #134 surface.
+  - The #75 work captured the empirical wheel-shipping check in its
+    Quality Gate decision (DEC-005 of #75).
+- Bead clauditor-9n8 instructions explicitly bias toward less
+  infrastructure: "New rules are load-bearing and hard to remove;
+  only add one if the pattern is durable across multiple future
+  instances."
+
+**Second-instance trigger** (when to revisit): if a *third* instance
+lands — e.g. excluding test fixtures, build helper scripts, or a
+sibling `.maintainer/` subtree from the wheel — codify at that
+point. The rule should describe both mechanisms (layout + exclude
+glob), name the regression-guard pair (positive + absence
+assertions in `tests/test_packaging.py`), and reference both #75
+DEC-005 and #134 DEC-002/DEC-008 as canonical anchors.
+
+### Decision B — No refresh of `.claude/rules/bundled-skill-docs-sync.md`
+
+**Question:** Does US-003's two new prose-presence assertions
+(`test_body_mentions_lint`, `test_body_mentions_doctor`) — landing
+inside the "Common errors" subsection rather than the `## Workflow`
+section — warrant a refresh of the rule's Canonical implementation
+section?
+
+**Decision:** No refresh. Note retained here.
+
+**Reasoning:**
+
+- The rule's step 5 already prescribes the prose-presence
+  assertion pattern: "for any load-bearing string the new workflow
+  introduces (e.g. `propose-eval`, `capture`, a new command name).
+  One `assert "<string>" in SKILL_MD.read_text()` per branch."
+- US-003's two new assertions follow that pattern verbatim — same
+  test-class location (`TestSkillMdBody`), same shape
+  (`assert "<string>" in body`), same one-line discipline. They
+  are *applications* of the existing pattern, not new pattern
+  shape.
+- Per `.claude/rules/rule-refresh-vs-delete.md`'s Q1 ("Is the
+  pattern still load-bearing?"): yes, but the rule's prose already
+  covers it. Per the rule's broader guidance: "Refresh is cheap;
+  replacement is not" — but a refresh *only* to add two more
+  bullets to the canonical-anchor list would be ceremonial, not
+  load-bearing.
+- The rule's framing is intentionally about the **three-file
+  workflow-cascade triangle** (SKILL.md ↔ docs/skill-usage.md ↔
+  README.md). DEC-004 of this plan deliberately landed the
+  lint/doctor mentions in "Common errors" *to avoid* triggering
+  the cascade; inflating the rule's canonical-implementation
+  section with non-cascade anchors would blur its primary message.
+- Subtle clarification considered and rejected: rewording step 5
+  from "any load-bearing string the new workflow introduces" to
+  "any load-bearing string the bundled skill introduces" would
+  generalize. But the existing wording is already broad enough
+  (any reader who hits a lint/doctor-style addition can apply it
+  by analogy), and the workflow-framing of the rule is the
+  load-bearing context — broadening it risks signal loss.
+
+**Second-instance trigger** (when to revisit): if a *third*
+instance lands where the prose-presence assertion pattern is
+applied to a non-workflow, non-Common-errors location (e.g. a new
+top-level subsection, a frontmatter-derived string), and the
+existing rule's framing reads as confusingly workflow-scoped, then
+a small refresh to step 5 + the canonical-implementation list is
+warranted. Until then, the existing wording carries.
+
+### Memory
+
+No user-preference signals emerged during this work. No memory
+updates.
