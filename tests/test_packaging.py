@@ -53,12 +53,33 @@ class TestWheelPackaging:
     def test_wheel_contains_bundled_skill_md(self, wheel_namelist: list[str]) -> None:
         assert "clauditor/skills/clauditor/SKILL.md" in wheel_namelist
 
-    def test_wheel_contains_bundled_eval_json(
+    def test_wheel_excludes_assets_dir(
         self, wheel_namelist: list[str]
     ) -> None:
+        # The maintainer-only ``assets/`` subtree (notably the dogfood
+        # ``clauditor.eval.json``, per DEC-007 of
+        # ``plans/super/43-setup-slash-command.md``) must not ship to
+        # end-user installs. DEC-001/DEC-002 of
+        # ``plans/super/134-bundled-skill-fixes.md`` flipped this from a
+        # presence assertion to an absence assertion. The positive control
+        # in ``test_wheel_contains_bundled_skill_md`` confirms the wheel
+        # still ships the bundled skill itself.
+        offenders = [name for name in wheel_namelist if "/assets/" in name]
+        assert offenders == [], (
+            f"wheel contains assets/ entries that should be excluded: {offenders}"
+        )
+
+    def test_wheel_excludes_bundled_eval_json(
+        self, wheel_namelist: list[str]
+    ) -> None:
+        # DEC-008 regression guard: pin the specific original-surface file
+        # (the maintainer dogfood eval) so a future contributor adding a
+        # new ``assets/`` file hits a clear failure pointing at this
+        # decision, even if the broader ``/assets/`` substring guard above
+        # is later weakened.
         assert (
             "clauditor/skills/clauditor/assets/clauditor.eval.json"
-            in wheel_namelist
+            not in wheel_namelist
         )
 
     def test_wheel_excludes_pycache(self, wheel_namelist: list[str]) -> None:
