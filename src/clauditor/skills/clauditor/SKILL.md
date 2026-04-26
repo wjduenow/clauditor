@@ -6,7 +6,7 @@ metadata:
   clauditor-version: "0.0.0-dev"
 argument-hint: "[skill-path]"
 disable-model-invocation: true
-allowed-tools: Bash(clauditor *), Bash(clauditor propose-eval *), Bash(clauditor suggest *), Bash(uv run clauditor *)
+allowed-tools: Bash(clauditor *), Bash(uv run clauditor *)
 ---
 
 # /clauditor — Validate and grade a Claude Code skill
