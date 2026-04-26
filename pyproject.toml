@@ -51,6 +51,12 @@ Issues = "https://github.com/wjduenow/clauditor/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/clauditor"]
 include = ["src/clauditor/skills/**/*"]
+# Keep the maintainer-only assets/ subtree (e.g. the dogfood
+# clauditor.eval.json) out of user installs. Lives on the wheel
+# target only — sdists are full source archives by convention, so
+# `assets/` ships in the tarball, but `pip install <sdist>` rebuilds
+# via this same wheel target and inherits the exclusion.
+exclude = ["src/clauditor/skills/**/assets/**"]
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "build_hooks/stamp_skill_version.py"

@@ -6,7 +6,7 @@ metadata:
   clauditor-version: "0.0.0-dev"
 argument-hint: "[skill-path]"
 disable-model-invocation: true
-allowed-tools: Bash(clauditor *), Bash(clauditor propose-eval *), Bash(clauditor suggest *), Bash(uv run clauditor *)
+allowed-tools: Bash(clauditor *), Bash(uv run clauditor *)
 ---
 
 # /clauditor — Validate and grade a Claude Code skill
@@ -64,7 +64,8 @@ entry point before running validate/grade.
    If no capture exists, the proposer still runs against the SKILL.md alone
    — but for a higher-quality proposal, run `clauditor capture <skill>`
    first so the model sees real output. See
-   `docs/cli-reference.md#propose-eval` for the full flag reference
+   <https://github.com/wjduenow/clauditor/blob/dev/docs/cli-reference.md#propose-eval>
+   for the full flag reference
    (`--from-capture`, `--from-iteration`, `--force`, `--model`, `--json`).
 
 4. **Run L1 validation first.** It is fast and free:
@@ -106,7 +107,8 @@ entry point before running validate/grade.
    user the diff plus the `motivated_by` criterion ids and
    `confidence` from the JSON sidecar. Do NOT auto-apply — let the
    user `git apply` the diff (or hand-edit) and re-run `validate` /
-   `grade` to measure the score delta. See `docs/cli-reference.md`
+   `grade` to measure the score delta. See the
+   [CLI reference](https://github.com/wjduenow/clauditor/blob/dev/docs/cli-reference.md)
    for the full flag reference.
 
 7. **Report concisely.** Surface:
@@ -129,3 +131,10 @@ entry point before running validate/grade.
 - **`no iteration under ... contains <skill-name>/grading.json`** —
   `clauditor suggest` requires a prior `clauditor grade` run. Run
   Step 5 first, then retry.
+- **`AGENTSKILLS_*` conformance warnings on stderr** — run
+  `clauditor lint <skill-path>` for the full agentskills.io
+  conformance report (frontmatter shape, naming, layout). Useful
+  when checking whether a skill is publish-ready.
+- **`claude: command not found` / auth errors / broken install symlink** —
+  run `clauditor doctor` for environment diagnostics
+  (Python, SDK, `claude` CLI, API key, install mode).
