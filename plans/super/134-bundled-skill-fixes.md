@@ -5,7 +5,7 @@
 - **Ticket:** [#134](https://github.com/wjduenow/clauditor/issues/134) — "Bundled /clauditor skill ships maintainer-only artifacts and references repo-only docs"
 - **Branch:** `feature/134-bundled-skill-fixes`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/134-bundled-skill-fixes`
-- **Phase:** approved (PR [#136](https://github.com/wjduenow/clauditor/pull/136))
+- **Phase:** devolved (PR [#136](https://github.com/wjduenow/clauditor/pull/136); epic `clauditor-0jy`)
 - **Sessions:** 1 (2026-04-25)
 - **Base:** dev @ a325f9d
 
@@ -335,7 +335,21 @@ Story ordering follows: packaging change → tests → frontmatter/prose → qua
 
 ## Beads Manifest
 
-*(populated in Phase 7 — devolve)*
+- **Epic:** `clauditor-0jy` — #134: bundled /clauditor skill cleanup
+- **Worktree:** `/home/wesd/Projects/worktrees/clauditor/134-bundled-skill-fixes`
+- **Branch:** `feature/134-bundled-skill-fixes`
+- **Plan PR:** [#136](https://github.com/wjduenow/clauditor/pull/136)
+
+| Task | ID | Depends on | Status |
+|------|-----|------------|--------|
+| US-001 — exclude `assets/` from wheel + flip `test_packaging.py` | `clauditor-i2x` | none | open (ready) |
+| US-002 — SKILL.md doc-refs → `blob/dev` URLs | `clauditor-n48` | none | open (ready) |
+| US-003 — lint/doctor mentions in Common errors + assertions | `clauditor-gkd` | none | open (ready) |
+| US-004 — trim redundant `allowed-tools` entries | `clauditor-i5g` | none | open (ready) |
+| US-005 — Quality Gate (4× review + ruff + pytest + wheel smoke) | `clauditor-bqf` | US-001..US-004 | open (blocked) |
+| US-006 — Patterns & Memory | `clauditor-9n8` | US-005 | open (blocked) |
+
+All six tasks are linked under the epic via `parent-child`. US-005 has four `blocks` deps (one per implementation story); US-006 has one `blocks` dep on US-005.
 
 ## Session Notes
 
@@ -348,3 +362,6 @@ Story ordering follows: packaging change → tests → frontmatter/prose → qua
 - Phase 2 architecture review: 8 areas, 7 PASS + 1 CONCERN (test_packaging.py — captured as US-001).
 - Phase 3 refinement: 8 decisions logged (DEC-001 through DEC-008).
 - Phase 4 detailing: 6 stories generated (4 implementation + Quality Gate + Patterns & Memory).
+- Phase 5 publish: plan committed, branch pushed, draft PR #136 opened.
+- Phase 6 approved: user signed off on the plan.
+- Phase 7 devolve: epic `clauditor-0jy` + 6 tasks created in beads with full dep graph; four implementation tasks ready in parallel.
