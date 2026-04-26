@@ -233,26 +233,36 @@ class TestSkillMdBody:
             "(bundled-skill-docs-sync regression guard)"
         )
 
-    def test_body_mentions_lint(
-        self, frontmatter_and_body: tuple[dict, str]
-    ) -> None:
-        # Regression guard (DEC-004 of
-        # plans/super/134-bundled-skill-fixes.md): the bundled SKILL.md
-        # body must reference `clauditor lint` in the Common errors
-        # subsection so the spec-conformance entry point does not
-        # silently disappear on a future edit. Scope the search to the
-        # Common errors subsection (not just the body) so the assertion
-        # also catches a future edit that moves the bullet elsewhere.
-        _, body = frontmatter_and_body
-        # Anchor the heading match with a newline on both sides so a
-        # stray inline use of the phrase elsewhere in the body cannot
-        # satisfy the assertion.
+    @staticmethod
+    def _common_errors_section(body: str) -> str:
+        # Slice the ``## Common errors`` subsection from the body,
+        # bounded by the next ``\n## `` header (or end-of-body if it's
+        # the last subsection). Anchoring the start with newlines on
+        # both sides prevents an inline use of the phrase elsewhere
+        # from satisfying the heading match. Bounding the end at the
+        # next H2 header prevents a future appended subsection from
+        # leaking content into the slice and silently satisfying the
+        # `clauditor lint` / `clauditor doctor` assertions when the
+        # bullets themselves are removed.
         heading = "\n## Common errors\n"
         assert heading in body, (
             "bundled SKILL.md body must contain a '## Common errors' "
             "subsection (DEC-004 regression guard)"
         )
-        common_errors = body.split(heading, 1)[1]
+        after = body.split(heading, 1)[1]
+        next_header = after.find("\n## ")
+        return after if next_header == -1 else after[:next_header]
+
+    def test_body_mentions_lint(
+        self, frontmatter_and_body: tuple[dict, str]
+    ) -> None:
+        # Regression guard (DEC-004 of
+        # plans/super/134-bundled-skill-fixes.md): the bundled SKILL.md
+        # body must reference `clauditor lint` inside the Common errors
+        # subsection so the spec-conformance entry point does not
+        # silently disappear on a future edit.
+        _, body = frontmatter_and_body
+        common_errors = self._common_errors_section(body)
         assert "clauditor lint" in common_errors, (
             "bundled SKILL.md '## Common errors' subsection must "
             "mention 'clauditor lint' (DEC-004 regression guard)"
@@ -263,22 +273,11 @@ class TestSkillMdBody:
     ) -> None:
         # Regression guard (DEC-004 of
         # plans/super/134-bundled-skill-fixes.md): the bundled SKILL.md
-        # body must reference `clauditor doctor` in the Common errors
+        # body must reference `clauditor doctor` inside the Common errors
         # subsection so the environment-diagnostics entry point does
-        # not silently disappear on a future edit. Scope the search to
-        # the Common errors subsection (not just the body) so the
-        # assertion also catches a future edit that moves the bullet
-        # elsewhere.
+        # not silently disappear on a future edit.
         _, body = frontmatter_and_body
-        # Anchor the heading match with a newline on both sides so a
-        # stray inline use of the phrase elsewhere in the body cannot
-        # satisfy the assertion.
-        heading = "\n## Common errors\n"
-        assert heading in body, (
-            "bundled SKILL.md body must contain a '## Common errors' "
-            "subsection (DEC-004 regression guard)"
-        )
-        common_errors = body.split(heading, 1)[1]
+        common_errors = self._common_errors_section(body)
         assert "clauditor doctor" in common_errors, (
             "bundled SKILL.md '## Common errors' subsection must "
             "mention 'clauditor doctor' (DEC-004 regression guard)"
