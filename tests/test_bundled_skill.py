@@ -233,6 +233,34 @@ class TestSkillMdBody:
             "(bundled-skill-docs-sync regression guard)"
         )
 
+    def test_body_mentions_lint(
+        self, frontmatter_and_body: tuple[dict, str]
+    ) -> None:
+        # Regression guard (DEC-004 of
+        # plans/super/134-bundled-skill-fixes.md): the bundled SKILL.md
+        # body must reference `clauditor lint` in the Common errors
+        # subsection so the spec-conformance entry point does not
+        # silently disappear on a future edit.
+        _, body = frontmatter_and_body
+        assert "clauditor lint" in body, (
+            "bundled SKILL.md body must mention 'clauditor lint' "
+            "(DEC-004 regression guard)"
+        )
+
+    def test_body_mentions_doctor(
+        self, frontmatter_and_body: tuple[dict, str]
+    ) -> None:
+        # Regression guard (DEC-004 of
+        # plans/super/134-bundled-skill-fixes.md): the bundled SKILL.md
+        # body must reference `clauditor doctor` in the Common errors
+        # subsection so the environment-diagnostics entry point does
+        # not silently disappear on a future edit.
+        _, body = frontmatter_and_body
+        assert "clauditor doctor" in body, (
+            "bundled SKILL.md body must mention 'clauditor doctor' "
+            "(DEC-004 regression guard)"
+        )
+
 
 class TestBundledSkillViaSpec:
     def test_bundled_skill_loads_via_skillspec(self) -> None:

@@ -129,3 +129,11 @@ entry point before running validate/grade.
 - **`no iteration under ... contains <skill-name>/grading.json`** —
   `clauditor suggest` requires a prior `clauditor grade` run. Run
   Step 5 first, then retry.
+- **`clauditor lint <skill-path>`** — checks SKILL.md against the
+  agentskills.io spec (frontmatter shape, naming, layout). Run this
+  if the skill author reports conformance errors or you want to
+  verify a skill is publish-ready.
+- **`clauditor doctor`** — environment diagnostics (Python, SDK,
+  `claude` CLI, API key, install mode). Run this if something seems
+  off (missing `claude` CLI, missing API key, broken install
+  symlink).
