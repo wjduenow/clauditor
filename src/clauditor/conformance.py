@@ -703,16 +703,15 @@ _NON_LOCAL_REF_PREFIX_RE: re.Pattern[str] = re.compile(
 )
 
 
-def _reference_depth(target: str) -> int:
-    """Return the directory-hop depth of a local reference target.
+def _normalize_ref_target(target: str) -> str:
+    """Strip the syntactic noise that does not affect a path's depth.
 
-    ``0`` means same-directory (e.g. ``foo.md``); ``1`` means one
-    subdirectory deep (e.g. ``refs/foo.md``); ``2+`` means deeper.
-    Returns ``-1`` as a sentinel when the target escapes the skill
-    directory via ``..``.
-
-    Strips a leading ``./`` and trailing ``#anchor`` / ``?query``
-    components before counting.
+    Removes trailing ``#anchor`` / ``?query`` components and any
+    leading ``./`` segments so that ``./foo/bar.md``,
+    ``foo/bar.md``, and ``foo/bar.md#sec`` collapse to the same
+    canonical form. Used by both depth calculation and the
+    de-duplication ``seen`` set so syntactic variants of the same
+    underlying file produce one warning, not three.
     """
     for sep in ("#", "?"):
         idx = target.find(sep)
@@ -720,7 +719,20 @@ def _reference_depth(target: str) -> int:
             target = target[:idx]
     while target.startswith("./"):
         target = target[2:]
-    parts = target.split("/")
+    return target
+
+
+def _reference_depth(normalized: str) -> int:
+    """Return the directory-hop depth of an already-normalized target.
+
+    ``0`` means same-directory (e.g. ``foo.md``); ``1`` means one
+    subdirectory deep (e.g. ``refs/foo.md``); ``2+`` means deeper.
+    Returns ``-1`` as a sentinel when the target escapes the skill
+    directory via ``..``.
+
+    Caller is expected to have run :func:`_normalize_ref_target` first.
+    """
+    parts = normalized.split("/")
     if any(p == ".." for p in parts):
         return -1
     # Number of directory hops = total segments minus the filename.
@@ -772,9 +784,13 @@ def _check_reference_depth(
             continue
         for match in _MD_INLINE_LINK_RE.finditer(line):
             _maybe_flag_reference(match.group(1), seen, issues)
-
-    for match in _MD_REF_DEF_RE.finditer(body):
-        _maybe_flag_reference(match.group(1), seen, issues)
+        # Reference-style definitions are scanned per-line (not once
+        # over the whole body) so the fence skip applies — a
+        # ``[label]: a/b/c.md`` line inside a ``\`\`\`...\`\`\`` block
+        # is treated as example syntax, not a real definition.
+        ref_match = _MD_REF_DEF_RE.match(line)
+        if ref_match:
+            _maybe_flag_reference(ref_match.group(1), seen, issues)
 
 
 def _maybe_flag_reference(
@@ -784,12 +800,16 @@ def _maybe_flag_reference(
 ) -> None:
     if not target or _NON_LOCAL_REF_PREFIX_RE.match(target):
         return
-    depth = _reference_depth(target)
+    normalized = _normalize_ref_target(target)
+    depth = _reference_depth(normalized)
     if 0 <= depth <= 1:
         return
-    if target in seen:
+    # De-dup on the normalized form so syntactic variants of the
+    # same underlying file (``./a/b/c.md``, ``a/b/c.md``,
+    # ``a/b/c.md#sec``) produce one warning, not three.
+    if normalized in seen:
         return
-    seen.add(target)
+    seen.add(normalized)
     if depth == -1:
         message = (
             f"SKILL.md references `{target}` which escapes the skill "

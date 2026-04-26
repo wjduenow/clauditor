@@ -1282,3 +1282,27 @@ class TestReferenceDepth:
         text = _build_skill(body=body)
         issues = check_conformance(text, _modern_path())
         assert self._CODE not in _codes(issues)
+
+    def test_dedup_collapses_syntactic_variants(self):
+        # ``./a/b/c.md``, ``a/b/c.md``, and ``a/b/c.md#sec`` all
+        # resolve to the same underlying file — produce one warning.
+        body = (
+            "[a](./a/b/c.md) and [b](a/b/c.md) and [c](a/b/c.md#sec).\n"
+        )
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        flagged = _by_code(issues, self._CODE)
+        assert len(flagged) == 1
+
+    def test_ref_def_inside_fenced_code_block_ignored(self):
+        # Reference-style link definitions inside a fenced block are
+        # example syntax, not real definitions — must not be flagged.
+        body = (
+            "Example of a ref-style link:\n"
+            "```markdown\n"
+            "[label]: deep/nested/page.md\n"
+            "```\n"
+        )
+        text = _build_skill(body=body)
+        issues = check_conformance(text, _modern_path())
+        assert self._CODE not in _codes(issues)
