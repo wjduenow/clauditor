@@ -44,7 +44,7 @@ a Claude Code skill. Walks the author through `clauditor validate`
 (L1) and `clauditor grade` (L3), and can propose an eval spec via
 `clauditor propose-eval` when one is missing.
 
-Source: [`src/clauditor/skills/clauditor/SKILL.md`](../src/clauditor/skills/clauditor/SKILL.md) · Eval: [`clauditor.eval.json`](../src/clauditor/skills/clauditor/assets/clauditor.eval.json)
+Source: [`src/clauditor/skills/clauditor/SKILL.md`](../src/clauditor/skills/clauditor/SKILL.md) · Eval (maintainer-only, not in user installs): [`clauditor.eval.json`](../src/clauditor/skills/clauditor/assets/clauditor.eval.json)
 
 The eval spec is maintainer-only — `test_args` references
 `.claude/commands/chunk.md` in this repo's dev-local tree — so the

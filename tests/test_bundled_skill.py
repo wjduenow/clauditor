@@ -240,11 +240,22 @@ class TestSkillMdBody:
         # plans/super/134-bundled-skill-fixes.md): the bundled SKILL.md
         # body must reference `clauditor lint` in the Common errors
         # subsection so the spec-conformance entry point does not
-        # silently disappear on a future edit.
+        # silently disappear on a future edit. Scope the search to the
+        # Common errors subsection (not just the body) so the assertion
+        # also catches a future edit that moves the bullet elsewhere.
         _, body = frontmatter_and_body
-        assert "clauditor lint" in body, (
-            "bundled SKILL.md body must mention 'clauditor lint' "
-            "(DEC-004 regression guard)"
+        # Anchor the heading match with a newline on both sides so a
+        # stray inline use of the phrase elsewhere in the body cannot
+        # satisfy the assertion.
+        heading = "\n## Common errors\n"
+        assert heading in body, (
+            "bundled SKILL.md body must contain a '## Common errors' "
+            "subsection (DEC-004 regression guard)"
+        )
+        common_errors = body.split(heading, 1)[1]
+        assert "clauditor lint" in common_errors, (
+            "bundled SKILL.md '## Common errors' subsection must "
+            "mention 'clauditor lint' (DEC-004 regression guard)"
         )
 
     def test_body_mentions_doctor(
@@ -254,11 +265,23 @@ class TestSkillMdBody:
         # plans/super/134-bundled-skill-fixes.md): the bundled SKILL.md
         # body must reference `clauditor doctor` in the Common errors
         # subsection so the environment-diagnostics entry point does
-        # not silently disappear on a future edit.
+        # not silently disappear on a future edit. Scope the search to
+        # the Common errors subsection (not just the body) so the
+        # assertion also catches a future edit that moves the bullet
+        # elsewhere.
         _, body = frontmatter_and_body
-        assert "clauditor doctor" in body, (
-            "bundled SKILL.md body must mention 'clauditor doctor' "
-            "(DEC-004 regression guard)"
+        # Anchor the heading match with a newline on both sides so a
+        # stray inline use of the phrase elsewhere in the body cannot
+        # satisfy the assertion.
+        heading = "\n## Common errors\n"
+        assert heading in body, (
+            "bundled SKILL.md body must contain a '## Common errors' "
+            "subsection (DEC-004 regression guard)"
+        )
+        common_errors = body.split(heading, 1)[1]
+        assert "clauditor doctor" in common_errors, (
+            "bundled SKILL.md '## Common errors' subsection must "
+            "mention 'clauditor doctor' (DEC-004 regression guard)"
         )
 
 

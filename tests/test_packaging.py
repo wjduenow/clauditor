@@ -64,7 +64,11 @@ class TestWheelPackaging:
         # presence assertion to an absence assertion. The positive control
         # in ``test_wheel_contains_bundled_skill_md`` confirms the wheel
         # still ships the bundled skill itself.
-        offenders = [name for name in wheel_namelist if "/assets/" in name]
+        offenders = [
+            name
+            for name in wheel_namelist
+            if name.startswith("clauditor/skills/") and "/assets/" in name
+        ]
         assert offenders == [], (
             f"wheel contains assets/ entries that should be excluded: {offenders}"
         )
