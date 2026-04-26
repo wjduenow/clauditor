@@ -5,7 +5,7 @@
 - **Ticket:** [#134](https://github.com/wjduenow/clauditor/issues/134) — "Bundled /clauditor skill ships maintainer-only artifacts and references repo-only docs"
 - **Branch:** `feature/134-bundled-skill-fixes`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/134-bundled-skill-fixes`
-- **Phase:** published (PR [#136](https://github.com/wjduenow/clauditor/pull/136))
+- **Phase:** approved (PR [#136](https://github.com/wjduenow/clauditor/pull/136))
 - **Sessions:** 1 (2026-04-25)
 - **Base:** dev @ a325f9d
 
