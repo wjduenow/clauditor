@@ -5,7 +5,7 @@ compatibility: "Requires: uv, gh CLI, git. Must be run from the clauditor repo r
 metadata:
   clauditor-version: "0.1.0"
 disable-model-invocation: true
-allowed-tools: Bash(git *), Bash(gh *), Bash(uv *), Bash(uvx *), Bash(grep *), Bash(cat *), Bash(sleep *), Bash(pip *), Bash(curl *), Read, Edit
+allowed-tools: Bash(git *), Bash(gh *), Bash(uv *), Bash(uvx *), Bash(grep *), Bash(cat *), Bash(sleep *), Bash(pip *), Bash(curl *), Bash(awk *), Bash(rm *), Bash(date *), Read, Edit, Write
 ---
 
 # /release-manager — Cut a clauditor-eval release
@@ -41,6 +41,7 @@ Run these checks and STOP if any fail — report the problem clearly and do not 
    - Test: `git fetch origin dev && git status` must show "up to date"
    - Full: `git fetch origin main && git status` must show "up to date"
 3. **Tests pass**: `uv run pytest --cov=clauditor --cov-report=term-missing -q`
+4. **CHANGELOG `[Unreleased]` is current**. Read `CHANGELOG.md` and show the user the current `[Unreleased]` section. Ask: "Does this cover everything shipping in this release?" Pause for confirmation before continuing — `[Unreleased]` becomes the GitHub Release body via `--notes-file` (full release Step 5), so empty / stale content there means an empty / stale release page. If the user wants to update it, stop here, let them edit, then re-run pre-flight.
 
 **Report a pre-flight summary** — always, even when every check passes. Render it as:
 
@@ -50,6 +51,7 @@ Pre-flight checks:
 - Clean working tree: PASS|FAIL
 - Up to date with origin: PASS|FAIL
 - Tests pass: PASS|FAIL
+- CHANGELOG [Unreleased] reviewed: PASS|FAIL
 ```
 
 Then continue to "Determine version" (on all-PASS) or STOP with the failing check highlighted.
@@ -145,6 +147,20 @@ Edit `pyproject.toml`: set `version = "{release_version}"`. Then refresh the loc
 uv sync
 ```
 
+### Step 1b — Promote CHANGELOG `[Unreleased]` to `[{release_version}]`
+Edit `CHANGELOG.md` so this release has its own dated section that the GitHub Release body can quote verbatim:
+
+1. Insert a new dated header **directly after** the existing `## [Unreleased]` line:
+   ```
+   ## [Unreleased]
+
+   ## [{release_version}] - {today_iso}
+   ```
+   where `{today_iso}` = `date +%Y-%m-%d`. Do **not** move the existing entries — leaving them under `[{release_version}]` is exactly the desired result; the new empty `[Unreleased]` above is what future entries land in.
+2. Update the bottom reference link table:
+   - Change the `[Unreleased]` link to `compare/v{release_version}...HEAD`.
+   - Add `[{release_version}]: https://github.com/wjduenow/clauditor/releases/tag/v{release_version}` directly below it.
+
 ### Step 2 — Build and verify
 ```bash
 rm -rf dist/
@@ -154,15 +170,15 @@ uvx twine check dist/*
 Both artifacts must show `PASSED`. Stop and report if either fails.
 
 ### Step 3 — Open release PR
-Push the version bump on a release branch and open a PR — direct push to `main` is blocked by branch protection.
+Push the version bump and the CHANGELOG promotion together on a release branch, then open a PR — direct push to `main` is blocked by branch protection.
 ```bash
 git checkout -b release/{release_version}
-git add pyproject.toml uv.lock
+git add pyproject.toml uv.lock CHANGELOG.md
 git commit -m "chore: release {release_version}"
 git push -u origin release/{release_version}
 gh pr create --base main --head release/{release_version} \
   --title "chore: release {release_version}" \
-  --body "Cuts v{release_version} to PyPI. Pre-flight tests pass; \`uv build\` + \`uvx twine check\` PASSED on both wheel and sdist."
+  --body "Cuts v{release_version} to PyPI. Pre-flight tests pass; \`uv build\` + \`uvx twine check\` PASSED on both wheel and sdist. CHANGELOG promoted from \`[Unreleased]\`."
 ```
 Stop and ask the user to merge the PR via GitHub. Once merged, continue.
 
@@ -175,13 +191,22 @@ git push origin v{release_version}
 ```
 
 ### Step 5 — Create GitHub Release
+Extract the just-promoted CHANGELOG section into a temp file and use it as the release body:
 ```bash
+awk -v ver="{release_version}" '
+  $0 ~ "^## \\["ver"\\] -" { capturing=1; next }
+  capturing && /^## \[/ { exit }
+  capturing { print }
+' CHANGELOG.md > .release-notes.md
+
 gh release create v{release_version} \
   --title "v{release_version}" \
-  --generate-notes \
+  --notes-file .release-notes.md \
   --repo wjduenow/clauditor
+
+rm .release-notes.md
 ```
-No `--prerelease` flag — this routes to PyPI.
+No `--prerelease` flag — this routes to PyPI. `--notes-file` (not `--generate-notes`) uses the curated CHANGELOG section verbatim instead of an auto-generated PR list.
 
 ### Step 6 — Monitor publish workflow
 ```bash

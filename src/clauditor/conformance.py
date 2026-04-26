@@ -263,6 +263,7 @@ def check_conformance(
     _check_allowed_tools(parsed, issues)
     _check_unknown_keys(parsed, issues)
     _check_body(body, issues)
+    _check_reference_depth(body, issues)
 
     return issues
 
@@ -498,7 +499,8 @@ def _check_license(parsed: dict, issues: list[ConformanceIssue]) -> None:
                 severity="error",
                 message=(
                     "Frontmatter `license` is empty; omit the key or "
-                    "provide a non-empty SPDX identifier."
+                    "provide a non-empty license name or path to a "
+                    "bundled license file."
                 ),
             )
         )
@@ -675,6 +677,160 @@ def _check_body(body: str, issues: list[ConformanceIssue]) -> None:
                 ),
             )
         )
+
+
+# Markdown link / image targets. Captures the URL/path portion of an
+# inline ``[text](target)`` or ``![alt](target)``, stopping at the first
+# whitespace or close-paren so an optional ``"title"`` after the target
+# does not contaminate the capture.
+_MD_INLINE_LINK_RE: re.Pattern[str] = re.compile(
+    r"!?\[[^\]]*\]\(\s*([^\s\)]+)"
+)
+
+# Reference-style link definitions: ``[label]: target [optional title]``.
+# Anchored to line start so it does not match the usage form
+# ``[text][label]`` elsewhere in the line.
+_MD_REF_DEF_RE: re.Pattern[str] = re.compile(
+    r"^\s{0,3}\[[^\]]+\]:\s*(\S+)",
+    re.MULTILINE,
+)
+
+# Targets that are NOT local file references: any URL scheme
+# (``http:``, ``mailto:``, ``ftp:``, ``data:``, …), absolute paths
+# (``/foo``), and pure anchors (``#section``). Schemes follow RFC 3986.
+_NON_LOCAL_REF_PREFIX_RE: re.Pattern[str] = re.compile(
+    r"^(?:[a-zA-Z][a-zA-Z0-9+.-]*:|#|/)"
+)
+
+
+def _normalize_ref_target(target: str) -> str:
+    """Strip the syntactic noise that does not affect a path's depth.
+
+    Removes trailing ``#anchor`` / ``?query`` components and any
+    leading ``./`` segments so that ``./foo/bar.md``,
+    ``foo/bar.md``, and ``foo/bar.md#sec`` collapse to the same
+    canonical form. Used by both depth calculation and the
+    de-duplication ``seen`` set so syntactic variants of the same
+    underlying file produce one warning, not three.
+    """
+    for sep in ("#", "?"):
+        idx = target.find(sep)
+        if idx != -1:
+            target = target[:idx]
+    while target.startswith("./"):
+        target = target[2:]
+    return target
+
+
+def _reference_depth(normalized: str) -> int:
+    """Return the directory-hop depth of an already-normalized target.
+
+    ``0`` means same-directory (e.g. ``foo.md``); ``1`` means one
+    subdirectory deep (e.g. ``refs/foo.md``); ``2+`` means deeper.
+    Returns ``-1`` as a sentinel when the target escapes the skill
+    directory via ``..``.
+
+    Caller is expected to have run :func:`_normalize_ref_target` first.
+    """
+    parts = normalized.split("/")
+    if any(p == ".." for p in parts):
+        return -1
+    # Number of directory hops = total segments minus the filename.
+    return max(0, len(parts) - 1)
+
+
+def _check_reference_depth(
+    body: str, issues: list[ConformanceIssue]
+) -> None:
+    """Flag Markdown references more than one directory deep.
+
+    Walks the body line by line, scanning for inline link / image
+    targets and reference-style link definitions. Skips fenced code
+    blocks (triple-backtick and triple-tilde) so example link
+    syntax inside code does not produce false positives. Targets with
+    URL schemes, absolute paths, and pure anchors are not local file
+    references and are skipped.
+
+    A target is considered "one level deep" when it lives in the same
+    directory as SKILL.md (``foo.md``) or in an immediate subdirectory
+    (``refs/foo.md``). Two or more directory hops (``a/b/c.md``) and
+    parent-escaping references (``../foo.md``) are flagged with
+    ``AGENTSKILLS_REFERENCE_DEPTH_TOO_DEEP`` (severity warning).
+
+    Per-target de-duplication: each unique target produces at most one
+    issue, even if referenced multiple times.
+    """
+    if body == "":
+        return
+
+    seen: set[str] = set()
+    in_fence = False
+    fence_marker = ""
+
+    for line in body.splitlines():
+        stripped = line.lstrip()
+        if in_fence:
+            if stripped.startswith(fence_marker):
+                in_fence = False
+                fence_marker = ""
+            continue
+        if stripped.startswith("```"):
+            in_fence = True
+            fence_marker = "```"
+            continue
+        if stripped.startswith("~~~"):
+            in_fence = True
+            fence_marker = "~~~"
+            continue
+        for match in _MD_INLINE_LINK_RE.finditer(line):
+            _maybe_flag_reference(match.group(1), seen, issues)
+        # Reference-style definitions are scanned per-line (not once
+        # over the whole body) so the fence skip applies — a
+        # ``[label]: a/b/c.md`` line inside a ``\`\`\`...\`\`\`` block
+        # is treated as example syntax, not a real definition.
+        ref_match = _MD_REF_DEF_RE.match(line)
+        if ref_match:
+            _maybe_flag_reference(ref_match.group(1), seen, issues)
+
+
+def _maybe_flag_reference(
+    target: str,
+    seen: set[str],
+    issues: list[ConformanceIssue],
+) -> None:
+    if not target or _NON_LOCAL_REF_PREFIX_RE.match(target):
+        return
+    normalized = _normalize_ref_target(target)
+    depth = _reference_depth(normalized)
+    if 0 <= depth <= 1:
+        return
+    # De-dup on the normalized form so syntactic variants of the
+    # same underlying file (``./a/b/c.md``, ``a/b/c.md``,
+    # ``a/b/c.md#sec``) produce one warning, not three.
+    if normalized in seen:
+        return
+    seen.add(normalized)
+    if depth == -1:
+        message = (
+            f"SKILL.md references `{target}` which escapes the skill "
+            f"directory via `..`; the agentskills.io specification "
+            f"recommends keeping file references one level deep from "
+            f"SKILL.md."
+        )
+    else:
+        message = (
+            f"SKILL.md references `{target}` which is {depth} "
+            f"directories deep; the agentskills.io specification "
+            f"recommends keeping file references one level deep from "
+            f"SKILL.md (avoid deeply nested reference chains)."
+        )
+    issues.append(
+        ConformanceIssue(
+            code="AGENTSKILLS_REFERENCE_DEPTH_TOO_DEEP",
+            severity="warning",
+            message=message,
+        )
+    )
 
 
 def _check_unquoted_colon_in_scalar(

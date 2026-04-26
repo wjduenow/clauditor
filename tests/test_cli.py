@@ -4828,9 +4828,15 @@ class TestCmdTrend:
         rc = main(["trend", "test-skill", "--metric", "pass_rate"])
         assert rc == 0
         out = capsys.readouterr().out
-        # Bad record skipped, only valid record appears.
-        assert "0.4" not in out
-        assert "0.9" in out
+        # Bad record skipped, only valid record appears. Match the
+        # tab-prefixed metric column rather than the bare substring
+        # "0.4" — trend output is "<iso-timestamp>\t<value>\n", and
+        # an iso timestamp like "...30.481..." contains "0.4" as an
+        # incidental substring whenever wall-clock seconds end in 0
+        # and the first microsecond digit is 4 (a ~1% time-dependent
+        # CI flake).
+        assert "\t0.4\n" not in out
+        assert "\t0.9\n" in out
 
 
 class TestCmdTrendCommandFilter:

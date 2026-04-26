@@ -7,7 +7,50 @@ contain breaking changes without a deprecation shim; see the
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> **How this is maintained.** Day-to-day work goes under `[Unreleased]`; on
+> release, those entries are promoted under a new version header dated with
+> the release day. The `/release-manager` skill uses the version section as
+> the GitHub Release body via `gh release create --notes-file`, so this file
+> is the single source of truth for human-facing release notes.
+
 ## [Unreleased]
+
+### Added
+
+- **`AGENTSKILLS_REFERENCE_DEPTH_TOO_DEEP` conformance warning (#129) —
+  agentskills.io spec sync.** `clauditor lint` now flags Markdown link / image targets and
+  reference-style definitions in a SKILL.md body that point more than
+  one directory deep, plus parent-escape (`..`) paths. Matches the
+  agentskills.io spec's "one level deep from SKILL.md" guidance.
+  Same-directory and one-subdirectory references stay silent; fenced
+  code blocks, URL schemes, anchors, and absolute paths are skipped;
+  per-target de-dupe so a target referenced N times produces a single
+  warning.
+- **Bundled `/clauditor` skill — diagnostics discoverability (#134).**
+  The SKILL.md "Common errors" section now mentions `clauditor lint`
+  and `clauditor doctor`, so users hitting a lint failure or a runner
+  misconfiguration find the right next-step command from the
+  in-skill text.
+
+### Changed
+
+- **`AGENTSKILLS_LICENSE_EMPTY` message phrasing (#129) — agentskills.io
+  spec sync.** Previously suggested a "non-empty SPDX identifier",
+  misleading for authors who want free-form license text. Updated to
+  "non-empty license name or path to a bundled license file" to match
+  the spec wording. No behavior change.
+- **Bundled `/clauditor` skill packaging (#134).** The maintainer-only
+  `assets/clauditor.eval.json` (the pre-release dogfood gate per
+  DEC-007 of #43) no longer ships in the wheel — it remains in the
+  repo for in-source dogfood runs only. SKILL.md `docs/cli-reference.md`
+  references now point at stable `blob/dev` GitHub URLs so they resolve
+  when SKILL.md is rendered outside the repo. `allowed-tools` trimmed
+  to `Bash(clauditor *), Bash(uv run clauditor *)` (the redundant
+  narrower entries are removed).
+
+## [0.1.0] - 2026-04-25
+
+First stable release on PyPI: <https://pypi.org/project/clauditor-eval/0.1.0/>.
 
 ### Breaking changes
 
@@ -220,3 +263,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for the codified recipe.
 - Bundled `/clauditor` Claude Code slash command installable via
   `clauditor setup`.
+
+[Unreleased]: https://github.com/wjduenow/clauditor/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/wjduenow/clauditor/releases/tag/v0.1.0
