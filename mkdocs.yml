@@ -49,3 +49,4 @@ nav:
   - Badges: badges.md
   - Architecture: architecture.md
   - Stream JSON: stream-json-schema.md
+  - Changelog: changelog.md
