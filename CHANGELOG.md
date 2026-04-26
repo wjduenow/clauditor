@@ -7,7 +7,17 @@ contain breaking changes without a deprecation shim; see the
 The format is loosely based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> **How this is maintained.** Day-to-day work goes under `[Unreleased]`; on
+> release, those entries are promoted under a new version header dated with
+> the release day. The `/release-manager` skill uses the version section as
+> the GitHub Release body via `gh release create --notes-file`, so this file
+> is the single source of truth for human-facing release notes.
+
 ## [Unreleased]
+
+## [0.1.0] - 2026-04-25
+
+First stable release on PyPI: <https://pypi.org/project/clauditor-eval/0.1.0/>.
 
 ### Breaking changes
 
@@ -220,3 +230,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for the codified recipe.
 - Bundled `/clauditor` Claude Code slash command installable via
   `clauditor setup`.
+
+[Unreleased]: https://github.com/wjduenow/clauditor/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/wjduenow/clauditor/releases/tag/v0.1.0
