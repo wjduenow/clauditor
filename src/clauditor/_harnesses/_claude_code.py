@@ -69,6 +69,7 @@ def env_without_api_key(
     source = base_env if base_env is not None else os.environ
     return {k: v for k, v in source.items() if k not in _API_KEY_ENV_VARS}
 
+
 # Soft cap applied to stream-json ``result`` text surfaced on
 # ``SkillResult.error``. Per DEC-008 of
 # ``plans/super/63-runner-error-surfacing.md`` — bound the memory
@@ -201,9 +202,7 @@ def _detect_background_task_noncompletion(
     return waiting_match or few_turns
 
 
-def _detect_interactive_hang(
-    stream_events: list[dict], final_text: str
-) -> bool:
+def _detect_interactive_hang(stream_events: list[dict], final_text: str) -> bool:
     """Return True when a stream-json capture looks like an interactive hang.
 
     Pure helper (no I/O, no global state) per
@@ -540,8 +539,7 @@ class ClaudeCodeHarness:
                     # SkillResult.warnings.
                     with stderr_warnings_lock:
                         stderr_warnings.append(
-                            "watchdog kill failed: "
-                            f"{type(exc).__name__}: {exc}"
+                            f"watchdog kill failed: {type(exc).__name__}: {exc}"
                         )
 
             watchdog = threading.Timer(timeout, _on_timeout)
@@ -712,9 +710,7 @@ class ClaudeCodeHarness:
                     )
                     if sanitized_subject:
                         sanitized_subject = sanitized_subject[:200]
-                suffix = (
-                    f" ({sanitized_subject})" if sanitized_subject else ""
-                )
+                suffix = f" ({sanitized_subject})" if sanitized_subject else ""
                 print(
                     f"clauditor.runner: apiKeySource={api_key_source}{suffix}",
                     file=sys.stderr,
@@ -755,9 +751,7 @@ class ClaudeCodeHarness:
                 and not _sync_tasks_forced
                 and stream_json_error_text is None
                 and stream_json_error_category is None
-                and _detect_background_task_noncompletion(
-                    stream_events, final_text
-                )
+                and _detect_background_task_noncompletion(stream_events, final_text)
             ):
                 warnings.append(_BACKGROUND_TASK_WARNING)
                 stream_json_error_category = "background-task"
@@ -782,9 +776,7 @@ class ClaudeCodeHarness:
                 if stderr_text:
                     warnings.append(stderr_text)
             else:
-                final_error = (
-                    stderr_text if returncode != 0 and stderr_text else None
-                )
+                final_error = stderr_text if returncode != 0 and stderr_text else None
                 final_category = None
 
             result = InvokeResult(
@@ -812,16 +804,13 @@ class ClaudeCodeHarness:
                     proc.terminate()
                 except (OSError, ProcessLookupError) as exc:
                     warnings.append(
-                        f"cleanup terminate failed: "
-                        f"{type(exc).__name__}: {exc}"
+                        f"cleanup terminate failed: {type(exc).__name__}: {exc}"
                     )
                 try:
                     proc.wait(timeout=1)
                 except subprocess.TimeoutExpired as exc:
                     # terminate() didn't finish in time; escalate to kill.
-                    warnings.append(
-                        f"cleanup wait after terminate timed out: {exc}"
-                    )
+                    warnings.append(f"cleanup wait after terminate timed out: {exc}")
                     try:
                         proc.kill()
                     except (OSError, ProcessLookupError) as kill_exc:

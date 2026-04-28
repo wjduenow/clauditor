@@ -53,6 +53,7 @@ class MockHarness:
         env: dict[str, str] | None,
         timeout: int,
         model: str | None = None,
+        subject: str | None = None,
     ) -> InvokeResult:
         """Record the call and return the pre-configured ``result``."""
         self.invoke_calls.append(
@@ -62,6 +63,7 @@ class MockHarness:
                 "env": env,
                 "timeout": timeout,
                 "model": model,
+                "subject": subject,
             }
         )
         return self.result

@@ -4,7 +4,9 @@ clauditor invokes the Claude CLI with `--output-format stream-json --verbose`
 and parses its NDJSON output line-by-line. This document is the authoritative
 reference for which fields clauditor reads, which it tolerates missing, and
 how it handles malformed lines. The parser lives in
-`src/clauditor/runner.py::SkillRunner._invoke`.
+`src/clauditor/_harnesses/_claude_code.py::ClaudeCodeHarness.invoke`
+(reached from `src/clauditor/runner.py::SkillRunner._invoke` via the
+`Harness` protocol introduced in #148).
 
 This schema reflects the Anthropic CLI streaming format as verified live
 against `claude` 2.1.x. If a future CLI version changes the shape, update
@@ -228,7 +230,8 @@ binary, and any other error path.
 
 ## Canonical parser
 
-`src/clauditor/runner.py::SkillRunner._invoke` is the single source of truth
-for all parsing logic. If you need to extend the schema (new message type,
-new field), update that function *and* this document *and*
-`.claude/rules/stream-json-schema.md` in the same commit.
+`src/clauditor/_harnesses/_claude_code.py::ClaudeCodeHarness.invoke` is the
+single source of truth for all parsing logic (called from
+`src/clauditor/runner.py::SkillRunner._invoke`). If you need to extend the
+schema (new message type, new field), update that method *and* this document
+*and* `.claude/rules/stream-json-schema.md` in the same commit.

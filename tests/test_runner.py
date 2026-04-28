@@ -602,6 +602,44 @@ class TestSkillRunnerClaudeBinDeprecation:
         assert runner.harness.claude_bin == "custom"
 
 
+class TestHarnessStripAuthKeys:
+    """Direct coverage of ``Harness.strip_auth_keys`` on both implementers.
+
+    Pinned by Quality Gate of issue #148: the protocol method had no
+    direct unit-test coverage on either ``ClaudeCodeHarness`` or
+    ``MockHarness`` (only one branch reached via integration paths).
+    Locks the non-mutating-scrub contract per
+    ``.claude/rules/non-mutating-scrub.md``.
+    """
+
+    def test_claude_code_strips_anthropic_keys(self):
+        """``ClaudeCodeHarness.strip_auth_keys`` removes Anthropic auth env vars."""
+        env = {
+            "ANTHROPIC_API_KEY": "sk-...",
+            "ANTHROPIC_AUTH_TOKEN": "tok",
+            "PATH": "/usr/bin",
+            "FOO": "bar",
+        }
+        scrubbed = ClaudeCodeHarness().strip_auth_keys(env)
+        assert "ANTHROPIC_API_KEY" not in scrubbed
+        assert "ANTHROPIC_AUTH_TOKEN" not in scrubbed
+        assert scrubbed["PATH"] == "/usr/bin"
+        assert scrubbed["FOO"] == "bar"
+        # Input unchanged (non-mutating).
+        assert "ANTHROPIC_API_KEY" in env
+
+    def test_mock_strip_is_identity_copy(self):
+        """``MockHarness.strip_auth_keys`` returns a verbatim copy (no scrubbing)."""
+        from clauditor._harnesses._mock import MockHarness
+
+        env = {"ANTHROPIC_API_KEY": "sk-...", "FOO": "bar"}
+        scrubbed = MockHarness().strip_auth_keys(env)
+        assert scrubbed == env
+        # Returns a new dict (mutation-safe per Harness protocol contract).
+        scrubbed["FOO"] = "mutated"
+        assert env["FOO"] == "bar"
+
+
 # ---------------------------------------------------------------------------
 # SkillResult.outputs dict
 # ---------------------------------------------------------------------------
@@ -2742,7 +2780,7 @@ class TestApiKeySourceParsing:
 
     def test_stderr_line_appends_subject_suffix(self, capsys):
         # Issue #107: when the caller threads a ``subject`` label
-        # through ``_invoke_claude_cli`` (as grader call sites do via
+        # through ``ClaudeCodeHarness.invoke`` (as grader call sites do via
         # ``call_anthropic``), the stderr info line gains a
         # ``" (<subject>)"`` suffix so operators can attribute each
         # line to a specific internal LLM call.
@@ -3064,7 +3102,8 @@ class TestEnvWithSyncTasks:
 
 class TestSkillRunnerInvokeRegressionSmoke:
     """Smoke tests for ``SkillRunner.run`` invariants preserved by
-    the US-001 extraction of ``_invoke_claude_cli``.
+    the US-001 extraction of ``_invoke_claude_cli`` (now
+    ``ClaudeCodeHarness.invoke`` per issue #148).
 
     These tests were authored BEFORE the extraction to lock in the
     current field-population shape of ``SkillResult``. Every existing
@@ -3142,18 +3181,25 @@ class TestSkillRunnerInvokeRegressionSmoke:
 
 
 # ---------------------------------------------------------------------------
-# US-001 (#86): _invoke_claude_cli direct tests
+# ClaudeCodeHarness.invoke direct tests
+# (originally _invoke_claude_cli per #86 US-001; migrated to the harness
+# protocol in #148 US-004)
 # ---------------------------------------------------------------------------
 
 
 class TestInvokeClaudeCli:
-    """Direct tests for the module-private ``_invoke_claude_cli`` helper
-    extracted in US-001 of ``plans/super/86-claude-cli-transport.md``.
+    """Direct tests for ``ClaudeCodeHarness.invoke``.
 
-    The helper is the transport-level primitive: it takes a pre-built
-    prompt plus explicit ``cwd`` / ``env`` / ``timeout`` / ``claude_bin``
-    and returns a lean :class:`InvokeResult` with no skill-name / args
-    context. US-003 will wire a second caller (``call_anthropic``'s CLI
+    Originally extracted as the module-private ``_invoke_claude_cli``
+    helper per US-001 of ``plans/super/86-claude-cli-transport.md``;
+    migrated to ``ClaudeCodeHarness.invoke`` per #148 US-004 (the body
+    moved verbatim into the harness method, function deleted, no
+    compatibility shim).
+
+    The harness's ``invoke`` is the transport-level primitive: it takes
+    a pre-built prompt plus explicit ``cwd`` / ``env`` / ``timeout`` and
+    returns a lean :class:`InvokeResult` with no skill-name / args
+    context. ``call_anthropic``'s CLI transport branch is the second caller
     transport branch) that needs exactly this raw-prompt shape.
     """
 
@@ -3934,7 +3980,7 @@ class TestBackgroundTaskNoncompletionIntegration:
         captured stderr is preserved in ``warnings`` (not silently
         dropped). Covers the shared
         ``("interactive", "background-task")`` branch in
-        ``_invoke_claude_cli`` that moves stderr to warnings so the
+        ``ClaudeCodeHarness.invoke`` that moves stderr to warnings so the
         caller can still observe subprocess diagnostics.
         """
         fake = make_fake_background_task_stream(

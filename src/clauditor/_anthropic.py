@@ -335,9 +335,7 @@ def check_any_auth_available(cmd_name: str) -> None:
     """
     if _api_key_is_set() or _claude_cli_is_available():
         return None
-    raise AnthropicAuthMissingError(
-        _AUTH_MISSING_TEMPLATE.format(cmd_name=cmd_name)
-    )
+    raise AnthropicAuthMissingError(_AUTH_MISSING_TEMPLATE.format(cmd_name=cmd_name))
 
 
 def check_api_key_only(cmd_name: str) -> None:
@@ -833,17 +831,26 @@ _CLI_TRANSPORT_TIMEOUT = 180
 # CLI-transport ``call_anthropic`` invocation in this process (DEC-001
 # of issue #148, US-004). ``allow_hang_heuristic=False`` because the
 # heuristic is tuned for skill-runner-shaped prompts; raw grader /
-# judge calls would otherwise trigger false positives. Imported
-# lazily at module scope (not inside the call site) so tests that
-# patch ``clauditor.runner`` / ``clauditor._harnesses`` see a single
-# stable harness instance.
+# judge calls would otherwise trigger false positives. The harness is
+# constructed once at module-import time so concurrent ``call_anthropic``
+# coroutines share a single instance (no per-call construction cost,
+# no thread-safety concerns since ``ClaudeCodeHarness`` is stateless
+# beyond its immutable construction kwargs).
 def _build_default_harness():
     """Build the module-level default :class:`ClaudeCodeHarness`.
 
-    Factored into a function so ``call_anthropic``'s deferred-import
-    discipline (the SDK branch only) is preserved: tests / callers
-    that never hit the CLI branch never trigger the import of
-    :mod:`clauditor.runner` via :mod:`clauditor._harnesses`.
+    Factored into a function so the import of
+    :mod:`clauditor._harnesses._claude_code` is contained in one place;
+    tests that patch ``clauditor._harnesses._claude_code.subprocess``
+    see a single stable harness instance.
+
+    Note: this does run at module-import time, so importing
+    ``clauditor._anthropic`` does eagerly import
+    ``clauditor._harnesses._claude_code`` (and hence
+    ``clauditor.runner``). The SDK branch's ``anthropic`` import is
+    still deferred to first call, but the harness is not — earlier
+    plans called this "deferred" but the cost is paid once when the
+    grader module is first imported.
     """
     from clauditor._harnesses._claude_code import ClaudeCodeHarness
 

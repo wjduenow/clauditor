@@ -48,12 +48,18 @@ class Harness(Protocol):
         env: dict[str, str] | None,
         timeout: int,
         model: str | None = None,
+        subject: str | None = None,
     ) -> InvokeResult:
         """Run the harness CLI with ``prompt`` and return an :class:`InvokeResult`.
 
         Implementations own subprocess invocation, output parsing, and
         any harness-specific observability they want to surface via
         :attr:`InvokeResult.harness_metadata`.
+
+        ``subject`` is an optional human-readable label (e.g.
+        ``"L2 extraction"``) that harnesses MAY use to enrich
+        observability output (logs, warning suffixes); harnesses that
+        do not consume it should still accept and ignore the kwarg.
         """
         ...
 

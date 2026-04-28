@@ -92,6 +92,13 @@ class SkillResult:
     # is a label (``"ANTHROPIC_API_KEY"``, ``"claude.ai"``, ``"none"``),
     # not a secret. See ``docs/stream-json-schema.md``.
     api_key_source: str | None = None
+    # DEC-007 of issue #148: additive forward-compat surface for
+    # harness-specific observability. ``ClaudeCodeHarness`` leaves
+    # this empty; ``CodexHarness`` (per #149) and a future raw-API
+    # harness use it to surface their native message-shape data
+    # (Codex ``reasoning`` items, raw-API reasoning tokens, etc.)
+    # without forcing a sidecar-schema breaking change.
+    harness_metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def succeeded(self) -> bool:
@@ -164,6 +171,13 @@ class InvokeResult:
     Every field mirrors a :class:`SkillResult` field and is populated
     with identical semantics so the projection in
     :meth:`SkillRunner._invoke` is a straight field-copy.
+
+    ``harness_metadata`` is the additive forward-compat surface
+    introduced by DEC-007 of issue #148: each harness uses it to
+    surface its native transport-specific shape (Codex's ``reasoning``
+    items, a raw-API harness's reasoning tokens, etc.) without forcing
+    a sidecar-schema breaking change on existing call sites. Today,
+    :class:`ClaudeCodeHarness` leaves it empty.
     """
 
     output: str
@@ -191,7 +205,6 @@ class InvokeResult:
     harness_metadata: dict[str, Any] = field(default_factory=dict)
 
 
-
 class SkillRunner:
     """Executes Claude Code skills via the CLI and captures output."""
 
@@ -199,6 +212,7 @@ class SkillRunner:
         self,
         project_dir: str | Path | None = None,
         timeout: int = 300,
+        *,
         claude_bin: str = "claude",
         harness: Harness | None = None,
     ):
@@ -363,9 +377,7 @@ class SkillRunner:
         # ``ClaudeCodeHarness`` and restoring it after the call.
         # Non-Claude-Code harnesses simply ignore the per-call value.
         original_hang = getattr(self.harness, "allow_hang_heuristic", None)
-        toggled = (
-            original_hang is not None and original_hang != allow_hang_heuristic
-        )
+        toggled = original_hang is not None and original_hang != allow_hang_heuristic
         if toggled:
             self.harness.allow_hang_heuristic = allow_hang_heuristic
         try:
@@ -392,4 +404,5 @@ class SkillRunner:
             stream_events=invoke.stream_events,
             warnings=invoke.warnings,
             api_key_source=invoke.api_key_source,
+            harness_metadata=invoke.harness_metadata,
         )

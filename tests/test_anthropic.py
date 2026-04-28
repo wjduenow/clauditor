@@ -1181,7 +1181,7 @@ class TestCallViaClaudeCli:
         class _BrokenPopen:
             def __init__(self) -> None:
                 # Only malformed lines. No ``result`` message, no
-                # assistant text. ``_invoke_claude_cli`` will emit
+                # assistant text. ``ClaudeCodeHarness.invoke`` will emit
                 # warnings + return exit_code=0 with empty output.
                 self.stdout = io.StringIO(
                     "this is not json\nneither is this\n"

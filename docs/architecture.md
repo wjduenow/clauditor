@@ -71,7 +71,7 @@ flowchart TD
 
 | Step | What | Where |
 |------|-------|-------|
-| Subprocess | `claude -p` with stream-json output | `runner.py::SkillRunner._invoke` |
+| Subprocess | `claude -p` with stream-json output | `_harnesses/_claude_code.py::ClaudeCodeHarness.invoke` (called from `runner.py::SkillRunner._invoke`) |
 | L1 Assertions | Deterministic string matching — no API calls | `assertions.py::run_assertions` |
 | L2 Extraction | Schema field extraction via Haiku | `grader.py::extract_and_report` |
 | L3 Quality | Rubric-based grading via Sonnet | `quality_grader.py::grade_quality` |
