@@ -5,7 +5,7 @@
 - **Parent epic:** [#143](https://github.com/wjduenow/clauditor/issues/143) (Multi-provider / multi-harness, Epic A)
 - **Branch:** `feature/144-providers-call-model`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/144-providers-call-model`
-- **Phase:** published
+- **Phase:** devolved
 - **Sessions:** 1 (2026-04-28)
 - **Type:** pure refactor (no behavior change)
 
@@ -619,4 +619,43 @@ Linear chain by design — every story preserves the property that `_anthropic.p
 
 ## Beads Manifest
 
-*Pending.*
+**Devolved on:** 2026-04-28
+
+**Epic:** `clauditor-kut` — #144: Multi-provider — extract _providers/ package with call_model dispatcher
+
+**Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/144-providers-call-model`
+**Branch:** `feature/144-providers-call-model`
+**Plan PR (review-only):** https://github.com/wjduenow/clauditor/pull/156
+
+**Tasks (linear chain — only the head is `ready` at any time):**
+
+| Story | Bead ID | Depends on | Title |
+|---|---|---|---|
+| US-001 | `clauditor-kut.1` | (none — head) | Move auth helpers to `_providers/_auth.py` |
+| US-002 | `clauditor-kut.2` | `clauditor-kut.1` | Move SDK seam to `_providers/_anthropic.py` + `ModelResult` rename |
+| US-003 | `clauditor-kut.3` | `clauditor-kut.2` | Add `call_model` dispatcher in `_providers/__init__.py` |
+| US-004 | `clauditor-kut.4` | `clauditor-kut.3` | Refresh `.claude/rules/centralized-sdk-call.md` for the new dispatcher seam |
+| US-005 | `clauditor-kut.5` | `clauditor-kut.4` | Rewire 6 grader call sites to `call_model` + `provider_source` |
+| US-006 | `clauditor-kut.6` | `clauditor-kut.5` | Rewire CLI commands and `pytest_plugin.py` to import from `_providers` |
+| US-007 | `clauditor-kut.7` | `clauditor-kut.6` | Shrink `_anthropic.py` to deprecated shim + DEC-004 announcement |
+| US-008 | `clauditor-kut.8` | `clauditor-kut.7` | Rename `tests/test_anthropic.py` → `tests/test_providers_anthropic.py` + patch paths |
+| US-009 | `clauditor-kut.9` | `clauditor-kut.8` | Split auth-related test classes into `tests/test_providers_auth.py` |
+| US-010 | `clauditor-kut.10` | `clauditor-kut.9` | Quality Gate (code reviewer ×4 + CodeRabbit + validation) |
+| US-011 | `clauditor-kut.11` | `clauditor-kut.10` | Patterns & Memory (final sweep) |
+
+**Verify state:**
+
+```bash
+bd ready                       # should show clauditor-kut.1 as the head
+bd show clauditor-kut          # epic with 11 children
+bd show clauditor-kut.1        # head task (US-001)
+```
+
+**Kick off ralph from the worktree:**
+
+```bash
+cd /home/wesd/dev/worktrees/clauditor/feature/144-providers-call-model
+ralph        # or /ralph-run inside Claude Code
+```
+
+Ralph picks up `clauditor-kut.1`, claims it, implements per the acceptance criteria in the plan doc (`plans/super/144-providers-call-model.md::US-001`), closes it, and the chain advances to `clauditor-kut.2`.
