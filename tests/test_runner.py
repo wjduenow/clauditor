@@ -11,18 +11,20 @@ import clauditor.runner as _runner_mod
 
 importlib.reload(_runner_mod)
 
-from clauditor.asserters import SkillAsserter  # noqa: E402
-from clauditor.runner import (  # noqa: E402
-    _BACKGROUND_TASK_WARNING_PREFIX,
-    _INTERACTIVE_HANG_WARNING_PREFIX,
+from clauditor._harnesses._claude_code import (  # noqa: E402
     _RESULT_TEXT_MAX_CHARS,
-    InvokeResult,
-    SkillResult,
-    SkillRunner,
     _classify_result_message,
     _count_background_task_launches,
     _detect_background_task_noncompletion,
     _detect_interactive_hang,
+)
+from clauditor.asserters import SkillAsserter  # noqa: E402
+from clauditor.runner import (  # noqa: E402
+    _BACKGROUND_TASK_WARNING_PREFIX,
+    _INTERACTIVE_HANG_WARNING_PREFIX,
+    InvokeResult,
+    SkillResult,
+    SkillRunner,
     _invoke_claude_cli,
     env_with_sync_tasks,
     env_without_api_key,
