@@ -71,12 +71,20 @@ from typing import Any, Literal
 # Each name is suppressed with a noqa marker (F401) because ruff sees
 # these as unused inside this module — they ARE unused here, since they
 # are re-exports for back-compat callers.
+#
+# The mutable one-shot announcement flag ``_announced_implicit_no_api_key``
+# is intentionally NOT re-exported here. A ``from clauditor._providers
+# import _announced_implicit_no_api_key`` would frozen-copy the initial
+# ``False`` value into this module — ``announce_implicit_no_api_key()``
+# rebinds the flag on its source module via ``global``, so the alias
+# here would silently diverge after the first call. Code that needs to
+# read or reset the flag must target its canonical location:
+# ``clauditor._providers._auth._announced_implicit_no_api_key``.
 from clauditor._providers import (
     _AUTH_MISSING_TEMPLATE,  # noqa: F401
     _AUTH_MISSING_TEMPLATE_KEY_ONLY,  # noqa: F401
     _IMPLICIT_NO_API_KEY_ANNOUNCEMENT,  # noqa: F401
     AnthropicAuthMissingError,  # noqa: F401
-    _announced_implicit_no_api_key,  # noqa: F401
     _api_key_is_set,  # noqa: F401
     _claude_cli_is_available,  # noqa: F401
     announce_implicit_no_api_key,  # noqa: F401

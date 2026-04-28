@@ -53,11 +53,19 @@ class AnthropicAuthMissingError(Exception):
 # ``AnthropicAuthMissingError`` is defined so ``_auth.py``'s deferred
 # / direct ``from clauditor._providers import AnthropicAuthMissingError``
 # resolves cleanly without a circular-import hazard.
+#
+# The mutable one-shot announcement flag ``_announced_implicit_no_api_key``
+# is intentionally NOT re-exported. ``from X import Y`` creates a fresh
+# binding in this module, and ``announce_implicit_no_api_key()`` rebinds
+# the flag on its source module via ``global`` — a re-exported alias here
+# would frozen-copy the initial ``False`` and silently diverge after the
+# first call. Tests and any future consumer that needs to read or reset
+# the flag must target its canonical location:
+# ``clauditor._providers._auth._announced_implicit_no_api_key``.
 from clauditor._providers._auth import (  # noqa: E402
     _AUTH_MISSING_TEMPLATE,
     _AUTH_MISSING_TEMPLATE_KEY_ONLY,
     _IMPLICIT_NO_API_KEY_ANNOUNCEMENT,
-    _announced_implicit_no_api_key,
     _api_key_is_set,
     _claude_cli_is_available,
     announce_implicit_no_api_key,
@@ -72,11 +80,11 @@ __all__ = [
     "check_api_key_only",
     # Private surface re-exported for back-compat with the
     # ``clauditor._anthropic`` shim and for tests that introspect
-    # constants by name.
+    # constants by name. The mutable ``_announced_implicit_no_api_key``
+    # flag is deliberately absent — see the import comment above.
     "_AUTH_MISSING_TEMPLATE",
     "_AUTH_MISSING_TEMPLATE_KEY_ONLY",
     "_IMPLICIT_NO_API_KEY_ANNOUNCEMENT",
-    "_announced_implicit_no_api_key",
     "_api_key_is_set",
     "_claude_cli_is_available",
 ]
