@@ -514,6 +514,95 @@ class TestSkillRunnerEnvAndTimeout:
 
 
 # ---------------------------------------------------------------------------
+# US-005: MockHarness substitution + claude_bin deprecation
+# ---------------------------------------------------------------------------
+
+
+class TestSkillRunnerHarnessSubstitution:
+    """US-005: a custom ``Harness`` swapped in via ``harness=`` kwarg
+    fully replaces the default :class:`ClaudeCodeHarness` and its result
+    is projected verbatim onto :class:`SkillResult`.
+    """
+
+    def test_skill_runner_projects_mock_harness_result(self):
+        """``runner.run`` projects the harness's configured ``InvokeResult``
+        onto a :class:`SkillResult` (field-copy per ``_invoke``)."""
+        from clauditor._harnesses._mock import MockHarness
+
+        configured = InvokeResult(
+            output="mocked-output",
+            exit_code=7,
+            duration_seconds=1.25,
+        )
+        mock = MockHarness(result=configured)
+        runner = SkillRunner(project_dir="/tmp", harness=mock)
+
+        result = runner.run("foo")
+
+        assert isinstance(result, SkillResult)
+        assert result.output == "mocked-output"
+        assert result.exit_code == 7
+        assert result.duration_seconds == 1.25
+        assert result.skill_name == "foo"
+
+    def test_skill_runner_records_invoke_call_args(self):
+        """The mock records prompt/cwd/env/timeout exactly as the runner
+        forwards them to :meth:`Harness.invoke`."""
+        from pathlib import Path
+
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir="/tmp", timeout=99, harness=mock)
+
+        runner.run("foo", "arg")
+
+        assert len(mock.invoke_calls) == 1
+        call = mock.invoke_calls[0]
+        assert call["prompt"] == "/foo arg"
+        assert call["cwd"] == Path("/tmp")
+        assert call["env"] is None
+        assert call["timeout"] == 99
+
+    def test_skill_runner_default_harness_is_claude_code(self):
+        """Constructing ``SkillRunner()`` with no ``harness=`` kwarg
+        builds a default :class:`ClaudeCodeHarness`."""
+        runner = SkillRunner()
+        assert isinstance(runner.harness, ClaudeCodeHarness)
+
+
+class TestSkillRunnerClaudeBinDeprecation:
+    """US-005 / DEC-002: ``claude_bin=`` together with an explicit
+    ``harness=`` is a soft-deprecation path — the harness wins and a
+    :class:`DeprecationWarning` is emitted. ``claude_bin=`` alone is
+    still the supported single-knob path and emits no warning.
+    """
+
+    def test_claude_bin_with_harness_emits_deprecation_warning(self):
+        from clauditor._harnesses._mock import MockHarness
+
+        with pytest.warns(
+            DeprecationWarning, match=r"claude_bin via ClaudeCodeHarness"
+        ):
+            SkillRunner(harness=MockHarness(), claude_bin="custom")
+
+    def test_claude_bin_without_harness_emits_no_warning(self):
+        """``claude_bin=`` alone is still supported — no warning, and the
+        constructed default harness honours the path."""
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            runner = SkillRunner(claude_bin="custom")
+
+        assert not any(
+            issubclass(w.category, DeprecationWarning) for w in caught
+        )
+        assert isinstance(runner.harness, ClaudeCodeHarness)
+        assert runner.harness.claude_bin == "custom"
+
+
+# ---------------------------------------------------------------------------
 # SkillResult.outputs dict
 # ---------------------------------------------------------------------------
 
