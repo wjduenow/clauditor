@@ -175,8 +175,13 @@ class TestHarnessProtocol:
 
     def test_stub_satisfies_harness_protocol(self):
         """A class with the three protocol members is structurally a
-        ``Harness`` — no runtime ``isinstance`` check needed; this
-        passes type-checking by the type-hint shape alone."""
+        ``Harness``. Verified at runtime via ``isinstance`` (the protocol
+        is ``@runtime_checkable``) and at signature level via
+        ``inspect.signature`` so adding a new required parameter to
+        ``Harness.invoke`` without updating implementations fails this
+        test rather than silently passing.
+        """
+        import inspect
         from pathlib import Path
         from typing import ClassVar
 
@@ -194,17 +199,30 @@ class TestHarnessProtocol:
                 env: dict[str, str] | None,
                 timeout: int,
                 model: str | None = None,
+                subject: str | None = None,
             ) -> InvokeResult:
                 return InvokeResult(output="ok", exit_code=0)
 
             def strip_auth_keys(self, env: dict[str, str]) -> dict[str, str]:
                 return dict(env)
 
-        def takes_harness(h: Harness) -> None:
-            return None
+        stub = StubHarness()
 
-        # Compiles + runs only if StubHarness satisfies the protocol shape.
-        takes_harness(StubHarness())
+        # Runtime member-presence check (the protocol is @runtime_checkable).
+        assert isinstance(stub, Harness)
+
+        # Signature drift-guard: the stub's invoke parameter set must be a
+        # superset of the protocol's, so adding a new required kwarg to
+        # ``Harness.invoke`` without updating implementations red-flags here.
+        # ``Harness.invoke`` is referenced via the class so ``self`` appears;
+        # ``stub.invoke`` is a bound method so ``self`` is absent. Compare
+        # the user-facing parameter sets (without ``self``) on both sides.
+        protocol_params = set(inspect.signature(Harness.invoke).parameters) - {"self"}
+        stub_params = set(inspect.signature(stub.invoke).parameters)
+        missing = protocol_params - stub_params
+        assert not missing, (
+            f"StubHarness.invoke missing protocol parameters: {missing}"
+        )
 
 
 class TestInvokeResultHarnessMetadata:

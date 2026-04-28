@@ -10,10 +10,10 @@ US-005 of ``plans/super/148-extract-harness-protocol.md``.
 
 Per DEC-008 the cross-harness :class:`Harness.invoke` protocol does NOT
 carry ``allow_hang_heuristic``; ``MockHarness`` mirrors the protocol
-signature exactly (``prompt``, ``cwd``, ``env``, ``timeout``, ``model``)
-and intentionally omits any Claude-Code-specific kwargs. The
-``strip_auth_keys`` helper returns a verbatim copy of ``env`` because a
-mock harness has no auth env vars of its own.
+signature exactly (``prompt``, ``cwd``, ``env``, ``timeout``, ``model``,
+``subject``) and intentionally omits any Claude-Code-specific kwargs.
+The ``strip_auth_keys`` helper returns a verbatim copy of ``env``
+because a mock harness has no auth env vars of its own.
 """
 
 from __future__ import annotations

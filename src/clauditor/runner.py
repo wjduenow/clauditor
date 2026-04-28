@@ -212,8 +212,8 @@ class SkillRunner:
         self,
         project_dir: str | Path | None = None,
         timeout: int = 300,
-        *,
         claude_bin: str = "claude",
+        *,
         harness: Harness | None = None,
     ):
         # Deferred import: ``ClaudeCodeHarness`` lives in
@@ -361,35 +361,41 @@ class SkillRunner:
         ``plans/super/64-runner-auth-timeout.md``).
 
         ``allow_hang_heuristic`` is configured at harness-construction
-        time per DEC-008 of issue #148, so the per-call kwarg is now
-        a no-op for the default :class:`ClaudeCodeHarness` path.
-        Existing callers preserve the kwarg shape; future harnesses
-        ignore it. The kwarg is retained on the :class:`SkillRunner`
-        public API for source-compatibility with the
-        ``EvalSpec.allow_hang_heuristic`` thread-through.
+        time per DEC-008 of issue #148. When the per-call value differs
+        from the harness's stored value (``EvalSpec.allow_hang_heuristic``
+        threading), this method constructs a fresh
+        :class:`ClaudeCodeHarness` for the call so the original instance's
+        state is never mutated — preventing concurrency hazards if the
+        harness is shared (``_anthropic._default_harness`` is). Non-Claude-Code
+        harnesses simply ignore the per-call value (passes through to the
+        runner's stored harness).
         """
         effective_timeout = timeout if timeout is not None else self.timeout
         effective_cwd = cwd if cwd is not None else self.project_dir
-        # ``allow_hang_heuristic`` is a Claude-Code-specific knob now
-        # owned at harness construction (DEC-008). Per-call overrides
-        # threaded from ``EvalSpec.allow_hang_heuristic`` are honoured
-        # by temporarily flipping the attribute on a
-        # ``ClaudeCodeHarness`` and restoring it after the call.
-        # Non-Claude-Code harnesses simply ignore the per-call value.
-        original_hang = getattr(self.harness, "allow_hang_heuristic", None)
-        toggled = original_hang is not None and original_hang != allow_hang_heuristic
-        if toggled:
-            self.harness.allow_hang_heuristic = allow_hang_heuristic
-        try:
-            invoke = self.harness.invoke(
-                prompt,
-                cwd=effective_cwd,
-                env=env,
-                timeout=effective_timeout,
+        # Resolve which harness to call. When the caller wants a per-call
+        # ``allow_hang_heuristic`` value that differs from the stored
+        # harness's, build a one-shot ``ClaudeCodeHarness`` mirroring
+        # the stored config but with the requested heuristic flag — no
+        # mutation of ``self.harness`` (concurrency-safe per Copilot
+        # review on PR #157). For non-Claude-Code harnesses, or when the
+        # values match, use the stored harness directly.
+        stored_hang = getattr(self.harness, "allow_hang_heuristic", None)
+        if stored_hang is not None and stored_hang != allow_hang_heuristic:
+            from clauditor._harnesses._claude_code import ClaudeCodeHarness
+
+            harness_for_call = ClaudeCodeHarness(
+                claude_bin=getattr(self.harness, "claude_bin", "claude"),
+                model=getattr(self.harness, "model", None),
+                allow_hang_heuristic=allow_hang_heuristic,
             )
-        finally:
-            if toggled:
-                self.harness.allow_hang_heuristic = original_hang
+        else:
+            harness_for_call = self.harness
+        invoke = harness_for_call.invoke(
+            prompt,
+            cwd=effective_cwd,
+            env=env,
+            timeout=effective_timeout,
+        )
         return SkillResult(
             output=invoke.output,
             exit_code=invoke.exit_code,

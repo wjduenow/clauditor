@@ -22,20 +22,25 @@ a sidecar-schema breaking change on existing call sites.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar, Protocol
+from typing import ClassVar, Protocol, runtime_checkable
 
 from clauditor.runner import InvokeResult
 
 __all__ = ["Harness", "InvokeResult"]
 
 
+@runtime_checkable
 class Harness(Protocol):
     """Structural contract for a Claude-Code-compatible LLM CLI harness.
 
     Implementations are duck-typed: any class providing the three
-    members below satisfies the protocol. There is no
-    ``@runtime_checkable`` decorator — type-hint shape is sufficient
-    for the call sites that consume harnesses today.
+    members below satisfies the protocol. Decorated with
+    ``@runtime_checkable`` so ``isinstance(obj, Harness)`` is a real
+    drift-guard (catches forgotten signature updates that a static
+    type-hint check would miss). Note that ``runtime_checkable``
+    Protocols only verify member presence by name, not signature shape;
+    sibling unit tests use ``inspect.signature`` to lock the parameter
+    set when stricter conformance is required.
     """
 
     name: ClassVar[str]
