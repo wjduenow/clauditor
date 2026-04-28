@@ -11,8 +11,18 @@ import clauditor.runner as _runner_mod
 
 importlib.reload(_runner_mod)
 
+# Reload the harness module too so its bound ``InvokeResult`` (imported
+# from :mod:`clauditor.runner` at import time) re-resolves to the
+# reloaded class. Without this, ``isinstance(harness.invoke(...).., InvokeResult)``
+# checks fail because the harness still holds the pre-reload class
+# reference. See US-004 of ``plans/super/148-extract-harness-protocol.md``.
+import clauditor._harnesses._claude_code as _claude_code_mod  # noqa: E402
+
+importlib.reload(_claude_code_mod)
+
 from clauditor._harnesses._claude_code import (  # noqa: E402
     _RESULT_TEXT_MAX_CHARS,
+    ClaudeCodeHarness,
     _classify_result_message,
     _count_background_task_launches,
     _detect_background_task_noncompletion,
@@ -26,7 +36,6 @@ from clauditor.runner import (  # noqa: E402
     InvokeResult,
     SkillResult,
     SkillRunner,
-    _invoke_claude_cli,
     env_with_sync_tasks,
 )
 from tests.conftest import (  # noqa: E402
@@ -45,7 +54,7 @@ class TestRunRaw:
     def test_run_raw_returns_baseline_skill_name(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream("hi"),
         ):
             result = runner.run_raw("test prompt")
@@ -54,7 +63,7 @@ class TestRunRaw:
     def test_run_raw_passes_prompt_directly(self):
         """Verify run_raw sends the prompt without a skill prefix."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("some output")
             result = runner.run_raw("find me activities in Seattle")
             mock_popen.assert_called_once()
@@ -89,8 +98,11 @@ class TestRunRaw:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run_raw("test prompt")
         assert result.exit_code == -1
@@ -100,7 +112,8 @@ class TestRunRaw:
     def test_run_raw_handles_missing_binary(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="nonexistent-binary")
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=FileNotFoundError
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            side_effect=FileNotFoundError
         ):
             result = runner.run_raw("test prompt")
         assert result.exit_code == -1
@@ -310,7 +323,7 @@ class TestSkillAsserter:
 class TestSkillRunnerRun:
     def test_runner_run_success(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("skill output")
             result = runner.run("my-skill", "some args")
 
@@ -332,7 +345,7 @@ class TestSkillRunnerRun:
 
     def test_runner_run_success_no_args(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("output")
             runner.run("my-skill")
             cmd = mock_popen.call_args[0][0]
@@ -354,8 +367,11 @@ class TestSkillRunnerRun:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run("my-skill")
         assert result.exit_code == -1
@@ -364,7 +380,7 @@ class TestSkillRunnerRun:
     def test_runner_run_not_found(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="missing-bin")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             side_effect=FileNotFoundError,
         ):
             result = runner.run("my-skill")
@@ -378,14 +394,14 @@ class TestSkillRunnerCwd:
 
     def test_runner_default_cwd_is_project_dir(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("out")
             runner.run("my-skill", "args")
             assert mock_popen.call_args.kwargs["cwd"] == "/tmp"
 
     def test_runner_cwd_override_passes_through_to_popen(self, tmp_path):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("out")
             runner.run("my-skill", "args", cwd=tmp_path)
             assert mock_popen.call_args.kwargs["cwd"] == str(tmp_path)
@@ -403,7 +419,7 @@ class TestSkillRunnerEnvAndTimeout:
     def test_run_env_none_popen_receives_none(self):
         """Default ``env=None`` reaches Popen unchanged."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("out")
             runner.run("my-skill", "args")
             assert mock_popen.call_args.kwargs["env"] is None
@@ -412,7 +428,7 @@ class TestSkillRunnerEnvAndTimeout:
         """``env={"KEY": "VAL"}`` is forwarded to Popen verbatim."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         env = {"KEY": "VAL", "PATH": "/usr/bin"}
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("out")
             runner.run("my-skill", "args", env=env)
             assert mock_popen.call_args.kwargs["env"] == env
@@ -436,10 +452,10 @@ class TestSkillRunnerEnvAndTimeout:
 
         with (
             patch(
-                "clauditor.runner.subprocess.Popen",
+                "clauditor._harnesses._claude_code.subprocess.Popen",
                 return_value=make_fake_skill_stream("out"),
             ),
-            patch("clauditor.runner.threading.Timer", _CapturingTimer),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _CapturingTimer),
         ):
             runner.run("my-skill", "args", timeout=60)
 
@@ -464,10 +480,10 @@ class TestSkillRunnerEnvAndTimeout:
 
         with (
             patch(
-                "clauditor.runner.subprocess.Popen",
+                "clauditor._harnesses._claude_code.subprocess.Popen",
                 return_value=make_fake_skill_stream("out"),
             ),
-            patch("clauditor.runner.threading.Timer", _CapturingTimer),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _CapturingTimer),
         ):
             runner.run("my-skill", "args")
 
@@ -486,7 +502,7 @@ class TestSkillRunnerEnvAndTimeout:
         """A ``runner.run("skill", args="")`` call with no new kwargs still
         works and produces a normal ``SkillResult`` — back-compat check."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("hello")
             result = runner.run("my-skill", args="")
             # env kwarg is passed (as None), not omitted — Popen's default
@@ -551,7 +567,7 @@ class TestStreamJsonRunner:
     def test_single_assistant_message_single_text_block(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream(
                 "hello", input_tokens=100, output_tokens=50
             ),
@@ -575,7 +591,7 @@ class TestStreamJsonRunner:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream("first", extra_messages=extra),
         ):
             result = runner.run("skill")
@@ -610,7 +626,8 @@ class TestStreamJsonRunner:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=_FakePopen(lines)
         ):
             result = runner.run("skill")
         assert result.output == "visible"
@@ -631,7 +648,8 @@ class TestStreamJsonRunner:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=_FakePopen(lines)
         ):
             result = runner.run("skill")
         assert isinstance(result, SkillResult)
@@ -662,7 +680,8 @@ class TestStreamJsonRunner:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=_FakePopen(lines)
         ):
             result = runner.run("skill")
         assert result.output == "survived"
@@ -687,8 +706,11 @@ class TestStreamJsonRunner:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run("skill")
         assert result.error == "timeout"
@@ -719,8 +741,11 @@ class TestStreamJsonRunner:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run("skill")
         # _on_timeout was called but returned early (poll() was not None);
@@ -747,8 +772,11 @@ class TestStreamJsonRunner:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run("skill")
         assert result.error == "timeout"
@@ -783,8 +811,11 @@ class TestStreamJsonRunner:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run("skill")
         assert result.error == "timeout"
@@ -816,8 +847,11 @@ class TestStreamJsonRunner:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run("skill")
         assert result.error == "timeout"
@@ -830,7 +864,8 @@ class TestStreamJsonRunner:
         """DEC-005: duration must be set even on FileNotFoundError."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="missing")
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=FileNotFoundError
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            side_effect=FileNotFoundError
         ):
             result = runner.run("skill")
         assert result.exit_code == -1
@@ -843,7 +878,7 @@ class TestStreamJsonRunner:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream("x", extra_messages=extra),
         ):
             result = runner.run("skill")
@@ -879,7 +914,7 @@ class TestStreamJsonDefensiveBranches:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=_FakePopen(lines),
         ):
             result = runner.run("skill")
@@ -904,7 +939,7 @@ class TestStreamJsonDefensiveBranches:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=_FakePopen(lines),
         ):
             result = runner.run("skill")
@@ -928,7 +963,7 @@ class TestStreamJsonDefensiveBranches:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=_FakePopen(lines),
         ):
             result = runner.run("skill")
@@ -953,7 +988,7 @@ class TestStreamJsonDefensiveBranches:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=_FakePopen(lines),
         ):
             result = runner.run("skill")
@@ -968,7 +1003,7 @@ class TestStreamJsonDefensiveBranches:
         fake.returncode = 1
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ):
             result = runner.run("skill")
         assert "warning: something" in (result.error or "")
@@ -989,7 +1024,7 @@ class TestStreamJsonDefensiveBranches:
         fake.stderr = _RaisingIter()
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ):
             result = runner.run("skill")
         # The run completed successfully despite the stderr drain exception.
@@ -1035,7 +1070,10 @@ class TestStreamJsonDefensiveBranches:
 
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
             pytest.raises(RuntimeError, match="boom"),
         ):
             runner.run("skill")
@@ -1064,7 +1102,7 @@ class TestStreamJsonDefensiveBranches:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=_FakePopen(lines),
         ):
             result = runner.run("skill")
@@ -1105,7 +1143,10 @@ class TestStreamJsonDefensiveBranches:
 
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
             pytest.raises(RuntimeError, match="parse failure"),
         ):
             runner.run("skill")
@@ -1137,7 +1178,10 @@ class TestStreamJsonDefensiveBranches:
 
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
             pytest.raises(RuntimeError, match="parse failure"),
         ):
             runner.run("skill")
@@ -1167,7 +1211,10 @@ class TestStreamJsonDefensiveBranches:
 
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
             pytest.raises(RuntimeError, match="parse failure"),
         ):
             runner.run("skill")
@@ -1198,7 +1245,10 @@ class TestStreamEvents:
         ]
         fake = _FakePopen([json.dumps(m) for m in messages])
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
 
         assert len(result.stream_events) == 3
@@ -1237,7 +1287,10 @@ class TestStreamEvents:
         ]
         fake = _FakePopen(lines)
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
 
         assert len(result.stream_events) == 3
@@ -1247,7 +1300,10 @@ class TestStreamEvents:
         """Regression: SkillResult.output is unchanged by stream_events work."""
         fake = make_fake_skill_stream("the quick brown fox")
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
 
         assert result.output == "the quick brown fox"
@@ -1286,7 +1342,7 @@ class TestSkillResultWarnings:
         """A clean run should produce zero warnings."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream("fine"),
         ):
             result = runner.run("skill")
@@ -1313,7 +1369,8 @@ class TestSkillResultWarnings:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=_FakePopen(lines)
         ):
             result = runner.run("skill")
         assert result.output == "ok"
@@ -1336,7 +1393,8 @@ class TestSkillResultWarnings:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=_FakePopen(lines)
         ):
             result = runner.run("skill")
         assert result.output == "no result"
@@ -1382,7 +1440,10 @@ class TestSkillResultWarnings:
         fake._killed = False
 
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
 
         assert result.output == "ok"
@@ -1408,7 +1469,10 @@ class TestSkillResultWarnings:
         fake = make_fake_skill_stream("ok")
         fake.stderr = _RaisingIter()
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
         assert result.output == "ok"
         assert any(
@@ -1429,7 +1493,10 @@ class TestSkillResultWarnings:
         fake = make_fake_skill_stream("ok")
         fake.stderr = _RaisingIter()
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
         assert result.output == "ok"
         assert any(
@@ -1457,7 +1524,10 @@ class TestSkillResultWarnings:
         fake.terminate = lambda: None
 
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
         assert result.output == "ok"
         assert any(
@@ -1475,7 +1545,10 @@ class TestSkillResultWarnings:
 
         fake.stdout.close = _close_raises
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
         assert result.output == "ok"
         assert any(
@@ -1798,7 +1871,10 @@ class TestStreamJsonIsErrorResult:
 
     def _run_with_stream(self, fake: _FakePopen) -> SkillResult:
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             return runner.run("skill")
 
     def test_429_classified_as_rate_limit(self):
@@ -2293,7 +2369,10 @@ class TestInteractiveHangDetection:
         allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             return runner.run("skill", allow_hang_heuristic=allow_hang_heuristic)
 
     def test_trailing_question_mark_triggers(self):
@@ -2470,7 +2549,10 @@ class TestApiKeySourceParsing:
 
     def _run_with_stream(self, fake: _FakePopen) -> SkillResult:
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             return runner.run("skill")
 
     def test_init_apikeysource_none(self):
@@ -2583,13 +2665,15 @@ class TestApiKeySourceParsing:
                 "apiKeySource": "none",
             },
         )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
-            _invoke_claude_cli(
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
+            ClaudeCodeHarness(claude_bin="claude").invoke(
                 "prompt",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
                 subject="L2 extraction",
             )
         captured = capsys.readouterr()
@@ -2615,13 +2699,15 @@ class TestApiKeySourceParsing:
                 "apiKeySource": "none",
             },
         )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
-            _invoke_claude_cli(
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
+            ClaudeCodeHarness(claude_bin="claude").invoke(
                 "prompt",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
             )
         captured = capsys.readouterr()
         matching = [
@@ -2646,13 +2732,15 @@ class TestApiKeySourceParsing:
             },
         )
         hostile = "  L2\nextraction\rwith   " + ("x" * 500) + "  "
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
-            _invoke_claude_cli(
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
+            ClaudeCodeHarness(claude_bin="claude").invoke(
                 "prompt",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
                 subject=hostile,
             )
         captured = capsys.readouterr()
@@ -2688,13 +2776,15 @@ class TestApiKeySourceParsing:
                 "apiKeySource": "none",
             },
         )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
-            _invoke_claude_cli(
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
+            ClaudeCodeHarness(claude_bin="claude").invoke(
                 "prompt",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
                 subject="   \n\r ",
             )
         captured = capsys.readouterr()
@@ -2901,7 +2991,7 @@ class TestSkillRunnerInvokeRegressionSmoke:
         try/finally measurement."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream(
                 "canonical success",
                 input_tokens=123,
@@ -2934,7 +3024,7 @@ class TestSkillRunnerInvokeRegressionSmoke:
         """Canonical success stream-json → pinned ``output`` text."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream(
                 "pinned-output-text-abc123",
                 input_tokens=10,
@@ -2951,7 +3041,7 @@ class TestSkillRunnerInvokeRegressionSmoke:
         """429-style stream-json result → ``error_category=="rate_limit"``."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream(
                 "partial",
                 error_text="429 Too Many Requests: rate limit exceeded",
@@ -2979,17 +3069,29 @@ class TestInvokeClaudeCli:
     """
 
     def _call(self, fake, **overrides):
-        """Run ``_invoke_claude_cli`` with the fake Popen + sane defaults."""
+        """Run ``ClaudeCodeHarness.invoke`` with the fake Popen + defaults."""
+        # ``claude_bin`` and ``allow_hang_heuristic`` are
+        # construction-time knobs on the harness now (US-004 of
+        # ``plans/super/148-extract-harness-protocol.md``); pull them
+        # out of ``overrides`` before forwarding the rest as ``invoke``
+        # call kwargs.
+        claude_bin = overrides.pop("claude_bin", "claude")
+        allow_hang_heuristic = overrides.pop("allow_hang_heuristic", True)
         kwargs = dict(
             cwd=None,
             env=None,
             timeout=180,
-            claude_bin="claude",
-            allow_hang_heuristic=True,
         )
         kwargs.update(overrides)
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
-            return _invoke_claude_cli("hi there prompt", **kwargs)
+        harness = ClaudeCodeHarness(
+            claude_bin=claude_bin,
+            allow_hang_heuristic=allow_hang_heuristic,
+        )
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
+            return harness.invoke("hi there prompt", **kwargs)
 
     # --------------------------------------------------------------- #
     # Success + field-population                                       #
@@ -3144,16 +3246,19 @@ class TestInvokeClaudeCli:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
-            result = _invoke_claude_cli(
+            result = ClaudeCodeHarness(
+                claude_bin="claude", allow_hang_heuristic=True
+            ).invoke(
                 "hi",
                 cwd=None,
                 env=None,
                 timeout=1,
-                claude_bin="claude",
-                allow_hang_heuristic=True,
             )
         assert result.exit_code == -1
         assert result.error == "timeout"
@@ -3165,15 +3270,17 @@ class TestInvokeClaudeCli:
         """Popen raising FileNotFoundError produces a clean InvokeResult
         with a descriptive error and no leaked stream state."""
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=FileNotFoundError
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            side_effect=FileNotFoundError
         ):
-            result = _invoke_claude_cli(
+            result = ClaudeCodeHarness(
+                claude_bin="nonexistent-claude-binary",
+                allow_hang_heuristic=True,
+            ).invoke(
                 "hi",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="nonexistent-claude-binary",
-                allow_hang_heuristic=True,
             )
         assert isinstance(result, InvokeResult)
         assert result.exit_code == -1
@@ -3191,15 +3298,15 @@ class TestInvokeClaudeCli:
     def test_env_none_passes_through_to_popen_verbatim(self):
         """``env=None`` reaches Popen unchanged (Popen's own default:
         inherit ``os.environ``)."""
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("ok")
-            _invoke_claude_cli(
+            ClaudeCodeHarness(
+                claude_bin="claude", allow_hang_heuristic=True
+            ).invoke(
                 "hi",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
-                allow_hang_heuristic=True,
             )
             assert mock_popen.call_args.kwargs["env"] is None
             # cwd=None → Popen.cwd=None (helper has no self.project_dir
@@ -3211,15 +3318,15 @@ class TestInvokeClaudeCli:
         CLI-transport caller (US-003) uses this path with
         ``env=env_without_api_key(os.environ)``."""
         env = {"PATH": "/usr/bin", "MARKER": "x"}
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("ok")
-            _invoke_claude_cli(
+            ClaudeCodeHarness(
+                claude_bin="claude", allow_hang_heuristic=True
+            ).invoke(
                 "hi",
                 cwd=tmp_path,
                 env=env,
                 timeout=180,
-                claude_bin="claude",
-                allow_hang_heuristic=True,
             )
             assert mock_popen.call_args.kwargs["env"] == env
             assert mock_popen.call_args.kwargs["cwd"] == str(tmp_path)
@@ -3228,16 +3335,16 @@ class TestInvokeClaudeCli:
         """``model=`` kwarg is inserted into the subprocess argv as
         ``["--model", model]`` so CLI transport honours the requested model.
         """
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("ok")
-            _invoke_claude_cli(
+            ClaudeCodeHarness(
+                claude_bin="claude", allow_hang_heuristic=True
+            ).invoke(
                 "hi",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
                 model="claude-haiku-4-5-20251001",
-                allow_hang_heuristic=True,
             )
             argv = mock_popen.call_args.args[0]
             assert "--model" in argv
@@ -3246,15 +3353,15 @@ class TestInvokeClaudeCli:
 
     def test_model_none_omits_flag(self):
         """When ``model=None`` (the default), ``--model`` is not added to argv."""
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("ok")
-            _invoke_claude_cli(
+            ClaudeCodeHarness(
+                claude_bin="claude", allow_hang_heuristic=True
+            ).invoke(
                 "hi",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
-                allow_hang_heuristic=True,
             )
             argv = mock_popen.call_args.args[0]
             assert "--model" not in argv
@@ -3263,35 +3370,32 @@ class TestInvokeClaudeCli:
     # Single-caller invariant (US-001 done-when criterion)             #
     # --------------------------------------------------------------- #
 
-    def test_single_caller_runner_py_only(self):
-        """Drift guard: ``_invoke_claude_cli`` is only called from the
-        whitelisted modules.
-
-        US-001 restricted callers to ``runner.py`` alone. US-003 added
-        the CLI transport branch in ``_anthropic.py`` as the second
-        (and only other) legitimate caller. Any third caller is a
-        layering smell — the transport primitive should not be reached
-        directly from CLI commands, pytest fixtures, or grader modules.
+    def test_invoke_claude_cli_helper_is_gone(self):
+        """Drift guard: the ``_invoke_claude_cli`` module-private helper
+        was deleted in US-004 of issue #148 (no compatibility shim per
+        DEC-001 / Q1 → A). All transport-level calls go through
+        :class:`ClaudeCodeHarness.invoke` now. A re-introduced helper
+        would re-fragment the harness seam, so this test fails loudly.
         """
         import pathlib
 
         import clauditor
 
         src_root = pathlib.Path(clauditor.__file__).parent
-        allowed_callers = {"runner.py", "_anthropic.py"}
         hits: list[pathlib.Path] = []
         for py_file in src_root.rglob("*.py"):
             text = py_file.read_text(encoding="utf-8")
-            # Skip the definition site + the US-003 CLI transport
-            # caller. Any other hit is a layering violation.
-            if py_file.name in allowed_callers:
-                continue
             if "_invoke_claude_cli" in text:
                 hits.append(py_file)
         assert hits == [], (
-            f"Unexpected caller of _invoke_claude_cli — allowed callers "
-            f"are {sorted(allowed_callers)!r}, got extras: {hits!r}"
+            "Unexpected reference to _invoke_claude_cli — the helper "
+            f"was deleted in US-004 of issue #148; got: {hits!r}"
         )
+
+        # Direct import attempt should now fail.
+        from clauditor import runner as _runner
+
+        assert not hasattr(_runner, "_invoke_claude_cli")
 
 
 # ---------------------------------------------------------------------------
@@ -3590,7 +3694,10 @@ class TestBackgroundTaskNoncompletionIntegration:
         allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             return runner.run("skill", allow_hang_heuristic=allow_hang_heuristic)
 
     def test_waiting_text_triggers_warning_and_category(self):
@@ -3674,7 +3781,10 @@ class TestBackgroundTaskNoncompletionIntegration:
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
             "PATH": "/usr/bin",
         }
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill", env=env)
         assert result.error_category is None
         assert not any(
@@ -3697,7 +3807,10 @@ class TestBackgroundTaskNoncompletionIntegration:
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "0",
             "PATH": "/usr/bin",
         }
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill", env=env)
         assert result.error_category == "background-task"
         assert any(

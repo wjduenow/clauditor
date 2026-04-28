@@ -38,7 +38,8 @@ tests do not burn wallclock.
 CLI transport (US-003 of ``plans/super/86-claude-cli-transport.md``):
 ``call_anthropic(prompt, model=..., transport="auto")`` accepts a
 ``transport`` kwarg resolving to ``"api"`` (SDK path) or ``"cli"``
-(subprocess path via :func:`clauditor.runner._invoke_claude_cli`).
+(subprocess path via
+:meth:`clauditor._harnesses._claude_code.ClaudeCodeHarness.invoke`).
 The ``"auto"`` default picks CLI when ``shutil.which("claude")`` is
 set (DEC-001 subscription-first). CLI failures surface as
 :class:`ClaudeCLIError`, a subclass of :class:`AnthropicHelperError`
@@ -292,7 +293,7 @@ def _claude_cli_is_available() -> bool:
     functional. That's deliberate: the goal of the pre-flight guard is
     to bail out cheaply when *neither* auth path is even theoretically
     available. If the CLI is on PATH but mis-authenticated, the
-    subsequent ``_invoke_claude_cli`` call will surface the failure via
+    subsequent harness ``invoke`` call will surface the failure via
     :class:`ClaudeCLIError` (exit 3) with a category-keyed message.
     """
     return shutil.which("claude") is not None
@@ -656,13 +657,13 @@ async def call_anthropic(
 
             - ``"api"``: force the SDK (HTTP) path.
             - ``"cli"``: force the subprocess path via
-              :func:`clauditor.runner._invoke_claude_cli`.
+              :meth:`clauditor._harnesses._claude_code.ClaudeCodeHarness.invoke`.
             - ``"auto"`` (default): pick CLI when the ``claude``
               binary is on PATH, else API (DEC-001 subscription-first).
               The first ``auto → cli`` resolution per Python process
               emits a one-shot stderr announcement (DEC-019).
         subject: Optional call-site label threaded to the CLI transport
-            for :func:`clauditor.runner._invoke_claude_cli`'s
+            for :meth:`ClaudeCodeHarness.invoke`'s
             ``apiKeySource`` telemetry line. When set, the CLI branch
             emits ``clauditor.runner: apiKeySource=<val> (<subject>)``
             so operators can attribute each line to a specific internal
@@ -828,6 +829,30 @@ async def _call_via_sdk(
 _CLI_TRANSPORT_TIMEOUT = 180
 
 
+# Module-level default :class:`ClaudeCodeHarness` shared across every
+# CLI-transport ``call_anthropic`` invocation in this process (DEC-001
+# of issue #148, US-004). ``allow_hang_heuristic=False`` because the
+# heuristic is tuned for skill-runner-shaped prompts; raw grader /
+# judge calls would otherwise trigger false positives. Imported
+# lazily at module scope (not inside the call site) so tests that
+# patch ``clauditor.runner`` / ``clauditor._harnesses`` see a single
+# stable harness instance.
+def _build_default_harness():
+    """Build the module-level default :class:`ClaudeCodeHarness`.
+
+    Factored into a function so ``call_anthropic``'s deferred-import
+    discipline (the SDK branch only) is preserved: tests / callers
+    that never hit the CLI branch never trigger the import of
+    :mod:`clauditor.runner` via :mod:`clauditor._harnesses`.
+    """
+    from clauditor._harnesses._claude_code import ClaudeCodeHarness
+
+    return ClaudeCodeHarness(allow_hang_heuristic=False)
+
+
+_default_harness = _build_default_harness()
+
+
 async def _call_via_claude_cli(
     prompt: str,
     *,
@@ -837,7 +862,8 @@ async def _call_via_claude_cli(
 ) -> AnthropicResult:
     """CLI (subprocess) transport branch.
 
-    Routes the prompt through :func:`clauditor.runner._invoke_claude_cli`
+    Routes the prompt through
+    :meth:`clauditor._harnesses._claude_code.ClaudeCodeHarness.invoke`
     in a thread (the helper is synchronous) and projects its
     :class:`clauditor.runner.InvokeResult` onto :class:`AnthropicResult`.
 
@@ -865,7 +891,6 @@ async def _call_via_claude_cli(
     # ``clauditor.runner`` import cost up-front. Mirrors the SDK
     # branch's deferred ``anthropic`` import.
     from clauditor._harnesses._claude_code import env_without_api_key
-    from clauditor.runner import _invoke_claude_cli
 
     retry_counts: dict[str, int] = {
         "rate_limit": 0,
@@ -875,19 +900,21 @@ async def _call_via_claude_cli(
 
     while True:
         start = _monotonic()
-        # ``_invoke_claude_cli`` is synchronous (subprocess + blocking
-        # stdout read). Run it in a thread so the asyncio event loop
-        # stays responsive (important for ``asyncio.gather`` fan-outs
-        # like ``blind_compare``'s two parallel judges — DEC-010).
+        # ``ClaudeCodeHarness.invoke`` is synchronous (subprocess +
+        # blocking stdout read). Run it in a thread so the asyncio
+        # event loop stays responsive (important for ``asyncio.gather``
+        # fan-outs like ``blind_compare``'s two parallel judges —
+        # DEC-010). The module-level ``_default_harness`` already
+        # carries ``allow_hang_heuristic=False`` (DEC-005 in #148: the
+        # CLI-transport branch never wants the heuristic — it's
+        # tuned for skill-runner-shaped prompts, not raw judge calls).
         invoke = await asyncio.to_thread(
-            _invoke_claude_cli,
+            _default_harness.invoke,
             prompt,
             cwd=None,
             env=env_without_api_key(os.environ),
             timeout=_CLI_TRANSPORT_TIMEOUT,
-            claude_bin="claude",
             model=model,
-            allow_hang_heuristic=False,
             subject=subject,
         )
         duration = _monotonic() - start
