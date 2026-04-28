@@ -11,13 +11,22 @@ import clauditor.runner as _runner_mod
 
 importlib.reload(_runner_mod)
 
-# Reload the harness module too so its bound ``InvokeResult`` (imported
-# from :mod:`clauditor.runner` at import time) re-resolves to the
+# Reload the harness package + module too so their bound ``InvokeResult``
+# (imported from :mod:`clauditor.runner` at import time) re-resolves to the
 # reloaded class. Without this, ``isinstance(harness.invoke(...).., InvokeResult)``
 # checks fail because the harness still holds the pre-reload class
 # reference. See US-004 of ``plans/super/148-extract-harness-protocol.md``.
+#
+# Reloading ``clauditor._harnesses`` (the package ``__init__.py``) is also
+# what gives coverage instrumentation a chance to see the package's
+# ``Harness`` Protocol definition: pytest-cov starts AFTER test collection,
+# by which point ``__init__.py`` has already executed. Reloading it here
+# (during test-module import, but post-collection) re-runs the body under
+# coverage so the Protocol class lines register as covered.
+import clauditor._harnesses as _harnesses_pkg  # noqa: E402
 import clauditor._harnesses._claude_code as _claude_code_mod  # noqa: E402
 
+importlib.reload(_harnesses_pkg)
 importlib.reload(_claude_code_mod)
 
 from clauditor._harnesses._claude_code import (  # noqa: E402
