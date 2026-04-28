@@ -134,6 +134,74 @@ class TestSkillResultSucceeded:
 
 
 # ---------------------------------------------------------------------------
+# Harness protocol + InvokeResult.harness_metadata (US-001 / clauditor-3sm.1)
+# ---------------------------------------------------------------------------
+
+
+class TestHarnessProtocol:
+    """Structural tests for the ``Harness`` protocol introduced in US-001.
+
+    The protocol lives in ``clauditor._harnesses`` and is the seam future
+    harnesses (Codex per #149) will satisfy. This test confirms the
+    public shape: ``name`` ClassVar plus ``invoke`` and
+    ``strip_auth_keys`` methods. Per DEC-008, ``allow_hang_heuristic``
+    is intentionally NOT on ``invoke`` — it's a Claude-Code-specific
+    knob configured at harness construction time (US-004).
+    """
+
+    def test_stub_satisfies_harness_protocol(self):
+        """A class with the three protocol members is structurally a
+        ``Harness`` — no runtime ``isinstance`` check needed; this
+        passes type-checking by the type-hint shape alone."""
+        from pathlib import Path
+        from typing import ClassVar
+
+        from clauditor._harnesses import Harness
+        from clauditor.runner import InvokeResult
+
+        class StubHarness:
+            name: ClassVar[str] = "stub"
+
+            def invoke(
+                self,
+                prompt: str,
+                *,
+                cwd: Path | None,
+                env: dict[str, str] | None,
+                timeout: int,
+                model: str | None = None,
+            ) -> InvokeResult:
+                return InvokeResult(output="ok", exit_code=0)
+
+            def strip_auth_keys(self, env: dict[str, str]) -> dict[str, str]:
+                return dict(env)
+
+        def takes_harness(h: Harness) -> None:
+            return None
+
+        # Compiles + runs only if StubHarness satisfies the protocol shape.
+        takes_harness(StubHarness())
+
+
+class TestInvokeResultHarnessMetadata:
+    """``InvokeResult`` gains a ``harness_metadata`` dict in US-001 to
+    let future harnesses surface harness-specific observability without
+    a sidecar-schema bump (DEC-007)."""
+
+    def test_default_is_empty_dict(self):
+        result = InvokeResult(output="ok", exit_code=0)
+        assert result.harness_metadata == {}
+
+    def test_independent_per_instance(self):
+        """``field(default_factory=dict)`` — not a shared mutable
+        default — so mutating one instance does not bleed into another."""
+        r1 = InvokeResult(output="ok", exit_code=0)
+        r2 = InvokeResult(output="ok", exit_code=0)
+        r1.harness_metadata["k"] = "v"
+        assert "k" not in r2.harness_metadata
+
+
+# ---------------------------------------------------------------------------
 # SkillAsserter — Layer 1 test-helper wrapper (US-006)
 # ---------------------------------------------------------------------------
 

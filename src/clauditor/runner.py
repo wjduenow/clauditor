@@ -21,7 +21,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 # Env vars stripped by :func:`env_without_api_key`. Both are
 # documented Anthropic SDK env-auth paths (DEC-007 of
@@ -467,6 +467,7 @@ class InvokeResult:
     stream_events: list[dict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     api_key_source: str | None = None
+    harness_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 def _invoke_claude_cli(
