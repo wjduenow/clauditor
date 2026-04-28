@@ -23,8 +23,9 @@ from pathlib import Path
 
 import pytest
 
+from clauditor._harnesses._claude_code import env_without_api_key
 from clauditor.asserters import SkillAsserter
-from clauditor.runner import SkillResult, SkillRunner, env_without_api_key
+from clauditor.runner import SkillResult, SkillRunner
 from clauditor.spec import SkillSpec
 
 

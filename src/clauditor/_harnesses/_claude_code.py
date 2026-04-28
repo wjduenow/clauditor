@@ -23,12 +23,36 @@ exact lockstep with the prefix definitions.
 
 from __future__ import annotations
 
+import os
 import re
 
 from clauditor.runner import (
     _BACKGROUND_TASK_WARNING_PREFIX,
     _INTERACTIVE_HANG_WARNING_PREFIX,
 )
+
+# Env vars stripped by :func:`env_without_api_key`. Both are
+# documented Anthropic SDK env-auth paths (DEC-007 of
+# ``plans/super/64-runner-auth-timeout.md``). Non-auth Anthropic env
+# vars such as ``ANTHROPIC_BASE_URL`` are intentionally preserved
+# (DEC-016).
+_API_KEY_ENV_VARS = frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"})
+
+
+def env_without_api_key(
+    base_env: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a new env dict with both auth env vars removed.
+
+    Pure, non-mutating helper per
+    ``.claude/rules/non-mutating-scrub.md``. When ``base_env`` is
+    ``None``, reads from ``os.environ``. Always returns a new dict
+    (never mutates the input). Strips ``ANTHROPIC_API_KEY`` and
+    ``ANTHROPIC_AUTH_TOKEN``; preserves every other key (including
+    ``ANTHROPIC_BASE_URL``).
+    """
+    source = base_env if base_env is not None else os.environ
+    return {k: v for k, v in source.items() if k not in _API_KEY_ENV_VARS}
 
 # Soft cap applied to stream-json ``result`` text surfaced on
 # ``SkillResult.error``. Per DEC-008 of

@@ -17,6 +17,7 @@ from clauditor._harnesses._claude_code import (  # noqa: E402
     _count_background_task_launches,
     _detect_background_task_noncompletion,
     _detect_interactive_hang,
+    env_without_api_key,
 )
 from clauditor.asserters import SkillAsserter  # noqa: E402
 from clauditor.runner import (  # noqa: E402
@@ -27,7 +28,6 @@ from clauditor.runner import (  # noqa: E402
     SkillRunner,
     _invoke_claude_cli,
     env_with_sync_tasks,
-    env_without_api_key,
 )
 from tests.conftest import (  # noqa: E402
     _FakePopen,

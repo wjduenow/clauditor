@@ -7,9 +7,10 @@ import json
 import sys
 from pathlib import Path
 
+from clauditor._harnesses._claude_code import env_without_api_key
 from clauditor.assertions import run_assertions
 from clauditor.paths import resolve_clauditor_dir
-from clauditor.runner import SkillResult, env_without_api_key
+from clauditor.runner import SkillResult
 from clauditor.workspace import (
     InvalidSkillNameError,
     IterationWorkspace,
