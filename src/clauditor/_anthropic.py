@@ -55,7 +55,34 @@ import shutil
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Any, Final, Literal
+from typing import Any, Literal
+
+# DEC-005 of ``plans/super/144-providers-call-model.md``: the auth
+# sub-seam moved into ``clauditor._providers._auth`` (US-001). The
+# imports below re-export every moved symbol so existing call sites
+# (``from clauditor._anthropic import check_any_auth_available``,
+# ``from clauditor._anthropic import _IMPLICIT_NO_API_KEY_ANNOUNCEMENT``,
+# etc.) keep working unmodified for one release. The class-identity
+# invariant — ``clauditor._anthropic.AnthropicAuthMissingError is
+# clauditor._providers.AnthropicAuthMissingError`` — holds because the
+# class is defined exactly once in ``_providers/__init__.py`` and
+# re-exported here, not redefined.
+#
+# Each name is suppressed with a noqa marker (F401) because ruff sees
+# these as unused inside this module — they ARE unused here, since they
+# are re-exports for back-compat callers.
+from clauditor._providers import (
+    _AUTH_MISSING_TEMPLATE,  # noqa: F401
+    _AUTH_MISSING_TEMPLATE_KEY_ONLY,  # noqa: F401
+    _IMPLICIT_NO_API_KEY_ANNOUNCEMENT,  # noqa: F401
+    AnthropicAuthMissingError,  # noqa: F401
+    _announced_implicit_no_api_key,  # noqa: F401
+    _api_key_is_set,  # noqa: F401
+    _claude_cli_is_available,  # noqa: F401
+    announce_implicit_no_api_key,  # noqa: F401
+    check_any_auth_available,  # noqa: F401
+    check_api_key_only,  # noqa: F401
+)
 
 # Module-level alias per .claude/rules/monotonic-time-indirection.md.
 # ``_sleep`` is patched in retry-branch tests to avoid real wallclock.
@@ -69,14 +96,6 @@ _monotonic = time.monotonic
 # resolves to CLI. Flipped to ``True`` after the first emission per
 # Python process; explicit ``transport="cli"`` never flips it.
 _announced_cli_transport = False
-
-# DEC-003 / DEC-009 / DEC-011 (#95 US-002): one-shot stderr announcement
-# when ``--transport cli`` implicitly strips ``ANTHROPIC_API_KEY`` /
-# ``ANTHROPIC_AUTH_TOKEN`` from the skill subprocess env. Flipped to
-# ``True`` after the first emission per Python process. Co-located with
-# ``_announced_cli_transport`` because the announcement flags form an
-# emerging family (DEC-009).
-_announced_implicit_no_api_key: bool = False
 
 
 def _rand_uniform(lo: float, hi: float) -> float:
@@ -112,26 +131,6 @@ class AnthropicHelperError(RuntimeError):
     original SDK exception is preserved on :attr:`__cause__` via
     ``raise ... from exc`` so callers that want to introspect (e.g. for
     status code) still can.
-    """
-
-
-class AnthropicAuthMissingError(Exception):
-    """Raised when no usable Anthropic authentication path is available.
-
-    Thrown by :func:`check_any_auth_available` when neither
-    ``ANTHROPIC_API_KEY`` is set nor the ``claude`` CLI is on PATH
-    (DEC-008 of ``plans/super/86-claude-cli-transport.md``), and by the
-    strict variant :func:`check_api_key_only` when ``ANTHROPIC_API_KEY``
-    alone is missing (DEC-009 — pytest fixtures stay strict).
-
-    Distinct from :class:`AnthropicHelperError` by design (DEC-010 of
-    ``plans/super/83-subscription-auth-gap.md``): the CLI layer routes
-    ``AnthropicAuthMissingError`` to exit 2 (pre-call input-validation
-    error per ``.claude/rules/llm-cli-exit-code-taxonomy.md``), while
-    ``AnthropicHelperError`` is routed to exit 3 (actual API failure).
-    Reusing the helper-error class would conflate those exit codes and
-    make the routing a string-match hack instead of a structural
-    ``except`` ladder.
     """
 
 
@@ -193,188 +192,6 @@ _CLI_AUTO_ANNOUNCEMENT = (
     "clauditor: using Claude CLI transport (subscription auth); "
     "pass --transport api to opt out"
 )
-
-
-# DEC-011 (#95 US-002): one-shot stderr line emitted when
-# ``--transport cli`` implicitly strips ``ANTHROPIC_API_KEY`` /
-# ``ANTHROPIC_AUTH_TOKEN`` from the skill subprocess env so the
-# subscription-auth guarantee extends end-to-end (SDK grader call AND
-# skill subprocess). Committed verbatim; tests assert substring presence
-# for ``ANTHROPIC_API_KEY``, ``ANTHROPIC_AUTH_TOKEN``, and
-# ``--transport api`` (the escape hatch).
-_IMPLICIT_NO_API_KEY_ANNOUNCEMENT: Final[str] = (
-    "clauditor: --transport cli stripped ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN "
-    "from the skill subprocess env (subscription auth end-to-end); "
-    "pass --transport api to keep the keys."
-)
-
-
-def announce_implicit_no_api_key() -> None:
-    """Emit the implicit-no-api-key notice to stderr once per process.
-
-    DEC-003 / DEC-009 / DEC-011 (#95 US-002). Called by CLI commands
-    (wired in US-003) when ``--transport cli`` resolves and the skill
-    subprocess env has ``ANTHROPIC_API_KEY`` / ``ANTHROPIC_AUTH_TOKEN``
-    stripped. The one-shot module flag :data:`_announced_implicit_no_api_key`
-    ensures a single announcement per Python process regardless of how
-    many subsequent CLI commands resolve under the same conditions.
-
-    Parallel to the ``auto → CLI`` announcement gating inside
-    :func:`call_anthropic` — kept as a standalone helper (not inlined)
-    so non-SDK call sites (``cli/grade.py`` etc.) can invoke it
-    directly without routing through :func:`call_anthropic`.
-    """
-    global _announced_implicit_no_api_key
-    if _announced_implicit_no_api_key:
-        return
-    print(_IMPLICIT_NO_API_KEY_ANNOUNCEMENT, file=sys.stderr)
-    _announced_implicit_no_api_key = True
-
-
-# DEC-015 / #86 US-005: message template for :func:`check_any_auth_available`
-# — the relaxed pre-flight guard that passes when either
-# ``ANTHROPIC_API_KEY`` is set OR the ``claude`` CLI binary is on PATH.
-# Four durable substrings are test-asserted: ``ANTHROPIC_API_KEY``,
-# ``Claude Pro``, ``console.anthropic.com``, ``claude CLI``. The first
-# three preserve #83 DEC-012's anchors; the fourth adds the CLI-path
-# escape hatch introduced in #86.
-#
-# ``{cmd_name}`` interpolation keeps #83 DEC-011's "say which command
-# fired" UX — users see ``clauditor grade`` (or ``propose-eval``,
-# ``suggest``, ``triggers``, ``extract``, ``compare --blind``) in the
-# message and know which invocation triggered the guard.
-_AUTH_MISSING_TEMPLATE = (
-    "ERROR: No usable authentication found.\n"
-    "clauditor {cmd_name} needs either:\n"
-    "  1. ANTHROPIC_API_KEY exported (API key from "
-    "https://console.anthropic.com/), OR\n"
-    "  2. claude CLI installed and authenticated (Claude Pro/Max "
-    "subscription)\n"
-    "Commands that don't need authentication: validate, capture, run, "
-    "lint, init,\n"
-    "badge, audit, trend."
-)
-
-
-# DEC-009 / #86 US-005: message template for :func:`check_api_key_only`,
-# the strict variant used by the three pytest fixtures. Preserves the
-# three #83 DEC-012 durable substrings (``ANTHROPIC_API_KEY``,
-# ``Claude Pro``, ``console.anthropic.com``). Fixtures opt into the
-# relaxed guard explicitly via ``CLAUDITOR_FIXTURE_ALLOW_CLI=1``.
-_AUTH_MISSING_TEMPLATE_KEY_ONLY = (
-    "ERROR: ANTHROPIC_API_KEY is not set.\n"
-    "clauditor {cmd_name} calls the Anthropic API directly and needs an API\n"
-    "key — a Claude Pro/Max subscription alone does not grant API access.\n"
-    "Get a key at https://console.anthropic.com/, then export\n"
-    "ANTHROPIC_API_KEY=... and re-run. Set CLAUDITOR_FIXTURE_ALLOW_CLI=1\n"
-    "to allow the claude CLI transport in pytest fixtures.\n"
-    "Commands that don't need a key: validate, capture, run, lint, init,\n"
-    "badge, audit, trend."
-)
-
-
-def _api_key_is_set() -> bool:
-    """Return True when ``ANTHROPIC_API_KEY`` is present and non-empty.
-
-    Whitespace-only values count as absent: the SDK's own "could not
-    resolve authentication method" path triggers on these shapes, and
-    the pre-flight guard's whole point is to catch the SDK's opaque
-    failure with an actionable message upstream.
-    """
-    value = os.environ.get("ANTHROPIC_API_KEY")
-    return value is not None and value.strip() != ""
-
-
-def _claude_cli_is_available() -> bool:
-    """Return True when the ``claude`` binary is on PATH.
-
-    Presence check only — we do NOT verify the CLI is authenticated or
-    functional. That's deliberate: the goal of the pre-flight guard is
-    to bail out cheaply when *neither* auth path is even theoretically
-    available. If the CLI is on PATH but mis-authenticated, the
-    subsequent ``_invoke_claude_cli`` call will surface the failure via
-    :class:`ClaudeCLIError` (exit 3) with a category-keyed message.
-    """
-    return shutil.which("claude") is not None
-
-
-def check_any_auth_available(cmd_name: str) -> None:
-    """Pre-flight guard: raise only when no auth path is available at all.
-
-    DEC-008 of ``plans/super/86-claude-cli-transport.md``. Passes when
-    either ``ANTHROPIC_API_KEY`` is set OR ``shutil.which("claude")``
-    returns a path. Raises :class:`AnthropicAuthMissingError` with the
-    DEC-015 message only when both avenues are closed.
-
-    Pure function per ``.claude/rules/pure-compute-vs-io-split.md``:
-    reads ``os.environ`` and probes PATH via ``shutil.which`` only; does
-    NOT print to stderr, does NOT call ``sys.exit``, does NOT log. The
-    CLI wrapper catches :class:`AnthropicAuthMissingError` and maps it
-    to ``return 2`` + stderr surfacing.
-
-    Per DEC-001 (#83), only ``ANTHROPIC_API_KEY`` counts for the key
-    branch — ``ANTHROPIC_AUTH_TOKEN`` is ignored even though the
-    underlying Anthropic SDK honors it. Per DEC-008 (#86), the CLI
-    branch succeeds on PATH-presence alone; authentication of the CLI
-    itself is not verified here (that failure surfaces downstream as
-    :class:`ClaudeCLIError` exit 3).
-
-    Args:
-        cmd_name: Subcommand label (e.g. ``"grade"``, ``"propose-eval"``,
-            ``"compare --blind"``) interpolated into the error message
-            so users see ``clauditor grade`` for immediately actionable
-            UX.
-
-    Raises:
-        AnthropicAuthMissingError: when neither auth path is available.
-            Message contains the four DEC-015 durable substrings
-            (``ANTHROPIC_API_KEY``, ``Claude Pro``,
-            ``console.anthropic.com``, ``claude CLI``) and the
-            interpolated command name.
-    """
-    if _api_key_is_set() or _claude_cli_is_available():
-        return None
-    raise AnthropicAuthMissingError(
-        _AUTH_MISSING_TEMPLATE.format(cmd_name=cmd_name)
-    )
-
-
-def check_api_key_only(cmd_name: str) -> None:
-    """Strict pre-flight guard: raise if ``ANTHROPIC_API_KEY`` is missing.
-
-    DEC-009 of ``plans/super/86-claude-cli-transport.md`` — pytest
-    fixtures stay strict. The three grading fixtures
-    (``clauditor_grader``, ``clauditor_triggers``,
-    ``clauditor_blind_compare``) call this helper rather than
-    :func:`check_any_auth_available` so a CI run under subscription-only
-    auth surfaces a config regression instead of silently falling back
-    to the CLI transport. Users who deliberately want fixtures to exercise
-    the CLI transport opt in with ``CLAUDITOR_FIXTURE_ALLOW_CLI=1``
-    (the pytest plugin routes through :func:`check_any_auth_available`
-    in that case).
-
-    Pure function per ``.claude/rules/pure-compute-vs-io-split.md``:
-    reads ``os.environ`` only; does NOT print to stderr, does NOT call
-    ``sys.exit``, does NOT log. The caller (pytest fixture factory)
-    catches :class:`AnthropicAuthMissingError` implicitly by letting it
-    propagate as a test setup failure (NOT ``pytest.skip`` per
-    ``.claude/rules/precall-env-validation.md`` — a silent skip under
-    subscription-only auth would mask a regression).
-
-    Args:
-        cmd_name: Fixture label (e.g. ``"grader"``, ``"triggers"``,
-            ``"blind_compare"``) interpolated into the error message.
-
-    Raises:
-        AnthropicAuthMissingError: when ``ANTHROPIC_API_KEY`` is absent,
-            an empty string, or whitespace-only. Message preserves the
-            three #83 DEC-012 durable substrings.
-    """
-    if _api_key_is_set():
-        return None
-    raise AnthropicAuthMissingError(
-        _AUTH_MISSING_TEMPLATE_KEY_ONLY.format(cmd_name=cmd_name)
-    )
 
 
 @dataclass
