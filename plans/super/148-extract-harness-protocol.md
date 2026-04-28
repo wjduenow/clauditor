@@ -6,11 +6,12 @@
 - **Branch:** `feature/148-extract-harness-protocol`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/148-extract-harness-protocol`
 - **Base branch:** `dev`
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **Sessions:** 1
 - **Last session:** 2026-04-28
 - **Total decisions:** 9
 - **PR URL:** https://github.com/wjduenow/clauditor/pull/157
+- **Beads epic:** `clauditor-3sm`
 
 ---
 
