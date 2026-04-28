@@ -936,7 +936,7 @@ class TestCallViaClaudeCli:
     Every test explicitly passes ``transport="cli"`` so it routes through
     the subprocess branch regardless of whether the test host has
     ``claude`` on PATH. Subprocess mocked at the
-    ``clauditor.runner.subprocess.Popen`` seam (same pattern as
+    ``clauditor._harnesses._claude_code.subprocess.Popen`` seam (same pattern as
     tests/test_runner.py). _sleep patched so retry waits cost zero
     wallclock.
     """
@@ -946,7 +946,7 @@ class TestCallViaClaudeCli:
         fake = _make_cli_success_popen("hello from cli")
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ), patch(
             "clauditor._anthropic._sleep", sleep_mock
         ):
@@ -967,7 +967,10 @@ class TestCallViaClaudeCli:
         fake = _make_cli_success_popen(
             "ok", input_tokens=123, output_tokens=45
         )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = await call_anthropic("p", model="m", transport="cli")
         assert result.input_tokens == 123
         assert result.output_tokens == 45
@@ -985,7 +988,7 @@ class TestCallViaClaudeCli:
         ]
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=fakes
+            "clauditor._harnesses._claude_code.subprocess.Popen", side_effect=fakes
         ), patch(
             "clauditor._anthropic._sleep", sleep_mock
         ), patch(
@@ -1011,7 +1014,7 @@ class TestCallViaClaudeCli:
         ]
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=fakes
+            "clauditor._harnesses._claude_code.subprocess.Popen", side_effect=fakes
         ), patch(
             "clauditor._anthropic._sleep", sleep_mock
         ), patch(
@@ -1028,7 +1031,7 @@ class TestCallViaClaudeCli:
         fake = _make_cli_error_popen("401 Unauthorized: invalid api key")
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ), patch(
             "clauditor._anthropic._sleep", sleep_mock
         ):
@@ -1052,7 +1055,7 @@ class TestCallViaClaudeCli:
         ]
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=fakes
+            "clauditor._harnesses._claude_code.subprocess.Popen", side_effect=fakes
         ), patch(
             "clauditor._anthropic._sleep", sleep_mock
         ), patch(
@@ -1073,7 +1076,7 @@ class TestCallViaClaudeCli:
         ]
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=fakes
+            "clauditor._harnesses._claude_code.subprocess.Popen", side_effect=fakes
         ), patch(
             "clauditor._anthropic._sleep", sleep_mock
         ), patch(
@@ -1088,7 +1091,7 @@ class TestCallViaClaudeCli:
         """Binary missing → ``transport`` category → 1 retry then raise."""
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             side_effect=FileNotFoundError,
         ), patch(
             "clauditor._anthropic._sleep", sleep_mock
@@ -1130,9 +1133,9 @@ class TestCallViaClaudeCli:
             f.poll = lambda: None
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=fakes
+            "clauditor._harnesses._claude_code.subprocess.Popen", side_effect=fakes
         ), patch(
-            "clauditor.runner.threading.Timer", _ImmediateTimer
+            "clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer
         ), patch(
             "clauditor._anthropic._sleep", sleep_mock
         ), patch(
@@ -1159,7 +1162,8 @@ class TestCallViaClaudeCli:
 
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=_popen_factory
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            side_effect=_popen_factory
         ), patch(
             "clauditor._anthropic._sleep", sleep_mock
         ), patch(
@@ -1202,7 +1206,7 @@ class TestCallViaClaudeCli:
         fakes = [_BrokenPopen(), _make_cli_success_popen("healed")]
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=fakes
+            "clauditor._harnesses._claude_code.subprocess.Popen", side_effect=fakes
         ), patch(
             "clauditor._anthropic._sleep", sleep_mock
         ), patch(
@@ -1222,7 +1226,7 @@ class TestCallViaClaudeCli:
         monkeypatch.setenv("PATH", "/usr/bin")
         mock_popen = MagicMock()
         mock_popen.return_value = _make_cli_success_popen("ok")
-        with patch("clauditor.runner.subprocess.Popen", mock_popen):
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen", mock_popen):
             await call_anthropic("p", model="m", transport="cli")
         call_kwargs = mock_popen.call_args.kwargs
         env = call_kwargs["env"]
@@ -1239,7 +1243,10 @@ class TestCallViaClaudeCli:
         catches CLI-transport failures transparently.
         """
         fake = _make_cli_error_popen("401 Unauthorized")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
         assert isinstance(exc_info.value, ClaudeCLIError)
@@ -1252,7 +1259,10 @@ class TestCallViaClaudeCli:
         provider's stream-json ``result`` text."""
         secret_leak = "secret-provider-text-should-not-appear-in-message"
         fake = _make_cli_error_popen(f"401 Unauthorized: {secret_leak}")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             with pytest.raises(ClaudeCLIError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
         msg = str(exc_info.value)
@@ -1277,7 +1287,10 @@ class TestCallViaClaudeCli:
                 "apiKeySource": "none",
             },
         )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             await call_anthropic(
                 "p",
                 model="m",
@@ -1312,7 +1325,10 @@ class TestCallViaClaudeCli:
                 "apiKeySource": "none",
             },
         )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             await call_anthropic("p", model="m", transport="cli")
         captured = capsys.readouterr()
         matching = [
@@ -1343,7 +1359,10 @@ class TestAnthropicResultFields:
     @pytest.mark.asyncio
     async def test_source_is_cli_under_cli_transport(self) -> None:
         fake = _make_cli_success_popen("cli-path")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = await call_anthropic(
                 "p", model="m", transport="cli"
             )
@@ -1370,7 +1389,7 @@ class TestAnthropicResultFields:
     async def test_duration_seconds_populated_under_cli(self) -> None:
         fake = _make_cli_success_popen("cli")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ), patch(
             "clauditor._anthropic._monotonic",
             side_effect=[10.0, 12.25],
@@ -1398,7 +1417,7 @@ class TestAutoTransportResolution:
             "clauditor._anthropic.shutil.which",
             return_value="/usr/local/bin/claude",
         ), patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ):
             result = await call_anthropic(
                 "p", model="m", transport="auto"
@@ -1455,7 +1474,7 @@ class TestAutoTransportResolution:
         with patch(
             "clauditor._anthropic.shutil.which", return_value=None
         ), patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             side_effect=FileNotFoundError,
         ), patch(
             "clauditor._anthropic._sleep", sleep_mock
@@ -1488,7 +1507,7 @@ class TestStderrAnnouncement:
             "clauditor._anthropic.shutil.which",
             return_value="/usr/local/bin/claude",
         ), patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ):
             await call_anthropic("p", model="m", transport="auto")
         captured = capsys.readouterr()
@@ -1508,7 +1527,8 @@ class TestStderrAnnouncement:
             "clauditor._anthropic.shutil.which",
             return_value="/usr/local/bin/claude",
         ), patch(
-            "clauditor.runner.subprocess.Popen", side_effect=[fake1, fake2]
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            side_effect=[fake1, fake2]
         ):
             await call_anthropic("p1", model="m", transport="auto")
             # Drain the first emission before the second call.
@@ -1528,7 +1548,10 @@ class TestStderrAnnouncement:
         """DEC-019: explicit ``transport="cli"`` never announces
         (no surprise; caller chose it)."""
         fake = _make_cli_success_popen("ok")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             await call_anthropic("p", model="m", transport="cli")
         captured = capsys.readouterr()
         assert (

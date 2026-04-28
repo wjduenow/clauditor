@@ -170,7 +170,10 @@ class TestPluginFunctionsDirect:
         )
         runner = clauditor_runner.__wrapped__(request)
         assert runner.timeout == 60
-        assert runner.claude_bin == "claude"
+        # ``claude_bin`` moved from ``SkillRunner`` to the harness in
+        # US-004 of issue #148; the default ``ClaudeCodeHarness``
+        # exposes it as ``harness.claude_bin``.
+        assert runner.harness.claude_bin == "claude"
 
     def test_spec_fixture_returns_callable(self, tmp_path):
         """clauditor_spec fixture returns a callable factory."""

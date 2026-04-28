@@ -428,7 +428,7 @@ class TestEvaluateFailureClassification:
         # interactive-hang signal the fixture doesn't expose directly.
         # Import the canonical string so a future rename propagates here
         # instead of leaving this test silently out of sync.
-        from clauditor.runner import _INTERACTIVE_HANG_WARNING
+        from clauditor._harnesses._claude_code import _INTERACTIVE_HANG_WARNING
 
         hang_warning = _INTERACTIVE_HANG_WARNING
         runner.run.return_value = SkillResult(
