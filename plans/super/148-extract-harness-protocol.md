@@ -486,8 +486,21 @@ ruff check src/ tests/ && ruff format --check src/ tests/ && pytest tests/
 
 ## Beads Manifest
 
-(Phase 7 — pending devolve.)
+- **Epic:** `clauditor-3sm` — #148: extract Harness protocol from _invoke_claude_cli (refactor)
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/148-extract-harness-protocol`
+- **Branch:** `feature/148-extract-harness-protocol` (based on `dev`)
+- **Devolved:** 2026-04-28
 
-## Beads Manifest
+| Bead | Story | Priority | Depends on |
+|---|---|---|---|
+| `clauditor-3sm.1` | US-001 — Create `_harnesses/` package + `Harness` Protocol + `harness_metadata` | P2 | (leaf) |
+| `clauditor-3sm.2` | US-002 — Move pure helpers + their constants | P2 | `.1` |
+| `clauditor-3sm.3` | US-003 — Move `_API_KEY_ENV_VARS` + `env_without_api_key`; update 4 callers | P2 | `.1` |
+| `clauditor-3sm.4` | US-004 — Implement `ClaudeCodeHarness`; migrate `_invoke_claude_cli`; rewire callers | P2 | `.1`, `.2`, `.3` |
+| `clauditor-3sm.5` | US-005 — `MockHarness` + substitution test + `claude_bin` deprecation test | P2 | `.4` |
+| `clauditor-3sm.6` | US-006 — Refresh 4 `.claude/rules/*.md` files | P3 | `.2`, `.3`, `.4` |
+| `clauditor-3sm.7` | US-007 — Quality Gate (code review ×4 + CodeRabbit + coverage ≥80%) | P2 | `.1`–`.6` |
+| `clauditor-3sm.8` | US-008 — Patterns & Memory | P3 | `.7` |
 
-(Phase 7 — pending devolve.)
+**Cycles:** none (verified via `bd dep cycles`).
+**Ready leaf:** `clauditor-3sm.1` (US-001).
