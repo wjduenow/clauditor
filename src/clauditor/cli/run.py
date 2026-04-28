@@ -6,10 +6,10 @@ import argparse
 import sys
 from pathlib import Path
 
+from clauditor._harnesses._claude_code import env_without_api_key
 from clauditor.runner import (
     SkillRunner,
     env_with_sync_tasks,
-    env_without_api_key,
 )
 
 

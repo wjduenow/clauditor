@@ -15,13 +15,13 @@ from clauditor._anthropic import (
     announce_implicit_no_api_key,
     check_any_auth_available,
 )
+from clauditor._harnesses._claude_code import env_without_api_key
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.benchmark import Benchmark, compute_benchmark
 from clauditor.paths import resolve_clauditor_dir
 from clauditor.runner import (
     SkillResult,
     env_with_sync_tasks,
-    env_without_api_key,
 )
 from clauditor.spec import SkillSpec
 from clauditor.workspace import (

@@ -22,13 +22,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-# Env vars stripped by :func:`env_without_api_key`. Both are
-# documented Anthropic SDK env-auth paths (DEC-007 of
-# ``plans/super/64-runner-auth-timeout.md``). Non-auth Anthropic env
-# vars such as ``ANTHROPIC_BASE_URL`` are intentionally preserved
-# (DEC-016).
-_API_KEY_ENV_VARS = frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"})
-
 # Documented Anthropic env var that forces ``Task(run_in_background=true)``
 # spawns to run synchronously (see
 # https://docs.claude.com/en/docs/claude-code/sub-agents — "Run
@@ -37,22 +30,6 @@ _API_KEY_ENV_VARS = frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"})
 # before emitting its ``result`` message. Tier 1.5 workaround for
 # GitHub #103 (see ``docs/adr/transport-research-103.md``).
 _SYNC_TASKS_ENV_VAR = "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
-
-
-def env_without_api_key(
-    base_env: dict[str, str] | None = None,
-) -> dict[str, str]:
-    """Return a new env dict with both auth env vars removed.
-
-    Pure, non-mutating helper per
-    ``.claude/rules/non-mutating-scrub.md``. When ``base_env`` is
-    ``None``, reads from ``os.environ``. Always returns a new dict
-    (never mutates the input). Strips ``ANTHROPIC_API_KEY`` and
-    ``ANTHROPIC_AUTH_TOKEN``; preserves every other key (including
-    ``ANTHROPIC_BASE_URL``).
-    """
-    source = base_env if base_env is not None else os.environ
-    return {k: v for k, v in source.items() if k not in _API_KEY_ENV_VARS}
 
 
 def env_with_sync_tasks(

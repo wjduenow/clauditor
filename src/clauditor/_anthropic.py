@@ -864,7 +864,8 @@ async def _call_via_claude_cli(
     # users only ever hit the SDK branch does not pay the
     # ``clauditor.runner`` import cost up-front. Mirrors the SDK
     # branch's deferred ``anthropic`` import.
-    from clauditor.runner import _invoke_claude_cli, env_without_api_key
+    from clauditor._harnesses._claude_code import env_without_api_key
+    from clauditor.runner import _invoke_claude_cli
 
     retry_counts: dict[str, int] = {
         "rate_limit": 0,

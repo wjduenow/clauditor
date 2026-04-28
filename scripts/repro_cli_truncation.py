@@ -69,7 +69,8 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    from clauditor.runner import _invoke_claude_cli, env_without_api_key
+    from clauditor._harnesses._claude_code import env_without_api_key
+    from clauditor.runner import _invoke_claude_cli
     import os
 
     args.log_dir.mkdir(parents=True, exist_ok=True)
