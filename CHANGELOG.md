@@ -15,6 +15,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`EvalSpec.system_prompt: str | None = None` field (#150).** Mirrors
+  `user_prompt`'s shape and validation: optional at load time, when set
+  must be a non-empty, non-whitespace string (`EvalSpec.from_file`
+  rejects empty strings, whitespace-only strings, and non-string
+  values). When unset, clauditor auto-derives the system prompt from
+  the `SKILL.md` body (post-frontmatter, via `parse_frontmatter`) at
+  `SkillSpec.run` time. Explicit `EvalSpec.system_prompt` wins over
+  the auto-derived `SKILL.md` body. Auto-derive failures (missing
+  file, malformed frontmatter) raise a `RuntimeError` naming the
+  skill and path. Frontmatter `system_prompt:` keys inside `SKILL.md`
+  are NOT supported (DEC-003) — the body is the auto-derive source.
+  See [`docs/eval-spec-reference.md#system-prompt`](docs/eval-spec-reference.md#system-prompt).
+- **`Harness.build_prompt(skill_name, args, *, system_prompt) -> str`
+  protocol method (#150).** Third member of the cross-harness
+  `Harness` protocol (alongside `invoke` and `strip_auth_keys`). Each
+  harness owns its identity-to-prompt strategy: `ClaudeCodeHarness`
+  keeps the slash-command synthesis (`f"/{skill_name} {args}"`, or
+  `f"/{skill_name}"` when args is empty) and ignores `system_prompt`
+  because the `claude -p` CLI has no separate system-prompt channel;
+  `MockHarness` records `(skill_name, args, system_prompt)` on
+  `build_prompt_calls` for test assertions and returns a deterministic
+  stub that surfaces all three inputs. The forthcoming `CodexHarness`
+  (#149) will consume `system_prompt` as the system message. See
+  [`docs/architecture.md#3-harness-protocol`](docs/architecture.md#3-harness-protocol).
+- **`SkillRunner.run(..., system_prompt=...)` keyword-only kwarg
+  (#150).** Threads the resolved `system_prompt` from `SkillSpec.run`
+  to the harness's `build_prompt`. Keyword-only and placed last so it
+  cannot collide positionally with the existing `cwd` / `env` /
+  `timeout` kwargs. `SkillSpec.run` resolves the effective value once
+  (explicit `EvalSpec.system_prompt` > auto-derived `SKILL.md` body)
+  and threads the resolved string through this kwarg.
+
 ## [0.1.1] - 2026-04-26
 
 ### Added
