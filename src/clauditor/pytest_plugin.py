@@ -221,7 +221,7 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
     """Fixture factory for quality grading. Returns a callable that grades a skill."""
     import asyncio
 
-    from clauditor._anthropic import (
+    from clauditor._providers import (
         check_any_auth_available,
         check_api_key_only,
     )
@@ -309,7 +309,7 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
     """
     import asyncio
 
-    from clauditor._anthropic import (
+    from clauditor._providers import (
         check_any_auth_available,
         check_api_key_only,
     )
@@ -346,7 +346,7 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
     """Fixture factory for trigger precision testing."""
     import asyncio
 
-    from clauditor._anthropic import (
+    from clauditor._providers import (
         check_any_auth_available,
         check_api_key_only,
     )

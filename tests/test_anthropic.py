@@ -2068,3 +2068,52 @@ class TestGraderImportsTargetProviders:
             "(US-005 acceptance criterion). Offenders:\n"
             + "\n".join(offenders)
         )
+
+
+class TestNoProductionImportsFromAnthropicShim:
+    """#144 US-006 grep-regression: zero production-code files under
+    ``src/clauditor/`` import from ``clauditor._anthropic``, except
+    the shim itself (``src/clauditor/_anthropic.py``).
+
+    Strengthens the US-005 grader-only invariant
+    (:class:`TestGraderImportsTargetProviders`) to cover the entire
+    production tree: the six LLM-mediated CLI commands, the pytest
+    plugin's three fixture sites, and any other `clauditor._anthropic`
+    consumer must now route through ``clauditor._providers``. The only
+    exempt file is the shim itself, which exists to re-export for
+    one-release back-compat.
+    """
+
+    def test_no_production_imports_from_anthropic_shim(self) -> None:
+        import re
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parent.parent
+        src_root = repo_root / "src" / "clauditor"
+        # Exempt: the shim itself (re-exports for back-compat), and
+        # the canonical ``_providers/`` package (defines the symbols
+        # the shim re-exports; may reference the shim path in
+        # docstrings / comments per DEC-005).
+        shim_path = (src_root / "_anthropic.py").resolve()
+        providers_root = (src_root / "_providers").resolve()
+        pattern = re.compile(r"from\s+clauditor\._anthropic\b")
+
+        offenders: list[str] = []
+        for py_path in src_root.rglob("*.py"):
+            resolved = py_path.resolve()
+            if resolved == shim_path:
+                continue
+            if providers_root in resolved.parents:
+                continue
+            text = py_path.read_text(encoding="utf-8")
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                if pattern.search(line):
+                    rel = py_path.relative_to(repo_root)
+                    offenders.append(f"{rel}:{lineno}: {line.strip()}")
+
+        assert not offenders, (
+            "Production code under src/clauditor/ must import from "
+            "clauditor._providers (US-006 acceptance criterion); the "
+            "back-compat shim ``clauditor._anthropic`` is the only "
+            "exempt file. Offenders:\n" + "\n".join(offenders)
+        )
