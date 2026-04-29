@@ -1507,6 +1507,70 @@ class TestEvalSpecUserPrompt:
         assert loaded.user_prompt == "Is ramen good?"
 
 
+class TestEvalSpecSystemPrompt:
+    """Tests for the optional ``system_prompt`` field (#150)."""
+
+    def test_from_file_loads_system_prompt(self, tmp_path):
+        """A spec with system_prompt set parses into the dataclass."""
+        data = {
+            "skill_name": "s",
+            "system_prompt": "you are helpful",
+        }
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+        assert spec.system_prompt == "you are helpful"
+
+    def test_from_file_system_prompt_absent_defaults_to_none(self, tmp_path):
+        """Omitting system_prompt leaves the attribute None."""
+        data = {"skill_name": "s"}
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+        assert spec.system_prompt is None
+
+    def test_from_file_system_prompt_empty_string_rejected(self, tmp_path):
+        """An empty-string system_prompt must be rejected — callers should
+        not have to disambiguate ``None`` vs ``""``."""
+        data = {"skill_name": "s", "system_prompt": ""}
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError, match="system_prompt must be a non-empty"
+        ) as excinfo:
+            EvalSpec.from_file(path)
+        assert "'s'" in str(excinfo.value)
+
+    def test_from_file_system_prompt_whitespace_only_rejected(self, tmp_path):
+        """Whitespace-only system_prompt must be rejected at load time."""
+        data = {"skill_name": "s", "system_prompt": "   "}
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError,
+            match="system_prompt must be a non-empty, non-whitespace",
+        ) as excinfo:
+            EvalSpec.from_file(path)
+        assert "'s'" in str(excinfo.value)
+
+    def test_from_file_system_prompt_non_string_rejected(self, tmp_path):
+        """A non-string system_prompt (e.g. a number) is rejected."""
+        data = {"skill_name": "s", "system_prompt": 42}
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError, match="system_prompt must be a non-empty"
+        ) as excinfo:
+            EvalSpec.from_file(path)
+        assert "'s'" in str(excinfo.value)
+
+    def test_to_dict_omits_system_prompt_when_unset(self):
+        """Round-tripping a spec without system_prompt does not inject the key."""
+        spec = EvalSpec(skill_name="s")
+        d = spec.to_dict()
+        assert "system_prompt" not in d
+
+    def test_to_dict_emits_system_prompt_when_set(self):
+        spec = EvalSpec(skill_name="s", system_prompt="hi")
+        d = spec.to_dict()
+        assert d["system_prompt"] == "hi"
+
+
 class TestEvalSpecFromDict:
     """Direct tests for :meth:`EvalSpec.from_dict` (DEC-007 of #52).
 

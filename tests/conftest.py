@@ -402,7 +402,7 @@ def make_eval_spec():
             spec = make_eval_spec(skill_name="my-skill")
     """
 
-    def _factory(**overrides) -> EvalSpec:
+    def _factory(system_prompt: str | None = None, **overrides) -> EvalSpec:
         defaults = {
             "skill_name": "test-skill",
             "description": "A test eval spec",
@@ -422,6 +422,7 @@ def make_eval_spec():
             "grading_model": "claude-sonnet-4-6",
             "trigger_tests": None,
             "variance": None,
+            "system_prompt": system_prompt,
         }
         defaults.update(overrides)
         return EvalSpec(**defaults)
@@ -560,7 +561,9 @@ def make_skill_result(
     )
 
 
-def build_eval_spec(**overrides) -> EvalSpec:
+def build_eval_spec(
+    system_prompt: str | None = None, **overrides
+) -> EvalSpec:
     """Minimal EvalSpec with sensible defaults for CLI tests.
 
     Accepts any EvalSpec field as keyword overrides.
@@ -575,6 +578,7 @@ def build_eval_spec(**overrides) -> EvalSpec:
         grading_model="claude-sonnet-4-6",
         trigger_tests=None,
         variance=None,
+        system_prompt=system_prompt,
     )
     defaults.update(overrides)
     return EvalSpec(**defaults)

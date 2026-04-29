@@ -249,6 +249,7 @@ class EvalSpec:
     # the skill-runner CLI arg string. Optional at load time, but required
     # by the blind-compare helper when that code path is used.
     user_prompt: str | None = None
+    system_prompt: str | None = None
     input_files: list[str] = field(default_factory=list)  # Resolved absolute paths
     assertions: list[dict] = field(default_factory=list)  # Layer 1 checks
     sections: list[SectionRequirement] = field(default_factory=list)  # Layer 2 schema
@@ -642,6 +643,15 @@ class EvalSpec:
                     f"got {user_prompt!r}"
                 )
 
+        system_prompt = data.get("system_prompt")
+        if system_prompt is not None:
+            if not isinstance(system_prompt, str) or not system_prompt.strip():
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): system_prompt "
+                    f"must be a non-empty, non-whitespace string, "
+                    f"got {system_prompt!r}"
+                )
+
         # DEC-005: optional per-eval escape hatch for the
         # interactive-hang heuristic. Absent → default True (back-compat).
         # Present → must be a real bool (reject "false", 0, None, etc.)
@@ -758,6 +768,7 @@ class EvalSpec:
             description=data.get("description", ""),
             test_args=data.get("test_args", ""),
             user_prompt=user_prompt,
+            system_prompt=system_prompt,
             input_files=resolved_input_files,
             assertions=data.get("assertions", []),
             sections=sections,
@@ -783,6 +794,11 @@ class EvalSpec:
             **(
                 {"user_prompt": self.user_prompt}
                 if self.user_prompt is not None
+                else {}
+            ),
+            **(
+                {"system_prompt": self.system_prompt}
+                if self.system_prompt is not None
                 else {}
             ),
             "input_files": self.input_files,
