@@ -773,3 +773,129 @@ class TestNewlineSanitization:
         assert issue["code"] == "PATH_UNREADABLE"
         assert "\n" not in issue["message"]
         assert "\\n" in issue["message"]
+
+
+# ---------------------------------------------------------------------------
+# clauditor-7w1 (#71 follow-up) — regression coverage for CodeRabbit findings.
+#
+# Finding 1 (MAJOR): the human path used to re-derive the exit code via
+# inline ``_INVALID_YAML_CODE`` / ``_has_error`` / ``args.strict`` checks,
+# duplicating the precomputed ``_compute_exit_code`` logic. The dispatch
+# now branches on ``exit_code`` directly; verify each of the three branches
+# (0, 1, 2) routes to the right human-path message.
+#
+# Finding 2 (MINOR): ``Path.resolve()`` raises ``ValueError`` on null-byte
+# paths. The path-validation block now wraps both ``resolve()`` and
+# ``is_file()`` in ``try/except (ValueError, TypeError)`` so malformed
+# paths fall through to the not-a-file branch instead of escaping as an
+# uncaught traceback.
+# ---------------------------------------------------------------------------
+
+
+class TestHumanPathExitCodeDispatch:
+    """Each branch of the new ``exit_code``-keyed dispatch produces the
+    matching human-path message (clauditor-7w1 finding 1)."""
+
+    def test_exit_code_0_branch_warning_only_success_line(
+        self, tmp_path, capsys
+    ):
+        """``exit_code == 0`` (warning-only, no strict) → success line + count."""
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        _write_warning_only(skill_path)
+
+        rc = main(["lint", str(skill_path)])
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        # Soft-pass success line with the warning-count suffix.
+        assert "Conformance check passed" in captured.out
+        assert "1 warning" in captured.out
+        # Hard-failure summary line MUST NOT appear on the success branch.
+        assert "Conformance check failed" not in captured.out
+        # Parse-failure line MUST NOT appear on the success branch.
+        assert "Cannot lint:" not in captured.out
+
+    def test_exit_code_1_branch_invalid_yaml_message(self, tmp_path, capsys):
+        """``exit_code == 1`` (INVALID_YAML) → ``Cannot lint:`` line."""
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        skill_path.parent.mkdir()
+        skill_path.write_text(
+            "---\nname: my-skill\ndescription: Missing closing fence.\n"
+            "# Body without closing ---\n",
+            encoding="utf-8",
+        )
+
+        rc = main(["lint", str(skill_path)])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "Cannot lint: SKILL.md frontmatter is not valid YAML" in captured.out
+        # The other two branches' messages must NOT appear.
+        assert "Conformance check failed" not in captured.out
+        assert "Conformance check passed" not in captured.out
+
+    def test_exit_code_2_branch_failure_summary(self, tmp_path, capsys):
+        """``exit_code == 2`` (error severity) → ``Conformance check failed`` line."""
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        _write_error_only(skill_path)
+
+        rc = main(["lint", str(skill_path)])
+
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert "Conformance check failed:" in captured.out
+        assert "1 issue(s)" in captured.out
+        # The other two branches' messages must NOT appear.
+        assert "Cannot lint:" not in captured.out
+        assert "Conformance check passed" not in captured.out
+
+    def test_exit_code_2_branch_strict_warning_failure_summary(
+        self, tmp_path, capsys
+    ):
+        """``--strict`` warning-only → ``exit_code == 2`` failure-summary line.
+
+        Verifies the ``args.strict`` branch of ``_compute_exit_code`` is
+        reachable from the human dispatch via the precomputed exit code,
+        not via a duplicate inline ``args.strict`` check on the human
+        side.
+        """
+        skill_path = tmp_path / "my-skill" / "SKILL.md"
+        _write_warning_only(skill_path)
+
+        rc = main(["lint", "--strict", str(skill_path)])
+
+        assert rc == 2
+        captured = capsys.readouterr()
+        assert "Conformance check failed:" in captured.out
+        assert "1 issue(s)" in captured.out
+
+
+class TestPathResolveNullByte:
+    """Null-byte paths must not crash the lint CLI (clauditor-7w1
+    finding 2). ``Path.resolve()`` raises ``ValueError`` on embedded
+    null bytes; the wrapped try/except routes the failure through the
+    existing not-a-file flow."""
+
+    def test_text_path_with_null_byte_does_not_crash(self, capsys):
+        """Null-byte path (human mode) → exit 1, stderr error, no traceback."""
+        rc = main(["lint", "bogus\x00with-null.md"])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        # Falls through to the standard not-a-file error line.
+        assert "ERROR: " in captured.err
+        assert "is not a regular file" in captured.err
+
+    def test_json_path_with_null_byte_does_not_crash(self, capsys):
+        """Null-byte path (``--json`` mode) → exit 1, PATH_NOT_A_FILE issue."""
+        rc = main(["lint", "--json", "bogus\x00with-null.md"])
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        payload = json.loads(captured.out)
+        assert payload["passed"] is False
+        assert len(payload["issues"]) == 1
+        issue = payload["issues"][0]
+        assert issue["code"] == "PATH_NOT_A_FILE"
+        assert issue["severity"] == "error"
