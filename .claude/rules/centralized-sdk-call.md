@@ -134,8 +134,9 @@ seam owns transport selection; every future caller inherits both the
 SDK and CLI backends for free.
 
 - **`"api"`** — HTTP SDK path via `AsyncAnthropic()`. Default before #86.
-- **`"cli"`** — subprocess path via `_invoke_claude_cli` (reuses the same
-  `InvokeResult` projection that `SkillRunner` uses).
+- **`"cli"`** — subprocess path via `harness.invoke()` (default harness is
+  `ClaudeCodeHarness` in `src/clauditor/_harnesses/_claude_code.py`; reuses the
+  same `InvokeResult` projection that `SkillRunner` uses).
 - **`"auto"`** — prefers CLI when `shutil.which("claude")` is non-None;
   falls back to SDK otherwise. Emits a one-time stderr announcement on
   first auto→CLI resolution per process so operators are not surprised.

@@ -6504,7 +6504,7 @@ class TestCmdValidateErrorSurfacingRegression:
         After, the first warning line is rendered as the base text and
         the interactive hint is appended.
         """
-        from clauditor.runner import _INTERACTIVE_HANG_WARNING
+        from clauditor._harnesses._claude_code import _INTERACTIVE_HANG_WARNING
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".git").mkdir()
@@ -6571,7 +6571,7 @@ class TestCmdRunErrorSurfacingRegression:
         ``if result.error:`` guard silently suppressed it since
         ``result.error`` is ``None`` for the heuristic).
         """
-        from clauditor.runner import _INTERACTIVE_HANG_WARNING
+        from clauditor._harnesses._claude_code import _INTERACTIVE_HANG_WARNING
 
         mock_runner = MagicMock()
         result = make_skill_result(

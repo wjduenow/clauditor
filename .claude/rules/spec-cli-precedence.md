@@ -279,7 +279,7 @@ the CLI layer is an extend, not a redesign.
 
 - **CLI**: `--no-api-key` flag on `validate`, `grade`, `capture`,
   `run`. When set, constructs the env dict via
-  `env_without_api_key()` in `runner.py`; passes as
+  `env_without_api_key()` in `_harnesses/_claude_code.py`; passes as
   `spec.run(env_override=env)`.
 - **Spec field**: NONE. Auth source is environmental, not
   skill-intrinsic (DEC-004 of

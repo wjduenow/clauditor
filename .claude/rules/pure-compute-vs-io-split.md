@@ -264,13 +264,13 @@ The #63 runner-error-surfacing work introduced three new pure
 helpers that each sit at a natural "plain types at the boundary"
 seam, testable in isolation without subprocess or SDK mocks:
 
-- `src/clauditor/runner.py::_classify_result_message(msg: dict)
+- `src/clauditor/_harnesses/_claude_code.py::_classify_result_message(msg: dict)
   -> tuple[str | None, str | None]` — consumes a stream-json
   `result` message dict, returns `(error_text, error_category)`.
   Strict `is True` check on `is_error`; 4 KB soft cap on the
   `result` string; keyword-priority classification (`rate_limit`
-  before `auth` before `api`). `_invoke` calls it once per run.
-- `src/clauditor/runner.py::_detect_interactive_hang(stream_events:
+  before `auth` before `api`). `ClaudeCodeHarness.invoke` calls it once per run.
+- `src/clauditor/_harnesses/_claude_code.py::_detect_interactive_hang(stream_events:
   list[dict], final_text: str) -> bool` — gated on
   `num_turns==1 + stop_reason=="end_turn"` AND either a trailing
   `?` in the final text OR an `AskUserQuestion` `tool_use` block
@@ -298,10 +298,10 @@ Why the split mattered specifically here:
 - **Two parsers + one renderer, one seam each**: the parser-side
   pure helpers (`_classify_result_message`,
   `_detect_interactive_hang`) are called from deep inside
-  `_invoke`'s streaming loop; embedding their logic inline would
+  `ClaudeCodeHarness.invoke`'s streaming loop; embedding their logic inline would
   have required subprocess-level mocking to reach the error
   branches. With the extraction, the branches are reachable
-  from in-memory tests and the `_invoke` wiring is narrow
+  from in-memory tests and the `ClaudeCodeHarness.invoke` wiring is narrow
   enough to review at a glance.
 - **Render-precedence has exactly one audit site**: the
   stream-json-wins-over-stderr ordering from DEC-001, the
