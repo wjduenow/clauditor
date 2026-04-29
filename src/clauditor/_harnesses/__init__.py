@@ -77,3 +77,28 @@ class Harness(Protocol):
         Claude Code) and scrubs them; non-auth env vars are preserved.
         """
         ...
+
+    def build_prompt(
+        self,
+        skill_name: str,
+        args: str,
+        *,
+        system_prompt: str | None,
+    ) -> str:
+        """Compose the prompt string this harness's ``invoke`` expects.
+
+        Pure compute (no I/O, no global state) per
+        ``.claude/rules/pure-compute-vs-io-split.md``. Each harness owns
+        the wire-shape for how a skill invocation is rendered into a
+        single prompt string: Claude Code uses slash-style commands
+        (``"/foo bar"``) understood by the ``claude -p`` CLI; future
+        raw-API harnesses may instead embed ``args`` plus an explicit
+        ``system_prompt`` in a structured message body.
+
+        ``system_prompt`` is keyword-only (per US-001 of issue #150) so
+        callers cannot accidentally swap it positionally with ``args``.
+        Harnesses that have no notion of a separate system prompt (e.g.
+        ``ClaudeCodeHarness``) MUST still accept and ignore the kwarg —
+        analogous to how all harnesses accept ``model`` on ``invoke``.
+        """
+        ...

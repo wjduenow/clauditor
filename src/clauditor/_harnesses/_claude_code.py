@@ -391,6 +391,29 @@ class ClaudeCodeHarness:
         """
         return env_without_api_key(env)
 
+    def build_prompt(
+        self,
+        skill_name: str,
+        args: str,
+        *,
+        system_prompt: str | None,
+    ) -> str:
+        """Render a Claude-Code slash-style invocation.
+
+        Returns ``"/{skill_name}"`` when ``args`` is empty, otherwise
+        ``"/{skill_name} {args}"``. ``system_prompt`` is part of the
+        cross-harness :class:`Harness.build_prompt` contract but has no
+        analogue on the ``claude -p`` CLI surface, so it is intentionally
+        ignored here (US-001 of issue #150). Future raw-API harnesses
+        will consume it.
+
+        Pure compute (no I/O) per
+        ``.claude/rules/pure-compute-vs-io-split.md``.
+        """
+        if args == "":
+            return f"/{skill_name}"
+        return f"/{skill_name} {args}"
+
     def invoke(
         self,
         prompt: str,
