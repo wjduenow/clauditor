@@ -71,7 +71,7 @@ def _mock_anthropic_result(
     """Return an :class:`AnthropicResult` shaped like a successful helper call.
 
     After bead ``clauditor-24h.3`` triggers.py routes through
-    ``clauditor._anthropic.call_anthropic`` instead of instantiating its
+    ``clauditor._providers.call_model`` instead of instantiating its
     own ``AsyncAnthropic`` client, so tests stub the helper and hand
     back an ``AnthropicResult`` directly.
     """
@@ -259,7 +259,7 @@ class TestClassifyQuery:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "match"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "do it", True, "test-model"
             )
@@ -272,7 +272,7 @@ class TestClassifyQuery:
         call = _mock_call_anthropic(
             '{"triggered": false, "confidence": 0.8, "reasoning": "nope"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "unrelated", False, "test-model"
             )
@@ -284,7 +284,7 @@ class TestClassifyQuery:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.6, "reasoning": "maybe"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "unrelated", False, "test-model"
             )
@@ -294,7 +294,7 @@ class TestClassifyQuery:
     @pytest.mark.asyncio
     async def test_parse_failure_defaults(self):
         call = _mock_call_anthropic("garbage response")
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "query", True, "test-model"
             )
@@ -307,7 +307,7 @@ class TestClassifyQuery:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "ok"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "query", True, "test-model"
             )
@@ -319,7 +319,7 @@ class TestClassifyQuery:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "ok"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             await classify_query(
                 "skill", "desc", "query", True, "my-model"
             )
@@ -331,7 +331,7 @@ class TestClassifyQuery:
     async def test_empty_text_blocks_falls_back_to_no_text(self):
         """A helper response with zero text blocks yields the 'no text' branch."""
         call = AsyncMock(return_value=_mock_anthropic_result(""))
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "query", True, "test-model"
             )
@@ -352,7 +352,7 @@ class TestClassifyQuery:
         from clauditor._anthropic import AnthropicHelperError
 
         call = AsyncMock(side_effect=AnthropicHelperError("rate limited"))
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "query", True, "test-model"
             )
@@ -373,7 +373,7 @@ class TestClassifyQuery:
         from clauditor._anthropic import AnthropicHelperError
 
         call = AsyncMock(side_effect=AnthropicHelperError("auth failure"))
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "unrelated query", False, "test-model"
             )
@@ -404,7 +404,7 @@ class TestTestTriggers:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             report = await run_test_triggers(spec, model="test-model")
         assert len(report.results) == 3
         assert report.model == "test-model"
@@ -419,7 +419,7 @@ class TestTestTriggers:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             report = await run_test_triggers(spec)
         # 3 queries × 500/200 per mock
         assert report.input_tokens == 1500
@@ -436,7 +436,7 @@ class TestTestTriggers:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             report = await run_test_triggers(spec)
 
         # All 3 queries should have been sent through the helper

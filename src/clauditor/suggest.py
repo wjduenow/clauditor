@@ -986,21 +986,22 @@ async def propose_edits(
     except Exception as exc:  # noqa: BLE001 — never raise out of propose_edits
         return _empty_report(api_error=f"prompt build error: {exc!r}")
 
-    # Route through the centralized helper so retry + error
-    # categorization live in one place (bead clauditor-24h.3). The
-    # helper raises AnthropicHelperError (a RuntimeError subclass) on
-    # non-retriable / exhausted failures; propose_edits promises to
-    # never raise, so we catch the broad Exception umbrella here and
-    # funnel the helper's user-facing message into ``api_error``.
-    from clauditor._anthropic import call_anthropic
+    # Route through the centralized dispatcher so retry + error
+    # categorization live in one place (bead clauditor-24h.3, refreshed
+    # in #144 US-005 to call_model). The anthropic backend raises
+    # AnthropicHelperError (a RuntimeError subclass) on non-retriable /
+    # exhausted failures; propose_edits promises to never raise, so we
+    # catch the broad Exception umbrella here and funnel the helper's
+    # user-facing message into ``api_error``.
+    from clauditor._providers import call_model
 
     try:
-        result = await call_anthropic(
+        result = await call_model(
             prompt,
+            provider="anthropic",
             model=model,
-            max_tokens=max_tokens,
             transport=transport,
-            subject="suggest proposer",
+            max_tokens=max_tokens,
         )
     except Exception as exc:  # noqa: BLE001 — never raise out of propose_edits
         return _empty_report(api_error=f"anthropic API error: {exc!r}")

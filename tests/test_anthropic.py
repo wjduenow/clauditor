@@ -2024,3 +2024,47 @@ class TestCallModel:
         from clauditor._providers import call_model as canonical_call_model
 
         assert shim_call_model is canonical_call_model
+
+
+class TestGraderImportsTargetProviders:
+    """#144 US-005: the six grader call sites import ``call_model``
+    from :mod:`clauditor._providers` (not ``clauditor._anthropic``).
+
+    Production grep-regression: after US-005 no production module
+    under ``src/clauditor/`` (excluding ``_providers/`` and the
+    deprecated shim ``_anthropic.py`` itself) imports from
+    ``clauditor._anthropic``. US-006 will further tighten this to
+    the CLI / pytest_plugin import sites; this test pins the US-005
+    grader invariant.
+    """
+
+    def test_grader_modules_do_not_import_from_anthropic_shim(self) -> None:
+        import re
+        from pathlib import Path
+
+        # The five grader modules touched in US-005.
+        targets = [
+            Path("src/clauditor/grader.py"),
+            Path("src/clauditor/quality_grader.py"),
+            Path("src/clauditor/triggers.py"),
+            Path("src/clauditor/propose_eval.py"),
+            Path("src/clauditor/suggest.py"),
+        ]
+        # Resolve relative to the repo root (tests run from repo root
+        # via ``pytest``).
+        repo_root = Path(__file__).resolve().parent.parent
+        pattern = re.compile(r"from\s+clauditor\._anthropic\b")
+
+        offenders: list[str] = []
+        for rel in targets:
+            full = repo_root / rel
+            text = full.read_text(encoding="utf-8")
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                if pattern.search(line):
+                    offenders.append(f"{rel}:{lineno}: {line.strip()}")
+
+        assert not offenders, (
+            "Grader call sites must import from clauditor._providers "
+            "(US-005 acceptance criterion). Offenders:\n"
+            + "\n".join(offenders)
+        )

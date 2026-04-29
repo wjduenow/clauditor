@@ -839,7 +839,7 @@ async def _single_propose_attempt(
     attempt_start = _monotonic()
 
     try:
-        from clauditor._anthropic import call_anthropic
+        from clauditor._providers import call_model
     except ImportError as exc:
         return _AttemptResult(
             metrics=AttemptMetrics(
@@ -854,12 +854,12 @@ async def _single_propose_attempt(
         )
 
     try:
-        result = await call_anthropic(
+        result = await call_model(
             prompt,
+            provider="anthropic",
             model=model,
-            max_tokens=max_tokens,
             transport=transport,
-            subject="propose-eval",
+            max_tokens=max_tokens,
         )
     except Exception as exc:  # noqa: BLE001 — never raise out of propose_eval
         return _AttemptResult(

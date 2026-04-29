@@ -1770,6 +1770,150 @@ class TestExtractionReportTransport:
         assert good_report.transport_source == "cli"
 
 
+class TestExtractionReportProviderSource:
+    """#144 US-005: ExtractionReport carries a ``provider_source``
+    field that defaults to ``"anthropic"`` and reads through from
+    :class:`ModelResult.provider`. Per DEC-006 the field is in-memory
+    only this ticket — :meth:`to_json` does NOT include it; #147 owns
+    the on-disk schema bump."""
+
+    def _spec(self) -> EvalSpec:
+        return EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[FieldRequirement(name="a", id="v1")],
+                        )
+                    ],
+                )
+            ],
+        )
+
+    def test_provider_source_defaults_to_anthropic(self):
+        report = ExtractionReport(
+            skill_name="s",
+            model="m",
+            results=[],
+            declared_field_ids=["v1"],
+        )
+        assert report.provider_source == "anthropic"
+
+    def test_to_json_does_not_include_provider_source(self):
+        """DEC-006: sidecar JSON shape is unchanged this ticket."""
+        report = ExtractionReport(
+            skill_name="s",
+            model="m",
+            results=[],
+            declared_field_ids=["v1"],
+            provider_source="openai",
+        )
+        data = json.loads(report.to_json())
+        assert "provider_source" not in data
+
+    def test_build_extraction_report_forwards_provider_source(self):
+        report = build_extraction_report(
+            ExtractedOutput(raw_json={}, sections={}),
+            self._spec(),
+            provider_source="openai",
+        )
+        assert report.provider_source == "openai"
+
+    def test_build_extraction_report_from_text_forwards_provider_source(
+        self,
+    ):
+        """All three branches (empty text, JSON error, success)
+        propagate ``provider_source``."""
+        spec = self._spec()
+
+        empty_report = build_extraction_report_from_text(
+            "",
+            spec,
+            skill_name="s",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            provider_source="openai",
+        )
+        assert empty_report.provider_source == "openai"
+
+        bad_report = build_extraction_report_from_text(
+            "not json at all",
+            spec,
+            skill_name="s",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            provider_source="openai",
+        )
+        assert bad_report.provider_source == "openai"
+
+        good_text = json.dumps({"Venues": {"primary": [{"a": "v"}]}})
+        good_report = build_extraction_report_from_text(
+            good_text,
+            spec,
+            skill_name="s",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            provider_source="openai",
+        )
+        assert good_report.provider_source == "openai"
+
+
+class TestExtractAndReportProviderSource:
+    """#144 US-005: ``extract_and_report`` propagates
+    ``ModelResult.provider`` into the resulting
+    :class:`ExtractionReport`'s ``provider_source`` field."""
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_propagates_provider_source(self):
+        from clauditor._providers import ModelResult
+        from clauditor.grader import extract_and_report
+
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Items",
+                    tiers=[
+                        TierRequirement(
+                            label="default",
+                            min_entries=1,
+                            fields=[
+                                FieldRequirement(
+                                    name="name",
+                                    required=True,
+                                    id="items-name",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        extraction_text = json.dumps(
+            {"Items": {"default": [{"name": "foo"}]}}
+        )
+        fake = ModelResult(
+            response_text=extraction_text,
+            text_blocks=[extraction_text],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(return_value=fake),
+        ):
+            report = await extract_and_report("output", spec)
+        assert report.provider_source == "anthropic"
+
+
 class TestExtractionReportDeclaredFieldIds:
     """Copilot fix (PR #34): ``ExtractionReport.to_json`` pre-populates
     every declared field id with an empty list, so the on-disk contract

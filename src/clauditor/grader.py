@@ -114,7 +114,7 @@ class ExtractionReport:
     entries show up with an empty list — downstream auditors can still see
     that the field was *declared* in the spec.
 
-    ``transport_source`` records which :class:`AnthropicResult`
+    ``transport_source`` records which :class:`ModelResult`
     transport produced the Haiku response — ``"api"`` or ``"cli"``.
     Persisted at ``schema_version=2`` per DEC-007 of
     ``plans/super/86-claude-cli-transport.md``. The audit loader
@@ -130,6 +130,13 @@ class ExtractionReport:
     parse_errors: list[str] = field(default_factory=list)
     declared_field_ids: list[str] = field(default_factory=list)
     transport_source: str = "api"
+    # ``provider_source`` records which provider backend produced the
+    # response — ``"anthropic"`` (current) or ``"openai"`` (#145+). Per
+    # DEC-006 of ``plans/super/144-providers-call-model.md`` this field
+    # is in-memory only — :meth:`to_json` does NOT include it; the
+    # ``schema_version: 3`` bump that lights it up on disk is owned by
+    # #147.
+    provider_source: str = "anthropic"
 
     @property
     def passed(self) -> bool:
@@ -217,6 +224,7 @@ def build_extraction_report(
     output_tokens: int = 0,
     parse_errors: list[str] | None = None,
     transport_source: str = "api",
+    provider_source: str = "anthropic",
 ) -> ExtractionReport:
     """Build a field-id-keyed ``ExtractionReport`` from extracted output.
 
@@ -305,6 +313,7 @@ def build_extraction_report(
         parse_errors=list(parse_errors or []),
         declared_field_ids=declared_field_ids,
         transport_source=transport_source,
+        provider_source=provider_source,
     )
 
 
@@ -725,6 +734,7 @@ def build_extraction_report_from_text(
     input_tokens: int,
     output_tokens: int,
     transport_source: str = "api",
+    provider_source: str = "anthropic",
 ) -> ExtractionReport:
     """Parse ``response_text`` into an :class:`ExtractionReport`.
 
@@ -746,6 +756,7 @@ def build_extraction_report_from_text(
             output_tokens=output_tokens,
             parse_errors=["grader returned no text blocks"],
             transport_source=transport_source,
+            provider_source=provider_source,
         )
 
     parse = parse_extraction_response(response_text, eval_spec)
@@ -764,6 +775,7 @@ def build_extraction_report_from_text(
             output_tokens=output_tokens,
             parse_errors=[err.message for err in parse.parse_errors],
             transport_source=transport_source,
+            provider_source=provider_source,
         )
     return build_extraction_report(
         parse.extracted,
@@ -774,6 +786,7 @@ def build_extraction_report_from_text(
         output_tokens=output_tokens,
         parse_errors=[err.message for err in parse.parse_errors],
         transport_source=transport_source,
+        provider_source=provider_source,
     )
 
 
@@ -784,35 +797,38 @@ async def _extract_call_with_retry(
     model: str,
     transport: str,
     ctx: str,
-) -> tuple[str, str, int, int]:
+) -> tuple[str, str, str, int, int]:
     """Issue the extraction Anthropic call with parse retry.
 
-    Returns ``(response_text, source, input_tokens, output_tokens)`` — the
-    final attempt's response text, the transport source, and cumulative
-    token counts across attempts. One retry on ``kind == "json"`` (true
-    decode failures + empty-after-fence-strip) per clauditor-6cf / #94;
-    no retry on ``kind == "shape"`` (valid JSON, wrong top-level type)
-    or ``kind == "flat_list"`` (section tiering missing) — both
-    indicate a model-protocol bug rather than a transient hiccup.
+    Returns ``(response_text, source, provider, input_tokens, output_tokens)``
+    — the final attempt's response text, the transport source, the
+    provider that produced the response, and cumulative token counts
+    across attempts. One retry on ``kind == "json"`` (true decode
+    failures + empty-after-fence-strip) per clauditor-6cf / #94; no
+    retry on ``kind == "shape"`` (valid JSON, wrong top-level type) or
+    ``kind == "flat_list"`` (section tiering missing) — both indicate
+    a model-protocol bug rather than a transient hiccup.
     """
-    from clauditor._anthropic import call_anthropic
+    from clauditor._providers import call_model
     from clauditor.quality_grader import _emit_parse_retry_notice
 
     total_input = 0
     total_output = 0
     last_text = ""
     last_source = "api"
+    last_provider = "anthropic"
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
-        api_result = await call_anthropic(
+        api_result = await call_model(
             prompt,
+            provider="anthropic",
             model=model,
-            max_tokens=4096,
             transport=transport,
-            subject="L2 extraction",
+            max_tokens=4096,
         )
         total_input += api_result.input_tokens
         total_output += api_result.output_tokens
         last_source = api_result.source
+        last_provider = api_result.provider
         last_text = (
             api_result.text_blocks[0] if api_result.text_blocks else ""
         )
@@ -832,7 +848,7 @@ async def _extract_call_with_retry(
             _emit_parse_retry_notice(
                 ctx, attempt + 2, _GRADER_PARSE_RETRY_LIMIT
             )
-    return last_text, last_source, total_input, total_output
+    return last_text, last_source, last_provider, total_input, total_output
 
 
 async def extract_and_grade(
@@ -854,17 +870,18 @@ async def extract_and_grade(
     Requires the 'grader' extra: pip install clauditor[grader]
     """
     prompt = build_extraction_prompt(eval_spec, output)
-    response_text, _source, input_tokens, output_tokens = (
+    response_text, _source, _provider, input_tokens, output_tokens = (
         await _extract_call_with_retry(
             prompt, eval_spec,
             model=model, transport=transport,
             ctx="extract_and_grade",
         )
     )
-    # Note: AssertionSet does not carry transport_source — extract_and_grade's
-    # sidecar (``assertions.json``) is unaffected by US-006. The transport
-    # source for the Layer 2 Haiku call is only persisted through
-    # ``extract_and_report`` → ``ExtractionReport``.
+    # Note: AssertionSet does not carry transport_source / provider_source —
+    # extract_and_grade's sidecar (``assertions.json``) is unaffected by
+    # US-006 / #144. The transport / provider source for the Layer 2
+    # Haiku call is only persisted through ``extract_and_report`` →
+    # ``ExtractionReport``.
     return build_extraction_assertion_set(
         response_text,
         eval_spec,
@@ -895,7 +912,7 @@ async def extract_and_report(
     ``iteration-N/<skill>/extraction.json``.
     """
     prompt = build_extraction_prompt(eval_spec, output)
-    response_text, source, input_tokens, output_tokens = (
+    response_text, source, provider, input_tokens, output_tokens = (
         await _extract_call_with_retry(
             prompt, eval_spec,
             model=model, transport=transport,
@@ -910,4 +927,5 @@ async def extract_and_report(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         transport_source=source,
+        provider_source=provider,
     )
