@@ -63,6 +63,7 @@ from clauditor._providers import (
     _claude_cli_is_available,  # noqa: F401
     announce_implicit_no_api_key,  # noqa: F401
     call_anthropic,  # noqa: F401
+    call_model,  # noqa: F401
     check_any_auth_available,  # noqa: F401
     check_api_key_only,  # noqa: F401
     resolve_transport,  # noqa: F401
