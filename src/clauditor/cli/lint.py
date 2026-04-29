@@ -171,8 +171,19 @@ def cmd_lint(args: argparse.Namespace) -> int:
     # Path validation (DEC-010). Accept absolute paths; follow symlinks
     # to their real target; reject directories, sockets, FIFOs, and
     # missing paths.
-    skill_path = Path(args.skill_md).resolve()
-    if not skill_path.is_file():
+    #
+    # ``Path.resolve()`` raises ``ValueError`` on paths containing
+    # embedded null bytes (``'\x00'``) and may raise ``TypeError`` on
+    # other malformed inputs. Treat those as "not a regular file" and
+    # fall through to the existing not-a-file handling so malformed
+    # paths produce the same clean error flow.
+    try:
+        skill_path = Path(args.skill_md).resolve()
+        is_file = skill_path.is_file()
+    except (ValueError, TypeError):
+        skill_path = Path(args.skill_md)
+        is_file = False
+    if not is_file:
         if args.json:
             # Synthetic PATH_NOT_A_FILE entry in the issues list so JSON
             # consumers have one uniform surface to read path errors
@@ -254,24 +265,22 @@ def cmd_lint(args: argparse.Namespace) -> int:
     for issue in issues:
         print(format_issue_line(issue), file=sys.stderr)
 
-    # Exit-1 case: malformed frontmatter is present (may coexist with
-    # sibling pre-parse warnings like ``AGENTSKILLS_LAYOUT_LEGACY``).
-    # Parse failures dominate — the caller cannot act on sibling issues
-    # until the YAML parses. Preserved under ``--strict`` per DEC-004.
-    if any(issue.code == _INVALID_YAML_CODE for issue in issues):
+    # Branch on the precomputed exit code so the human path inherits
+    # the taxonomy from ``_compute_exit_code`` rather than re-deriving
+    # it via a parallel chain of ``_INVALID_YAML_CODE`` / ``_has_error``
+    # / ``args.strict`` checks (which would silently drift if the
+    # taxonomy ever changed). The three cases are exhaustive:
+    #   exit_code == 1 — INVALID_YAML parse failure (DEC-004 special).
+    #   exit_code == 2 — error severity OR ``--strict``-escalated warning.
+    #   exit_code == 0 — warning-only without ``--strict`` (soft-pass
+    #                    with a count suffix so the caller notices the
+    #                    stderr output).
+    if exit_code == 1:
         print("Cannot lint: SKILL.md frontmatter is not valid YAML")
         return 1
-
-    # Hard-fail when any error-severity issue is present, OR when
-    # ``--strict`` escalates warning-only results.
-    if _has_error(issues) or args.strict:
+    if exit_code == 2:
         print(f"Conformance check failed: {len(issues)} issue(s) — see above")
         return 2
-
-    # Warning-only result without ``--strict`` (DEC-004): render the
-    # stderr lines above, but return exit 0 with a success line that
-    # advertises the warning count so the caller is not misled into
-    # thinking stderr output was a hard failure.
     warning_count = len(issues)
     suffix = "" if warning_count == 1 else "s"
     print(
