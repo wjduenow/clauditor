@@ -6,11 +6,12 @@
 - **Branch:** `feature/150-prompt-resolver`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/150-prompt-resolver`
 - **Base branch:** `dev`
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **Sessions:** 1
 - **Last session:** 2026-04-29
 - **Total decisions:** 13
 - **PR URL:** https://github.com/wjduenow/clauditor/pull/158
+- **Beads epic:** `clauditor-dnr`
 
 ---
 
@@ -408,4 +409,25 @@ US-002 ─┴─> US-004 ──┴─> US-005 ──> US-006 ──> US-007
 
 ## Beads Manifest
 
-*(Phase 7)*
+- **Epic:** `clauditor-dnr` — #150: skill identity to prompt resolver (EvalSpec.system_prompt)
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/150-prompt-resolver`
+- **Branch:** `feature/150-prompt-resolver`
+- **PR:** https://github.com/wjduenow/clauditor/pull/158
+
+### Tasks
+
+| ID | Story | Priority | Blocked by |
+|---|---|---|---|
+| `clauditor-dnr.1` | US-001 — Add `build_prompt` to `Harness` protocol; implement on `ClaudeCodeHarness` and `MockHarness` | P1 | — |
+| `clauditor-dnr.2` | US-002 — Add `EvalSpec.system_prompt` field + validation | P1 | — |
+| `clauditor-dnr.3` | US-003 — Wire `system_prompt` through `SkillRunner.run` via `harness.build_prompt` | P1 | `.1` |
+| `clauditor-dnr.4` | US-004 — Resolve and thread `system_prompt` in `SkillSpec.run` (auto-derive + override + friendly errors) | P1 | `.2`, `.3` |
+| `clauditor-dnr.5` | US-005 — Documentation updates | P2 | `.1`, `.2`, `.3`, `.4` |
+| `clauditor-dnr.6` | US-006 — Quality Gate (code review × 4 + CodeRabbit) | P2 | `.1`, `.2`, `.3`, `.4`, `.5` |
+| `clauditor-dnr.7` | US-007 — Patterns & Memory | P3 | `.6` |
+
+### Next steps
+
+1. Run Ralph: `/ralph-run`
+2. Monitor: `bd list --status=in_progress` (or `bd ready` to see what's claimable)
+3. When done: `/closeout`
