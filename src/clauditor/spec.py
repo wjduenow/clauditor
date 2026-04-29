@@ -9,6 +9,7 @@ import glob
 import sys
 from pathlib import Path
 
+from clauditor._frontmatter import parse_frontmatter
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.conformance import check_conformance, format_issue_line
 from clauditor.paths import derive_project_dir, derive_skill_name
@@ -190,6 +191,33 @@ class SkillSpec:
         effective_env = env_override
         if effective_sync_tasks:
             effective_env = env_with_sync_tasks(effective_env)
+
+        # US-004 of issue #150: resolve the effective system_prompt.
+        # Explicit ``EvalSpec.system_prompt`` wins; otherwise auto-derive
+        # from the skill file body (post-frontmatter). Wrap I/O failures
+        # (missing file, malformed frontmatter, permission errors) as a
+        # friendly RuntimeError that names the skill and path; the
+        # original exception chains through ``__cause__`` for debug.
+        # The empty-string body case threads through verbatim — we do
+        # NOT fall back to None, so misconfigured skills surface clearly
+        # rather than silently masking the missing prompt.
+        effective_system_prompt = (
+            self.eval_spec.system_prompt
+            if (self.eval_spec is not None and self.eval_spec.system_prompt is not None)
+            else None
+        )
+        if effective_system_prompt is None:
+            try:
+                skill_text = self.skill_path.read_text(encoding="utf-8")
+                _meta, body = parse_frontmatter(skill_text)
+                effective_system_prompt = body
+            except (FileNotFoundError, OSError, ValueError) as exc:
+                raise RuntimeError(
+                    f"clauditor.spec: failed to auto-derive system_prompt "
+                    f"for skill {self.skill_name!r} from {self.skill_path}: "
+                    f"{exc}"
+                ) from exc
+
         result = self.runner.run(
             self.skill_name,
             run_args,
@@ -197,6 +225,7 @@ class SkillSpec:
             allow_hang_heuristic=allow_hang_heuristic,
             timeout=effective_timeout,
             env=effective_env,
+            system_prompt=effective_system_prompt,
         )
 
         # Read output from files if eval spec specifies file-based output

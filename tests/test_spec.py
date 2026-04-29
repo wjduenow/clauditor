@@ -306,6 +306,10 @@ class TestRun:
         runner = mock_runner(output="explicit output")
         spec = SkillSpec.from_file(skill_path, runner=runner)
         result = spec.run(args="--custom flag")
+        # US-004 of issue #150: ``system_prompt`` is auto-derived from
+        # the skill body when ``EvalSpec.system_prompt`` is unset; for
+        # ``tmp_skill_file``'s default content there is no frontmatter
+        # so the entire content is the body.
         runner.run.assert_called_once_with(
             "run-skill",
             "--custom flag",
@@ -313,6 +317,7 @@ class TestRun:
             allow_hang_heuristic=True,
             timeout=None,
             env=None,
+            system_prompt=skill_path.read_text(encoding="utf-8"),
         )
         assert result.output == "explicit output"
 
@@ -328,6 +333,7 @@ class TestRun:
             allow_hang_heuristic=True,
             timeout=None,
             env=None,
+            system_prompt=skill_path.read_text(encoding="utf-8"),
         )
 
     def test_run_uses_empty_string_when_no_eval_no_args(
@@ -344,6 +350,7 @@ class TestRun:
             allow_hang_heuristic=True,
             timeout=None,
             env=None,
+            system_prompt=skill_path.read_text(encoding="utf-8"),
         )
 
 
@@ -669,6 +676,7 @@ class TestOutputFilesResolutionWithStagedInputs:
             allow_hang_heuristic=True,
             timeout=None,
             env=None,
+            system_prompt=None,
         ):
             assert cwd == run_dir / "inputs"
             (cwd / "cleaned.csv").write_text(cleaned_text)
@@ -1081,3 +1089,129 @@ class TestExampleEvalSpec:
             "example eval spec must not contain legacy 'value' keys; "
             "use per-type semantic keys (needle/pattern/length/count)"
         )
+
+
+# ---------------------------------------------------------------------------
+# US-004 of issue #150: ``SkillSpec.run`` resolves ``system_prompt`` and
+# threads it to ``SkillRunner.run``. Explicit ``EvalSpec.system_prompt``
+# wins; otherwise the body of ``SKILL.md`` (post-frontmatter) is auto-
+# derived. I/O failures during auto-derivation are wrapped in a friendly
+# ``RuntimeError`` that names skill + path with the original exception
+# chained via ``__cause__``.
+# ---------------------------------------------------------------------------
+
+
+class TestSystemPromptResolution:
+    """``SkillSpec.run`` computes the effective ``system_prompt`` and
+    threads it through ``self.runner.run(...)``.
+
+    Uses :class:`MockHarness` (substituted via ``SkillRunner(harness=...)``)
+    so the assertion can read ``MockHarness.build_prompt_calls`` rather
+    than reaching into a ``MagicMock`` call_args.
+    """
+
+    @staticmethod
+    def _build_runner_with_mock_harness(project_dir):
+        from clauditor._harnesses._mock import MockHarness
+        from clauditor.runner import SkillRunner
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir=project_dir, harness=mock)
+        return runner, mock
+
+    def test_skill_spec_run_auto_derives_system_prompt_from_body(
+        self, tmp_skill_file
+    ):
+        """No explicit ``EvalSpec.system_prompt`` → auto-derive from
+        ``SKILL.md`` body (post-frontmatter)."""
+        body = "# Skill\n\nThis is the body content used as system prompt.\n"
+        content = "---\nname: prompt-skill\n---\n" + body
+        skill_path = tmp_skill_file("prompt-skill", content=content)
+        runner, mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        spec.run("args here")
+
+        assert len(mock.build_prompt_calls) == 1
+        assert mock.build_prompt_calls[-1]["system_prompt"] == body
+
+    def test_skill_spec_run_explicit_eval_spec_system_prompt_wins(
+        self, tmp_skill_file
+    ):
+        """When ``EvalSpec.system_prompt`` is set, it wins over the body."""
+        content = "---\nname: prompt-skill\n---\nBODY"
+        eval_data = {
+            "skill_name": "prompt-skill",
+            "test_args": "",
+            "assertions": [],
+            "system_prompt": "EXPLICIT",
+        }
+        skill_path, _ = tmp_skill_file(
+            "prompt-skill", content=content, eval_data=eval_data
+        )
+        runner, mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        spec.run()
+
+        assert mock.build_prompt_calls[-1]["system_prompt"] == "EXPLICIT"
+
+    def test_skill_spec_run_no_system_prompt_when_eval_spec_explicitly_empty_body(
+        self, tmp_skill_file
+    ):
+        """SKILL.md body is empty (frontmatter only) → auto-derive yields
+        ``""``; the empty value threads through verbatim. Documents the
+        edge case rather than masking it."""
+        # Frontmatter only, no body. ``parse_frontmatter`` returns
+        # ``""`` for the body.
+        content = "---\nname: prompt-skill\n---\n"
+        skill_path = tmp_skill_file("prompt-skill", content=content)
+        runner, mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        spec.run()
+
+        assert mock.build_prompt_calls[-1]["system_prompt"] == ""
+
+    def test_skill_spec_run_missing_skill_md_raises_friendly_error(
+        self, tmp_path
+    ):
+        """``skill_path`` points at a non-existent file → ``RuntimeError``
+        with skill_name + path; ``__cause__`` is ``FileNotFoundError``.
+
+        Uses the direct ``SkillSpec(...)`` constructor (not ``from_file``,
+        which itself raises on missing files) so the auto-derive branch
+        in ``run`` is the surface under test.
+        """
+        missing_path = tmp_path / "missing-skill.md"
+        runner, _mock = self._build_runner_with_mock_harness(tmp_path)
+        spec = SkillSpec(skill_path=missing_path, eval_spec=None, runner=runner)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            spec.run()
+
+        msg = str(exc_info.value)
+        assert spec.skill_name in msg
+        assert str(missing_path) in msg
+        assert isinstance(exc_info.value.__cause__, FileNotFoundError)
+
+    def test_skill_spec_run_malformed_frontmatter_raises_friendly_error(
+        self, tmp_skill_file
+    ):
+        """Malformed frontmatter (no closing ``---``) → ``parse_frontmatter``
+        raises ``ValueError``; ``RuntimeError`` wraps it with skill_name
+        + path; ``__cause__`` is the original ``ValueError``."""
+        # Opening ``---`` with no closing delimiter is the canonical
+        # ValueError case in ``parse_frontmatter``.
+        content = "---\nname: bad-skill\n# missing closing delimiter\n"
+        skill_path = tmp_skill_file("bad-skill", content=content)
+        runner, _mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            spec.run()
+
+        msg = str(exc_info.value)
+        assert spec.skill_name in msg
+        assert str(skill_path) in msg
+        assert isinstance(exc_info.value.__cause__, ValueError)
