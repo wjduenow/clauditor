@@ -43,7 +43,7 @@ class TestImplicitNoApiKeyCoupling:
     ) -> None:
         """Every test starts with the one-shot module flag False."""
         monkeypatch.setattr(
-            "clauditor._anthropic._announced_implicit_no_api_key", False
+            "clauditor._providers._auth._announced_implicit_no_api_key", False
         )
 
     def _run_grade(self, argv, *, eval_spec=None):

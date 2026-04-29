@@ -1611,7 +1611,7 @@ class TestAnnounceImplicitNoApiKey:
     ) -> None:
         """Every test starts with the one-shot flag set to False."""
         monkeypatch.setattr(
-            "clauditor._anthropic._announced_implicit_no_api_key", False
+            "clauditor._providers._auth._announced_implicit_no_api_key", False
         )
 
     def test_first_call_emits_announcement(
@@ -1813,3 +1813,25 @@ class TestResolveTransportInternal:
             ValueError, match=r"Unknown transport 'sdk'"
         ):
             _resolve_transport(cast("str", "sdk"))  # type: ignore[arg-type]
+
+
+class TestExceptionClassIdentity:
+    """Regression: ``AnthropicAuthMissingError`` is the same class object
+    when imported from either ``clauditor._anthropic`` (back-compat shim)
+    or ``clauditor._providers`` (canonical). Defining the class twice
+    would silently break ``except AnthropicAuthMissingError`` at any
+    call site that imported from the other module.
+
+    Traces to: DEC-005 + Architecture Review "Security — concern" #1
+    of plans/super/144-providers-call-model.md.
+    """
+
+    def test_auth_missing_error_class_identity(self) -> None:
+        from clauditor._anthropic import (
+            AnthropicAuthMissingError as ShimClass,
+        )
+        from clauditor._providers import (
+            AnthropicAuthMissingError as CanonicalClass,
+        )
+
+        assert ShimClass is CanonicalClass
