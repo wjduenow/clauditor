@@ -73,7 +73,7 @@ def _resolve_grader_transport(args: argparse.Namespace, eval_spec=None) -> str:
     """
     import os
 
-    from clauditor._anthropic import resolve_transport
+    from clauditor._providers import resolve_transport
 
     env_transport = os.environ.get("CLAUDITOR_TRANSPORT")
     if env_transport is not None and env_transport.strip() == "":

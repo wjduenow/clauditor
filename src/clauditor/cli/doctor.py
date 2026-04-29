@@ -222,7 +222,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # Reports ``"none"`` when the chosen transport's prerequisite is
     # missing (``"api"`` without a key, or ``"cli"`` without the
     # binary on PATH).
-    from clauditor._anthropic import resolve_transport
+    from clauditor._providers import resolve_transport
 
     env_transport = os.environ.get("CLAUDITOR_TRANSPORT")
     if env_transport is not None and env_transport.strip() == "":
