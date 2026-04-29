@@ -1,21 +1,37 @@
 # Rule: Route every Anthropic SDK call through the centralized helper
 
 When any clauditor module needs to call the Anthropic API, it must go
-through `clauditor._anthropic.call_anthropic` rather than constructing
-its own `AsyncAnthropic` client or `messages.create` call. The helper
-owns retry policy, error categorization, token accounting, and the
-`AnthropicHelperError` user-facing error envelope. Bypassing it means
-each new caller re-implements (and drifts on) the retry/back-off/auth-
-error-message logic the rest of clauditor depends on.
+through the centralized `clauditor._providers.call_model` dispatcher
+rather than constructing its own `AsyncAnthropic` client or
+`messages.create` call. The dispatcher routes to the backend selected
+by `provider=` (today only `"anthropic"`, which delegates to
+`clauditor._providers._anthropic.call_anthropic`); both layers
+together own retry policy, error categorization, token accounting,
+transport routing, and the `AnthropicHelperError` user-facing error
+envelope. Bypassing them means each new caller re-implements (and
+drifts on) the retry/back-off/auth-error-message logic the rest of
+clauditor depends on.
+
+For one-release back-compat, `clauditor._anthropic` re-exports the
+moved public surface (`call_anthropic`, `AnthropicHelperError`,
+`ClaudeCLIError`, `ModelResult`/`AnthropicResult`, the auth helpers,
+etc.) so existing call sites keep working unmodified — but new code
+should target `clauditor._providers` directly.
 
 ## The pattern
 
 ```python
 # At the call site:
-from clauditor._anthropic import AnthropicHelperError, call_anthropic
+from clauditor._providers import AnthropicHelperError, call_model
 
 try:
-    result = await call_anthropic(prompt, model=model, max_tokens=4096)
+    result = await call_model(
+        prompt,
+        provider="anthropic",
+        model=model,
+        transport="auto",
+        max_tokens=4096,
+    )
 except AnthropicHelperError as exc:
     # User-facing message already formatted (auth hint, status code,
     # body excerpt). Surface to stderr, set exit code, do NOT retry.
@@ -24,9 +40,30 @@ except AnthropicHelperError as exc:
 response_text = result.text_blocks[0] if result.text_blocks else ""
 # result.input_tokens / result.output_tokens for metrics
 # result.raw_message for refusal / tool-use inspection
+# result.provider == "anthropic"; result.source in {"api", "cli"}
 ```
 
-Inside `_anthropic.py`:
+Inside `_providers/__init__.py` (the dispatcher):
+
+```python
+async def call_model(
+    prompt: str,
+    *,
+    provider: Literal["anthropic", "openai"],
+    model: str,
+    transport: str = "auto",
+    max_tokens: int = 4096,
+) -> ModelResult:
+    if provider == "anthropic":
+        return await _anthropic.call_anthropic(
+            prompt, model=model, transport=transport, max_tokens=max_tokens
+        )
+    if provider == "openai":
+        raise NotImplementedError("openai provider lands in #145")
+    raise ValueError(f"unknown provider: {provider!r}")
+```
+
+Inside `_providers/_anthropic.py` (the anthropic backend body):
 
 ```python
 # Module-level aliases per .claude/rules/monotonic-time-indirection.md.
@@ -81,17 +118,22 @@ async def call_anthropic(
   AnthropicHelperError` for the pre-formatted user-facing message.
 - **`_sleep` / `_rand_uniform` module-level aliases** per
   `.claude/rules/monotonic-time-indirection.md`: tests patch
-  `clauditor._anthropic._sleep` and `clauditor._anthropic._rand_uniform`
-  rather than `asyncio.sleep` / `random.uniform`. Patching the
-  stdlib originals under asyncio corrupts the event loop's own
-  scheduler ticks; the alias indirection keeps the test scope tight.
-- **`AnthropicResult` bundles what all callers need**: joined
+  `clauditor._providers._anthropic._sleep` and
+  `clauditor._providers._anthropic._rand_uniform` rather than
+  `asyncio.sleep` / `random.uniform`. Patching the stdlib originals
+  under asyncio corrupts the event loop's own scheduler ticks; the
+  alias indirection keeps the test scope tight.
+- **`ModelResult` bundles what all callers need**: joined
   `response_text`, per-block `text_blocks`, `input_tokens`,
-  `output_tokens`, `raw_message`. Callers that want to distinguish
-  "no text" from "empty text" check `text_blocks`; callers that want
-  refusal handling read `raw_message`; metrics consumers read the
-  token fields. One return type covers every current consumer without
-  forcing them to dig through the raw SDK response.
+  `output_tokens`, `raw_message`, plus `provider` (`"anthropic"` or
+  `"openai"`) and `source` (`"api"` or `"cli"`) so callers can stamp
+  per-call provenance on their reports. Callers that want to
+  distinguish "no text" from "empty text" check `text_blocks`; callers
+  that want refusal handling read `raw_message`; metrics consumers
+  read the token fields. One return type covers every current consumer
+  without forcing them to dig through the raw SDK response. The legacy
+  alias `AnthropicResult = ModelResult` is preserved so existing test
+  fixtures and docstrings keep working.
 - **`ImportError` is raised un-wrapped**: when the `anthropic` SDK is
   not installed, the helper raises `ImportError` directly (not
   `AnthropicHelperError`). This preserves the existing
@@ -101,15 +143,28 @@ async def call_anthropic(
 
 ## Canonical implementation
 
-`src/clauditor/_anthropic.py::call_anthropic` — single async helper,
-~90 effective lines, exhaustive unit-tested retry branches in
-`tests/test_anthropic.py`. The dataclass `AnthropicResult` and the
-exception type `AnthropicHelperError` are part of the public surface
-for callers; everything prefixed with `_` (`_compute_backoff`,
-`_body_excerpt`, `_extract_result`, `_sleep`, `_rand_uniform`,
-`_rng`) is internal.
+`src/clauditor/_providers/__init__.py::call_model` — thin async
+dispatcher. Validates `provider`, delegates `provider="anthropic"` to
+`clauditor._providers._anthropic.call_anthropic`, raises
+`NotImplementedError` for `provider="openai"` (lands in #145), and
+raises `ValueError` for unknown values.
 
-Call sites (four consumers):
+`src/clauditor/_providers/_anthropic.py::call_anthropic` — the
+anthropic backend body, single async helper, ~90 effective lines,
+exhaustive unit-tested retry branches in `tests/test_anthropic.py`.
+The dataclass `ModelResult` (with back-compat alias `AnthropicResult`)
+and the exception types `AnthropicHelperError` / `ClaudeCLIError` are
+part of the public surface for callers; everything prefixed with `_`
+(`_compute_backoff`, `_body_excerpt`, `_extract_result`, `_sleep`,
+`_rand_uniform`, `_rng`) is internal.
+
+`src/clauditor/_anthropic.py` — back-compat shim. Re-exports the
+public surface so existing call sites still importing
+`from clauditor._anthropic` keep working unmodified for one release.
+New code targets `clauditor._providers` directly.
+
+Call sites (four consumers — paths unchanged; import lines move to
+`from clauditor._providers import call_model` in US-005):
 
 - `src/clauditor/grader.py` — `extract_and_grade`,
   `extract_and_report` (Layer 2 schema extraction).
@@ -120,8 +175,9 @@ Call sites (four consumers):
 - `src/clauditor/triggers.py` — trigger precision judge.
 
 Each call site's shape is the same: build a prompt with a pure
-helper, `await call_anthropic(prompt, model=..., max_tokens=...)`,
-hand the resulting `text_blocks[0]` to a pure parser/builder. See
+helper, `await call_model(prompt, provider="anthropic", model=...,
+transport=..., max_tokens=...)`, hand the resulting `text_blocks[0]`
+to a pure parser/builder. See
 `.claude/rules/pure-compute-vs-io-split.md` (LLM grader pure split
 anchor) for how the pure layer that surrounds this seam is
 structured.
@@ -148,56 +204,62 @@ env var > `EvalSpec.transport` > default `"auto"`. The shared helper
 the precedence logic for all six LLM-mediated CLI commands so whitespace
 normalization and env stripping are applied uniformly.
 
-`AnthropicResult.source` (`"api"` or `"cli"`) records which backend
-handled each call. `BlindReport.transport_source` propagates this through
-blind-compare; when the two parallel calls disagree (unlikely in practice),
-the report stamps `"mixed"` (DEC-018).
+`ModelResult.source` (`"api"` or `"cli"`) records which backend
+handled each call (legacy alias `AnthropicResult.source` is preserved).
+`BlindReport.transport_source` propagates this through blind-compare;
+when the two parallel calls disagree (unlikely in practice), the
+report stamps `"mixed"` (DEC-018).
 
 ### Implicit-coupling announcements — an emerging family
 
 One-time-per-process stderr notices are an emerging family co-located
-in `src/clauditor/_anthropic.py`. Each member pairs a module-level
-bool flag with an announcement-text constant; the print-and-flip
-logic either lives inline at the call site (the first member, from
-#86) or is factored into a public helper (the second member, from
-#95, and the target shape going forward). Two members today:
+in the `clauditor._providers` package. Each member pairs a
+module-level bool flag with an announcement-text constant; the
+print-and-flip logic either lives inline at the call site (the first
+member, from #86) or is factored into a public helper (the second
+member, from #95, and the target shape going forward). Two members
+today:
 
 - `_announced_cli_transport` (bool flag) + `_CLI_AUTO_ANNOUNCEMENT`
-  (plain `str` constant) — from #86. Fires on auto→cli transport
-  resolution. Print-and-flip is **inlined** inside `call_anthropic`
-  (see the `if not _announced_cli_transport:` block near the bottom
-  of the function). No standalone emitter helper.
+  (plain `str` constant) in `src/clauditor/_providers/_anthropic.py`
+  — from #86. Fires on auto→cli transport resolution. Print-and-flip
+  is **inlined** inside `call_anthropic` (see the
+  `if not _announced_cli_transport:` block near the bottom of the
+  function). No standalone emitter helper.
 - `_announced_implicit_no_api_key` (bool flag) +
-  `_IMPLICIT_NO_API_KEY_ANNOUNCEMENT` (`Final[str]` constant) — from
-  #95 US-002. Fires when `--transport cli` (or
-  `CLAUDITOR_TRANSPORT=cli`) implicitly strips `ANTHROPIC_API_KEY` /
-  `ANTHROPIC_AUTH_TOKEN` from a skill subprocess env. Print-and-flip
-  lives in the **public helper** `announce_implicit_no_api_key()`,
-  called from the `env_override` computation in
-  `cli/grade.py::cmd_grade` (see `.claude/rules/spec-cli-precedence.md`
-  "Implicit coupling at the operator-intent layers" for the call-site
-  contract).
+  `_IMPLICIT_NO_API_KEY_ANNOUNCEMENT` (`Final[str]` constant) in
+  `src/clauditor/_providers/_auth.py` — from #95 US-002. Fires when
+  `--transport cli` (or `CLAUDITOR_TRANSPORT=cli`) implicitly strips
+  `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from a skill subprocess
+  env. Print-and-flip lives in the **public helper**
+  `announce_implicit_no_api_key()`, called from the `env_override`
+  computation in `cli/grade.py::cmd_grade` (see
+  `.claude/rules/spec-cli-precedence.md` "Implicit coupling at the
+  operator-intent layers" for the call-site contract).
 
 The #95 shape (`Final[str]` constant + public helper) is the target
 pattern for new members — it makes the notice independently testable
 without reaching into `call_anthropic` internals. New announcement
-flags belong in the same module (DEC-009 of
-`plans/super/95-subscription-auth-flag.md`). Reset mechanism for
-tests is the `monkeypatch.setattr(..., False)` autouse fixture
-pattern — see `tests/test_anthropic.py::TestStderrAnnouncement` and
+flags belong in the `_providers` package (DEC-009 of
+`plans/super/95-subscription-auth-flag.md`); auth-coupled notices in
+`_providers/_auth.py`, transport-coupled notices in
+`_providers/_anthropic.py`. Reset mechanism for tests is the
+`monkeypatch.setattr(..., False)` autouse fixture pattern — see
+`tests/test_anthropic.py::TestStderrAnnouncement` and
 `TestAnnounceImplicitNoApiKey` for the shape.
 
 ## When this rule applies
 
 Any new clauditor feature that needs to call Anthropic — a new
 grader tier, an auto-triage judge, a rubric critic, a regeneration-
-on-low-score loop. Import `call_anthropic` and use it. Do NOT
-construct `AsyncAnthropic()` directly in the new module; do NOT
-catch `RateLimitError` / `APIStatusError` at the call site to
-implement a bespoke retry loop. If the centralized retry policy is
-genuinely wrong for a new use case, change the policy in
-`_anthropic.py` (with tests covering the new branches) so every
-caller inherits the fix.
+on-low-score loop. Import `call_model` from `clauditor._providers`
+and call it with `provider="anthropic"`. Do NOT construct
+`AsyncAnthropic()` directly in the new module; do NOT catch
+`RateLimitError` / `APIStatusError` at the call site to implement a
+bespoke retry loop. If the centralized retry policy is genuinely
+wrong for a new use case, change the policy in
+`_providers/_anthropic.py` (with tests covering the new branches) so
+every caller inherits the fix.
 
 ## When this rule does NOT apply
 
@@ -210,6 +272,11 @@ caller inherits the fix.
   directly for a diagnostic. They can construct a client inline —
   but production paths loaded via `import clauditor.*` must go
   through the helper.
-- Tests that mock Anthropic entirely. The mock target is
-  `clauditor._anthropic.call_anthropic` (or a per-call-site patch of
-  the same symbol), never the `anthropic` SDK directly.
+- Tests that mock Anthropic entirely. The canonical mock target is
+  `clauditor._providers._anthropic.call_anthropic` (or a per-call-site
+  patch of the same symbol), never the `anthropic` SDK directly.
+  Tests that patched the legacy path `clauditor._anthropic.X` need to
+  follow the symbol to its new location — Python's
+  `monkeypatch.setattr` operates on the module where the symbol
+  lives, so re-exports through the back-compat shim do not propagate
+  patches.
