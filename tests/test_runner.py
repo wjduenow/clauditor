@@ -613,7 +613,9 @@ class TestSkillRunnerHarnessSubstitution:
 
     def test_skill_runner_records_invoke_call_args(self):
         """The mock records prompt/cwd/env/timeout exactly as the runner
-        forwards them to :meth:`Harness.invoke`."""
+        forwards them to :meth:`Harness.invoke`. Per US-003 of issue #150
+        the prompt is the string returned by ``MockHarness.build_prompt``,
+        which has its own deterministic shape (``"[mock]|/foo arg"``)."""
         from pathlib import Path
 
         from clauditor._harnesses._mock import MockHarness
@@ -625,7 +627,7 @@ class TestSkillRunnerHarnessSubstitution:
 
         assert len(mock.invoke_calls) == 1
         call = mock.invoke_calls[0]
-        assert call["prompt"] == "/foo arg"
+        assert call["prompt"] == "[mock]|/foo arg"
         assert call["cwd"] == Path("/tmp")
         assert call["env"] is None
         assert call["timeout"] == 99
@@ -754,6 +756,81 @@ class TestHarnessBuildPrompt:
         # ``system_prompt`` when present.
         assert "hello" in returned
         assert "foo" in returned
+
+
+class TestSkillRunnerRunBuildsPromptViaHarness:
+    """US-003 of issue #150: ``SkillRunner.run`` composes its prompt via
+    ``self.harness.build_prompt(...)`` rather than synthesizing the slash
+    string inline. The ``system_prompt`` kwarg threads from
+    :meth:`SkillRunner.run` through to ``build_prompt`` (see DEC-008 for
+    why it is the LAST keyword argument on ``run``).
+    """
+
+    def test_runner_run_calls_harness_build_prompt_with_args(self):
+        """``runner.run("foo", "bar")`` records a build_prompt call with
+        ``skill_name="foo"``, ``args="bar"``, ``system_prompt=None``."""
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir="/tmp", harness=mock)
+
+        runner.run("foo", "bar")
+
+        assert len(mock.build_prompt_calls) == 1
+        call = mock.build_prompt_calls[-1]
+        assert call["skill_name"] == "foo"
+        assert call["args"] == "bar"
+        assert call["system_prompt"] is None
+
+    def test_runner_run_threads_system_prompt_kwarg_to_build_prompt(self):
+        """``runner.run("foo", "bar", system_prompt="hello")`` threads
+        ``system_prompt`` through to ``Harness.build_prompt``."""
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir="/tmp", harness=mock)
+
+        runner.run("foo", "bar", system_prompt="hello")
+
+        assert len(mock.build_prompt_calls) == 1
+        call = mock.build_prompt_calls[-1]
+        assert call["skill_name"] == "foo"
+        assert call["args"] == "bar"
+        assert call["system_prompt"] == "hello"
+
+    def test_runner_run_passes_built_prompt_to_invoke(self):
+        """The string returned by ``Harness.build_prompt`` is exactly what
+        reaches ``Harness.invoke`` as ``prompt``."""
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir="/tmp", harness=mock)
+
+        runner.run("foo", "bar", system_prompt="hello")
+
+        # ``MockHarness.build_prompt`` returns
+        # ``f"[mock]{system_prompt or ''}|/{skill_name} {args}".rstrip()``.
+        expected_prompt = "[mock]hello|/foo bar"
+        assert len(mock.invoke_calls) == 1
+        assert mock.invoke_calls[-1]["prompt"] == expected_prompt
+
+    def test_runner_run_back_compat_no_system_prompt_kwarg(self):
+        """Calling ``runner.run("foo", "bar")`` with no ``system_prompt``
+        kwarg yields the legacy ``"/foo bar"`` prompt when paired with
+        :class:`ClaudeCodeHarness` (which ignores ``system_prompt``)."""
+        runner = SkillRunner(project_dir="/tmp", harness=ClaudeCodeHarness())
+
+        # Patch ``invoke`` to capture the prompt without spawning a subprocess.
+        captured: dict[str, str] = {}
+
+        def _fake_invoke(prompt, **_kwargs):
+            captured["prompt"] = prompt
+            return InvokeResult(output="", exit_code=0, duration_seconds=0.0)
+
+        with patch.object(runner.harness, "invoke", side_effect=_fake_invoke):
+            runner.run("foo", "bar")
+
+        assert captured["prompt"] == "/foo bar"
 
 
 # ---------------------------------------------------------------------------
