@@ -1899,3 +1899,128 @@ class TestModelResult:
 
         result = ModelResult(response_text="ok", provider="openai")
         assert result.provider == "openai"
+
+
+class TestCallModel:
+    """Regression tests for the #144 US-003 ``call_model`` dispatcher.
+
+    Traces to DEC-001 (signature does not include ``subject``) and
+    DEC-002 (``provider="openai"`` raises :class:`NotImplementedError`)
+    of ``plans/super/144-providers-call-model.md``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_call_model_routes_anthropic_to_call_anthropic(
+        self,
+    ) -> None:
+        """``call_model(provider="anthropic", ...)`` delegates to
+        :func:`call_anthropic` with the same kwargs."""
+        from clauditor._providers import ModelResult, call_model
+
+        canned = ModelResult(response_text="ok", provider="anthropic")
+        with patch(
+            "clauditor._providers._anthropic.call_anthropic",
+            new=AsyncMock(return_value=canned),
+        ) as mock_call:
+            result = await call_model(
+                "the prompt",
+                provider="anthropic",
+                model="claude-3-5-haiku-latest",
+                transport="api",
+                max_tokens=4096,
+            )
+
+        mock_call.assert_awaited_once_with(
+            "the prompt",
+            model="claude-3-5-haiku-latest",
+            transport="api",
+            max_tokens=4096,
+        )
+        assert result is canned
+
+    @pytest.mark.asyncio
+    async def test_call_model_anthropic_returns_model_result(self) -> None:
+        """The dispatcher returns the ``ModelResult`` produced by
+        :func:`call_anthropic` unchanged."""
+        from clauditor._providers import ModelResult, call_model
+
+        canned = ModelResult(
+            response_text="ok",
+            provider="anthropic",
+            source="api",
+            input_tokens=12,
+            output_tokens=34,
+        )
+        with patch(
+            "clauditor._providers._anthropic.call_anthropic",
+            new=AsyncMock(return_value=canned),
+        ):
+            result = await call_model(
+                "the prompt",
+                provider="anthropic",
+                model="claude-3-5-haiku-latest",
+            )
+
+        assert isinstance(result, ModelResult)
+        assert result.provider == "anthropic"
+        assert result.source == "api"
+        assert result.input_tokens == 12
+        assert result.output_tokens == 34
+
+    @pytest.mark.asyncio
+    async def test_call_model_openai_raises_not_implemented(self) -> None:
+        """``provider="openai"`` raises :class:`NotImplementedError`
+        with a message pointing at #145 (DEC-002)."""
+        from clauditor._providers import call_model
+
+        with pytest.raises(NotImplementedError, match="#145"):
+            await call_model(
+                "the prompt",
+                provider="openai",
+                model="gpt-4o-mini",
+            )
+
+    def test_call_model_signature_does_not_include_subject(self) -> None:
+        """DEC-001 guard: ``call_model`` MUST NOT carry a ``subject``
+        parameter. ``subject`` is Claude-Code-CLI-specific and does
+        not generalize across providers."""
+        import inspect
+
+        from clauditor._providers import call_model
+
+        sig = inspect.signature(call_model)
+        assert "subject" not in sig.parameters
+
+    def test_call_model_in_providers_all(self) -> None:
+        """``call_model`` is exported from
+        :mod:`clauditor._providers`'s ``__all__``."""
+        import clauditor._providers as providers
+
+        assert "call_model" in providers.__all__
+
+    @pytest.mark.asyncio
+    async def test_call_model_unknown_provider_raises_value_error(
+        self,
+    ) -> None:
+        """An unknown ``provider`` value (neither ``"anthropic"`` nor
+        ``"openai"``) raises :class:`ValueError` at the dispatcher
+        boundary so callers see a crisp pre-call error rather than
+        a deeper ``AttributeError`` later."""
+        from clauditor._providers import call_model
+
+        with pytest.raises(ValueError, match="unknown provider"):
+            await call_model(
+                "the prompt",
+                provider="vertex",  # type: ignore[arg-type]
+                model="claude-3-5-haiku-latest",
+            )
+
+    def test_call_model_importable_via_shim(self) -> None:
+        """``from clauditor._anthropic import call_model`` resolves
+        to the same callable as the canonical
+        ``clauditor._providers.call_model`` (transitional re-export
+        per US-003)."""
+        from clauditor._anthropic import call_model as shim_call_model
+        from clauditor._providers import call_model as canonical_call_model
+
+        assert shim_call_model is canonical_call_model
