@@ -19,6 +19,14 @@ need to handle triple-backtick-inside-quoted-string, skipped
 approach is tracked in US-003 of ``plans/super/67-per-type-assertion-keys.md``
 as a future tightening if a false positive ever slips through.
 
+To avoid flagging non-clauditor JSON (e.g. Discord-API option schemas
+where ``"type": 3`` is an integer-tagged STRING option type and
+``"value"`` is the choice value field), the predicate also requires a
+known clauditor assertion-type literal (``"contains"``, ``"regex"``,
+``"min_length"``, etc.) to appear in the block. This makes the
+keyword detector semantic: only blocks that actually look like a
+clauditor assertion get flagged.
+
 Files covered (the human-facing doc triangle per
 ``.claude/rules/bundled-skill-docs-sync.md``):
 
@@ -96,6 +104,40 @@ def _json_fenced_blocks(text: str) -> list[str]:
     return pattern.findall(text)
 
 
+# Clauditor assertion ``type`` literals — the discriminator values
+# accepted by ``ASSERTION_TYPE_REQUIRED_KEYS`` in
+# ``src/clauditor/schemas.py``. Used to disambiguate clauditor
+# assertion examples from foreign JSON that happens to share a
+# ``"type":`` / ``"value":`` shape (e.g. Discord-API option schemas
+# where ``"type": 3`` is an integer-tagged STRING option type, not a
+# clauditor assertion). When this list grows in schemas.py, mirror it
+# here.
+_CLAUDITOR_ASSERTION_TYPE_LITERALS: tuple[str, ...] = (
+    '"contains"',
+    '"not_contains"',
+    '"regex"',
+    '"min_length"',
+    '"max_length"',
+    '"min_count"',
+    '"has_urls"',
+    '"has_format"',
+)
+
+
+def _looks_like_clauditor_assertion(block: str) -> bool:
+    """Return True if ``block`` mentions a clauditor assertion-type literal.
+
+    Tightens the legacy ``"value"`` detector so it only fires on
+    blocks that actually look like a clauditor assertion. A
+    Discord-API choice block (``{"type": 3, "value": "x"}``) has
+    integer ``"type":`` — none of the clauditor literal strings are
+    present — and is correctly skipped.
+    """
+    return any(
+        literal in block for literal in _CLAUDITOR_ASSERTION_TYPE_LITERALS
+    )
+
+
 class TestAssertionExamplesUsePerTypeKeys:
     """Every ``"value":`` in a JSON-fenced assertion example is a bug.
 
@@ -117,6 +159,12 @@ class TestAssertionExamplesUsePerTypeKeys:
         offenders: list[tuple[int, str]] = []
         for idx, block in enumerate(_json_fenced_blocks(text)):
             if '"type":' not in block:
+                continue
+            # Tighten: only flag blocks that look like clauditor
+            # assertions. Foreign JSON whose ``"type":`` value is
+            # something else (Discord option enums, OpenAPI schema
+            # types, etc.) is not a copy-paste hazard for clauditor.
+            if not _looks_like_clauditor_assertion(block):
                 continue
             if '"value":' in block:
                 offenders.append((idx, block))
@@ -199,6 +247,12 @@ class TestAssertionExamplesUseNativeIntPayloads:
         for idx, block in enumerate(_json_fenced_blocks(text)):
             if '"type":' not in block:
                 continue
+            # Same tightening as ``test_no_value_key_in_assertion_json_block``:
+            # only blocks that look like a clauditor assertion are in
+            # scope. Foreign JSON examples whose ``"type":`` value is
+            # not a clauditor assertion-type literal are skipped.
+            if not _looks_like_clauditor_assertion(block):
+                continue
             matches = self._STRINGLY_INT_RE.findall(block)
             if matches:
                 offenders.append((idx, block))
@@ -209,3 +263,99 @@ class TestAssertionExamplesUseNativeIntPayloads:
             f"length/count are native JSON ints — use 500, not "
             f'"500".\nFirst offender body:\n{offenders[0][1][:400]}'
         )
+
+
+class TestLooksLikeClauditorAssertion:
+    """The ``_looks_like_clauditor_assertion`` predicate's contract.
+
+    Direct unit tests on the helper, not via the file-walker. Ensures
+    the tightening introduced for clauditor-07p does not (a) drop
+    legitimate clauditor examples — those WITH ``"value"`` must still
+    be flagged via the original detector — or (b) start flagging
+    foreign JSON whose ``"type":`` value is not a clauditor
+    assertion-type literal (Discord-API option schemas, OpenAPI
+    type-tagged unions, etc.).
+    """
+
+    def test_discord_api_choice_block_is_not_flagged(self) -> None:
+        """A Discord-API ``ApplicationCommandOptionChoice`` block is not a
+        clauditor assertion.
+
+        Reproduces the failure mode that motivated clauditor-07p:
+        ``type: 3`` is Discord's STRING option type (an integer-tagged
+        enum, not a clauditor assertion literal) and ``value`` is the
+        choice's value field. The predicate must reject this.
+        """
+        block = (
+            '{ "name": "animal", "type": 3, "required": true,\n'
+            '  "choices": [ {"name": "Dog", "value": "animal_dog"} ] }'
+        )
+        assert _looks_like_clauditor_assertion(block) is False
+
+    def test_openapi_type_tag_is_not_flagged(self) -> None:
+        """A JSON schema fragment with ``"type": "object"`` is not a
+        clauditor assertion."""
+        block = '{"type": "object", "value": "foo"}'
+        assert _looks_like_clauditor_assertion(block) is False
+
+    def test_legacy_clauditor_contains_block_is_flagged(self) -> None:
+        """A real legacy clauditor ``contains`` block WITH ``"value"`` is
+        still flagged so the original detector keeps catching it.
+
+        Without this assertion the tightening could over-rotate and
+        let legitimate copy-paste hazards slip through.
+        """
+        block = '{"type": "contains", "value": "Deltas"}'
+        assert _looks_like_clauditor_assertion(block) is True
+
+    def test_legacy_clauditor_min_length_block_is_flagged(self) -> None:
+        """A legacy ``min_length`` block is flagged."""
+        block = '{"type": "min_length", "value": "500"}'
+        assert _looks_like_clauditor_assertion(block) is True
+
+    def test_modern_clauditor_regex_block_is_flagged(self) -> None:
+        """A modern post-#67 ``regex`` block is also flagged.
+
+        The predicate keys on the type literal, not on the presence
+        of ``value`` — so it correctly identifies any clauditor
+        assertion block in scope, whether legacy or modern. The
+        downstream ``"value":`` check is what gates flagging.
+        """
+        block = '{"type": "regex", "pattern": "^[A-Z]"}'
+        assert _looks_like_clauditor_assertion(block) is True
+
+
+class TestNoValueKeyDetectorEndToEnd:
+    """End-to-end coverage for the tightened detector.
+
+    Drives the same logic the file-walker uses on synthesized blocks,
+    verifying that (a) the foreign-JSON false positive is not flagged
+    and (b) the legitimate legacy ``"value"`` shape IS flagged.
+    """
+
+    def test_discord_block_does_not_register_as_legacy_assertion(self) -> None:
+        """The exact failing block from clauditor-07p does not register.
+
+        Walks the same ``"type":`` / ``"value":`` predicate chain the
+        file-walker applies, with the new ``_looks_like_clauditor_assertion``
+        gate inserted. The Discord choice block has both keys but
+        must not be flagged.
+        """
+        block = (
+            '{ "name": "animal", "type": 3, "required": true,\n'
+            '  "choices": [ {"name": "Dog", "value": "animal_dog"} ] }'
+        )
+        assert '"type":' in block
+        assert '"value":' in block
+        # Tightened predicate skips this block.
+        assert _looks_like_clauditor_assertion(block) is False
+
+    def test_legacy_clauditor_block_does_register(self) -> None:
+        """A real clauditor assertion with the legacy ``value`` key is still
+        flagged, so the original migration guard keeps working."""
+        block = '{"id": "a1", "type": "contains", "value": "Deltas"}'
+        assert '"type":' in block
+        assert '"value":' in block
+        # Tightened predicate accepts this block (a clauditor
+        # assertion-type literal is present).
+        assert _looks_like_clauditor_assertion(block) is True
