@@ -157,3 +157,51 @@ flowchart LR
 - **L3** always runs (if `grading_criteria` defined — required for `grade`)
 - All three layers receive the **same skill output text** and evaluate independently
 - Results are combined into the final report; the overall pass/fail is driven by L3's `pass_rate` against the configured threshold (default 70%)
+
+---
+
+## 3. Harness Protocol
+
+`clauditor.runner.SkillRunner` is harness-agnostic — it delegates the
+actual LLM-CLI subprocess to a `Harness` implementation that satisfies
+the structural protocol defined in
+`src/clauditor/_harnesses/__init__.py`. The protocol has three
+members: `invoke(prompt, *, cwd, env, timeout, model, subject)` for
+the subprocess + parse loop, `strip_auth_keys(env)` for harness-specific
+auth-env scrubbing, and **`build_prompt(skill_name, args, *,
+system_prompt) -> str`** (introduced in #150) which composes the wire
+prompt each harness's `invoke` expects. Each harness owns its
+identity-to-prompt strategy; the runner never assembles a slash command
+or message body itself.
+
+Shipping implementations:
+
+- **`ClaudeCodeHarness.build_prompt`** — returns
+  `f"/{skill_name} {args}"`, or `f"/{skill_name}"` when `args` is the
+  empty string. Ignores `system_prompt` because the `claude -p` CLI
+  has no separate system-prompt channel (skill identity carries the
+  body via the slash command).
+- **`MockHarness.build_prompt`** — appends
+  `{"skill_name", "args", "system_prompt"}` to `build_prompt_calls` so
+  unit tests can assert against the triple, then returns a deterministic
+  string of the form `"[mock]<system_prompt or ''>|/<skill_name>
+  <args>"` (trailing whitespace stripped). The returned string surfaces
+  all three inputs so a test can assert on the rendered prompt without
+  inspecting the call list.
+- **Future: `CodexHarness.build_prompt` (#149)** — will prepend
+  `system_prompt` as the system message and append `args` as the user
+  message, matching the OpenAI-style structured-message wire format.
+  This is the motivating use case for the `system_prompt` kwarg living
+  on the cross-harness protocol surface.
+
+**Resolution flow.** `SkillSpec.run` resolves the effective
+`system_prompt` once at the spec layer (explicit `EvalSpec.system_prompt`
+> auto-derived `SKILL.md` body — see
+[`docs/eval-spec-reference.md#system-prompt`](eval-spec-reference.md#system-prompt))
+and threads the resolved string through to the harness via the new
+keyword-only `system_prompt` kwarg on `SkillRunner.run(...)`. The kwarg
+is keyword-only and placed last so callers cannot accidentally swap it
+positionally with the existing `cwd` / `env` / `timeout` kwargs.
+Harnesses that have no notion of a separate system prompt (currently
+`ClaudeCodeHarness`) MUST still accept and ignore the kwarg —
+analogous to how all harnesses accept `model` on `invoke`.
