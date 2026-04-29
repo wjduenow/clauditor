@@ -451,6 +451,179 @@ class TestBlindReportSchema:
         assert data["transport_source"] == "api"
 
 
+class TestGradingReportProviderSource:
+    """#144 US-005: GradingReport carries a ``provider_source`` field
+    that defaults to ``"anthropic"`` and reads through from
+    :class:`ModelResult.provider`. Per DEC-006 the field is in-memory
+    only this ticket — :meth:`to_json` does NOT include it; #147 owns
+    the on-disk schema bump."""
+
+    def _report(self, **overrides) -> GradingReport:
+        defaults = dict(
+            skill_name="provider-test",
+            results=_make_results([True]),
+            model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
+        )
+        defaults.update(overrides)
+        return GradingReport(**defaults)
+
+    def test_provider_source_defaults_to_anthropic(self):
+        report = self._report()
+        assert report.provider_source == "anthropic"
+
+    def test_to_json_does_not_include_provider_source(self):
+        """DEC-006: sidecar JSON shape is unchanged this ticket."""
+        report = self._report(provider_source="openai")
+        data = json.loads(report.to_json())
+        assert "provider_source" not in data
+
+
+class TestBlindReportProviderSource:
+    """#144 US-005: BlindReport carries a ``provider_source`` field
+    that defaults to ``"anthropic"``. Per DEC-006 the field is
+    in-memory only this ticket — :meth:`to_json` does NOT include it;
+    #147 owns the on-disk schema bump."""
+
+    def _report(self, **overrides) -> BlindReport:
+        defaults = dict(
+            preference="a",
+            confidence=0.8,
+            score_a=0.9,
+            score_b=0.6,
+            reasoning="A is better",
+            model="claude-sonnet-4-6",
+        )
+        defaults.update(overrides)
+        return BlindReport(**defaults)
+
+    def test_provider_source_defaults_to_anthropic(self):
+        report = self._report()
+        assert report.provider_source == "anthropic"
+
+    def test_to_json_does_not_include_provider_source(self):
+        """DEC-006: sidecar JSON shape is unchanged this ticket."""
+        report = self._report(provider_source="openai")
+        data = json.loads(report.to_json())
+        assert "provider_source" not in data
+
+
+class TestProviderSourcePropagation:
+    """#144 US-005: ``ModelResult.provider`` flows through the async
+    grader wrappers (``grade_quality``, ``blind_compare``) into the
+    resulting report's ``provider_source`` field."""
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_propagates_provider_source(self):
+        from clauditor._providers import ModelResult
+
+        spec = _make_spec()
+        grading_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.85,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 0.8,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+        ]
+        fake = ModelResult(
+            response_text=json.dumps(grading_data),
+            text_blocks=[json.dumps(grading_data)],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(return_value=fake),
+        ):
+            report = await grade_quality("output", spec)
+        assert report.provider_source == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_propagates_provider_source(self):
+        from clauditor._providers import ModelResult
+
+        verdict = json.dumps(
+            {
+                "preference": "1",
+                "confidence": 0.8,
+                "score_1": 0.8,
+                "score_2": 0.4,
+                "reasoning": "r",
+            }
+        )
+        fake = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(return_value=fake),
+        ):
+            report = await blind_compare("query", "out_a", "out_b")
+        assert report.provider_source == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_provider_source_mixed(self):
+        """When the two parallel judges return different providers,
+        ``provider_source`` stamps ``"mixed"``."""
+        from clauditor._providers import ModelResult
+
+        verdict = json.dumps(
+            {
+                "preference": "1",
+                "confidence": 0.8,
+                "score_1": 0.8,
+                "score_2": 0.4,
+                "reasoning": "r",
+            }
+        )
+        fake_a = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+        )
+        fake_o = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[fake_a, fake_o]),
+        ):
+            report = await blind_compare("query", "out_a", "out_b")
+        assert report.provider_source == "mixed"
+
+
 class TestParseGradingResponse:
     def test_valid_json(self):
         data = [
@@ -2954,5 +3127,89 @@ class TestCombineBlindResults:
             transport_source="cli",
         )
         assert report.transport_source == "cli"
+
+    def test_provider_source_default_anthropic(self):
+        """#144 US-005: ``provider_source`` defaults to ``"anthropic"``
+        on the both-fail / only-one-parsed / agreement branches."""
+        report = combine_blind_results(
+            parsed1=None,
+            parsed2=None,
+            text1="garbage1",
+            text2="garbage2",
+            run1_mapping="ab->12",
+            run2_mapping="ab->21",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+        )
+        assert report.provider_source == "anthropic"
+
+    def test_provider_source_propagated_through_all_branches(self):
+        """#144 US-005: ``provider_source`` flows through all four
+        branches (both-fail, only-one-parsed × 2, agreement)."""
+        # Both-fail.
+        r0 = combine_blind_results(
+            parsed1=None,
+            parsed2=None,
+            text1="g1",
+            text2="g2",
+            run1_mapping="ab->12",
+            run2_mapping="ab->21",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+            provider_source="openai",
+        )
+        assert r0.provider_source == "openai"
+
+        # Only-first-parsed.
+        r1 = combine_blind_results(
+            parsed1=self._parsed(preference="1"),
+            parsed2=None,
+            text1="ok",
+            text2="g",
+            run1_mapping="ab->12",
+            run2_mapping="ab->21",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+            provider_source="openai",
+        )
+        assert r1.provider_source == "openai"
+
+        # Only-second-parsed.
+        r2 = combine_blind_results(
+            parsed1=None,
+            parsed2=self._parsed(preference="1"),
+            text1="g",
+            text2="ok",
+            run1_mapping="ab->12",
+            run2_mapping="ab->21",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+            provider_source="openai",
+        )
+        assert r2.provider_source == "openai"
+
+        # Agreement / disagreement (both parsed) branch.
+        r3 = combine_blind_results(
+            parsed1=self._parsed(preference="1"),
+            parsed2=self._parsed(preference="2"),
+            text1="t1",
+            text2="t2",
+            run1_mapping="ab->12",
+            run2_mapping="ab->21",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+            provider_source="openai",
+        )
+        assert r3.provider_source == "openai"
 
 

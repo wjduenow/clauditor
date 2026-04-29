@@ -1008,7 +1008,7 @@ class TestProposeEval:
         pi = _make_propose_input()
         result = _mock_anthropic_result(text=_good_response_text())
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1037,7 +1037,7 @@ class TestProposeEval:
         # default in ``_good_spec_dict``). Override must win.
         result = _mock_anthropic_result(text=_good_response_text())
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1062,7 +1062,7 @@ class TestProposeEval:
         pi.captured_skill_args = ""  # sidecar present, args were empty
         result = _mock_anthropic_result(text=_good_response_text())
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1076,7 +1076,7 @@ class TestProposeEval:
         pi = _make_propose_input()  # captured_skill_args=None
         result = _mock_anthropic_result(text=_good_response_text())
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1090,7 +1090,7 @@ class TestProposeEval:
         pi = _make_propose_input()
         result = _mock_anthropic_result(text=_good_response_text())
         call_mock = AsyncMock(return_value=result)
-        with patch("clauditor._anthropic.call_anthropic", call_mock):
+        with patch("clauditor._providers.call_model", call_mock):
             _ = await propose_eval(pi, spec_dir=tmp_path)
         call_mock.assert_awaited_once()
         kwargs = call_mock.await_args.kwargs
@@ -1108,7 +1108,7 @@ class TestProposeEval:
         pi = _make_propose_input()
         result = _mock_anthropic_result(text=_good_response_text())
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ), patch(
             # Aggregate ``duration_seconds`` is the SUM of per-attempt
@@ -1128,7 +1128,7 @@ class TestProposeEval:
     ) -> None:
         pi = _make_propose_input()
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(side_effect=RuntimeError("boom")),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1150,7 +1150,7 @@ class TestProposeEval:
         first = _mock_anthropic_result(text="not json {{{")
         second = _mock_anthropic_result(text="still not json {{{")
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(side_effect=[first, second]),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1175,7 +1175,7 @@ class TestProposeEval:
         }
         result = _mock_anthropic_result(text=json.dumps(bad_spec))
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1208,7 +1208,7 @@ class TestProposeEval:
         # build_propose_eval_prompt before the SDK call.
         call_mock = AsyncMock()
         with patch(
-            "clauditor._anthropic.call_anthropic", call_mock
+            "clauditor._providers.call_model", call_mock
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
         call_mock.assert_not_awaited()
@@ -1223,7 +1223,7 @@ class TestProposeEval:
         result = _mock_anthropic_result(text=_good_response_text())
         monkeypatch.chdir(tmp_path)
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi)
@@ -1241,7 +1241,7 @@ class TestProposeEval:
         )
         result = _mock_anthropic_result(text=_good_response_text())
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1265,7 +1265,7 @@ class TestProposeEval:
             raw_message=None,
         )
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=empty),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1299,7 +1299,7 @@ class TestProposeEval:
         split_result = ResultWithoutResponseText([full[:half], full[half:]])
 
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=split_result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1502,7 +1502,7 @@ class TestProposeEvalRepairRetry:
             output_tokens=70,
         )
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(side_effect=[first, second]),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1557,7 +1557,7 @@ class TestProposeEvalRepairRetry:
         second = _mock_anthropic_result(text=json.dumps(second_bad))
 
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(side_effect=[first, second]),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1587,7 +1587,7 @@ class TestProposeEvalRepairRetry:
         result = _mock_anthropic_result(text=_good_response_text())
         call_mock = AsyncMock(side_effect=[result])
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             call_mock,
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1617,7 +1617,7 @@ class TestProposeEvalRepairRetry:
             side_effect=[AnthropicHelperError("401 auth failed")]
         )
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             call_mock,
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1662,7 +1662,7 @@ class TestProposeEvalRepairRetry:
             side_effect=[first, AnthropicHelperError("503 repair boom")]
         )
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             call_mock,
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1701,7 +1701,7 @@ class TestProposeEvalRepairRetry:
             output_tokens=44,
         )
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(side_effect=[first, second]),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1751,7 +1751,7 @@ class TestProposeEvalRepairRetry:
         )
 
         mock_call = AsyncMock(side_effect=[first_bad])
-        with patch("clauditor._anthropic.call_anthropic", mock_call):
+        with patch("clauditor._providers.call_model", mock_call):
             report = await propose_eval(pi, spec_dir=tmp_path)
 
         # The retry was skipped: only one API call fired, only one

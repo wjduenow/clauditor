@@ -179,24 +179,24 @@ async def classify_query(
 ) -> TriggerResult:
     """Classify a single query using the LLM.
 
-    Sends a prompt to the LLM via the centralized ``call_anthropic``
-    helper (bead ``clauditor-24h.3``) and parses the response to
-    determine whether the query would trigger the skill. Retry /
-    rate-limit / auth-error handling lives inside the helper — this
-    function just awaits the result and projects it onto
-    :class:`TriggerResult`.
+    Sends a prompt to the LLM via the centralized
+    :func:`clauditor._providers.call_model` dispatcher (#144 US-005)
+    and parses the response to determine whether the query would
+    trigger the skill. Retry / rate-limit / auth-error handling lives
+    inside the dispatcher's anthropic backend — this function just
+    awaits the result and projects it onto :class:`TriggerResult`.
     """
-    from clauditor._anthropic import AnthropicHelperError, call_anthropic
+    from clauditor._providers import AnthropicHelperError, call_model
 
     prompt = build_trigger_prompt(skill_name, description, query)
 
     try:
-        result = await call_anthropic(
+        result = await call_model(
             prompt,
+            provider="anthropic",
             model=model,
-            max_tokens=1024,
             transport=transport,
-            subject="triggers judge",
+            max_tokens=1024,
         )
     except AnthropicHelperError as exc:
         # Graceful degradation: a single API failure (auth, 5xx

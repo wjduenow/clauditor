@@ -1891,7 +1891,7 @@ def _mock_anthropic_result(
     """Return an AnthropicResult shaped like a successful helper call.
 
     After bead ``clauditor-24h.3`` the suggest call path goes through
-    ``clauditor._anthropic.call_anthropic`` rather than constructing
+    ``clauditor._providers.call_model`` rather than constructing
     its own client, so tests that used to stub ``AsyncAnthropic`` now
     stub the helper and hand back an ``AnthropicResult`` directly.
     """
@@ -1914,7 +1914,7 @@ class TestProposeEdits:
             text=_good_envelope_text(motivated_by=["a1"])
         )
         call_mock = AsyncMock(return_value=result)
-        with patch("clauditor._anthropic.call_anthropic", call_mock):
+        with patch("clauditor._providers.call_model", call_mock):
             report = await propose_edits(si)
         call_mock.assert_awaited_once()
         kwargs = call_mock.await_args.kwargs
@@ -1932,7 +1932,7 @@ class TestProposeEdits:
             text=_good_envelope_text(motivated_by=["a1"])
         )
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ), patch(
             "clauditor.suggest._monotonic", side_effect=[0.0, 1.25]
@@ -1946,7 +1946,7 @@ class TestProposeEdits:
     ) -> None:
         si = _suggest_input_with_signals()
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(side_effect=RuntimeError("boom")),
         ):
             report = await propose_edits(si)
@@ -1961,7 +1961,7 @@ class TestProposeEdits:
         si = _suggest_input_with_signals()
         result = _mock_anthropic_result(text="this is not json {{{")
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_edits(si)
@@ -1979,7 +1979,7 @@ class TestProposeEdits:
             output_tokens=80,
         )
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_edits(si)
@@ -2004,7 +2004,7 @@ class TestProposeEdits:
             )
         )
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_edits(si)
