@@ -10,6 +10,7 @@
 - **Sessions:** 1
 - **Last session:** 2026-04-29
 - **Total decisions:** 13
+- **PR URL:** https://github.com/wjduenow/clauditor/pull/158
 
 ---
 
