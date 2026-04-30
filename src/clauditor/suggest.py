@@ -934,6 +934,7 @@ async def propose_edits(
     model: str = DEFAULT_SUGGEST_MODEL,
     max_tokens: int = 4096,
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> SuggestReport:
     """Call Sonnet, parse the response, validate anchors, return a report.
 
@@ -996,9 +997,13 @@ async def propose_edits(
     from clauditor._providers import call_model
 
     try:
+        # #145 US-010: ``provider`` is plumbed by the caller so an
+        # eval spec with ``grading_provider="openai"`` routes through
+        # the OpenAI backend; default ``"anthropic"`` preserves
+        # back-compat for callers that don't set it.
         result = await call_model(
             prompt,
-            provider="anthropic",
+            provider=provider,
             model=model,
             transport=transport,
             max_tokens=max_tokens,

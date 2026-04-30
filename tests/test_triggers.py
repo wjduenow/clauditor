@@ -442,3 +442,61 @@ class TestTestTriggers:
         # All 3 queries should have been sent through the helper
         assert call.await_count == 3
         assert len(report.results) == 3
+
+
+class TestTriggersGradingProviderOpenAI:
+    """#145 US-010: when ``eval_spec.grading_provider == "openai"``,
+    ``test_triggers`` resolves the provider once from the spec and
+    threads it into every per-query ``classify_query`` call."""
+
+    @pytest.mark.asyncio
+    async def test_triggers_stamps_openai_when_grading_provider_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = _make_eval_spec(
+            should_trigger=["a", "b"],
+            should_not_trigger=["c"],
+        )
+        spec.grading_provider = "openai"
+        call = _mock_call_anthropic(
+            '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
+        )
+        with patch("clauditor._providers.call_model", call):
+            await run_test_triggers(spec)
+        # All 3 per-query call_model invocations must have received
+        # ``provider="openai"``.
+        assert call.await_count == 3
+        for c in call.await_args_list:
+            assert c.kwargs["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_triggers_defaults_to_anthropic_when_unset(self) -> None:
+        """Back-compat regression: a spec with ``grading_provider=None``
+        still routes through anthropic."""
+        spec = _make_eval_spec(
+            should_trigger=["a"],
+        )
+        # grading_provider default = None
+        call = _mock_call_anthropic(
+            '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
+        )
+        with patch("clauditor._providers.call_model", call):
+            await run_test_triggers(spec)
+        assert call.await_count == 1
+        assert call.await_args.kwargs["provider"] == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_classify_query_provider_kwarg_threaded(self) -> None:
+        """``classify_query`` accepts a ``provider`` kwarg and threads
+        it directly into ``call_model``."""
+        call = _mock_call_anthropic(
+            '{"triggered": true, "confidence": 0.9, "reasoning": "ok"}'
+        )
+        with patch("clauditor._providers.call_model", call):
+            await classify_query(
+                "skill", "desc", "q", True, "test-model",
+                provider="openai",
+            )
+        call.assert_awaited_once()
+        assert call.await_args.kwargs["provider"] == "openai"

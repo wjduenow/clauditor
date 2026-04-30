@@ -594,6 +594,7 @@ async def _call_blind_side_with_retry(
     model: str,
     transport: str,
     side_label: str,
+    provider: str = "anthropic",
 ) -> tuple[dict | None, str, str, str, int, int]:
     """Run one side of a blind-compare judge with parse retry.
 
@@ -611,12 +612,12 @@ async def _call_blind_side_with_retry(
     total_output = 0
     last_text = ""
     last_source = "api"
-    last_provider = "anthropic"
+    last_provider = provider
     parsed: dict | None = None
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
         r = await call_model(
             prompt,
-            provider="anthropic",
+            provider=provider,
             model=model,
             transport=transport,
             max_tokens=2048,
@@ -660,6 +661,7 @@ async def blind_compare(
     model: str = DEFAULT_GRADING_MODEL,
     rng: random.Random | None = None,
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> BlindReport:
     """Blind A/B judge: call Anthropic twice with swapped positions.
 
@@ -684,12 +686,19 @@ async def blind_compare(
     p1 = _build_blind_prompt_for_mapping(m1, *args)
     p2 = _build_blind_prompt_for_mapping(m2, *args)
     start = _monotonic()
+    # #145 US-010: ``provider`` is resolved by the caller
+    # (``blind_compare_from_spec`` reads it from
+    # ``spec.eval_spec.grading_provider``) and threaded to BOTH
+    # parallel calls. Resolved once here so the two gather'd calls
+    # always agree — never read the spec twice.
     side1, side2 = await _asyncio.gather(
         _call_blind_side_with_retry(
-            p1, model=model, transport=transport, side_label="side1"
+            p1, model=model, transport=transport, side_label="side1",
+            provider=provider,
         ),
         _call_blind_side_with_retry(
-            p2, model=model, transport=transport, side_label="side2"
+            p2, model=model, transport=transport, side_label="side2",
+            provider=provider,
         ),
     )
     duration = _monotonic() - start
@@ -787,6 +796,11 @@ async def blind_compare_from_spec(
 
     effective_model = model if model is not None else spec.eval_spec.grading_model
 
+    # #145 US-010: Resolve provider from the spec; default to
+    # ``"anthropic"`` for back-compat. Single resolution shared
+    # between both parallel judges inside ``blind_compare``.
+    provider = spec.eval_spec.grading_provider or "anthropic"
+
     return await blind_compare(
         user_prompt,
         output_a,
@@ -795,6 +809,7 @@ async def blind_compare_from_spec(
         model=effective_model,
         rng=rng,
         transport=transport,
+        provider=provider,
     )
 
 
@@ -1135,16 +1150,21 @@ async def grade_quality(
 
     prompt = build_grading_prompt(eval_spec, output)
 
+    # #145 US-010: Resolve provider from the spec; default to
+    # ``"anthropic"`` for back-compat. Pulled out of the retry loop so
+    # every attempt routes to the same backend.
+    provider = eval_spec.grading_provider or "anthropic"
+
     start = _monotonic()
     total_input_tokens = 0
     total_output_tokens = 0
     last_response_text = ""
     last_source = "api"
-    last_provider = "anthropic"
+    last_provider = provider
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
         api_result = await call_model(
             prompt,
-            provider="anthropic",
+            provider=provider,
             model=model,
             transport=transport,
             max_tokens=4096,

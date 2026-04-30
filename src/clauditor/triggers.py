@@ -176,6 +176,7 @@ async def classify_query(
     expected: bool,
     model: str,
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> TriggerResult:
     """Classify a single query using the LLM.
 
@@ -193,7 +194,7 @@ async def classify_query(
     try:
         result = await call_model(
             prompt,
-            provider="anthropic",
+            provider=provider,
             model=model,
             transport=transport,
             max_tokens=1024,
@@ -271,6 +272,11 @@ async def test_triggers(
     for q in eval_spec.trigger_tests.should_not_trigger:
         queries.append((q, False))
 
+    # #145 US-010: Resolve provider from the spec; default to
+    # ``"anthropic"`` for back-compat. Threaded into every per-query
+    # ``classify_query`` call.
+    provider = eval_spec.grading_provider or "anthropic"
+
     tasks = [
         classify_query(
             skill_name=eval_spec.skill_name,
@@ -279,6 +285,7 @@ async def test_triggers(
             expected=expected,
             model=model,
             transport=transport,
+            provider=provider,
         )
         for q, expected in queries
     ]
