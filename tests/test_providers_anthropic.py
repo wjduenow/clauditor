@@ -1544,9 +1544,12 @@ class TestModelResult:
 class TestCallModel:
     """Regression tests for the #144 US-003 ``call_model`` dispatcher.
 
-    Traces to DEC-001 (signature does not include ``subject``) and
-    DEC-002 (``provider="openai"`` raises :class:`NotImplementedError`)
-    of ``plans/super/144-providers-call-model.md``.
+    Traces to DEC-001 (signature does not include ``subject``) of
+    ``plans/super/144-providers-call-model.md`` and #145 US-005
+    (``provider="openai"`` dispatches to
+    :func:`clauditor._providers._openai.call_openai`; the prior
+    ``NotImplementedError`` placeholder from #144 DEC-002 was
+    replaced).
     """
 
     @pytest.mark.asyncio
@@ -1608,17 +1611,56 @@ class TestCallModel:
         assert result.output_tokens == 34
 
     @pytest.mark.asyncio
-    async def test_call_model_openai_raises_not_implemented(self) -> None:
-        """``provider="openai"`` raises :class:`NotImplementedError`
-        with a message pointing at #145 (DEC-002)."""
-        from clauditor._providers import call_model
+    async def test_call_model_dispatches_to_openai(self) -> None:
+        """#145 US-005: ``provider="openai"`` delegates to
+        :func:`clauditor._providers._openai.call_openai` with the
+        forwarded kwargs. Patches the canonical module path per
+        ``.claude/rules/back-compat-shim-discipline.md`` Pattern 3."""
+        from clauditor._providers import ModelResult, call_model
 
-        with pytest.raises(NotImplementedError, match="#145"):
-            await call_model(
-                "the prompt",
+        canned = ModelResult(
+            response_text="ok",
+            provider="openai",
+            source="api",
+            input_tokens=7,
+            output_tokens=11,
+        )
+        with patch(
+            "clauditor._providers._openai.call_openai",
+            new=AsyncMock(return_value=canned),
+        ) as mock_call:
+            result = await call_model(
+                "hi",
                 provider="openai",
-                model="gpt-4o-mini",
+                model="gpt-5.4",
             )
+
+        mock_call.assert_awaited_once_with(
+            "hi",
+            model="gpt-5.4",
+            transport="auto",
+            max_tokens=4096,
+        )
+        assert result is canned
+        assert result.provider == "openai"
+
+    @pytest.mark.asyncio
+    async def test_call_model_propagates_openai_helper_error(self) -> None:
+        """#145 US-005: an :class:`OpenAIHelperError` raised inside
+        :func:`call_openai` propagates verbatim through the
+        dispatcher — the dispatcher must NOT swallow or wrap it."""
+        from clauditor._providers import OpenAIHelperError, call_model
+
+        with patch(
+            "clauditor._providers._openai.call_openai",
+            new=AsyncMock(side_effect=OpenAIHelperError("simulated")),
+        ):
+            with pytest.raises(OpenAIHelperError, match="simulated"):
+                await call_model(
+                    "hi",
+                    provider="openai",
+                    model="gpt-5.4",
+                )
 
     def test_call_model_signature_does_not_include_subject(self) -> None:
         """DEC-001 guard: ``call_model`` MUST NOT carry a ``subject``
