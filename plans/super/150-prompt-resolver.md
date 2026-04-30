@@ -6,12 +6,13 @@
 - **Branch:** `feature/150-prompt-resolver`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/150-prompt-resolver`
 - **Base branch:** `dev`
-- **Phase:** `devolved`
+- **Phase:** `complete`
 - **Sessions:** 1
 - **Last session:** 2026-04-29
 - **Total decisions:** 13
 - **PR URL:** https://github.com/wjduenow/clauditor/pull/158
-- **Beads epic:** `clauditor-dnr`
+- **Beads epic:** `clauditor-dnr` (closed)
+- **Status:** All 7 stories merged on `feature/150-prompt-resolver`. CI green. Awaiting merge to `dev`.
 
 ---
 
