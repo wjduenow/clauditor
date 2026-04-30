@@ -5,8 +5,9 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/145
 - **Branch:** `feature/145-openai-provider`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/145-openai-provider`
-- **Phase:** published
+- **Phase:** devolved
 - **PR:** https://github.com/wjduenow/clauditor/pull/160
+- **Epic:** clauditor-2cq
 - **Sessions:** 1 (2026-04-29)
 - **Depends on:** #144 (CLOSED — `call_model` dispatcher + `ModelResult` envelope shipped)
 - **Blocks:** #146 (`grading_provider` precedence), #147 (sidecar v3 with `provider` field)
@@ -497,7 +498,28 @@ Architecture-natural ordering: foundations → SDK seam → dispatcher → auth 
 
 ## Beads Manifest
 
-(Phase 7 — populated on devolve.)
+**Epic:** `clauditor-2cq` — #145: OpenAI provider via Responses API
+**Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/145-openai-provider`
+**Branch:** `feature/145-openai-provider`
+**PR:** https://github.com/wjduenow/clauditor/pull/160
+
+| Story | Bead ID | Depends on |
+|---|---|---|
+| US-001 — Hoist retry helpers to `_providers/_retry.py` | `clauditor-0y2` | (epic) |
+| US-002 — Add `openai>=1.66.0` + `_providers/_openai.py` happy path | `clauditor-2pf` | US-001 |
+| US-003 — OpenAI response parser edges | `clauditor-n5h` | US-002 |
+| US-004 — OpenAI retry/error branches | `clauditor-4uw` | US-002 |
+| US-005 — Wire OpenAI into `call_model` dispatcher | `clauditor-52b` | US-002, US-004 |
+| US-006 — OpenAI auth helper + `check_provider_auth` dispatcher | `clauditor-4cq` | (epic) |
+| US-007 — `EvalSpec.grading_provider` field | `clauditor-jlo` | (epic) |
+| US-008 — Strip `OPENAI_API_KEY` from skill subprocess env | `clauditor-ejw` | (epic) |
+| US-009 — Wire 4 CLI commands to `check_provider_auth` | `clauditor-5wc` | US-006, US-007 |
+| US-010 — Wire 4 grader call sites | `clauditor-iye` | US-005, US-007 |
+| US-011 — End-to-end tests for `grading_provider="openai"` | `clauditor-t8t` | US-009, US-010 |
+| US-012 — Quality Gate | `clauditor-y16` | US-001..US-011 |
+| US-013 — Patterns & Memory | `clauditor-8gx` | US-012 |
+
+**Initially ready** (zero-dependency starting set): `clauditor-0y2` (US-001), `clauditor-4cq` (US-006), `clauditor-jlo` (US-007), `clauditor-ejw` (US-008).
 
 ## Session Notes
 
