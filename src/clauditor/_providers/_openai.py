@@ -69,14 +69,51 @@ from typing import Any, Final
 from openai import AsyncOpenAI
 
 from clauditor._providers import ModelResult
+from clauditor._providers._retry import (
+    CONN_MAX_RETRIES,
+    RATE_LIMIT_MAX_RETRIES,
+    SERVER_MAX_RETRIES,
+    compute_backoff,
+)
 
 # Module-level alias per .claude/rules/monotonic-time-indirection.md.
-# ``_sleep`` is patched in (future) retry-branch tests to avoid real
+# ``_sleep`` is patched in retry-branch tests to avoid real
 # wallclock; ``_monotonic`` lets tests pin duration measurements
 # deterministically without clobbering the asyncio event loop's own
 # scheduler ticks.
 _sleep = asyncio.sleep
 _monotonic = time.monotonic
+
+
+# Body excerpt length when surfacing APIStatusError messages. 512 is
+# enough to include the canonical
+# ``{"error": {"type": "...", "message": "..."}}`` envelope without
+# flooding stderr. Mirrors :data:`clauditor._providers._anthropic._BODY_EXCERPT_CHARS`.
+# Duplicated rather than imported because each provider may evolve
+# its own body-shape conventions; today they happen to match.
+_BODY_EXCERPT_CHARS = 512
+
+
+def _body_excerpt(exc: Any) -> str:
+    """Return a short string representation of an SDK exception body.
+
+    Mirrors :func:`clauditor._providers._anthropic._body_excerpt`.
+    Duplicated rather than shared because each provider's SDK may
+    evolve different body shapes; today both happen to expose ``.body``
+    as either a decoded dict, raw bytes/string, or ``None``. All three
+    are coerced to a best-effort string truncated to
+    :data:`_BODY_EXCERPT_CHARS`.
+    """
+    body = getattr(exc, "body", None)
+    if body is None:
+        return "<no body>"
+    try:
+        text = body if isinstance(body, str) else repr(body)
+    except Exception:  # noqa: BLE001 - defensive repr
+        text = "<unrenderable body>"
+    if len(text) > _BODY_EXCERPT_CHARS:
+        return text[:_BODY_EXCERPT_CHARS] + "..."
+    return text
 
 
 # DEC-001 of plans/super/145-openai-provider.md: pin the default
@@ -258,33 +295,142 @@ async def call_openai(
     # call-site-discoverable.
     del transport, subject
 
-    # The OpenAI SDK reads ``OPENAI_API_KEY`` automatically. The
-    # ``check_openai_auth`` pre-flight (US-006 / DEC-006) runs
-    # upstream of this call site at the CLI / fixture boundary.
-    client = AsyncOpenAI()
-
-    start = _monotonic()
-    response: Any = await client.responses.create(
-        input=prompt,
-        model=model,
-        max_output_tokens=max_tokens,
-    )
-    duration = _monotonic() - start
-
-    # Delegate the projection to the pure helper per
-    # .claude/rules/pure-compute-vs-io-split.md. Retry branches in
-    # US-004 will reuse the same helper inside the retry loop.
-    response_text, text_blocks, input_tokens, output_tokens, raw_message = (
-        _extract_openai_result(response)
+    # Local imports mirror :func:`call_anthropic`'s pattern. The
+    # ``openai`` SDK is a hard dependency per DEC-004 of #145 so the
+    # ``AsyncOpenAI`` symbol is already imported at module load (the
+    # tests patch the module-level ``AsyncOpenAI`` symbol). Import the
+    # exception classes here so the retry ladder names them locally.
+    # Per ``.claude/rules/centralized-sdk-call.md``: ``ImportError``
+    # is RE-RAISED un-wrapped so callers surface a clean
+    # ``pip install openai>=1.66.0`` hint.
+    from openai import (
+        APIConnectionError,
+        APIStatusError,
+        AuthenticationError,
+        PermissionDeniedError,
+        RateLimitError,
     )
 
-    return ModelResult(
-        response_text=response_text,
-        text_blocks=text_blocks,
-        input_tokens=input_tokens,
-        output_tokens=output_tokens,
-        raw_message=raw_message,
-        source="api",
-        duration_seconds=duration,
-        provider="openai",
-    )
+    # Defense-in-depth (per ``.claude/rules/precall-env-validation.md``):
+    # wrap the ``AsyncOpenAI()`` construction site so a future SDK
+    # that raises ``TypeError`` from ``__init__`` (e.g. on an
+    # unresolved auth method) surfaces as a clean
+    # ``OpenAIHelperError`` rather than a raw traceback. Fixed
+    # sanitized message; original ``TypeError`` preserved on
+    # ``__cause__`` via ``raise ... from``. ``ImportError`` is NOT
+    # caught — per the centralized-sdk-call rule, missing-SDK errors
+    # must propagate un-wrapped so the install hint surfaces.
+    try:
+        client = AsyncOpenAI()
+    except ImportError:
+        raise
+    except TypeError as exc:
+        raise OpenAIHelperError(
+            "OpenAI SDK client initialization failed — "
+            "verify OPENAI_API_KEY is set."
+        ) from exc
+
+    rate_limit_retries = 0
+    server_retries = 0
+    conn_retries = 0
+
+    while True:
+        # Duration measures the successful attempt's wall clock only,
+        # excluding retry sleeps (mirrors DEC-020 of the Anthropic
+        # branch). Reset ``start`` on every ``continue`` so a
+        # successful-after-retry call reports the final attempt's
+        # own duration.
+        start = _monotonic()
+        try:
+            response: Any = await client.responses.create(
+                input=prompt,
+                model=model,
+                max_output_tokens=max_tokens,
+            )
+        except RateLimitError as exc:
+            if rate_limit_retries >= RATE_LIMIT_MAX_RETRIES:
+                raise OpenAIHelperError(
+                    f"OpenAI rate limit (429) after "
+                    f"{RATE_LIMIT_MAX_RETRIES} retries. Body: "
+                    f"{_body_excerpt(exc)}"
+                ) from exc
+            delay = compute_backoff(rate_limit_retries)
+            rate_limit_retries += 1
+            await _sleep(delay)
+            continue
+        except (AuthenticationError, PermissionDeniedError) as exc:
+            raise OpenAIHelperError(
+                f"OpenAI authentication failed "
+                f"({exc.status_code}): check the OPENAI_API_KEY "
+                f"environment variable. Body: {_body_excerpt(exc)}"
+            ) from exc
+        except APIStatusError as exc:
+            status = getattr(exc, "status_code", 0)
+            if status < 500:
+                # 4xx (other than 401/403): bad request, not found,
+                # unprocessable entity, etc. No retry.
+                raise OpenAIHelperError(
+                    f"OpenAI API request failed "
+                    f"({status}): {exc.message}. Body: "
+                    f"{_body_excerpt(exc)}"
+                ) from exc
+            if server_retries >= SERVER_MAX_RETRIES:
+                raise OpenAIHelperError(
+                    f"OpenAI server error ({status}) after "
+                    f"{SERVER_MAX_RETRIES} retry. Body: "
+                    f"{_body_excerpt(exc)}"
+                ) from exc
+            delay = compute_backoff(server_retries)
+            server_retries += 1
+            await _sleep(delay)
+            continue
+        except APIConnectionError as exc:
+            if conn_retries >= CONN_MAX_RETRIES:
+                raise OpenAIHelperError(
+                    f"OpenAI connection error after "
+                    f"{CONN_MAX_RETRIES} retry: "
+                    f"{getattr(exc, 'message', repr(exc))}"
+                ) from exc
+            delay = compute_backoff(conn_retries)
+            conn_retries += 1
+            await _sleep(delay)
+            continue
+        except TypeError as exc:
+            # Defense-in-depth wrap (per
+            # ``.claude/rules/precall-env-validation.md``). If a
+            # future caller bypasses the pre-flight auth guard and
+            # the SDK raises ``TypeError`` from
+            # ``responses.create`` (e.g. unresolved auth, malformed
+            # client config), surface a clean
+            # ``OpenAIHelperError`` rather than the raw traceback.
+            # Fixed sanitized message — no ``str(exc)``,
+            # no ``exc.args``. Original exception preserved on
+            # ``__cause__`` via ``raise ... from exc``. Not retried:
+            # a ``TypeError`` is a config error, not transient.
+            raise OpenAIHelperError(
+                "OpenAI SDK client initialization failed — "
+                "verify OPENAI_API_KEY is set."
+            ) from exc
+
+        duration = _monotonic() - start
+
+        # Delegate the projection to the pure helper per
+        # .claude/rules/pure-compute-vs-io-split.md.
+        (
+            response_text,
+            text_blocks,
+            input_tokens,
+            output_tokens,
+            raw_message,
+        ) = _extract_openai_result(response)
+
+        return ModelResult(
+            response_text=response_text,
+            text_blocks=text_blocks,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            raw_message=raw_message,
+            source="api",
+            duration_seconds=duration,
+            provider="openai",
+        )

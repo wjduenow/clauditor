@@ -21,6 +21,7 @@ from clauditor._providers._openai import (
     DEFAULT_MODEL_L2,
     DEFAULT_MODEL_L3,
     OpenAIHelperError,
+    _body_excerpt,
     _extract_openai_result,
     call_openai,
 )
@@ -502,3 +503,458 @@ class TestExtractOpenAIResult:
         resp.model_dump = MagicMock(side_effect=TypeError("boom"))
         _, _, _, _, raw = _extract_openai_result(resp)
         assert raw == {}
+
+
+# ---------------------------------------------------------------------------
+# US-004: Retry / error branches in call_openai
+# ---------------------------------------------------------------------------
+
+
+import httpx  # noqa: E402
+from openai import (  # noqa: E402
+    APIConnectionError,
+    APIStatusError,
+    AuthenticationError,
+    PermissionDeniedError,
+    RateLimitError,
+)
+
+
+def _make_rate_limit_error(
+    *, message: str = "rate limit", body: object | None = None
+) -> RateLimitError:
+    req = httpx.Request("POST", "https://example.com/v1/responses")
+    httpx_resp = httpx.Response(429, request=req)
+    return RateLimitError(message, response=httpx_resp, body=body)
+
+
+def _make_status_error(
+    status: int,
+    *,
+    message: str = "boom",
+    body: object | None = None,
+) -> APIStatusError:
+    req = httpx.Request("POST", "https://example.com/v1/responses")
+    httpx_resp = httpx.Response(status, request=req)
+    return APIStatusError(message, response=httpx_resp, body=body)
+
+
+def _make_auth_error(
+    *, message: str = "invalid key", body: object | None = None
+) -> AuthenticationError:
+    req = httpx.Request("POST", "https://example.com/v1/responses")
+    httpx_resp = httpx.Response(401, request=req)
+    return AuthenticationError(message, response=httpx_resp, body=body)
+
+
+def _make_permission_error() -> PermissionDeniedError:
+    req = httpx.Request("POST", "https://example.com/v1/responses")
+    httpx_resp = httpx.Response(403, request=req)
+    return PermissionDeniedError(
+        "forbidden",
+        response=httpx_resp,
+        body={"error": {"message": "nope"}},
+    )
+
+
+def _make_connection_error() -> APIConnectionError:
+    req = httpx.Request("POST", "https://example.com/v1/responses")
+    return APIConnectionError(message="connection reset", request=req)
+
+
+def _patch_async_openai_with_side_effect(side_effect):
+    """Patch ``AsyncOpenAI`` so ``.responses.create`` uses ``side_effect``.
+
+    Distinct from ``_patch_async_openai`` (above) which uses
+    ``return_value`` for the happy path. Per
+    ``.claude/rules/mock-side-effect-for-distinct-calls.md``, the
+    retry tests pass a list / iterable so each retry iteration
+    sees a distinct value.
+    """
+    fake_client = MagicMock()
+    fake_client.responses = MagicMock()
+    fake_client.responses.create = AsyncMock(side_effect=side_effect)
+    fake_class = MagicMock(return_value=fake_client)
+    return (
+        patch("clauditor._providers._openai.AsyncOpenAI", new=fake_class),
+        fake_client,
+    )
+
+
+class TestBodyExcerpt:
+    """Coverage for the OpenAI body-excerpt helper.
+
+    Mirrors :class:`tests.test_providers_anthropic.TestBodyExcerpt`
+    — the helpers are duplicated per-provider, so the tests are too.
+    """
+
+    def test_none_body(self) -> None:
+        exc = MagicMock()
+        exc.body = None
+        assert _body_excerpt(exc) == "<no body>"
+
+    def test_string_body(self) -> None:
+        exc = MagicMock()
+        exc.body = "some error text"
+        assert _body_excerpt(exc) == "some error text"
+
+    def test_dict_body_rendered(self) -> None:
+        exc = MagicMock()
+        exc.body = {"error": {"message": "bad"}}
+        out = _body_excerpt(exc)
+        assert "error" in out
+        assert "bad" in out
+
+    def test_body_truncated_at_limit(self) -> None:
+        exc = MagicMock()
+        exc.body = "x" * 1000
+        out = _body_excerpt(exc)
+        # 512 chars + 3-char ellipsis
+        assert out.endswith("...")
+        assert len(out) == 512 + 3
+
+    def test_unrenderable_body_tolerated(self) -> None:
+        # A body whose ``repr()`` itself raises must fall through to
+        # the "<unrenderable body>" sentinel rather than propagate.
+        class Bad:
+            def __repr__(self) -> str:
+                raise RuntimeError("nope")
+
+        exc = MagicMock()
+        exc.body = Bad()
+        assert _body_excerpt(exc) == "<unrenderable body>"
+
+
+class TestCallOpenAIRateLimit:
+    @pytest.mark.asyncio
+    async def test_retries_three_times_then_raises(self) -> None:
+        # Four failures: retries 0, 1, 2 then raise on attempt 4.
+        # Distinct bodies per call prove the loop keeps iterating.
+        errors = [
+            _make_rate_limit_error(body={"attempt": i}) for i in range(4)
+        ]
+        ctx, fake_client = _patch_async_openai_with_side_effect(errors)
+        sleep_mock = AsyncMock()
+        with ctx, patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ), patch(
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
+        ):
+            with pytest.raises(OpenAIHelperError) as exc_info:
+                await call_openai("p", model="gpt-5.4")
+        assert "rate limit" in str(exc_info.value).lower()
+        # 4 create calls, 3 sleeps between them.
+        assert fake_client.responses.create.await_count == 4
+        assert sleep_mock.await_count == 3
+        # Sleeps should be 1, 2, 4 with zero jitter.
+        delays = [c.args[0] for c in sleep_mock.await_args_list]
+        assert delays == [1.0, 2.0, 4.0]
+        # Original SDK exception preserved via __cause__.
+        assert isinstance(exc_info.value.__cause__, RateLimitError)
+
+    @pytest.mark.asyncio
+    async def test_recovery_after_two_retries(self) -> None:
+        # Distinct retry errors followed by a success — per rule
+        # mock-side-effect-for-distinct-calls.md, each call value
+        # is unique so the retry loop actually iterates.
+        resp = _mock_response(
+            output_text="recovered", input_tokens=10, output_tokens=3
+        )
+        sequence = [
+            _make_rate_limit_error(body={"n": 1}),
+            _make_rate_limit_error(body={"n": 2}),
+            resp,
+        ]
+        ctx, fake_client = _patch_async_openai_with_side_effect(sequence)
+        sleep_mock = AsyncMock()
+        with ctx, patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ), patch(
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
+        ):
+            result = await call_openai("p", model="gpt-5.4")
+        assert result.response_text == "recovered"
+        assert fake_client.responses.create.await_count == 3
+        assert sleep_mock.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_backoff_respects_jitter_band(self) -> None:
+        # Stub _rand_uniform to ±0.25 extremes; verify delays sit
+        # inside the documented band.
+        errors = [
+            _make_rate_limit_error(body={"n": i}) for i in range(4)
+        ]
+        ctx, _ = _patch_async_openai_with_side_effect(errors)
+        sleep_mock = AsyncMock()
+        with ctx, patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ), patch(
+            "clauditor._providers._retry._rand_uniform",
+            side_effect=[0.25, -0.25, 0.25],
+        ):
+            with pytest.raises(OpenAIHelperError):
+                await call_openai("p", model="gpt-5.4")
+        delays = [c.args[0] for c in sleep_mock.await_args_list]
+        # retry 0: base 1, +25% → 1.25
+        # retry 1: base 2, -25% → 1.5
+        # retry 2: base 4, +25% → 5.0
+        assert delays[0] == pytest.approx(1.25)
+        assert delays[1] == pytest.approx(1.5)
+        assert delays[2] == pytest.approx(5.0)
+
+
+class TestCallOpenAIServerError:
+    @pytest.mark.asyncio
+    async def test_503_retries_once_then_raises(self) -> None:
+        # Two distinct 503s so the side_effect list documents both
+        # the first and the retry arm; the retry is exhausted on
+        # the second and the helper raises.
+        errors = [
+            _make_status_error(503, message="svc1", body={"n": 1}),
+            _make_status_error(503, message="svc2", body={"n": 2}),
+        ]
+        ctx, fake_client = _patch_async_openai_with_side_effect(errors)
+        sleep_mock = AsyncMock()
+        with ctx, patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ), patch(
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
+        ):
+            with pytest.raises(OpenAIHelperError) as exc_info:
+                await call_openai("p", model="gpt-5.4")
+        assert "503" in str(exc_info.value)
+        assert "server error" in str(exc_info.value).lower()
+        assert fake_client.responses.create.await_count == 2
+        assert sleep_mock.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_500_recovers_after_one_retry(self) -> None:
+        resp = _mock_response(
+            output_text="recovered", input_tokens=1, output_tokens=1
+        )
+        sequence = [
+            _make_status_error(500, message="internal", body={"n": 1}),
+            resp,
+        ]
+        ctx, _ = _patch_async_openai_with_side_effect(sequence)
+        sleep_mock = AsyncMock()
+        with ctx, patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ), patch(
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
+        ):
+            result = await call_openai("p", model="gpt-5.4")
+        assert result.response_text == "recovered"
+        assert sleep_mock.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_502_recovers_after_one_retry(self) -> None:
+        # Coverage parity for the 502 status code branch.
+        resp = _mock_response(output_text="ok")
+        sequence = [
+            _make_status_error(502, message="bad gateway", body={"n": 1}),
+            resp,
+        ]
+        ctx, _ = _patch_async_openai_with_side_effect(sequence)
+        sleep_mock = AsyncMock()
+        with ctx, patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ), patch(
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
+        ):
+            result = await call_openai("p", model="gpt-5.4")
+        assert result.response_text == "ok"
+
+
+class TestCallOpenAIClientError:
+    @pytest.mark.asyncio
+    async def test_400_fails_fast_no_retry(self) -> None:
+        err = _make_status_error(
+            400, message="bad request", body={"error": {"message": "nope"}}
+        )
+        ctx, fake_client = _patch_async_openai_with_side_effect(err)
+        sleep_mock = AsyncMock()
+        with ctx, patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ):
+            with pytest.raises(OpenAIHelperError) as exc_info:
+                await call_openai("p", model="gpt-5.4")
+        msg = str(exc_info.value)
+        assert "400" in msg
+        assert "bad request" in msg
+        assert fake_client.responses.create.await_count == 1
+        assert sleep_mock.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_422_fails_fast_no_retry(self) -> None:
+        err = _make_status_error(
+            422, message="unprocessable", body=None
+        )
+        ctx, fake_client = _patch_async_openai_with_side_effect(err)
+        sleep_mock = AsyncMock()
+        with ctx, patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ):
+            with pytest.raises(OpenAIHelperError) as exc_info:
+                await call_openai("p", model="gpt-5.4")
+        assert "422" in str(exc_info.value)
+        assert fake_client.responses.create.await_count == 1
+        assert sleep_mock.await_count == 0
+
+
+class TestCallOpenAIAuthErrors:
+    @pytest.mark.asyncio
+    async def test_401_mentions_api_key_env_var(self) -> None:
+        err = _make_auth_error(
+            message="invalid api key",
+            body={"error": {"message": "invalid key"}},
+        )
+        ctx, fake_client = _patch_async_openai_with_side_effect(err)
+        sleep_mock = AsyncMock()
+        with ctx, patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ):
+            with pytest.raises(OpenAIHelperError) as exc_info:
+                await call_openai("p", model="gpt-5.4")
+        msg = str(exc_info.value)
+        assert "OPENAI_API_KEY" in msg
+        assert "401" in msg
+        # Auth errors must not retry.
+        assert fake_client.responses.create.await_count == 1
+        assert sleep_mock.await_count == 0
+        assert isinstance(exc_info.value.__cause__, AuthenticationError)
+
+    @pytest.mark.asyncio
+    async def test_403_also_mentions_api_key_env_var(self) -> None:
+        err = _make_permission_error()
+        ctx, fake_client = _patch_async_openai_with_side_effect(err)
+        sleep_mock = AsyncMock()
+        with ctx, patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ):
+            with pytest.raises(OpenAIHelperError) as exc_info:
+                await call_openai("p", model="gpt-5.4")
+        msg = str(exc_info.value)
+        assert "OPENAI_API_KEY" in msg
+        assert "403" in msg
+        assert fake_client.responses.create.await_count == 1
+        assert sleep_mock.await_count == 0
+        assert isinstance(
+            exc_info.value.__cause__, PermissionDeniedError
+        )
+
+
+class TestCallOpenAIConnectionError:
+    @pytest.mark.asyncio
+    async def test_retries_once_then_raises(self) -> None:
+        errors = [_make_connection_error(), _make_connection_error()]
+        ctx, fake_client = _patch_async_openai_with_side_effect(errors)
+        sleep_mock = AsyncMock()
+        with ctx, patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ), patch(
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
+        ):
+            with pytest.raises(OpenAIHelperError) as exc_info:
+                await call_openai("p", model="gpt-5.4")
+        assert "connection" in str(exc_info.value).lower()
+        assert fake_client.responses.create.await_count == 2
+        assert sleep_mock.await_count == 1
+        assert isinstance(exc_info.value.__cause__, APIConnectionError)
+
+    @pytest.mark.asyncio
+    async def test_recovers_after_one_retry(self) -> None:
+        resp = _mock_response(output_text="got it")
+        sequence = [_make_connection_error(), resp]
+        ctx, _ = _patch_async_openai_with_side_effect(sequence)
+        sleep_mock = AsyncMock()
+        with ctx, patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ), patch(
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
+        ):
+            result = await call_openai("p", model="gpt-5.4")
+        assert result.response_text == "got it"
+        assert sleep_mock.await_count == 1
+
+
+class TestCallOpenAIImportError:
+    @pytest.mark.asyncio
+    async def test_async_openai_importerror_re_raises(self) -> None:
+        # Per .claude/rules/centralized-sdk-call.md: ImportError must
+        # be raised UN-WRAPPED (not wrapped in OpenAIHelperError) so
+        # the user gets a clean `pip install openai>=1.66.0` hint
+        # path. Simulate the missing-SDK case by patching the
+        # module-level AsyncOpenAI symbol to raise ImportError on
+        # construction.
+        with patch(
+            "clauditor._providers._openai.AsyncOpenAI",
+            side_effect=ImportError("No module named 'openai'"),
+        ):
+            with pytest.raises(ImportError) as exc_info:
+                await call_openai("p", model="gpt-5.4")
+        # Not wrapped in OpenAIHelperError — bare ImportError.
+        assert not isinstance(exc_info.value, OpenAIHelperError)
+
+
+class TestCallOpenAITypeError:
+    """Defense-in-depth wrap for SDK ``TypeError``.
+
+    Per ``.claude/rules/precall-env-validation.md``: wrap
+    ``TypeError`` (which the SDK raises when no auth is configured)
+    as ``OpenAIHelperError`` with a fixed sanitized message — no
+    ``str(exc)``, no ``exc.args``. Original exception preserved on
+    ``__cause__`` via ``raise ... from exc``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_typeerror_at_construction_wrapped(self) -> None:
+        # If AsyncOpenAI() construction raises TypeError (e.g. SDK
+        # internal config error), the wrap should fire with the
+        # fixed sanitized message.
+        sdk_text = "Could not resolve authentication method"
+
+        def _raise_at_construct(*args: object, **kwargs: object) -> None:
+            raise TypeError(sdk_text)
+
+        sleep_mock = AsyncMock()
+        with patch(
+            "clauditor._providers._openai.AsyncOpenAI",
+            side_effect=_raise_at_construct,
+        ), patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ):
+            with pytest.raises(OpenAIHelperError) as exc_info:
+                await call_openai("p", model="gpt-5.4")
+        msg = str(exc_info.value)
+        assert "OpenAI SDK client initialization failed" in msg
+        assert "OPENAI_API_KEY" in msg
+        # SDK-sourced text must NOT leak into the user-facing message.
+        assert sdk_text not in msg
+        # No retry; construction failure is not transient.
+        assert sleep_mock.await_count == 0
+        assert isinstance(exc_info.value.__cause__, TypeError)
+        assert sdk_text in str(exc_info.value.__cause__)
+
+    @pytest.mark.asyncio
+    async def test_typeerror_at_responses_create_wrapped(self) -> None:
+        # If .responses.create raises TypeError, the wrap should
+        # fire with the fixed sanitized message. No retry.
+        sdk_text = "Could not resolve authentication method"
+        ctx, fake_client = _patch_async_openai_with_side_effect(
+            TypeError(sdk_text)
+        )
+        sleep_mock = AsyncMock()
+        with ctx, patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ):
+            with pytest.raises(OpenAIHelperError) as exc_info:
+                await call_openai("p", model="gpt-5.4")
+        msg = str(exc_info.value)
+        assert "OpenAI SDK client initialization failed" in msg
+        assert "OPENAI_API_KEY" in msg
+        assert sdk_text not in msg
+        assert fake_client.responses.create.await_count == 1
+        assert sleep_mock.await_count == 0
+        assert isinstance(exc_info.value.__cause__, TypeError)
+        assert sdk_text in str(exc_info.value.__cause__)
