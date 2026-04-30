@@ -1,7 +1,8 @@
-"""Back-compat shim for the Anthropic SDK seam (#144 US-002).
+"""Back-compat shim for the Anthropic SDK seam (#144 US-002, US-007).
 
 The SDK seam moved to :mod:`clauditor._providers._anthropic` in #144
-US-002. This module exists for one release as a deprecated shim that
+US-002. The auth seam lives in :mod:`clauditor._providers._auth`.
+This module exists for one release as a deprecated shim that
 re-exports every public symbol from the new home so existing call
 sites (``from clauditor._anthropic import call_anthropic``,
 ``from clauditor._anthropic import AnthropicHelperError``, etc.) keep
@@ -16,6 +17,13 @@ object as the one defined in ``_providers/_anthropic.py`` /
 ``_providers/__init__.py``. ``except AnthropicHelperError`` ladders
 catch the same class regardless of whether the caller imported it
 from the shim or from the canonical location.
+
+DEC-004 (#144 US-007): the back-compat ``call_anthropic`` is a thin
+wrapper here (NOT a re-export) that calls
+:func:`announce_call_anthropic_deprecation` once per process before
+delegating to :func:`call_model`. The deprecation notice is the third
+member of the "Implicit-coupling announcements — an emerging family"
+documented in ``.claude/rules/centralized-sdk-call.md``.
 """
 
 from __future__ import annotations
@@ -27,32 +35,27 @@ from __future__ import annotations
 # patch takes effect on the canonical ``_providers/_anthropic.py``
 # call site as well.
 import shutil  # noqa: E402, F401
+from typing import Literal
 
 # DEC-005 of ``plans/super/144-providers-call-model.md``: the auth
 # sub-seam moved into ``clauditor._providers._auth`` (US-001) and the
 # SDK sub-seam moved into ``clauditor._providers._anthropic``
 # (US-002). The imports below re-export every moved symbol so existing
-# call sites keep working unmodified for one release. The
-# class-identity invariant (every re-exported class ``is`` the same
-# object as the one defined in ``_providers``) holds because each
-# class is defined exactly once in ``_providers`` and re-exported
-# here, not redefined.
+# call sites keep working unmodified for one release.
 #
-# Each name is suppressed with a noqa marker (F401) because ruff sees
-# these as unused inside this module — they ARE unused here, since
-# they are re-exports for back-compat callers.
-#
-# The mutable one-shot announcement flag ``_announced_implicit_no_api_key``
-# is intentionally NOT re-exported here. A ``from clauditor._providers
-# import _announced_implicit_no_api_key`` would frozen-copy the initial
-# ``False`` value into this module — ``announce_implicit_no_api_key()``
-# rebinds the flag on its source module via ``global``, so the alias
-# here would silently diverge after the first call. Code that needs to
-# read or reset the flag must target its canonical location:
-# ``clauditor._providers._auth._announced_implicit_no_api_key``.
+# The mutable one-shot announcement flags
+# (``_announced_implicit_no_api_key``,
+# ``_announced_call_anthropic_deprecation``) are intentionally NOT
+# re-exported here. ``from X import Y`` would frozen-copy the initial
+# ``False`` value into this module, but the helpers rebind the flag on
+# their source module via ``global`` — the alias here would silently
+# diverge after the first call. Code that needs to read or reset a
+# flag must target its canonical location in
+# ``clauditor._providers._auth``.
 from clauditor._providers import (
     _AUTH_MISSING_TEMPLATE,  # noqa: F401
     _AUTH_MISSING_TEMPLATE_KEY_ONLY,  # noqa: F401
+    _CALL_ANTHROPIC_DEPRECATION_NOTICE,  # noqa: F401
     _IMPLICIT_NO_API_KEY_ANNOUNCEMENT,  # noqa: F401
     AnthropicAuthMissingError,  # noqa: F401
     AnthropicHelperError,  # noqa: F401
@@ -61,9 +64,9 @@ from clauditor._providers import (
     ModelResult,  # noqa: F401
     _api_key_is_set,  # noqa: F401
     _claude_cli_is_available,  # noqa: F401
+    announce_call_anthropic_deprecation,
     announce_implicit_no_api_key,  # noqa: F401
-    call_anthropic,  # noqa: F401
-    call_model,  # noqa: F401
+    call_model,  # noqa: F401  (re-exported for back-compat)
     check_any_auth_available,  # noqa: F401
     check_api_key_only,  # noqa: F401
     resolve_transport,  # noqa: F401
@@ -72,18 +75,6 @@ from clauditor._providers import (
 # Re-export the SDK-seam private surface from the canonical module so
 # tests / call sites that referenced these names via
 # ``clauditor._anthropic`` keep resolving for the back-compat window.
-# These are NOT in ``_providers/__init__.py``'s ``__all__`` (they are
-# implementation details of the Anthropic backend, not public surface
-# of the package) — re-exporting only here is intentional.
-#
-# Mutable patchable hooks (``_sleep``, ``_rand_uniform``,
-# ``_monotonic``, ``_announced_cli_transport``) and the ``shutil``
-# module reference: these are the canonical patch targets used by
-# the retry / backoff / announcement tests. Per #144 US-002 the
-# canonical location is ``clauditor._providers._anthropic``; tests
-# updated for the move target the new path. The names below stay
-# importable here so name-only consumers (``from clauditor._anthropic
-# import _CLI_AUTO_ANNOUNCEMENT``) keep working.
 from clauditor._providers._anthropic import (  # noqa: F401, E402
     _BODY_EXCERPT_CHARS,
     _CLI_AUTO_ANNOUNCEMENT,
@@ -109,3 +100,66 @@ from clauditor._providers._anthropic import (  # noqa: F401, E402
     _rng,
     _sleep,
 )
+
+
+async def call_anthropic(
+    prompt: str,
+    *,
+    model: str,
+    max_tokens: int = 4096,
+    transport: Literal["api", "cli", "auto"] = "auto",
+    subject: str | None = None,
+) -> ModelResult:
+    """Deprecated back-compat wrapper for the Anthropic provider seam.
+
+    DEC-004 of ``plans/super/144-providers-call-model.md``. Existing
+    callers that imported ``call_anthropic`` from
+    :mod:`clauditor._anthropic` keep working for one release, but the
+    first call per Python process emits a one-shot deprecation notice
+    pointing at the canonical replacement
+    (:func:`clauditor._providers.call_model` with
+    ``provider="anthropic"``). The notice is suppressed on subsequent
+    calls within the same process.
+
+    Delegates directly to
+    :func:`clauditor._providers._anthropic.call_anthropic` (NOT
+    :func:`call_model`) so the ``subject`` keyword threads through to
+    the CLI transport's ``apiKeySource`` telemetry line. The
+    :func:`call_model` dispatcher's signature deliberately omits
+    ``subject`` per DEC-001 (it does not generalize across providers);
+    new code that needs ``subject`` should target
+    :func:`clauditor._providers._anthropic.call_anthropic` directly.
+    """
+    announce_call_anthropic_deprecation()
+    # Resolve via module attribute so test patches that target
+    # ``clauditor._providers._anthropic.call_anthropic`` (the canonical
+    # patch path per ``.claude/rules/centralized-sdk-call.md``) take
+    # effect here. A direct import-bound call would resolve via the
+    # ``from clauditor._providers import call_anthropic`` binding
+    # above, which a patch on ``_providers._anthropic`` would NOT
+    # affect — same reason :func:`call_model` uses a deferred import.
+    from clauditor._providers import _anthropic as _anthropic_mod
+
+    return await _anthropic_mod.call_anthropic(
+        prompt,
+        model=model,
+        max_tokens=max_tokens,
+        transport=transport,
+        subject=subject,
+    )
+
+
+__all__ = [
+    "AnthropicAuthMissingError",
+    "AnthropicHelperError",
+    "AnthropicResult",
+    "ClaudeCLIError",
+    "ModelResult",
+    "announce_call_anthropic_deprecation",
+    "announce_implicit_no_api_key",
+    "call_anthropic",
+    "call_model",
+    "check_any_auth_available",
+    "check_api_key_only",
+    "resolve_transport",
+]

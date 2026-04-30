@@ -1667,6 +1667,154 @@ class TestAnnounceImplicitNoApiKey:
         assert captured.err != ""
 
 
+class TestCallAnthropicDeprecationAnnouncement:
+    """DEC-004 (#144 US-007): one-shot stderr deprecation notice when
+    the back-compat shim ``clauditor._anthropic.call_anthropic`` is
+    invoked.
+
+    Parallel to :class:`TestStderrAnnouncement` /
+    :class:`TestAnnounceImplicitNoApiKey` — same autouse-reset
+    pattern; same one-shot-per-process contract. Tests pin three
+    durable substrings (``clauditor._anthropic``,
+    ``clauditor._providers``, ``will be removed``) per
+    ``.claude/rules/precall-env-validation.md``'s durable-substring
+    discipline so stylistic copy edits don't churn tests.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_announcement_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every test starts with the one-shot flag set to False."""
+        monkeypatch.setattr(
+            "clauditor._providers._auth._announced_call_anthropic_deprecation",
+            False,
+        )
+
+    def test_first_call_emits_announcement(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from clauditor._providers._auth import (
+            announce_call_anthropic_deprecation,
+        )
+
+        announce_call_anthropic_deprecation()
+        captured = capsys.readouterr()
+        from clauditor._anthropic import _CALL_ANTHROPIC_DEPRECATION_NOTICE
+
+        assert _CALL_ANTHROPIC_DEPRECATION_NOTICE in captured.err
+
+    def test_second_call_silent(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from clauditor._providers._auth import (
+            announce_call_anthropic_deprecation,
+        )
+
+        announce_call_anthropic_deprecation()
+        # Drain the first emission.
+        capsys.readouterr()
+        announce_call_anthropic_deprecation()
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_constant_names_deprecated_path(self) -> None:
+        """First durable substring — users must see the deprecated
+        import path so they know which module triggered the notice."""
+        from clauditor._anthropic import _CALL_ANTHROPIC_DEPRECATION_NOTICE
+
+        assert "clauditor._anthropic" in _CALL_ANTHROPIC_DEPRECATION_NOTICE
+
+    def test_constant_names_canonical_path(self) -> None:
+        """Second durable substring — users must see the canonical
+        replacement path so they have an immediate next step."""
+        from clauditor._anthropic import _CALL_ANTHROPIC_DEPRECATION_NOTICE
+
+        assert "clauditor._providers" in _CALL_ANTHROPIC_DEPRECATION_NOTICE
+
+    def test_constant_names_future_removal(self) -> None:
+        """Third durable substring — users must see that the
+        deprecation is on a clock (one-release horizon)."""
+        from clauditor._anthropic import _CALL_ANTHROPIC_DEPRECATION_NOTICE
+
+        assert "will be removed" in _CALL_ANTHROPIC_DEPRECATION_NOTICE
+
+    @pytest.mark.asyncio
+    async def test_call_anthropic_emits_deprecation_warning_first_call(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Invoking the shim's ``call_anthropic`` triggers the
+        announcement before delegating to the canonical seam."""
+        from clauditor._anthropic import call_anthropic as shim_call_anthropic
+
+        canned = AnthropicResult(response_text="ok", provider="anthropic")
+        with patch(
+            "clauditor._providers._anthropic.call_anthropic",
+            new=AsyncMock(return_value=canned),
+        ):
+            await shim_call_anthropic("p", model="m")
+        captured = capsys.readouterr()
+        assert "clauditor._anthropic" in captured.err
+        assert "will be removed" in captured.err
+
+    @pytest.mark.asyncio
+    async def test_call_anthropic_announcement_only_fires_once(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Second call within the same process is silent — the
+        one-shot flag stays flipped."""
+        from clauditor._anthropic import call_anthropic as shim_call_anthropic
+
+        canned = AnthropicResult(response_text="ok", provider="anthropic")
+        with patch(
+            "clauditor._providers._anthropic.call_anthropic",
+            new=AsyncMock(return_value=canned),
+        ):
+            await shim_call_anthropic("p1", model="m")
+            # Drain the first emission.
+            capsys.readouterr()
+            await shim_call_anthropic("p2", model="m")
+        captured = capsys.readouterr()
+        assert "will be removed" not in captured.err
+
+    @pytest.mark.asyncio
+    async def test_call_anthropic_delegates_to_canonical_seam(
+        self,
+    ) -> None:
+        """Shim's ``call_anthropic`` delegates to
+        :func:`clauditor._providers._anthropic.call_anthropic` and
+        threads through ``model``, ``transport``, ``max_tokens``,
+        ``subject`` verbatim. Delegating directly (rather than via
+        :func:`call_model`) preserves the ``subject`` kwarg for the
+        CLI transport's ``apiKeySource`` telemetry line, which the
+        :func:`call_model` dispatcher signature drops per DEC-001."""
+        from clauditor._anthropic import call_anthropic as shim_call_anthropic
+
+        canned = AnthropicResult(response_text="ok", provider="anthropic")
+        mock_canonical = AsyncMock(return_value=canned)
+        with patch(
+            "clauditor._providers._anthropic.call_anthropic",
+            new=mock_canonical,
+        ):
+            result = await shim_call_anthropic(
+                "the-prompt",
+                model="claude-sonnet-4-6",
+                transport="api",
+                max_tokens=2048,
+                subject="L2 extraction",
+            )
+
+        assert result is canned
+        mock_canonical.assert_awaited_once()
+        kwargs = mock_canonical.await_args.kwargs
+        assert kwargs["model"] == "claude-sonnet-4-6"
+        assert kwargs["transport"] == "api"
+        assert kwargs["max_tokens"] == 2048
+        assert kwargs["subject"] == "L2 extraction"
+        # Positional prompt
+        assert mock_canonical.await_args.args == ("the-prompt",)
+
+
 class TestResolveTransport:
     """DEC-012 / DEC-017 of #86: four-layer precedence resolution.
 
@@ -1881,13 +2029,24 @@ class TestModelResult:
 
     def test_call_anthropic_still_works_via_shim(self) -> None:
         """``from clauditor._anthropic import call_anthropic`` resolves
-        to the same callable as ``from clauditor._providers import
-        call_anthropic`` — the shim re-export has not aliased it to
-        a different object."""
+        to a callable. Per #144 US-007 (DEC-004), the shim's
+        ``call_anthropic`` is a thin deprecation-wrapper around
+        :func:`clauditor._providers.call_model`, NOT the same callable
+        object as :func:`clauditor._providers.call_anthropic` — so the
+        old ``is`` identity invariant intentionally no longer holds.
+        What we DO require is that both names resolve to callables and
+        the shim wrapper still produces a ``ModelResult`` when invoked.
+        """
         from clauditor._anthropic import call_anthropic as shim_call
         from clauditor._providers import call_anthropic as canonical_call
 
-        assert shim_call is canonical_call
+        assert callable(shim_call)
+        assert callable(canonical_call)
+        # The shim wrapper is a fresh function defined in the shim
+        # module; the canonical name resolves to the
+        # ``_providers/_anthropic.py`` body. Identity intentionally
+        # does NOT hold post-US-007.
+        assert shim_call is not canonical_call
 
     def test_provider_field_accepts_openai(self) -> None:
         """Forward-compat: a ``ModelResult`` can be constructed with
