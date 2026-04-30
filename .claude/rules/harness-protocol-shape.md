@@ -3,9 +3,13 @@
 When adding a new harness implementation (Codex per #149, future raw-API
 agent loop, etc.), conform to the `Harness` protocol surface defined in
 `src/clauditor/_harnesses/__init__.py`. The protocol is **structurally
-typed** (no `@runtime_checkable` decorator; no inheritance pressure) so a
-harness is "in" the moment it provides three members with matching
-signatures.
+typed** and decorated `@runtime_checkable`, so `isinstance(obj, Harness)`
+works as a duck-typed drift-guard — but `runtime_checkable` only checks
+member presence, not signature shape; sibling tests in
+`tests/test_runner.py::TestHarnessProtocol` use `inspect.signature` to
+lock the parameter set. A harness is "in" the moment it provides four
+members (`name`, `invoke`, `strip_auth_keys`, `build_prompt`) with
+matching signatures.
 
 ## The pattern
 
@@ -47,15 +51,31 @@ class MyHarness:
         # Return a NEW dict with your harness's auth env vars removed.
         # Pure, non-mutating per non-mutating-scrub.md.
         ...
+
+    def build_prompt(
+        self,
+        skill_name: str,
+        args: str,
+        *,
+        system_prompt: str | None,
+    ) -> str:
+        # Compose the wire-shape prompt this harness's ``invoke``
+        # expects. Pure compute (no I/O, no global state) per
+        # pure-compute-vs-io-split.md. Each harness owns its own
+        # rendering — Claude Code uses ``"/{skill_name} {args}"``;
+        # raw-API harnesses embed ``system_prompt`` in a structured
+        # message body. Harnesses with no notion of a separate system
+        # prompt MUST still accept and ignore the kwarg.
+        ...
 ```
 
 ## Rationale
 
-Three members keep the protocol minimal: identity (`name`), the work
-itself (`invoke`), and a non-mutating env scrub (`strip_auth_keys`).
-Construction parameters are entirely per-harness — they don't appear on
-the protocol surface — so harness-specific knobs cannot leak into
-cross-harness code.
+Four members keep the protocol minimal: identity (`name`), the work
+itself (`invoke`), a non-mutating env scrub (`strip_auth_keys`), and the
+pure prompt composer (`build_prompt`). Construction parameters are
+entirely per-harness — they don't appear on the protocol surface — so
+harness-specific knobs cannot leak into cross-harness code.
 
 ### Why `name: ClassVar[str]`
 
@@ -102,20 +122,79 @@ hidden system prompts) populate `harness_metadata` with their own keys.
 sidecars can surface harness-specific observability without bumping a
 schema version.
 
+### Why `build_prompt` is on the protocol (not a free function)
+
+Each harness's wire-shape is structurally different: Claude Code consumes
+`"/{skill_name} {args}"` slash-commands resolved by `claude -p`; future
+Codex / raw-API harnesses prepend `system_prompt` and append `args` as
+distinct message-body components. Putting `build_prompt` on the protocol
+lets every harness own its own rendering without forcing
+`SkillRunner.run` to branch on harness type. Per US-001 of issue #150,
+the method is **pure compute** — no file I/O, no global state — so
+auto-derive of `system_prompt` from `SKILL.md` body lives one layer up
+in `SkillSpec.run` (which wraps read/parse failures in a `RuntimeError`
+naming the skill + path with `__cause__` chained, per
+`.claude/rules/pure-compute-vs-io-split.md`).
+
+### Why `system_prompt` on `build_prompt` is keyword-only
+
+Per US-001 of issue #150, `system_prompt` is a positional-swap risk
+against `args` (both are strings; transposing them silently sends the
+wrong text to the LLM). Marking it keyword-only after `*` makes the
+mistake unrepresentable: `harness.build_prompt("foo", "bar", "baz")`
+would `TypeError` instead of binding `"baz"` to `system_prompt`.
+Harnesses with no notion of a separate system prompt
+(`ClaudeCodeHarness`) MUST still accept and ignore the kwarg — analogous
+to how all harnesses accept `model` on `invoke` even if they pin a
+fixed value internally.
+
 ## Canonical implementations
 
 - `src/clauditor/_harnesses/_claude_code.py::ClaudeCodeHarness` — the
   primary implementation; subprocess + stream-json parser.
-- `src/clauditor/_harnesses/_mock.py::MockHarness` — minimal test
-  helper; records every `invoke(...)` call, returns a configurable
+  `build_prompt` returns `f"/{skill_name}"` when `args == ""`, else
+  `f"/{skill_name} {args}"`; ignores `system_prompt`.
+- `src/clauditor/_harnesses/_mock.py::MockHarness` — production-grade
+  protocol implementation (NOT just a test fake). Records every
+  `invoke(...)` and `build_prompt(...)` call on `invoke_calls` and
+  `build_prompt_calls` respectively, returns a configurable
   `InvokeResult`. Use for `SkillRunner(harness=MockHarness(...))` in
-  unit tests when you don't want to mock subprocess.
+  unit tests when you don't want to mock subprocess. **Because
+  `MockHarness` is a real protocol implementation, every protocol
+  addition MUST update it in the same PR** — otherwise `isinstance(mock,
+  Harness)` silently breaks for any test that relied on it.
+
+## Adding a new protocol member — checklist
+
+When extending the protocol with a new member (`build_prompt` from #150
+is the first such extension since the protocol was extracted in #148):
+
+1. Define the member on `Harness` in `src/clauditor/_harnesses/__init__.py`
+   with a clear docstring noting purity and per-harness ownership.
+2. Implement on **every** existing harness in the same PR — including
+   `MockHarness` (it is production-grade, not a test fake; see canonical
+   implementations above). A skipped implementation silently breaks
+   `isinstance(harness, Harness)` for any caller relying on the
+   `runtime_checkable` drift-guard.
+3. Keep I/O at a higher layer. If the new member needs a side-effectful
+   resolver (e.g. `build_prompt`'s `system_prompt` auto-derive), put the
+   I/O in `SkillSpec.run` (or its analogue) and pass the resolved value
+   into the pure protocol method, per
+   `.claude/rules/pure-compute-vs-io-split.md`.
+4. Update the count in this rule's opening paragraph and rationale
+   header. The signature drift between rule prose and protocol code is
+   real footgun; keeping the count current is the cheap audit signal.
+5. Add a signature-locking test in
+   `tests/test_runner.py::TestHarnessProtocol` using `inspect.signature`
+   to assert the parameter set, kinds (positional vs keyword-only), and
+   return annotation. Keyword-only parameters are particularly
+   sensitive — `runtime_checkable` does not enforce them.
 
 ## Adding a new harness — checklist
 
 1. Create `src/clauditor/_harnesses/_<name>.py` (private module
    convention — leading underscore).
-2. Define the class with the three protocol members. Match parameter
+2. Define the class with the four protocol members. Match parameter
    names and types exactly.
 3. Construct an `InvokeResult` populated with semantic-equivalent
    fields (`output`, `exit_code`, `duration_seconds`, `error`,
