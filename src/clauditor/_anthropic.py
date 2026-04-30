@@ -74,6 +74,17 @@ from clauditor._providers import (
     resolve_transport,  # noqa: F401
 )
 
+# DEC-007 of ``plans/super/145-openai-provider.md``: the retry helpers
+# moved to ``clauditor._providers._retry``. Re-export under the
+# legacy underscored names so existing call sites that imported
+# ``_compute_backoff`` / ``_compute_retry_decision`` / the retry
+# constants from ``clauditor._anthropic`` keep resolving for the
+# back-compat window. The jitter indirection (``_rand_uniform`` /
+# ``_rng``) also moved with the helpers — tests that patched the
+# legacy path follow the symbols to ``clauditor._providers._retry``
+# per ``.claude/rules/back-compat-shim-discipline.md`` Pattern 3.
+from clauditor._providers import _retry as _retry_mod  # noqa: E402
+
 # Re-export the SDK-seam private surface from the canonical module so
 # tests / call sites that referenced these names via
 # ``clauditor._anthropic`` keep resolving for the back-compat window.
@@ -82,25 +93,32 @@ from clauditor._providers._anthropic import (  # noqa: F401, E402
     _CLI_AUTO_ANNOUNCEMENT,
     _CLI_ERROR_TEMPLATES,
     _CLI_TRANSPORT_TIMEOUT,
-    _CONN_MAX_RETRIES,
-    _RATE_LIMIT_MAX_RETRIES,
-    _SERVER_MAX_RETRIES,
     _VALID_TRANSPORT_VALUES,
     _body_excerpt,
     _build_default_harness,
     _call_via_claude_cli,
     _call_via_sdk,
     _classify_invoke_result,
-    _compute_backoff,
-    _compute_retry_decision,
     _default_harness,
     _extract_result,
     _monotonic,
-    _rand_uniform,
     _resolve_transport,
-    _rng,
     _sleep,
 )
+
+# Module-attribute aliases (NOT ``from X import Y``) so the legacy
+# underscored names are bound on this shim's module object. Tests
+# that monkeypatched ``clauditor._anthropic._compute_backoff`` etc.
+# kept resolving for one release of back-compat. New tests target
+# the canonical home ``clauditor._providers._retry`` per
+# ``.claude/rules/back-compat-shim-discipline.md`` Pattern 3.
+_RATE_LIMIT_MAX_RETRIES = _retry_mod.RATE_LIMIT_MAX_RETRIES
+_SERVER_MAX_RETRIES = _retry_mod.SERVER_MAX_RETRIES
+_CONN_MAX_RETRIES = _retry_mod.CONN_MAX_RETRIES
+_compute_backoff = _retry_mod.compute_backoff
+_compute_retry_decision = _retry_mod.compute_retry_decision
+_rand_uniform = _retry_mod._rand_uniform
+_rng = _retry_mod._rng
 
 
 async def call_anthropic(
