@@ -48,6 +48,30 @@ class AnthropicAuthMissingError(Exception):
     """
 
 
+class OpenAIAuthMissingError(Exception):
+    """Raised when ``OPENAI_API_KEY`` is missing for the OpenAI provider.
+
+    Thrown by :func:`check_openai_auth` (and its dispatcher
+    :func:`check_provider_auth` when ``provider="openai"``) when
+    ``OPENAI_API_KEY`` is absent, empty, or whitespace-only.
+
+    Distinct from :class:`AnthropicAuthMissingError` AND from any
+    future ``OpenAIHelperError`` by design (DEC-006 of
+    ``plans/super/145-openai-provider.md``): the CLI layer routes
+    ``OpenAIAuthMissingError`` to exit 2 (pre-call input-validation
+    error per ``.claude/rules/llm-cli-exit-code-taxonomy.md``) — the
+    same exit code the Anthropic auth-missing class routes to, but
+    via a structurally distinct ``except`` branch so future
+    helper-error classes (exit 3) cannot collapse into the same
+    branch by accident.
+
+    Subclass of :class:`Exception` directly, NOT of
+    :class:`AnthropicAuthMissingError` or any helper-error class — a
+    common ancestor would defeat the structural-routing invariant
+    every CLI dispatcher depends on.
+    """
+
+
 # Re-export the auth-helper surface from ``_auth.py``. Imported AFTER
 # ``AnthropicAuthMissingError`` is defined so ``_auth.py``'s deferred
 # / direct ``from clauditor._providers import AnthropicAuthMissingError``
@@ -76,12 +100,16 @@ from clauditor._providers._auth import (  # noqa: E402, I001
     _AUTH_MISSING_TEMPLATE_KEY_ONLY,
     _CALL_ANTHROPIC_DEPRECATION_NOTICE,
     _IMPLICIT_NO_API_KEY_ANNOUNCEMENT,
+    _OPENAI_AUTH_MISSING_TEMPLATE,
     _api_key_is_set,
     _claude_cli_is_available,
+    _openai_api_key_is_set,
     announce_call_anthropic_deprecation,
     announce_implicit_no_api_key,
     check_any_auth_available,
     check_api_key_only,
+    check_openai_auth,
+    check_provider_auth,
 )
 
 # Re-export the SDK-seam public surface from ``_anthropic.py`` (#144
@@ -179,12 +207,15 @@ __all__ = [
     "AnthropicResult",
     "ClaudeCLIError",
     "ModelResult",
+    "OpenAIAuthMissingError",
     "announce_call_anthropic_deprecation",
     "announce_implicit_no_api_key",
     "call_anthropic",
     "call_model",
     "check_any_auth_available",
     "check_api_key_only",
+    "check_openai_auth",
+    "check_provider_auth",
     "resolve_transport",
     # Private surface re-exported for back-compat with the
     # ``clauditor._anthropic`` shim and for tests that introspect
@@ -194,6 +225,8 @@ __all__ = [
     "_AUTH_MISSING_TEMPLATE_KEY_ONLY",
     "_CALL_ANTHROPIC_DEPRECATION_NOTICE",
     "_IMPLICIT_NO_API_KEY_ANNOUNCEMENT",
+    "_OPENAI_AUTH_MISSING_TEMPLATE",
     "_api_key_is_set",
     "_claude_cli_is_available",
+    "_openai_api_key_is_set",
 ]
