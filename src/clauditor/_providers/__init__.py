@@ -126,6 +126,13 @@ from clauditor._providers._anthropic import (  # noqa: E402, I001
     resolve_transport,
 )
 
+# Re-export the OpenAI-backend public error class (#145 US-005). The
+# ``call_openai`` callable itself is intentionally NOT re-exported at
+# the package level — callers should go through :func:`call_model`
+# (the dispatcher) so transport routing and provider stamping stay
+# centralized.
+from clauditor._providers._openai import OpenAIHelperError  # noqa: E402, I001
+
 async def call_model(
     prompt: str,
     *,
@@ -149,20 +156,22 @@ async def call_model(
     providers. Anthropic-only callers that need ``subject`` continue to
     invoke :func:`call_anthropic` directly.
 
-    Per DEC-002 of the same plan, ``provider="openai"`` raises
-    :class:`NotImplementedError` (not ``AnthropicHelperError``) so the
-    CLI's exit-code ladder can route it distinctly when the seam is
-    finished in #145.
+    Per #145 US-005, ``provider="openai"`` delegates to
+    :func:`clauditor._providers._openai.call_openai`. The OpenAI
+    backend has no transport axis (DEC-002 of
+    ``plans/super/145-openai-provider.md``); the ``transport`` kwarg
+    is forwarded for signature parity but ignored by the OpenAI
+    backend, which always stamps ``ModelResult.source = "api"``.
 
     Args:
         prompt: Single-turn user prompt body, forwarded verbatim.
-        provider: ``"anthropic"`` for the existing backend;
-            ``"openai"`` reserved for #145.
+        provider: ``"anthropic"`` or ``"openai"``.
         model: Provider-specific model name (e.g.
-            ``"claude-sonnet-4-6"`` for anthropic).
+            ``"claude-sonnet-4-6"`` for anthropic,
+            ``"gpt-5-mini"`` for openai).
         transport: Transport selector forwarded to the anthropic
             backend (``"api"``, ``"cli"``, or ``"auto"``). Ignored
-            for the future openai backend (no transport axis there).
+            by the openai backend (no transport axis there).
         max_tokens: Upper bound on response tokens. Defaults to 4096.
 
     Returns:
@@ -172,10 +181,12 @@ async def call_model(
     Raises:
         ValueError: ``provider`` is not ``"anthropic"`` or
             ``"openai"``.
-        NotImplementedError: ``provider="openai"`` — landing in #145.
         AnthropicHelperError: Anthropic backend failure (auth, rate
             limit, server error, connection error). See
             :func:`call_anthropic`.
+        OpenAIHelperError: OpenAI backend failure (auth, rate limit,
+            server error, connection error). See
+            :func:`clauditor._providers._openai.call_openai`.
     """
     if provider == "anthropic":
         # Call via the module attribute so test patches that target
@@ -194,7 +205,22 @@ async def call_model(
             max_tokens=max_tokens,
         )
     if provider == "openai":
-        raise NotImplementedError("openai provider lands in #145")
+        # Deferred per-call import so test patches that target
+        # ``clauditor._providers._openai.call_openai`` (the canonical
+        # patch path per
+        # ``.claude/rules/back-compat-shim-discipline.md`` Pattern 3)
+        # take effect here. A direct import-bound call would resolve
+        # via this module's ``from ... import call_openai`` binding
+        # (if we had one), which a patch on ``_providers._openai``
+        # would NOT affect.
+        from clauditor._providers import _openai as _openai_mod
+
+        return await _openai_mod.call_openai(
+            prompt,
+            model=model,
+            transport=transport,
+            max_tokens=max_tokens,
+        )
     raise ValueError(
         f"call_model: unknown provider {provider!r} — "
         "expected 'anthropic' or 'openai'"
@@ -208,6 +234,7 @@ __all__ = [
     "ClaudeCLIError",
     "ModelResult",
     "OpenAIAuthMissingError",
+    "OpenAIHelperError",
     "announce_call_anthropic_deprecation",
     "announce_implicit_no_api_key",
     "call_anthropic",
