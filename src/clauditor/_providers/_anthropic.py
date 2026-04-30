@@ -540,8 +540,8 @@ async def _call_via_sdk(
         )
     except ImportError as exc:
         raise ImportError(
-            "clauditor._anthropic.call_anthropic requires the anthropic "
-            "SDK. Install with: pip install clauditor[grader]"
+            "clauditor._providers._anthropic.call_anthropic requires the "
+            "anthropic SDK. Install with: pip install clauditor[grader]"
         ) from exc
 
     # Defense-in-depth (DEC-008 of #83): wrap the
@@ -728,10 +728,13 @@ async def _call_via_claude_cli(
     no SDK ``Message`` object. Callers audited in US-002 tolerate
     ``None``.
     """
-    # Imports deferred to call time so a module whose ``call_anthropic``
-    # users only ever hit the SDK branch does not pay the
-    # ``clauditor.runner`` import cost up-front. Mirrors the SDK
-    # branch's deferred ``anthropic`` import.
+    # Keep this import local to the CLI branch so the dependency on
+    # ``env_without_api_key`` stays scoped to the code path that uses
+    # it. The default harness is constructed at module load via
+    # ``_default_harness = _build_default_harness()``, so the
+    # ``clauditor._harnesses._claude_code`` module is already imported
+    # by the time this branch runs — this local import is a
+    # readability scoping choice, not a startup-cost optimization.
     from clauditor._harnesses._claude_code import env_without_api_key
 
     retry_counts: dict[str, int] = {

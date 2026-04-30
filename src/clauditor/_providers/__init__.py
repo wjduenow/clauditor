@@ -103,7 +103,7 @@ async def call_model(
     *,
     provider: Literal["anthropic", "openai"],
     model: str,
-    transport: str = "auto",
+    transport: Literal["api", "cli", "auto"] = "auto",
     max_tokens: int = 4096,
 ) -> ModelResult:
     """Provider-agnostic dispatcher routing to the right backend.
@@ -162,7 +162,7 @@ async def call_model(
         return await _anthropic_mod.call_anthropic(
             prompt,
             model=model,
-            transport=transport,  # type: ignore[arg-type]
+            transport=transport,
             max_tokens=max_tokens,
         )
     if provider == "openai":

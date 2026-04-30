@@ -54,6 +54,8 @@ from pathlib import Path
 
 import pytest
 
+from clauditor.schemas import ASSERTION_TYPE_REQUIRED_KEYS
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Scope: the human-facing doc triangle. See module docstring for the
@@ -104,23 +106,18 @@ def _json_fenced_blocks(text: str) -> list[str]:
     return pattern.findall(text)
 
 
-# Clauditor assertion ``type`` literals — the discriminator values
-# accepted by ``ASSERTION_TYPE_REQUIRED_KEYS`` in
-# ``src/clauditor/schemas.py``. Used to disambiguate clauditor
-# assertion examples from foreign JSON that happens to share a
-# ``"type":`` / ``"value":`` shape (e.g. Discord-API option schemas
-# where ``"type": 3`` is an integer-tagged STRING option type, not a
-# clauditor assertion). When this list grows in schemas.py, mirror it
-# here.
-_CLAUDITOR_ASSERTION_TYPE_LITERALS: tuple[str, ...] = (
-    '"contains"',
-    '"not_contains"',
-    '"regex"',
-    '"min_length"',
-    '"max_length"',
-    '"min_count"',
-    '"has_urls"',
-    '"has_format"',
+# Clauditor assertion ``type`` literals — derived directly from
+# ``ASSERTION_TYPE_REQUIRED_KEYS`` so the detector stays in lockstep
+# with schemas.py without a hand-maintained mirror. Used to
+# disambiguate clauditor assertion examples from foreign JSON that
+# happens to share a ``"type":`` / ``"value":`` shape (e.g. Discord-API
+# option schemas where ``"type": 3`` is an integer-tagged STRING option
+# type, not a clauditor assertion). Each entry is a quoted JSON-string
+# literal so the substring search in ``_looks_like_clauditor_assertion``
+# matches the on-disk JSON form (``"type": "contains"``) rather than
+# bare identifier mentions in prose.
+_CLAUDITOR_ASSERTION_TYPE_LITERALS: tuple[str, ...] = tuple(
+    f'"{name}"' for name in ASSERTION_TYPE_REQUIRED_KEYS
 )
 
 
