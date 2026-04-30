@@ -3380,3 +3380,115 @@ class TestCombineBlindResults:
         assert r3.provider_source == "openai"
 
 
+class TestGradeQualityWithOpenAI:
+    """#145 US-011 — End-to-end: an :class:`EvalSpec` with
+    ``grading_provider="openai"`` runs L3 grading through the full
+    pipeline (prompt build -> ``call_model`` -> parse -> report build)
+    and produces a populated :class:`GradingReport` with
+    ``provider_source == "openai"`` plus per-criterion verdicts.
+
+    Acceptance criterion 2 of issue #145. Builds on the unit-level
+    wiring tests in :class:`TestGradingProviderOpenAIWiring` by
+    asserting on the full report surface (per-criterion results,
+    metric properties, token counts) rather than just the
+    provider-stamping signal.
+
+    ``grade_quality`` makes a single ``call_model`` invocation per
+    happy-path attempt (L3 only — L2 extraction is orchestrated
+    separately in :mod:`clauditor.spec` and is not part of the
+    ``grade_quality`` entry point), so this test uses
+    ``return_value=`` per the second-paragraph contract of
+    ``.claude/rules/mock-side-effect-for-distinct-calls.md``.
+    """
+
+    def _spec(self) -> EvalSpec:
+        return EvalSpec(
+            skill_name="rubric-skill",
+            description="A test skill for rubric grading",
+            grading_criteria=[
+                "Output contains actionable recommendations",
+                "Tone is professional and clear",
+                "All requested topics are covered",
+            ],
+            grading_provider="openai",
+        )
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_openai_e2e(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Full L3 path: spec.grading_provider="openai" flows through
+        ``call_model(provider="openai", ...)``, the mocked OpenAI
+        ``ModelResult`` is parsed into per-criterion verdicts, and the
+        returned :class:`GradingReport` is fully populated:
+
+        - ``provider_source == "openai"``
+        - per-criterion results aligned to the spec's criteria
+        - aggregated pass_rate / mean_score from parsed verdicts
+        - token counts from the mocked ``ModelResult``
+        """
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec()
+        # JSON shape positionally aligned to spec.grading_criteria.
+        grading_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.92,
+                "evidence": "Three concrete next-step bullets at the end.",
+                "reasoning": "Each recommendation names an actor + action.",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.88,
+                "evidence": "No slang; consistent register throughout.",
+                "reasoning": "Sentence structure stays declarative.",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": False,
+                "score": 0.55,
+                "evidence": "Topic 3 (rollback) is not mentioned.",
+                "reasoning": "Two of three topics covered; one omitted.",
+            },
+        ]
+        verdict_text = json.dumps(grading_data)
+        fake = ModelResult(
+            response_text=verdict_text,
+            text_blocks=[verdict_text],
+            input_tokens=120,
+            output_tokens=240,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            report = await grade_quality("fake skill output", spec)
+
+        # Provider stamping (acceptance criterion 2 — primary signal).
+        assert report.provider_source == "openai"
+        # ``call_model`` was called exactly once with ``provider="openai"``
+        # — the spec field flowed through the resolver to the dispatcher.
+        assert call_mock.await_count == 1
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+        # Per-criterion verdicts populated, positionally aligned to spec.
+        assert len(report.results) == 3
+        assert [r.criterion for r in report.results] == [
+            "Output contains actionable recommendations",
+            "Tone is professional and clear",
+            "All requested topics are covered",
+        ]
+        assert [r.passed for r in report.results] == [True, True, False]
+        # Aggregated metrics computed from per-criterion scores.
+        assert report.pass_rate == pytest.approx(2 / 3)
+        assert report.mean_score == pytest.approx(
+            (0.92 + 0.88 + 0.55) / 3
+        )
+        # Token counts propagated from the mocked ``ModelResult``.
+        assert report.input_tokens == 120
+        assert report.output_tokens == 240
+
+
