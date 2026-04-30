@@ -217,8 +217,8 @@ in the `clauditor._providers` package. Each member pairs a
 module-level bool flag with an announcement-text constant; the
 print-and-flip logic either lives inline at the call site (the first
 member, from #86) or is factored into a public helper (the second
-member, from #95, and the target shape going forward). Two members
-today:
+and third members, from #95 and #144 respectively, and the target
+shape going forward). Three members today:
 
 - `_announced_cli_transport` (bool flag) + `_CLI_AUTO_ANNOUNCEMENT`
   (plain `str` constant) in `src/clauditor/_providers/_anthropic.py`
@@ -236,17 +236,29 @@ today:
   computation in `cli/grade.py::cmd_grade` (see
   `.claude/rules/spec-cli-precedence.md` "Implicit coupling at the
   operator-intent layers" for the call-site contract).
+- `_announced_call_anthropic_deprecation` (bool flag) +
+  `_CALL_ANTHROPIC_DEPRECATION_NOTICE` (`Final[str]` constant) in
+  `src/clauditor/_providers/_auth.py` — from #144 US-007. Fires on
+  the first invocation per Python process of the back-compat shim
+  `clauditor._anthropic.call_anthropic`. Print-and-flip lives in the
+  **public helper** `announce_call_anthropic_deprecation()`, called
+  from the shim's `call_anthropic` wrapper before each delegation to
+  `call_model(provider="anthropic", ...)`. Three durable substrings
+  pinned by tests: `"clauditor._anthropic"` (deprecated path),
+  `"clauditor._providers"` (canonical replacement),
+  `"will be removed"` (future-removal hint).
 
-The #95 shape (`Final[str]` constant + public helper) is the target
+The #95 / #144 shape (`Final[str]` constant + public helper) is the target
 pattern for new members — it makes the notice independently testable
 without reaching into `call_anthropic` internals. New announcement
 flags belong in the `_providers` package (DEC-009 of
-`plans/super/95-subscription-auth-flag.md`); auth-coupled notices in
-`_providers/_auth.py`, transport-coupled notices in
-`_providers/_anthropic.py`. Reset mechanism for tests is the
-`monkeypatch.setattr(..., False)` autouse fixture pattern — see
-`tests/test_anthropic.py::TestStderrAnnouncement` and
-`TestAnnounceImplicitNoApiKey` for the shape.
+`plans/super/95-subscription-auth-flag.md`); auth-coupled and
+deprecation-coupled notices in `_providers/_auth.py`, transport-
+coupled notices in `_providers/_anthropic.py`. Reset mechanism for
+tests is the `monkeypatch.setattr(..., False)` autouse fixture
+pattern — see `tests/test_anthropic.py::TestStderrAnnouncement`,
+`TestAnnounceImplicitNoApiKey`, and
+`TestCallAnthropicDeprecationAnnouncement` for the shape.
 
 ## When this rule applies
 

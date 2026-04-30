@@ -74,9 +74,11 @@ class AnthropicAuthMissingError(Exception):
 from clauditor._providers._auth import (  # noqa: E402, I001
     _AUTH_MISSING_TEMPLATE,
     _AUTH_MISSING_TEMPLATE_KEY_ONLY,
+    _CALL_ANTHROPIC_DEPRECATION_NOTICE,
     _IMPLICIT_NO_API_KEY_ANNOUNCEMENT,
     _api_key_is_set,
     _claude_cli_is_available,
+    announce_call_anthropic_deprecation,
     announce_implicit_no_api_key,
     check_any_auth_available,
     check_api_key_only,
@@ -177,6 +179,7 @@ __all__ = [
     "AnthropicResult",
     "ClaudeCLIError",
     "ModelResult",
+    "announce_call_anthropic_deprecation",
     "announce_implicit_no_api_key",
     "call_anthropic",
     "call_model",
@@ -189,6 +192,7 @@ __all__ = [
     # flag is deliberately absent — see the import comment above.
     "_AUTH_MISSING_TEMPLATE",
     "_AUTH_MISSING_TEMPLATE_KEY_ONLY",
+    "_CALL_ANTHROPIC_DEPRECATION_NOTICE",
     "_IMPLICIT_NO_API_KEY_ANNOUNCEMENT",
     "_api_key_is_set",
     "_claude_cli_is_available",

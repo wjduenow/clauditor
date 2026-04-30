@@ -86,6 +86,61 @@ def announce_implicit_no_api_key() -> None:
     _announced_implicit_no_api_key = True
 
 
+# DEC-004 (#144 US-007): one-shot stderr announcement when the
+# back-compat shim ``clauditor._anthropic.call_anthropic`` is invoked.
+# Flipped to ``True`` after the first emission per Python process. Co-
+# located with the other one-shot announcement flags
+# (:data:`_announced_implicit_no_api_key` here, ``_announced_cli_transport``
+# in ``_providers/_anthropic.py``) per
+# ``.claude/rules/centralized-sdk-call.md`` "Implicit-coupling
+# announcements — an emerging family". Tests reset via the
+# ``monkeypatch.setattr(..., False)`` autouse fixture pattern,
+# targeting the canonical flag location at
+# ``clauditor._providers._auth._announced_call_anthropic_deprecation``.
+_announced_call_anthropic_deprecation: bool = False
+
+
+# DEC-004 (#144 US-007): the deprecation notice emitted on the first
+# back-compat-shim ``call_anthropic`` invocation per Python process.
+# Three durable substrings are test-asserted:
+#   1. ``clauditor._anthropic`` — the deprecated import path so users
+#      know exactly which module triggered the notice.
+#   2. ``clauditor._providers`` — the canonical replacement path so
+#      users have an immediate next step.
+#   3. ``will be removed`` — the future-removal hint so users know the
+#      deprecation is on a clock (one-release horizon).
+# Stylistic copy edits are tolerated; the three anchors are the
+# load-bearing contract per
+# ``.claude/rules/precall-env-validation.md``'s durable-substring
+# discipline.
+_CALL_ANTHROPIC_DEPRECATION_NOTICE: Final[str] = (
+    "DeprecationWarning: clauditor._anthropic is deprecated and will be "
+    "removed in a future release; import from clauditor._providers "
+    "instead (e.g. `from clauditor._providers import call_model, "
+    "AnthropicHelperError`). See plans/super/144-providers-call-model.md "
+    "for the migration."
+)
+
+
+def announce_call_anthropic_deprecation() -> None:
+    """Emit the ``clauditor._anthropic`` deprecation notice once per process.
+
+    DEC-004 of ``plans/super/144-providers-call-model.md``. Called from
+    the back-compat shim's :func:`clauditor._anthropic.call_anthropic`
+    wrapper before each delegation to :func:`call_model`. The one-shot
+    module flag :data:`_announced_call_anthropic_deprecation` ensures a
+    single announcement per Python process regardless of how many
+    subsequent shim calls land — same shape as
+    :func:`announce_implicit_no_api_key` (#95 US-002). Tests reset by
+    ``monkeypatch.setattr`` on the canonical flag location.
+    """
+    global _announced_call_anthropic_deprecation
+    if _announced_call_anthropic_deprecation:
+        return
+    print(_CALL_ANTHROPIC_DEPRECATION_NOTICE, file=sys.stderr)
+    _announced_call_anthropic_deprecation = True
+
+
 # DEC-015 / #86 US-005: message template for :func:`check_any_auth_available`
 # — the relaxed pre-flight guard that passes when either
 # ``ANTHROPIC_API_KEY`` is set OR the ``claude`` CLI binary is on PATH.
