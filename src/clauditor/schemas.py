@@ -874,6 +874,12 @@ class EvalSpec:
             # Tier 1.5 of GitHub #103: emit only on non-default.
             # Omission at load time means default ``False``.
             result["sync_tasks"] = True
+        if self.grading_provider is not None:
+            # DEC-003 of #145: emit only on non-default. Omission at
+            # load time means ``None``, which the four grader call
+            # sites read as ``"anthropic"``. QG pass 3 (#145) caught
+            # the round-trip data-loss when this writer was missed.
+            result["grading_provider"] = self.grading_provider
         if self.output_file is not None:
             result["output_file"] = self.output_file
         if self.output_files:
