@@ -1033,3 +1033,112 @@ def test_propose_eval_help_is_registered(capsys):
     assert "--dry-run" in out
     assert "--model" in out
     assert "--json" in out
+
+
+# ---------------------------------------------------------------------------
+# #145 US-009: ``check_provider_auth`` wiring for ``propose-eval``.
+#
+# ``propose-eval`` is the eval-creation step itself, so there is no
+# ``eval_spec`` to read ``grading_provider`` from — the proposer call is
+# hardcoded to ``provider="anthropic"`` in ``propose_eval.py``. The CLI
+# wrapper still routes through ``check_provider_auth`` (with the
+# literal ``"anthropic"`` provider) and catches both
+# ``AnthropicAuthMissingError`` AND ``OpenAIAuthMissingError`` so the
+# structural ``except`` ladder mirrors the other 3 LLM-mediated CLI
+# commands per ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+#
+# The 3 tests below mirror the per-command shape (one positive, one
+# OpenAI-key-missing negative, one default-Anthropic regression). The
+# OpenAI-key-missing case is exercised by patching
+# ``check_provider_auth`` to raise ``OpenAIAuthMissingError`` — a
+# forward-compat exercise of the ``except`` branch the source ships
+# today (today's anthropic-only proposer cannot emit it natively).
+# ---------------------------------------------------------------------------
+
+
+class TestCmdProposeEvalProviderAuth:
+    """#145 US-009: ``cmd_propose_eval`` dispatches via ``check_provider_auth``."""
+
+    def test_propose_eval_with_openai_grading_provider_passes_when_key_set(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """``OPENAI_API_KEY`` set alongside the autouse-fixture's
+        ``ANTHROPIC_API_KEY`` does not change the happy path:
+        ``propose-eval`` is hardcoded to ``provider="anthropic"`` for the
+        proposer call, so the Anthropic guard passes and the command
+        proceeds to write the eval.json.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        with patch(
+            "clauditor.cli.propose_eval.propose_eval",
+            new=AsyncMock(return_value=_make_report()),
+        ):
+            rc = main(["propose-eval", str(skill_md)])
+
+        assert rc == 0
+        target = skill_md.with_suffix(".eval.json")
+        assert target.exists()
+
+    def test_propose_eval_with_openai_grading_provider_exits_2_when_key_missing(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """Forward-compat exercise of the ``except OpenAIAuthMissingError``
+        branch: patch ``check_provider_auth`` to raise the OpenAI auth
+        error and assert the CLI maps it to exit 2 with stderr
+        mentioning ``OPENAI_API_KEY``. The proposer call must not be
+        awaited.
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        proposer_mock = AsyncMock(return_value=_make_report())
+        with (
+            patch(
+                "clauditor.cli.propose_eval.check_provider_auth",
+                side_effect=OpenAIAuthMissingError(
+                    "ERROR: OPENAI_API_KEY is not set.\n"
+                    "clauditor propose-eval needs an OpenAI API key.\n"
+                    "Get one at https://platform.openai.com/."
+                ),
+            ),
+            patch(
+                "clauditor.cli.propose_eval.propose_eval",
+                new=proposer_mock,
+            ),
+        ):
+            rc = main(["propose-eval", str(skill_md)])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "OPENAI_API_KEY" in err
+        assert proposer_mock.await_count == 0
+        target = skill_md.with_suffix(".eval.json")
+        assert not target.exists()
+
+    def test_propose_eval_with_default_anthropic_provider_unchanged(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """Regression check: with only ``ANTHROPIC_API_KEY`` set (the
+        default autouse-fixture value) and no ``OPENAI_API_KEY``,
+        ``propose-eval`` proceeds through the Anthropic guard and writes
+        the eval.json as before.
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        skill_md = _write_skill(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        with patch(
+            "clauditor.cli.propose_eval.propose_eval",
+            new=AsyncMock(return_value=_make_report()),
+        ):
+            rc = main(["propose-eval", str(skill_md)])
+
+        assert rc == 0
+        target = skill_md.with_suffix(".eval.json")
+        assert target.exists()
