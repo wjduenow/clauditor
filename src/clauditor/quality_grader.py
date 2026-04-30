@@ -65,7 +65,7 @@ class GradingResult:
 class GradingReport:
     """Aggregated results from grading against a full rubric.
 
-    ``transport_source`` records which :class:`AnthropicResult` transport
+    ``transport_source`` records which :class:`ModelResult` transport
     produced the Anthropic response this report was built from — either
     ``"api"`` (SDK / HTTP path) or ``"cli"`` (subprocess via
     ``claude -p``). Persisted into ``grading.json`` at
@@ -84,6 +84,13 @@ class GradingReport:
     input_tokens: int = 0
     output_tokens: int = 0
     transport_source: str = "api"
+    # ``provider_source`` records which provider backend produced the
+    # response — ``"anthropic"`` (current) or ``"openai"`` (#145+). Per
+    # DEC-006 of ``plans/super/144-providers-call-model.md`` this field
+    # is in-memory only — :meth:`to_json` does NOT include it; the
+    # ``schema_version: 3`` bump that lights it up on disk is owned by
+    # #147.
+    provider_source: str = "anthropic"
 
     @property
     def passed(self) -> bool:
@@ -205,7 +212,7 @@ class BlindReport:
     anchoring on a/b), but results are reported against the canonical
     a/b labels of the caller.
 
-    ``transport_source`` records which :class:`AnthropicResult`
+    ``transport_source`` records which :class:`ModelResult`
     transport produced the underlying Anthropic response(s) — either
     ``"api"`` or ``"cli"``. DEC-018 of
     ``plans/super/86-claude-cli-transport.md`` introduces
@@ -227,6 +234,12 @@ class BlindReport:
     output_tokens: int = 0
     duration_seconds: float = 0.0
     transport_source: str = "api"
+    # ``provider_source`` records which provider backend produced the
+    # response — ``"anthropic"`` (current) or ``"openai"`` (#145+). Per
+    # DEC-006 of ``plans/super/144-providers-call-model.md`` this field
+    # is in-memory only — :meth:`to_json` does NOT include it; #147
+    # owns the on-disk schema bump that lights it up in the sidecar.
+    provider_source: str = "anthropic"
 
     def to_json(self) -> str:
         """Serialize the report to a JSON string.
@@ -417,6 +430,7 @@ def combine_blind_results(
     output_tokens: int,
     duration_seconds: float,
     transport_source: str = "api",
+    provider_source: str = "anthropic",
 ) -> BlindReport:
     """Combine two parsed judge verdicts into a canonical :class:`BlindReport`.
 
@@ -450,6 +464,7 @@ def combine_blind_results(
             output_tokens=output_tokens,
             duration_seconds=duration_seconds,
             transport_source=transport_source,
+            provider_source=provider_source,
         )
 
     if parsed1 is None or parsed2 is None:
@@ -482,6 +497,7 @@ def combine_blind_results(
             output_tokens=output_tokens,
             duration_seconds=duration_seconds,
             transport_source=transport_source,
+            provider_source=provider_source,
         )
 
     winner1, conf1, sa1, sb1, reason1 = _translate_blind_result(
@@ -521,6 +537,7 @@ def combine_blind_results(
         output_tokens=output_tokens,
         duration_seconds=duration_seconds,
         transport_source=transport_source,
+        provider_source=provider_source,
     )
 
 
@@ -577,34 +594,37 @@ async def _call_blind_side_with_retry(
     model: str,
     transport: str,
     side_label: str,
-) -> tuple[dict | None, str, str, int, int]:
+) -> tuple[dict | None, str, str, str, int, int]:
     """Run one side of a blind-compare judge with parse retry.
 
-    Returns ``(parsed, text, source, input_tokens, output_tokens)`` — the
-    parsed verdict dict (or ``None`` on shape failure), the final
-    attempt's response text, the transport source, and the cumulative
-    token counts across attempts. One retry on JSON decode failure per
+    Returns ``(parsed, text, source, provider, input_tokens,
+    output_tokens)`` — the parsed verdict dict (or ``None`` on shape
+    failure), the final attempt's response text, the transport source,
+    the provider that produced the response, and the cumulative token
+    counts across attempts. One retry on JSON decode failure per
     clauditor-6cf / #94; no retry on shape failure (missing required
     keys) since that indicates a model-protocol bug.
     """
-    from clauditor._anthropic import call_anthropic
+    from clauditor._providers import call_model
 
     total_input = 0
     total_output = 0
     last_text = ""
     last_source = "api"
+    last_provider = "anthropic"
     parsed: dict | None = None
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
-        r = await call_anthropic(
+        r = await call_model(
             prompt,
+            provider="anthropic",
             model=model,
-            max_tokens=2048,
             transport=transport,
-            subject=f"L3 blind compare {side_label}",
+            max_tokens=2048,
         )
         total_input += r.input_tokens
         total_output += r.output_tokens
         last_source = r.source
+        last_provider = r.provider
         last_text = r.text_blocks[0] if r.text_blocks else ""
         parsed, parse_err = _parse_blind_response_verbose(last_text)
         if parsed is not None:
@@ -621,7 +641,14 @@ async def _call_blind_side_with_retry(
                 attempt + 2,
                 _GRADER_PARSE_RETRY_LIMIT,
             )
-    return parsed, last_text, last_source, total_input, total_output
+    return (
+        parsed,
+        last_text,
+        last_source,
+        last_provider,
+        total_input,
+        total_output,
+    )
 
 
 async def blind_compare(
@@ -666,13 +693,18 @@ async def blind_compare(
         ),
     )
     duration = _monotonic() - start
-    parsed1, t1, src1, in1, out1 = side1
-    parsed2, t2, src2, in2, out2 = side2
+    parsed1, t1, src1, prov1, in1, out1 = side1
+    parsed2, t2, src2, prov2, in2, out2 = side2
     # DEC-018: transport_source reflects the underlying Anthropic call(s).
     # When the two parallel judges disagree (API + CLI — unlikely but
     # possible in an ``auto`` fallback race), stamp ``"mixed"`` so the
     # audit trail surfaces that the report isn't purely one transport.
     transport_source = src1 if src1 == src2 else "mixed"
+    # ``provider_source`` follows the same shape: stamp ``"mixed"`` if
+    # the two judge calls came from different providers (impossible
+    # today since both fix ``provider="anthropic"``, but the seam is
+    # ready for #145's openai backend).
+    provider_source = prov1 if prov1 == prov2 else "mixed"
     return combine_blind_results(
         parsed1=parsed1, parsed2=parsed2,
         text1=t1, text2=t2,
@@ -681,6 +713,7 @@ async def blind_compare(
         output_tokens=out1 + out2,
         duration_seconds=duration,
         transport_source=transport_source,
+        provider_source=provider_source,
     )
 
 
@@ -951,6 +984,7 @@ def _grading_failure_report(
     evidence: str,
     reasoning: str,
     transport_source: str = "api",
+    provider_source: str = "anthropic",
 ) -> GradingReport:
     """Build a failed :class:`GradingReport` for a parse/alignment failure.
 
@@ -975,6 +1009,7 @@ def _grading_failure_report(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         transport_source=transport_source,
+        provider_source=provider_source,
     )
 
 
@@ -988,6 +1023,7 @@ def build_grading_report(
     input_tokens: int,
     output_tokens: int,
     transport_source: str = "api",
+    provider_source: str = "anthropic",
 ) -> GradingReport:
     """Parse ``response_text`` into a :class:`GradingReport`.
 
@@ -1011,6 +1047,7 @@ def build_grading_report(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "transport_source": transport_source,
+        "provider_source": provider_source,
     }
     if not response_text:
         return _grading_failure_report(
@@ -1052,6 +1089,7 @@ def build_grading_report(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         transport_source=transport_source,
+        provider_source=provider_source,
     )
 
 
@@ -1093,7 +1131,7 @@ async def grade_quality(
     Requires the 'grader' extra: pip install clauditor[grader]
     """
     thresholds = thresholds if thresholds is not None else GradeThresholds()
-    from clauditor._anthropic import call_anthropic
+    from clauditor._providers import call_model
 
     prompt = build_grading_prompt(eval_spec, output)
 
@@ -1102,17 +1140,19 @@ async def grade_quality(
     total_output_tokens = 0
     last_response_text = ""
     last_source = "api"
+    last_provider = "anthropic"
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
-        api_result = await call_anthropic(
+        api_result = await call_model(
             prompt,
+            provider="anthropic",
             model=model,
-            max_tokens=4096,
             transport=transport,
-            subject="L3 grading",
+            max_tokens=4096,
         )
         total_input_tokens += api_result.input_tokens
         total_output_tokens += api_result.output_tokens
         last_source = api_result.source
+        last_provider = api_result.provider
         last_response_text = (
             api_result.text_blocks[0] if api_result.text_blocks else ""
         )
@@ -1159,6 +1199,7 @@ async def grade_quality(
         input_tokens=total_input_tokens,
         output_tokens=total_output_tokens,
         transport_source=last_source,
+        provider_source=last_provider,
     )
 
 

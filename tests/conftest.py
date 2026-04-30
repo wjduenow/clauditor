@@ -280,8 +280,8 @@ def _dummy_anthropic_api_key(monkeypatch):
     Tests that specifically exercise the guard (``TestAuthGuardMissingKey``
     in ``tests/test_cli_auth_guard.py``, ``TestCheckAnyAuthAvailable``,
     ``TestCheckApiKeyOnly``, and ``TestCallAnthropicTypeError`` in
-    ``tests/test_anthropic.py``, ``TestClauditorFixturesAuthGuard`` in
-    ``tests/test_pytest_plugin.py``, and ``TestRegressionNoApiKey`` in
+    ``tests/test_providers_anthropic.py``, ``TestClauditorFixturesAuthGuard``
+    in ``tests/test_pytest_plugin.py``, and ``TestRegressionNoApiKey`` in
     ``tests/test_cli_auth_guard.py``) call
     ``monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)`` inside
     the test body — same ``monkeypatch`` instance as this fixture, so
@@ -324,7 +324,7 @@ def _force_api_transport_in_tests(monkeypatch):
     to return ``None`` so the ``auto`` branch deterministically resolves
     to API. Tests that exercise the CLI transport specifically
     (``TestCallViaClaudeCli``, ``TestAutoTransportResolution``,
-    ``TestStderrAnnouncement`` in ``tests/test_anthropic.py``)
+    ``TestStderrAnnouncement`` in ``tests/test_providers_anthropic.py``)
     re-patch ``shutil.which`` inside the test body to override this
     default.
     """

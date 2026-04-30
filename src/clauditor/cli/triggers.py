@@ -6,7 +6,7 @@ import argparse
 import json
 import sys
 
-from clauditor._anthropic import (
+from clauditor._providers import (
     AnthropicAuthMissingError,
     check_any_auth_available,
 )

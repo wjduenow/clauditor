@@ -10,12 +10,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from clauditor import history
-from clauditor._anthropic import (
+from clauditor._harnesses._claude_code import env_without_api_key
+from clauditor._providers import (
     AnthropicAuthMissingError,
     announce_implicit_no_api_key,
     check_any_auth_available,
 )
-from clauditor._harnesses._claude_code import env_without_api_key
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.benchmark import Benchmark, compute_benchmark
 from clauditor.paths import resolve_clauditor_dir
