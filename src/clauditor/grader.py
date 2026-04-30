@@ -812,15 +812,20 @@ async def _extract_call_with_retry(
     from clauditor._providers import call_model
     from clauditor.quality_grader import _emit_parse_retry_notice
 
+    # #145 US-010: Resolve provider from the spec; default to
+    # ``"anthropic"`` for back-compat. Pulled out of the retry loop so
+    # every attempt routes to the same backend.
+    provider = eval_spec.grading_provider or "anthropic"
+
     total_input = 0
     total_output = 0
     last_text = ""
     last_source = "api"
-    last_provider = "anthropic"
+    last_provider = provider
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
         api_result = await call_model(
             prompt,
-            provider="anthropic",
+            provider=provider,
             model=model,
             transport=transport,
             max_tokens=4096,

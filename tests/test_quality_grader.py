@@ -624,6 +624,173 @@ class TestProviderSourcePropagation:
         assert report.provider_source == "mixed"
 
 
+class TestGradingProviderOpenAIWiring:
+    """#145 US-010: when ``eval_spec.grading_provider == "openai"``,
+    ``grade_quality`` and ``blind_compare`` route through the OpenAI
+    backend and stamp ``provider_source == "openai"`` on the returned
+    report."""
+
+    def _spec_with_openai(self) -> EvalSpec:
+        return EvalSpec(
+            skill_name="test-skill",
+            description="A test skill for unit tests",
+            grading_criteria=[
+                "Output contains actionable recommendations",
+                "Tone is professional and clear",
+                "All requested topics are covered",
+            ],
+            grading_provider="openai",
+        )
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_stamps_openai_when_grading_provider_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec_with_openai()
+        grading_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.85,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 0.8,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+        ]
+        fake = ModelResult(
+            response_text=json.dumps(grading_data),
+            text_blocks=[json.dumps(grading_data)],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            report = await grade_quality("output", spec)
+        assert report.provider_source == "openai"
+        # Verify ``provider="openai"`` flowed through to call_model.
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_stamps_openai_when_grading_provider_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``blind_compare`` accepts a ``provider`` kwarg; both parallel
+        judge calls must use the SAME resolved provider value. The
+        composition helper :func:`blind_compare_from_spec` resolves it
+        from ``spec.eval_spec.grading_provider`` once, before the
+        ``asyncio.gather``, so the two sides cannot disagree."""
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        verdict = json.dumps(
+            {
+                "preference": "1",
+                "confidence": 0.8,
+                "score_1": 0.8,
+                "score_2": 0.4,
+                "reasoning": "r",
+            }
+        )
+        # Per .claude/rules/mock-side-effect-for-distinct-calls.md:
+        # ``blind_compare`` calls ``call_model`` twice (once per side
+        # of the position swap), so distinct results are wired through
+        # ``side_effect=[...]``. Both sides return ``provider="openai"``
+        # so ``provider_source`` lands as ``"openai"`` not ``"mixed"``.
+        side1 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        side2 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(side_effect=[side1, side2])
+        with patch("clauditor._providers.call_model", call_mock):
+            report = await blind_compare(
+                "query",
+                "out_a",
+                "out_b",
+                provider="openai",
+            )
+        assert report.provider_source == "openai"
+        # Both calls received the same resolved provider.
+        assert call_mock.await_count == 2
+        for call in call_mock.await_args_list:
+            assert call.kwargs["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_defaults_to_anthropic_when_unset(
+        self,
+    ) -> None:
+        """Back-compat regression: a spec with ``grading_provider=None``
+        still routes through anthropic."""
+        from clauditor._providers import ModelResult
+
+        spec = _make_spec()  # grading_provider default = None
+        grading_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.85,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 0.8,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+        ]
+        fake = ModelResult(
+            response_text=json.dumps(grading_data),
+            text_blocks=[json.dumps(grading_data)],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            report = await grade_quality("output", spec)
+        assert report.provider_source == "anthropic"
+        assert call_mock.await_args.kwargs["provider"] == "anthropic"
+
+
 class TestParseGradingResponse:
     def test_valid_json(self):
         data = [

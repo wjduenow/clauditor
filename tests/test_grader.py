@@ -1914,6 +1914,116 @@ class TestExtractAndReportProviderSource:
         assert report.provider_source == "anthropic"
 
 
+class TestExtractAndReportGradingProviderOpenAI:
+    """#145 US-010: when ``eval_spec.grading_provider == "openai"``,
+    ``extract_and_report`` and ``extract_and_grade`` route through the
+    OpenAI backend and stamp ``ExtractionReport.provider_source ==
+    "openai"``."""
+
+    def _spec(self, *, grading_provider: str | None = None) -> EvalSpec:
+        return EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Items",
+                    tiers=[
+                        TierRequirement(
+                            label="default",
+                            min_entries=1,
+                            fields=[
+                                FieldRequirement(
+                                    name="name",
+                                    required=True,
+                                    id="items-name",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+            grading_provider=grading_provider,
+        )
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_stamps_openai_when_grading_provider_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec(grading_provider="openai")
+        extraction_text = json.dumps(
+            {"Items": {"default": [{"name": "foo"}]}}
+        )
+        fake = ModelResult(
+            response_text=extraction_text,
+            text_blocks=[extraction_text],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            report = await extract_and_report("output", spec)
+        assert report.provider_source == "openai"
+        # Verify ``provider="openai"`` flowed through to call_model.
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_extract_and_grade_stamps_openai_when_grading_provider_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec(grading_provider="openai")
+        extraction_text = json.dumps(
+            {"Items": {"default": [{"name": "foo"}]}}
+        )
+        fake = ModelResult(
+            response_text=extraction_text,
+            text_blocks=[extraction_text],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            await extract_and_grade("output", spec)
+        # ``extract_and_grade`` returns an ``AssertionSet`` (no
+        # provider_source field) — verify the resolved provider flowed
+        # through to ``call_model``.
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_defaults_to_anthropic_when_unset(
+        self,
+    ) -> None:
+        """Back-compat regression: a spec with ``grading_provider=None``
+        (the default) still routes through anthropic."""
+        from clauditor._providers import ModelResult
+
+        spec = self._spec()  # grading_provider default = None
+        extraction_text = json.dumps(
+            {"Items": {"default": [{"name": "foo"}]}}
+        )
+        fake = ModelResult(
+            response_text=extraction_text,
+            text_blocks=[extraction_text],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            report = await extract_and_report("output", spec)
+        assert report.provider_source == "anthropic"
+        assert call_mock.await_args.kwargs["provider"] == "anthropic"
+
+
 class TestExtractionReportDeclaredFieldIds:
     """Copilot fix (PR #34): ``ExtractionReport.to_json`` pre-populates
     every declared field id with an empty list, so the on-disk contract

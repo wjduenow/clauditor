@@ -2029,6 +2029,45 @@ class TestProposeEdits:
         assert "prompt build error" in report.api_error
         assert "prompt kaboom" in report.api_error
 
+    @pytest.mark.asyncio
+    async def test_suggest_stamps_openai_when_grading_provider_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """#145 US-010: ``propose_edits`` accepts a ``provider`` kwarg
+        and threads it through to ``call_model``. The CLI layer (a
+        future ticket) resolves it from ``spec.eval_spec.grading_provider``;
+        this test verifies the function-level wiring."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        si = _suggest_input_with_signals()
+        result = _mock_anthropic_result(
+            text=_good_envelope_text(motivated_by=["a1"])
+        )
+        call_mock = AsyncMock(return_value=result)
+        with patch("clauditor._providers.call_model", call_mock):
+            report = await propose_edits(si, provider="openai")
+        # propose_edits succeeded — no api/parse errors.
+        assert report.api_error is None
+        assert report.parse_error is None
+        # Verify ``provider="openai"`` flowed through to call_model.
+        call_mock.assert_awaited_once()
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_suggest_defaults_to_anthropic_when_provider_unset(
+        self,
+    ) -> None:
+        """Back-compat regression: ``propose_edits`` without the
+        ``provider`` kwarg still routes through anthropic."""
+        si = _suggest_input_with_signals()
+        result = _mock_anthropic_result(
+            text=_good_envelope_text(motivated_by=["a1"])
+        )
+        call_mock = AsyncMock(return_value=result)
+        with patch("clauditor._providers.call_model", call_mock):
+            await propose_edits(si)
+        call_mock.assert_awaited_once()
+        assert call_mock.await_args.kwargs["provider"] == "anthropic"
+
 
 class TestRenderUnifiedDiff:
     def test_single_edit_produces_expected_hunk(self) -> None:
