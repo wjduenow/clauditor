@@ -21,6 +21,7 @@ from clauditor._providers._openai import (
     DEFAULT_MODEL_L2,
     DEFAULT_MODEL_L3,
     OpenAIHelperError,
+    _extract_openai_result,
     call_openai,
 )
 
@@ -35,12 +36,26 @@ def _mock_response(
     """Build a MagicMock shaped like an OpenAI Responses-API response.
 
     The real ``openai.types.responses.Response`` object is a Pydantic
-    model with ``output_text`` (joined message text), ``usage``
-    (input/output token counts), and ``model_dump()`` (Pydantic v2
-    dict serialization). Mock just enough of that surface for the
-    happy-path projection.
+    model with ``output[]`` (list of output items: messages,
+    reasoning, tool-use), ``output_text`` (SDK convenience accessor
+    joining message text), ``usage`` (input/output token counts),
+    and ``model_dump()`` (Pydantic v2 dict serialization). Build a
+    single-message ``output[]`` mirroring ``output_text`` so the
+    extractor's per-block walker yields matching ``text_blocks``.
     """
     resp = MagicMock()
+    if output_text:
+        # Build a single message item with one output_text block so
+        # the extractor's walker collects matching text_blocks.
+        msg = MagicMock()
+        msg.type = "message"
+        block = MagicMock()
+        block.type = "output_text"
+        block.text = output_text
+        msg.content = [block]
+        resp.output = [msg]
+    else:
+        resp.output = []
     resp.output_text = output_text
     resp.usage = MagicMock(
         input_tokens=input_tokens, output_tokens=output_tokens
@@ -220,3 +235,270 @@ class TestCallOpenAISuccess:
             await call_openai("p", model="gpt-5.4", max_tokens=2048)
         kwargs = fake_client.responses.create.call_args.kwargs
         assert kwargs["max_output_tokens"] == 2048
+
+
+def _build_message_item(*texts: str) -> MagicMock:
+    """Build a Responses-API ``message``-typed output item.
+
+    Each text becomes one ``output_text``-typed content block. The
+    real SDK shape is ``ResponseOutputMessage`` with ``type ==
+    "message"`` and a ``content`` list of ``ResponseOutputText`` /
+    ``ResponseOutputRefusal`` objects.
+    """
+    item = MagicMock()
+    item.type = "message"
+    blocks = []
+    for text in texts:
+        block = MagicMock()
+        block.type = "output_text"
+        block.text = text
+        blocks.append(block)
+    item.content = blocks
+    return item
+
+
+def _build_reasoning_item() -> MagicMock:
+    """Build a Responses-API ``reasoning``-typed output item.
+
+    Reasoning items appear in the response.output[] list under
+    extended-thinking modes; the helper must skip them when
+    collecting text blocks. Forward-compat with #154's
+    harness-context sidecar work.
+    """
+    item = MagicMock()
+    item.type = "reasoning"
+    # Reasoning items have a ``summary`` field, not ``content``.
+    item.summary = [MagicMock(text="thinking...")]
+    return item
+
+
+def _make_response(
+    *,
+    output: list | None = None,
+    output_text: str | None = "",
+    usage: MagicMock | None = None,
+    raw_dict: dict | None = None,
+    has_model_dump: bool = True,
+) -> MagicMock:
+    """Build a Responses-API response stub for the extractor tests.
+
+    Distinct from the call-site ``_mock_response`` helper: this one
+    exposes ``output`` (the list of output items the extractor
+    walks), where ``_mock_response`` exposes only ``output_text``.
+    Pass ``output_text=None`` to omit the attribute entirely.
+    """
+    resp = MagicMock()
+    resp.output = output if output is not None else []
+    if output_text is None:
+        del resp.output_text
+    else:
+        resp.output_text = output_text
+    if usage is not None:
+        resp.usage = usage
+    else:
+        # Default: simple usage with zero tokens so tests that don't
+        # care about token counts get a clean baseline.
+        u = MagicMock()
+        u.input_tokens = 0
+        u.output_tokens = 0
+        resp.usage = u
+    if has_model_dump:
+        resp.model_dump = MagicMock(
+            return_value=raw_dict
+            if raw_dict is not None
+            else {"id": "resp_x"}
+        )
+    else:
+        del resp.model_dump
+    return resp
+
+
+class TestExtractOpenAIResult:
+    """Defensive parser tests for ``_extract_openai_result``.
+
+    The helper walks ``response.output[]`` skipping non-message
+    items (reasoning, tool-use), collects text from ``output_text``
+    blocks, and falls back to ``response.output_text`` when the
+    walker yields nothing. Token coercion mirrors
+    ``_anthropic._extract_result``'s defensive shape.
+    """
+
+    def test_happy_path_message_only(self) -> None:
+        # Single message with one output_text block. text_blocks
+        # captures the per-message joined text; response_text
+        # prefers the SDK's output_text accessor.
+        resp = _make_response(
+            output=[_build_message_item("hello world")],
+            output_text="hello world",
+        )
+        text, blocks, in_t, out_t, raw = _extract_openai_result(resp)
+        assert blocks == ["hello world"]
+        assert text == "hello world"
+
+    def test_filters_reasoning_items(self) -> None:
+        # Reasoning items in the response.output[] list must be
+        # skipped — only message-typed items contribute to
+        # text_blocks. Forward-compat with #154's harness-context
+        # sidecar work where reasoning summaries land elsewhere.
+        resp = _make_response(
+            output=[
+                _build_reasoning_item(),
+                _build_message_item("msg"),
+            ],
+            output_text="msg",
+        )
+        text, blocks, _, _, _ = _extract_openai_result(resp)
+        assert blocks == ["msg"]
+        assert text == "msg"
+
+    def test_multiple_message_blocks_joined(self) -> None:
+        # Two message items with one output_text block each. The
+        # walker collects per-message joined text into text_blocks;
+        # response_text mirrors the SDK's joined accessor.
+        resp = _make_response(
+            output=[
+                _build_message_item("first"),
+                _build_message_item("second"),
+            ],
+            output_text="firstsecond",
+        )
+        text, blocks, _, _, _ = _extract_openai_result(resp)
+        assert blocks == ["first", "second"]
+        assert text == "firstsecond"
+
+    def test_empty_output_yields_empty(self) -> None:
+        # Empty response.output[] list AND empty output_text — the
+        # extractor returns empty containers without raising.
+        resp = _make_response(output=[], output_text="")
+        text, blocks, _, _, _ = _extract_openai_result(resp)
+        assert text == ""
+        assert blocks == []
+
+    def test_missing_usage_yields_zero_tokens(self) -> None:
+        # Defensive: a response with no ``usage`` attribute (or
+        # usage=None) must not crash the projection. Token counts
+        # default to 0.
+        resp = _make_response(output=[], output_text="")
+        del resp.usage
+        _, _, in_t, out_t, _ = _extract_openai_result(resp)
+        assert in_t == 0
+        assert out_t == 0
+
+    def test_null_usage_input_tokens_yields_zero(self) -> None:
+        # Defensive: usage.input_tokens = None (a future SDK quirk
+        # or an incomplete response) must coerce to 0 rather than
+        # raising TypeError on int(None).
+        usage = MagicMock()
+        usage.input_tokens = None
+        usage.output_tokens = None
+        resp = _make_response(output=[], output_text="", usage=usage)
+        _, _, in_t, out_t, _ = _extract_openai_result(resp)
+        assert in_t == 0
+        assert out_t == 0
+
+    def test_string_usage_field_falls_back_to_zero(self) -> None:
+        # Defensive parity with _anthropic._extract_result: a
+        # non-numeric string in input_tokens / output_tokens falls
+        # back to 0 rather than crashing the projection.
+        usage = MagicMock()
+        usage.input_tokens = "not a number"
+        usage.output_tokens = "garbage"
+        resp = _make_response(output=[], output_text="", usage=usage)
+        _, _, in_t, out_t, _ = _extract_openai_result(resp)
+        assert in_t == 0
+        assert out_t == 0
+
+    def test_status_incomplete_does_not_raise(self) -> None:
+        # An ``incomplete`` status (max_output_tokens exhausted,
+        # filtered, etc.) must not abort the extractor. The caller
+        # decides what to do — the helper just projects what's
+        # there.
+        resp = _make_response(
+            output=[_build_message_item("partial")],
+            output_text="partial",
+            raw_dict={
+                "status": "incomplete",
+                "incomplete_details": {"reason": "max_output_tokens"},
+            },
+        )
+        resp.status = "incomplete"
+        resp.incomplete_details = MagicMock(reason="max_output_tokens")
+        text, blocks, _, _, raw = _extract_openai_result(resp)
+        assert text == "partial"
+        assert blocks == ["partial"]
+        assert raw["status"] == "incomplete"
+
+    def test_raw_message_dict_round_trip(self) -> None:
+        # raw_message is the Pydantic-v2 dict from
+        # ``response.model_dump()``. Round-trip the canned dict to
+        # confirm the helper does not mutate or reshape it.
+        raw = {"id": "x", "status": "completed"}
+        resp = _make_response(
+            output=[], output_text="", raw_dict=raw
+        )
+        _, _, _, _, got = _extract_openai_result(resp)
+        assert got == raw
+
+    def test_raw_message_fallback_on_missing_model_dump(self) -> None:
+        # Defensive against a future SDK that drops .model_dump():
+        # raw_message falls back to {} (NOT None — a dict matches
+        # the documented shape downstream callers may isinstance).
+        resp = _make_response(
+            output=[], output_text="", has_model_dump=False
+        )
+        _, _, _, _, raw = _extract_openai_result(resp)
+        assert raw == {}
+
+    def test_output_text_attribute_missing_falls_back_to_blocks(
+        self,
+    ) -> None:
+        # If the SDK ever drops the convenience output_text
+        # accessor, the helper falls back to joining text_blocks so
+        # response_text stays populated.
+        resp = _make_response(
+            output=[_build_message_item("alpha", "beta")],
+            output_text=None,
+        )
+        text, blocks, _, _, _ = _extract_openai_result(resp)
+        assert blocks == ["alphabeta"]
+        assert text == "alphabeta"
+
+    def test_skips_non_output_text_content_blocks(self) -> None:
+        # Defensive: a message item whose content[] mixes
+        # output_text blocks with other types (refusal, future
+        # block types) must skip the non-text blocks without
+        # raising.
+        msg = MagicMock()
+        msg.type = "message"
+        text_block = MagicMock()
+        text_block.type = "output_text"
+        text_block.text = "real"
+        refusal = MagicMock()
+        refusal.type = "refusal"
+        refusal.refusal = "I cannot help"
+        msg.content = [refusal, text_block]
+        resp = _make_response(output=[msg], output_text="real")
+        text, blocks, _, _, _ = _extract_openai_result(resp)
+        # Only the output_text block contributes; refusal is skipped.
+        assert blocks == ["real"]
+        assert text == "real"
+
+    def test_message_with_non_list_content_is_skipped(self) -> None:
+        # Defensive: a future SDK shape change where ``content`` is
+        # a string or scalar must not crash the walker.
+        msg = MagicMock()
+        msg.type = "message"
+        msg.content = "not-a-list"
+        resp = _make_response(output=[msg], output_text="")
+        text, blocks, _, _, _ = _extract_openai_result(resp)
+        assert blocks == []
+        assert text == ""
+
+    def test_model_dump_raising_falls_back_to_empty_dict(self) -> None:
+        # Defensive: if .model_dump() exists but raises (a future
+        # SDK quirk, a partial response object), the helper falls
+        # back to {} rather than propagating.
+        resp = _make_response(output=[], output_text="")
+        resp.model_dump = MagicMock(side_effect=TypeError("boom"))
+        _, _, _, _, raw = _extract_openai_result(resp)
+        assert raw == {}

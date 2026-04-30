@@ -101,6 +101,103 @@ class OpenAIHelperError(Exception):
     """
 
 
+def _extract_openai_result(
+    response: Any,
+) -> tuple[str, list[str], int, int, dict]:
+    """Project a Responses-API response into the ``ModelResult`` payload.
+
+    Pure helper per ``.claude/rules/pure-compute-vs-io-split.md``:
+    no I/O, never raises, defensive against missing or malformed
+    fields. Mirrors the structural shape of
+    :func:`clauditor._providers._anthropic._extract_result` so the
+    two providers' projections stay reviewable side-by-side.
+
+    Walks ``response.output[]`` skipping non-``message`` items
+    (e.g. ``type == "reasoning"`` items emitted by extended-thinking
+    modes — forward-compat with #154's harness-context sidecar
+    work). Each ``message`` item's ``content[]`` is walked for
+    ``type == "output_text"`` blocks; the per-message text is
+    joined and appended to ``text_blocks``.
+
+    Args:
+        response: Responses-API response object (or any duck-typed
+            stand-in). All attribute reads are guarded with
+            :func:`getattr` defaults so a future SDK shape change
+            cannot crash the projection.
+
+    Returns:
+        Tuple of ``(response_text, text_blocks, input_tokens,
+        output_tokens, raw_message)``:
+
+        - ``response_text`` prefers ``response.output_text`` (the
+          SDK's joined-message-text convenience accessor). Falls
+          back to ``"".join(text_blocks)`` when the accessor is
+          absent or empty.
+        - ``text_blocks`` is the per-message joined text list; an
+          empty list means the response had no message-typed
+          output items (refusal, tool-only, incomplete).
+        - ``input_tokens`` / ``output_tokens`` come from
+          ``response.usage`` with defensive ``int()`` coercion;
+          fall back to 0 on missing/null/non-numeric values.
+        - ``raw_message`` is ``response.model_dump()`` (Pydantic-v2
+          dict) when available, else ``{}``.
+    """
+    # Walk response.output[], filtering to message items and
+    # collecting per-message joined text. Non-message items
+    # (reasoning, tool-use, etc.) are skipped; per-block walking is
+    # defensive against a future SDK that adds new content-block
+    # types — we only collect text from output_text blocks.
+    text_blocks: list[str] = []
+    output = getattr(response, "output", None) or []
+    if isinstance(output, list):
+        for item in output:
+            if getattr(item, "type", None) != "message":
+                continue
+            content = getattr(item, "content", None) or []
+            if not isinstance(content, list):
+                continue
+            parts: list[str] = []
+            for block in content:
+                if getattr(block, "type", None) != "output_text":
+                    continue
+                text = getattr(block, "text", "") or ""
+                if isinstance(text, str):
+                    parts.append(text)
+            text_blocks.append("".join(parts))
+
+    # Prefer the SDK's joined output_text accessor; fall back to
+    # joining text_blocks when it is absent or empty.
+    output_text = getattr(response, "output_text", "") or ""
+    if not output_text and text_blocks:
+        output_text = "".join(text_blocks)
+
+    usage = getattr(response, "usage", None)
+    try:
+        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
+    except (TypeError, ValueError, AttributeError):
+        input_tokens = 0
+    try:
+        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+    except (TypeError, ValueError, AttributeError):
+        output_tokens = 0
+
+    # raw_message: prefer the Pydantic-v2 dict (DEC-001 of #145).
+    # Fall back to {} so downstream callers that ``isinstance(...,
+    # dict)`` keep a stable shape. Defensive against a future SDK
+    # that drops .model_dump() entirely.
+    raw_message: dict = {}
+    model_dump = getattr(response, "model_dump", None)
+    if callable(model_dump):
+        try:
+            dumped = model_dump()
+        except (TypeError, AttributeError):
+            dumped = None
+        if isinstance(dumped, dict):
+            raw_message = dumped
+
+    return output_text, text_blocks, input_tokens, output_tokens, raw_message
+
+
 async def call_openai(
     prompt: str,
     *,
@@ -174,28 +271,15 @@ async def call_openai(
     )
     duration = _monotonic() - start
 
-    output_text = getattr(response, "output_text", "") or ""
-    text_blocks = [output_text] if output_text else []
-
-    usage = getattr(response, "usage", None)
-    try:
-        input_tokens = int(getattr(usage, "input_tokens", 0) or 0)
-    except (TypeError, ValueError):
-        input_tokens = 0
-    try:
-        output_tokens = int(getattr(usage, "output_tokens", 0) or 0)
-    except (TypeError, ValueError):
-        output_tokens = 0
-
-    # DEC-001 raw_message shape: Pydantic v2 dict via .model_dump().
-    # Defensive against a future SDK that drops the method —
-    # fall back to ``None`` so :attr:`ModelResult.raw_message` stays
-    # tolerable for ``isinstance(..., dict)`` checks downstream.
-    model_dump = getattr(response, "model_dump", None)
-    raw_message = model_dump() if callable(model_dump) else None
+    # Delegate the projection to the pure helper per
+    # .claude/rules/pure-compute-vs-io-split.md. Retry branches in
+    # US-004 will reuse the same helper inside the retry loop.
+    response_text, text_blocks, input_tokens, output_tokens, raw_message = (
+        _extract_openai_result(response)
+    )
 
     return ModelResult(
-        response_text=output_text,
+        response_text=response_text,
         text_blocks=text_blocks,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
