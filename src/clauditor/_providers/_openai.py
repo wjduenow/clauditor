@@ -200,7 +200,15 @@ def _extract_openai_result(
                 text = getattr(block, "text", "") or ""
                 if isinstance(text, str):
                     parts.append(text)
-            text_blocks.append("".join(parts))
+            # QG pass 2 (#145): only append when this message yielded
+            # at least one text part. A message item with no
+            # ``output_text`` content blocks (refusal-only, tool-use-
+            # only, or ``content=None``) collapses to no entry rather
+            # than an empty-string entry, so the downstream contract
+            # ``not result.text_blocks`` reliably distinguishes
+            # "no message-typed text" from "message had empty text".
+            if parts:
+                text_blocks.append("".join(parts))
 
     # Prefer the SDK's joined output_text accessor; fall back to
     # joining text_blocks when it is absent or empty.

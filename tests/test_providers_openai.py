@@ -375,6 +375,47 @@ class TestExtractOpenAIResult:
         assert text == ""
         assert blocks == []
 
+    def test_message_with_content_none_yields_no_block(self) -> None:
+        # QG pass 2 (#145): a message item with ``content=None``
+        # (refusal-only / placeholder) must NOT produce an empty-string
+        # entry in text_blocks. The contract is symmetric: zero
+        # output_text blocks → zero text_blocks entries, regardless of
+        # whether ``content`` was None, missing, or an empty list.
+        item = MagicMock()
+        item.type = "message"
+        item.content = None
+        resp = _make_response(output=[item], output_text="")
+        text, blocks, _, _, _ = _extract_openai_result(resp)
+        assert blocks == []
+        assert text == ""
+
+    def test_message_with_content_empty_list_yields_no_block(self) -> None:
+        # Symmetric with ``content=None``: an empty content list
+        # produces no text_blocks entry (not [""]). Pins the QG pass 2
+        # asymmetry fix in ``_providers/_openai.py``.
+        item = MagicMock()
+        item.type = "message"
+        item.content = []
+        resp = _make_response(output=[item], output_text="")
+        text, blocks, _, _, _ = _extract_openai_result(resp)
+        assert blocks == []
+        assert text == ""
+
+    def test_message_with_only_non_output_text_blocks_yields_no_block(self) -> None:
+        # A message item with only ``refusal``-typed content blocks
+        # (or other non-``output_text`` types) yields no text_blocks
+        # entry. Symmetric with content=None / content=[].
+        item = MagicMock()
+        item.type = "message"
+        refusal = MagicMock()
+        refusal.type = "refusal"
+        refusal.refusal = "I cannot help with that."
+        item.content = [refusal]
+        resp = _make_response(output=[item], output_text="")
+        text, blocks, _, _, _ = _extract_openai_result(resp)
+        assert blocks == []
+        assert text == ""
+
     def test_missing_usage_yields_zero_tokens(self) -> None:
         # Defensive: a response with no ``usage`` attribute (or
         # usage=None) must not crash the projection. Token counts
