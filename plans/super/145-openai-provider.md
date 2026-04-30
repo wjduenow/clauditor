@@ -5,7 +5,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/145
 - **Branch:** `feature/145-openai-provider`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/145-openai-provider`
-- **Phase:** detailing
+- **Phase:** published
+- **PR:** https://github.com/wjduenow/clauditor/pull/160
 - **Sessions:** 1 (2026-04-29)
 - **Depends on:** #144 (CLOSED — `call_model` dispatcher + `ModelResult` envelope shipped)
 - **Blocks:** #146 (`grading_provider` precedence), #147 (sidecar v3 with `provider` field)
