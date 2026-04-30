@@ -151,7 +151,8 @@ raises `ValueError` for unknown values.
 
 `src/clauditor/_providers/_anthropic.py::call_anthropic` — the
 anthropic backend body, single async helper, ~90 effective lines,
-exhaustive unit-tested retry branches in `tests/test_anthropic.py`.
+exhaustive unit-tested retry branches in
+`tests/test_providers_anthropic.py`.
 The dataclass `ModelResult` (with back-compat alias `AnthropicResult`)
 and the exception types `AnthropicHelperError` / `ClaudeCLIError` are
 part of the public surface for callers; everything prefixed with `_`
@@ -256,7 +257,8 @@ flags belong in the `_providers` package (DEC-009 of
 deprecation-coupled notices in `_providers/_auth.py`, transport-
 coupled notices in `_providers/_anthropic.py`. Reset mechanism for
 tests is the `monkeypatch.setattr(..., False)` autouse fixture
-pattern — see `tests/test_anthropic.py::TestStderrAnnouncement`,
+pattern — see
+`tests/test_providers_anthropic.py::TestStderrAnnouncement`,
 `TestAnnounceImplicitNoApiKey`, and
 `TestCallAnthropicDeprecationAnnouncement` for the shape.
 
