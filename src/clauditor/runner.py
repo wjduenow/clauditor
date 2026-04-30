@@ -253,6 +253,7 @@ class SkillRunner:
         env: dict[str, str] | None = None,
         timeout: int | None = None,
         allow_hang_heuristic: bool = True,
+        system_prompt: str | None = None,
     ) -> SkillResult:
         """Run a skill and capture its output.
 
@@ -273,13 +274,20 @@ class SkillRunner:
                 heuristic (DEC-005). Threaded here from
                 ``EvalSpec.allow_hang_heuristic`` so authors can opt out
                 when the heuristic is wrong for a particular skill.
+            system_prompt: Optional system prompt forwarded to
+                :meth:`Harness.build_prompt` (US-003 of issue #150).
+                Harnesses that have no notion of a separate system prompt
+                (``ClaudeCodeHarness``) ignore the kwarg; future raw-API
+                harnesses will embed it in a structured message body.
+                Placed LAST per DEC-008 of #150 — a stable anchor for
+                existing test mocks that bind earlier kwargs positionally.
 
         Returns:
             SkillResult with captured output
         """
-        prompt = f"/{skill_name}"
-        if args:
-            prompt += f" {args}"
+        prompt = self.harness.build_prompt(
+            skill_name, args, system_prompt=system_prompt
+        )
         return self._invoke(
             prompt=prompt,
             skill_name=skill_name,

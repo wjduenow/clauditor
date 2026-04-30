@@ -167,14 +167,14 @@ class TestHarnessProtocol:
 
     The protocol lives in ``clauditor._harnesses`` and is the seam future
     harnesses (Codex per #149) will satisfy. This test confirms the
-    public shape: ``name`` ClassVar plus ``invoke`` and
-    ``strip_auth_keys`` methods. Per DEC-008, ``allow_hang_heuristic``
+    public shape: ``name`` ClassVar plus ``invoke``, ``strip_auth_keys``,
+    and ``build_prompt`` methods. Per DEC-008, ``allow_hang_heuristic``
     is intentionally NOT on ``invoke`` — it's a Claude-Code-specific
     knob configured at harness construction time (US-004).
     """
 
     def test_stub_satisfies_harness_protocol(self):
-        """A class with the three protocol members is structurally a
+        """A class with the four protocol members is structurally a
         ``Harness``. Verified at runtime via ``isinstance`` (the protocol
         is ``@runtime_checkable``) and at signature level via
         ``inspect.signature`` so adding a new required parameter to
@@ -206,6 +206,15 @@ class TestHarnessProtocol:
             def strip_auth_keys(self, env: dict[str, str]) -> dict[str, str]:
                 return dict(env)
 
+            def build_prompt(
+                self,
+                skill_name: str,
+                args: str,
+                *,
+                system_prompt: str | None,
+            ) -> str:
+                return f"/{skill_name}"
+
         stub = StubHarness()
 
         # Runtime member-presence check (the protocol is @runtime_checkable).
@@ -222,6 +231,36 @@ class TestHarnessProtocol:
         missing = protocol_params - stub_params
         assert not missing, (
             f"StubHarness.invoke missing protocol parameters: {missing}"
+        )
+
+    def test_harness_protocol_includes_build_prompt(self):
+        """Drift-guard for ``Harness.build_prompt`` (US-001 of #150).
+
+        Locks: (1) the method exists on the protocol; (2) ``system_prompt``
+        is keyword-only; (3) the return annotation is ``str``. A signature
+        change that drops keyword-only or changes the return type fails
+        this test.
+        """
+        import inspect
+
+        from clauditor._harnesses import Harness
+
+        assert hasattr(Harness, "build_prompt"), (
+            "Harness protocol missing build_prompt"
+        )
+        sig = inspect.signature(Harness.build_prompt)
+        params = sig.parameters
+        assert "system_prompt" in params, (
+            "Harness.build_prompt missing system_prompt parameter"
+        )
+        assert params["system_prompt"].kind is inspect.Parameter.KEYWORD_ONLY, (
+            "Harness.build_prompt.system_prompt must be keyword-only"
+        )
+        assert params["system_prompt"].annotation == "str | None", (
+            "Harness.build_prompt.system_prompt must be annotated 'str | None'"
+        )
+        assert sig.return_annotation == "str", (
+            "Harness.build_prompt return annotation must be 'str'"
         )
 
 
@@ -574,7 +613,9 @@ class TestSkillRunnerHarnessSubstitution:
 
     def test_skill_runner_records_invoke_call_args(self):
         """The mock records prompt/cwd/env/timeout exactly as the runner
-        forwards them to :meth:`Harness.invoke`."""
+        forwards them to :meth:`Harness.invoke`. Per US-003 of issue #150
+        the prompt is the string returned by ``MockHarness.build_prompt``,
+        which has its own deterministic shape (``"[mock]|/foo arg"``)."""
         from pathlib import Path
 
         from clauditor._harnesses._mock import MockHarness
@@ -586,7 +627,7 @@ class TestSkillRunnerHarnessSubstitution:
 
         assert len(mock.invoke_calls) == 1
         call = mock.invoke_calls[0]
-        assert call["prompt"] == "/foo arg"
+        assert call["prompt"] == "[mock]|/foo arg"
         assert call["cwd"] == Path("/tmp")
         assert call["env"] is None
         assert call["timeout"] == 99
@@ -665,6 +706,131 @@ class TestHarnessStripAuthKeys:
         # Returns a new dict (mutation-safe per Harness protocol contract).
         scrubbed["FOO"] = "mutated"
         assert env["FOO"] == "bar"
+
+
+class TestHarnessBuildPrompt:
+    """Direct coverage of ``Harness.build_prompt`` on both implementers.
+
+    Pinned by US-001 of issue #150: the prompt-builder is a pure helper
+    (no I/O) per ``.claude/rules/pure-compute-vs-io-split.md``. Locks:
+    (1) ``ClaudeCodeHarness`` returns slash-style commands and ignores
+    ``system_prompt``; (2) ``MockHarness`` records every call on
+    ``build_prompt_calls`` for test assertions.
+    """
+
+    def test_claude_code_harness_build_prompt_with_args_and_no_system_prompt(self):
+        """Args present → ``"/{skill_name} {args}"``; ``system_prompt`` ignored."""
+        result = ClaudeCodeHarness().build_prompt("foo", "bar baz", system_prompt=None)
+        assert result == "/foo bar baz"
+
+    def test_claude_code_harness_build_prompt_no_args(self):
+        """Empty args → ``"/{skill_name}"`` with no trailing space."""
+        result = ClaudeCodeHarness().build_prompt("foo", "", system_prompt=None)
+        assert result == "/foo"
+
+    def test_claude_code_harness_build_prompt_ignores_system_prompt(self):
+        """``system_prompt`` does not appear in the Claude Code slash command."""
+        result = ClaudeCodeHarness().build_prompt("foo", "", system_prompt="anything")
+        assert result == "/foo"
+
+    def test_mock_harness_build_prompt_records_call(self):
+        """``MockHarness.build_prompt`` records ``(skill_name, args, system_prompt)``
+        on ``build_prompt_calls`` so unit tests can assert against it."""
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        returned = mock.build_prompt("foo", "bar", system_prompt="hello")
+        assert len(mock.build_prompt_calls) == 1
+        entry = mock.build_prompt_calls[0]
+        # Recorded entry must contain all three values; structure is the
+        # mock's choice (dict or tuple) so long as the values are present.
+        if isinstance(entry, dict):
+            assert entry["skill_name"] == "foo"
+            assert entry["args"] == "bar"
+            assert entry["system_prompt"] == "hello"
+        else:
+            assert "foo" in entry
+            assert "bar" in entry
+            assert "hello" in entry
+        # And the returned string is deterministic enough to surface
+        # ``system_prompt`` when present.
+        assert "hello" in returned
+        assert "foo" in returned
+
+
+class TestSkillRunnerRunBuildsPromptViaHarness:
+    """US-003 of issue #150: ``SkillRunner.run`` composes its prompt via
+    ``self.harness.build_prompt(...)`` rather than synthesizing the slash
+    string inline. The ``system_prompt`` kwarg threads from
+    :meth:`SkillRunner.run` through to ``build_prompt`` (see DEC-008 for
+    why it is the LAST keyword argument on ``run``).
+    """
+
+    def test_runner_run_calls_harness_build_prompt_with_args(self):
+        """``runner.run("foo", "bar")`` records a build_prompt call with
+        ``skill_name="foo"``, ``args="bar"``, ``system_prompt=None``."""
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir="/tmp", harness=mock)
+
+        runner.run("foo", "bar")
+
+        assert len(mock.build_prompt_calls) == 1
+        call = mock.build_prompt_calls[-1]
+        assert call["skill_name"] == "foo"
+        assert call["args"] == "bar"
+        assert call["system_prompt"] is None
+
+    def test_runner_run_threads_system_prompt_kwarg_to_build_prompt(self):
+        """``runner.run("foo", "bar", system_prompt="hello")`` threads
+        ``system_prompt`` through to ``Harness.build_prompt``."""
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir="/tmp", harness=mock)
+
+        runner.run("foo", "bar", system_prompt="hello")
+
+        assert len(mock.build_prompt_calls) == 1
+        call = mock.build_prompt_calls[-1]
+        assert call["skill_name"] == "foo"
+        assert call["args"] == "bar"
+        assert call["system_prompt"] == "hello"
+
+    def test_runner_run_passes_built_prompt_to_invoke(self):
+        """The string returned by ``Harness.build_prompt`` is exactly what
+        reaches ``Harness.invoke`` as ``prompt``."""
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir="/tmp", harness=mock)
+
+        runner.run("foo", "bar", system_prompt="hello")
+
+        # ``MockHarness.build_prompt`` returns
+        # ``f"[mock]{system_prompt or ''}|/{skill_name} {args}".rstrip()``.
+        expected_prompt = "[mock]hello|/foo bar"
+        assert len(mock.invoke_calls) == 1
+        assert mock.invoke_calls[-1]["prompt"] == expected_prompt
+
+    def test_runner_run_back_compat_no_system_prompt_kwarg(self):
+        """Calling ``runner.run("foo", "bar")`` with no ``system_prompt``
+        kwarg yields the legacy ``"/foo bar"`` prompt when paired with
+        :class:`ClaudeCodeHarness` (which ignores ``system_prompt``)."""
+        runner = SkillRunner(project_dir="/tmp", harness=ClaudeCodeHarness())
+
+        # Patch ``invoke`` to capture the prompt without spawning a subprocess.
+        captured: dict[str, str] = {}
+
+        def _fake_invoke(prompt, **_kwargs):
+            captured["prompt"] = prompt
+            return InvokeResult(output="", exit_code=0, duration_seconds=0.0)
+
+        with patch.object(runner.harness, "invoke", side_effect=_fake_invoke):
+            runner.run("foo", "bar")
+
+        assert captured["prompt"] == "/foo bar"
 
 
 # ---------------------------------------------------------------------------
