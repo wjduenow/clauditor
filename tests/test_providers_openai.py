@@ -958,3 +958,38 @@ class TestCallOpenAITypeError:
         assert sleep_mock.await_count == 0
         assert isinstance(exc_info.value.__cause__, TypeError)
         assert sdk_text in str(exc_info.value.__cause__)
+
+    @pytest.mark.asyncio
+    async def test_openai_error_at_construction_wrapped(self) -> None:
+        """#145 QG pass 1 (Bug 2): the SDK raises ``openai.OpenAIError``
+        (NOT ``TypeError``) at ``AsyncOpenAI()`` construction when
+        ``OPENAI_API_KEY`` is unset. Without ``OpenAIError`` in the
+        construction-site ``except`` tuple, the missing-key path bypasses
+        the defense-in-depth and surfaces a raw SDK traceback.
+        """
+        from openai import OpenAIError
+
+        sdk_text = "The api_key client option must be set"
+
+        def _raise_at_construct(*args: object, **kwargs: object) -> None:
+            raise OpenAIError(sdk_text)
+
+        sleep_mock = AsyncMock()
+        with patch(
+            "clauditor._providers._openai.AsyncOpenAI",
+            side_effect=_raise_at_construct,
+        ), patch(
+            "clauditor._providers._openai._sleep", sleep_mock
+        ):
+            with pytest.raises(OpenAIHelperError) as exc_info:
+                await call_openai("p", model="gpt-5.4")
+        msg = str(exc_info.value)
+        assert "OpenAI SDK client initialization failed" in msg
+        assert "OPENAI_API_KEY" in msg
+        # SDK-sourced text must NOT leak into the user-facing message.
+        assert sdk_text not in msg
+        # No retry; construction failure is not transient.
+        assert sleep_mock.await_count == 0
+        # Original exception preserved on __cause__ via raise ... from exc.
+        assert isinstance(exc_info.value.__cause__, OpenAIError)
+        assert sdk_text in str(exc_info.value.__cause__)

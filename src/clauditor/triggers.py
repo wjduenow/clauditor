@@ -187,7 +187,11 @@ async def classify_query(
     inside the dispatcher's anthropic backend — this function just
     awaits the result and projects it onto :class:`TriggerResult`.
     """
-    from clauditor._providers import AnthropicHelperError, call_model
+    from clauditor._providers import (
+        AnthropicHelperError,
+        OpenAIHelperError,
+        call_model,
+    )
 
     prompt = build_trigger_prompt(skill_name, description, query)
 
@@ -199,7 +203,7 @@ async def classify_query(
             transport=transport,
             max_tokens=1024,
         )
-    except AnthropicHelperError as exc:
+    except (AnthropicHelperError, OpenAIHelperError) as exc:
         # Graceful degradation: a single API failure (auth, 5xx
         # exhaustion, network) must not abort the entire trigger batch
         # in ``test_triggers``. ``passed=False`` always — an API error

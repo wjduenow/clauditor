@@ -2695,6 +2695,101 @@ class TestCmdCompareBlind:
         assert "file-pair form" in err
 
 
+class TestCmdCompareBlindProviderAuth:
+    """#145 QG pass 1 (Bug 3): ``compare --blind`` resolves provider and
+    dispatches the per-provider auth guard.
+
+    Pre-fix: ``_run_blind_compare`` called the Anthropic-only
+    ``check_any_auth_available("compare --blind")`` regardless of
+    ``eval_spec.grading_provider``. A spec declaring
+    ``grading_provider="openai"`` would surface a misleading
+    ANTHROPIC_API_KEY-required error when only OPENAI_API_KEY was set.
+    """
+
+    def test_compare_blind_with_openai_grading_provider_passes_when_key_set(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec with ``grading_provider="openai"`` and ``OPENAI_API_KEY`` set
+        → proceeds through the auth guard. Mocks the blind judge so the
+        test does not actually call OpenAI.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        before, after = _write_pair(tmp_path)
+        eval_spec = _make_eval_spec(
+            user_prompt="Write a hello world",
+            grading_provider="openai",
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = _make_blind_report()
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.blind_compare",
+                new=AsyncMock(return_value=report),
+            ),
+        ):
+            rc = main(_blind_argv(before, after))
+        assert rc == 0
+
+    def test_compare_blind_with_openai_grading_provider_exits_2_when_key_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Spec with ``grading_provider="openai"`` and missing
+        ``OPENAI_API_KEY`` → exit 2 with stderr mentioning the env var
+        (not ANTHROPIC_API_KEY).
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # Even if Anthropic key is present, OpenAI provider must require
+        # OPENAI_API_KEY — the spec's grading_provider is the source of
+        # truth.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-irrelevant")
+        before, after = _write_pair(tmp_path)
+        eval_spec = _make_eval_spec(
+            user_prompt="Write a hello world",
+            grading_provider="openai",
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = _make_blind_report()
+        # The blind_compare mock should never be reached.
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.blind_compare",
+                new_callable=AsyncMock,
+                return_value=report,
+            ) as mock_blind,
+        ):
+            rc = main(_blind_argv(before, after))
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "OPENAI_API_KEY" in err
+        assert mock_blind.await_count == 0
+
+    def test_compare_blind_with_default_anthropic_provider_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression check: spec with ``grading_provider=None`` (default)
+        still routes through the Anthropic auth guard.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        before, after = _write_pair(tmp_path)
+        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
+        assert eval_spec.grading_provider is None
+        spec = _make_spec(eval_spec=eval_spec)
+        report = _make_blind_report()
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.blind_compare",
+                new=AsyncMock(return_value=report),
+            ),
+        ):
+            rc = main(_blind_argv(before, after))
+        assert rc == 0
+
+
 class TestCmdGradeCompareFlagRemoved:
     """US-003: the legacy --compare flag on grade is gone."""
 

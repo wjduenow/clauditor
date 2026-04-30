@@ -146,8 +146,9 @@ async def call_model(
     Thin shim that owns provider selection. ``provider="anthropic"``
     delegates to :func:`clauditor._providers._anthropic.call_anthropic`
     (which itself owns transport selection between the SDK and the
-    ``claude`` CLI). ``provider="openai"`` raises
-    :class:`NotImplementedError` until #145 lands the OpenAI backend.
+    ``claude`` CLI). ``provider="openai"`` delegates to
+    :func:`clauditor._providers._openai.call_openai` (#145 US-005;
+    no transport axis — DEC-002 of ``plans/super/145-openai-provider.md``).
 
     Per DEC-001 of ``plans/super/144-providers-call-model.md``, the
     signature deliberately does NOT include a ``subject`` parameter:

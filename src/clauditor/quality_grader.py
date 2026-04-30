@@ -21,6 +21,13 @@ if TYPE_CHECKING:
     from clauditor.spec import SkillSpec
 
 
+# TODO(#146): ``DEFAULT_GRADING_MODEL`` is Anthropic-specific. Callers
+# passing ``grading_provider="openai"`` (per #145 US-010) MUST also set
+# ``grading_model`` explicitly on the eval spec — handing this Anthropic
+# default to the OpenAI backend produces a 4xx model-not-found from the
+# OpenAI SDK. #146 owns the per-provider default-model precedence
+# resolver; until it lands, the spec author is responsible for naming
+# an OpenAI model when ``grading_provider="openai"``.
 DEFAULT_GRADING_MODEL = "claude-sonnet-4-6"
 
 # Indirection so tests can patch blind_compare timing without affecting

@@ -382,6 +382,37 @@ class TestClassifyQuery:
         assert result.passed is False
         assert "API error" in result.reasoning
 
+    @pytest.mark.asyncio
+    async def test_classify_query_returns_failed_result_on_openai_helper_error(
+        self,
+    ):
+        """#145 QG pass 1: an :class:`OpenAIHelperError` from the OpenAI
+        backend must be caught with the same graceful-degradation contract
+        as :class:`AnthropicHelperError`. Without this, a single OpenAI
+        failure (auth, rate-limit exhaustion, conn error, 5xx) escapes
+        ``asyncio.gather`` and aborts the whole ``test_triggers`` batch
+        when ``provider="openai"``.
+        """
+        from clauditor._providers import OpenAIHelperError
+
+        call = AsyncMock(side_effect=OpenAIHelperError("simulated openai"))
+        with patch("clauditor._providers.call_model", call):
+            result = await classify_query(
+                "skill",
+                "desc",
+                "query",
+                True,
+                "test-model",
+                provider="openai",
+            )
+        assert result.predicted_trigger is False
+        assert result.passed is False
+        assert result.confidence == 0.0
+        assert "API error" in result.reasoning
+        assert "simulated openai" in result.reasoning
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
+
 
 # --- test_triggers tests ---
 

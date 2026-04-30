@@ -307,24 +307,33 @@ async def call_openai(
         APIConnectionError,
         APIStatusError,
         AuthenticationError,
+        OpenAIError,
         PermissionDeniedError,
         RateLimitError,
     )
 
     # Defense-in-depth (per ``.claude/rules/precall-env-validation.md``):
-    # wrap the ``AsyncOpenAI()`` construction site so a future SDK
-    # that raises ``TypeError`` from ``__init__`` (e.g. on an
-    # unresolved auth method) surfaces as a clean
+    # wrap the ``AsyncOpenAI()`` construction site so the SDK's auth
+    # missing-key error (``OpenAIError`` raised when ``OPENAI_API_KEY``
+    # is unset) and any future ``TypeError`` from ``__init__`` (e.g.
+    # on an unresolved auth method) surface as a clean
     # ``OpenAIHelperError`` rather than a raw traceback. Fixed
-    # sanitized message; original ``TypeError`` preserved on
+    # sanitized message; original exception preserved on
     # ``__cause__`` via ``raise ... from``. ``ImportError`` is NOT
     # caught — per the centralized-sdk-call rule, missing-SDK errors
     # must propagate un-wrapped so the install hint surfaces.
+    #
+    # ``OpenAIError`` is the SDK's base exception. ``AuthenticationError``,
+    # ``RateLimitError``, ``APIStatusError``, ``APIConnectionError`` are
+    # all subclasses, but those are raised from ``responses.create()`` —
+    # not from ``AsyncOpenAI()`` construction — so this site only sees
+    # the bare ``OpenAIError`` (or ``TypeError`` for legacy SDK config
+    # errors).
     try:
         client = AsyncOpenAI()
     except ImportError:
         raise
-    except TypeError as exc:
+    except (TypeError, OpenAIError) as exc:
         raise OpenAIHelperError(
             "OpenAI SDK client initialization failed — "
             "verify OPENAI_API_KEY is set."
