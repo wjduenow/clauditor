@@ -563,3 +563,332 @@ class TestClaudeCliIsAvailable:
 
         _patch_which(monkeypatch, None)
         assert _claude_cli_is_available() is False
+
+
+class TestCheckOpenAiAuth:
+    """Unit tests for the OpenAI pre-flight auth guard (US-006 / DEC-006).
+
+    Mirrors :class:`TestCheckApiKeyOnly`'s shape — the OpenAI guard is
+    unconditionally strict (no CLI-fallback branch since OpenAI has no
+    equivalent of the ``claude`` CLI subscription path). Pins DEC-006
+    of ``plans/super/145-openai-provider.md``: pure helper raising
+    :class:`OpenAIAuthMissingError` when ``OPENAI_API_KEY`` is absent,
+    empty, or whitespace-only.
+    """
+
+    def test_key_present_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import check_openai_auth
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        assert check_openai_auth("grade") is None
+
+    def test_key_absent_raises_with_hint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import (
+            OpenAIAuthMissingError,
+            check_openai_auth,
+        )
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(OpenAIAuthMissingError) as exc_info:
+            check_openai_auth("grade")
+        message = str(exc_info.value)
+        # DEC-006 durable substrings.
+        assert "OPENAI_API_KEY" in message
+        assert "platform.openai.com" in message
+        # Command-name interpolation.
+        assert "clauditor grade" in message
+
+    def test_empty_string_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import (
+            OpenAIAuthMissingError,
+            check_openai_auth,
+        )
+
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        with pytest.raises(OpenAIAuthMissingError):
+            check_openai_auth("grade")
+
+    def test_whitespace_only_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import (
+            OpenAIAuthMissingError,
+            check_openai_auth,
+        )
+
+        monkeypatch.setenv("OPENAI_API_KEY", "   \t\n")
+        with pytest.raises(OpenAIAuthMissingError):
+            check_openai_auth("grade")
+
+    def test_key_whitespace_surrounded_accepted(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-empty value with surrounding whitespace counts as present."""
+        from clauditor._providers import check_openai_auth
+
+        monkeypatch.setenv("OPENAI_API_KEY", "  sk-test  ")
+        assert check_openai_auth("grade") is None
+
+    def test_cmd_name_interpolation_extract(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import (
+            OpenAIAuthMissingError,
+            check_openai_auth,
+        )
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(OpenAIAuthMissingError) as exc_info:
+            check_openai_auth("extract")
+        assert "clauditor extract" in str(exc_info.value)
+
+    def test_cmd_name_interpolation_propose_eval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import (
+            OpenAIAuthMissingError,
+            check_openai_auth,
+        )
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(OpenAIAuthMissingError) as exc_info:
+            check_openai_auth("propose-eval")
+        assert "clauditor propose-eval" in str(exc_info.value)
+
+    def test_openai_auth_missing_error_is_not_anthropic_subclass(
+        self,
+    ) -> None:
+        """DEC-006 (#145) + ``.claude/rules/llm-cli-exit-code-taxonomy.md``:
+        ``OpenAIAuthMissingError`` is a direct subclass of
+        :class:`Exception`, NOT of :class:`AnthropicAuthMissingError`.
+        A common ancestor would defeat the structural-routing
+        invariant CLI dispatchers depend on.
+        """
+        from clauditor._providers import (
+            AnthropicAuthMissingError,
+            OpenAIAuthMissingError,
+        )
+
+        assert not issubclass(OpenAIAuthMissingError, AnthropicAuthMissingError)
+        # And the converse — neither inherits from the other.
+        assert not issubclass(AnthropicAuthMissingError, OpenAIAuthMissingError)
+        # Direct base is Exception.
+        assert OpenAIAuthMissingError.__bases__ == (Exception,)
+
+    def test_constant_substrings(self) -> None:
+        """Prose-presence check on the message template."""
+        from clauditor._providers import _OPENAI_AUTH_MISSING_TEMPLATE
+
+        assert "OPENAI_API_KEY" in _OPENAI_AUTH_MISSING_TEMPLATE
+        assert "platform.openai.com" in _OPENAI_AUTH_MISSING_TEMPLATE
+        assert "{cmd_name}" in _OPENAI_AUTH_MISSING_TEMPLATE
+
+
+class TestCheckProviderAuth:
+    """Unit tests for the multi-provider dispatcher (US-006 / DEC-006).
+
+    Pins DEC-006 of ``plans/super/145-openai-provider.md``: single
+    public seam ``check_provider_auth(provider, cmd_name)`` that
+    routes to the provider-specific guard. Distinct exception classes
+    propagate through (preserving the structural-routing invariant
+    every CLI dispatcher depends on per
+    ``.claude/rules/llm-cli-exit-code-taxonomy.md``).
+    """
+
+    def test_anthropic_delegates_to_check_any_auth_available(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``provider="anthropic"`` routes to
+        :func:`check_any_auth_available`. Verified by the behavioral
+        contract: when both ``ANTHROPIC_API_KEY`` is unset AND the
+        ``claude`` CLI is absent, the dispatcher raises
+        :class:`AnthropicAuthMissingError` — exactly the relaxed
+        guard's contract.
+        """
+        from clauditor._providers import (
+            AnthropicAuthMissingError,
+            check_provider_auth,
+        )
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _patch_which(monkeypatch, None)
+        with pytest.raises(AnthropicAuthMissingError):
+            check_provider_auth("anthropic", "grade")
+
+    def test_anthropic_passes_when_key_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import check_provider_auth
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        _patch_which(monkeypatch, None)
+        assert check_provider_auth("anthropic", "grade") is None
+
+    def test_anthropic_passes_when_cli_present(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """DEC-006 explicitly preserves #86 DEC-008's key-OR-CLI
+        semantics for the anthropic branch. CLI presence alone passes
+        the dispatcher's anthropic route."""
+        from clauditor._providers import check_provider_auth
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _patch_which(monkeypatch, "/usr/local/bin/claude")
+        assert check_provider_auth("anthropic", "grade") is None
+
+    def test_anthropic_delegates_via_module_attribute(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tightening test: patch ``check_any_auth_available`` on the
+        canonical ``_providers._auth`` module path and verify the
+        dispatcher actually called it. Catches accidental inline-
+        re-implementation."""
+        import clauditor._providers._auth as _auth
+
+        called_with: list[str] = []
+
+        def _stub(cmd_name: str) -> None:
+            called_with.append(cmd_name)
+            return None
+
+        monkeypatch.setattr(_auth, "check_any_auth_available", _stub)
+        _auth.check_provider_auth("anthropic", "grade")
+        assert called_with == ["grade"]
+
+    def test_openai_delegates_to_check_openai_auth(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``provider="openai"`` routes to :func:`check_openai_auth`.
+        Verified behaviorally: when ``OPENAI_API_KEY`` is unset, the
+        dispatcher raises :class:`OpenAIAuthMissingError`."""
+        from clauditor._providers import (
+            OpenAIAuthMissingError,
+            check_provider_auth,
+        )
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(OpenAIAuthMissingError):
+            check_provider_auth("openai", "grade")
+
+    def test_openai_passes_when_key_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import check_provider_auth
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        assert check_provider_auth("openai", "grade") is None
+
+    def test_openai_delegates_via_module_attribute(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Tightening test: patch ``check_openai_auth`` on the
+        canonical ``_providers._auth`` module path and verify the
+        dispatcher actually called it."""
+        import clauditor._providers._auth as _auth
+
+        called_with: list[str] = []
+
+        def _stub(cmd_name: str) -> None:
+            called_with.append(cmd_name)
+            return None
+
+        monkeypatch.setattr(_auth, "check_openai_auth", _stub)
+        _auth.check_provider_auth("openai", "extract")
+        assert called_with == ["extract"]
+
+    def test_unknown_provider_raises_value_error(self) -> None:
+        from clauditor._providers import check_provider_auth
+
+        with pytest.raises(ValueError) as exc_info:
+            check_provider_auth("vertex", "grade")
+        # Helpful error message names the unknown value.
+        assert "vertex" in str(exc_info.value)
+
+    def test_empty_string_provider_raises_value_error(self) -> None:
+        from clauditor._providers import check_provider_auth
+
+        with pytest.raises(ValueError):
+            check_provider_auth("", "grade")
+
+    def test_anthropic_propagates_distinct_class(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Structural-routing invariant: the anthropic branch raises
+        :class:`AnthropicAuthMissingError` and NOT
+        :class:`OpenAIAuthMissingError`, so a CLI ``except`` ladder
+        keyed on the OpenAI class would NOT catch the anthropic
+        failure."""
+        from clauditor._providers import (
+            OpenAIAuthMissingError,
+            check_provider_auth,
+        )
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        _patch_which(monkeypatch, None)
+        with pytest.raises(Exception) as exc_info:
+            check_provider_auth("anthropic", "grade")
+        # The raised class is NOT OpenAIAuthMissingError.
+        assert not isinstance(exc_info.value, OpenAIAuthMissingError)
+
+    def test_openai_propagates_distinct_class(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Symmetric structural-routing invariant for the openai branch."""
+        from clauditor._providers import (
+            AnthropicAuthMissingError,
+            check_provider_auth,
+        )
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(Exception) as exc_info:
+            check_provider_auth("openai", "grade")
+        # The raised class is NOT AnthropicAuthMissingError.
+        assert not isinstance(exc_info.value, AnthropicAuthMissingError)
+
+
+class TestOpenAiApiKeyIsSet:
+    """Direct unit coverage for ``_openai_api_key_is_set()``.
+
+    Helper is exercised transitively through ``TestCheckOpenAiAuth``,
+    but a dedicated test class pins the whitespace-only-is-absent
+    contract documented in the helper's docstring (mirrors
+    :class:`TestApiKeyIsSet` for the Anthropic side).
+    """
+
+    def test_returns_true_when_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers._auth import _openai_api_key_is_set
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-real-key")
+        assert _openai_api_key_is_set() is True
+
+    def test_returns_false_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers._auth import _openai_api_key_is_set
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert _openai_api_key_is_set() is False
+
+    def test_returns_false_when_empty(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers._auth import _openai_api_key_is_set
+
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        assert _openai_api_key_is_set() is False
+
+    def test_returns_false_when_whitespace_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers._auth import _openai_api_key_is_set
+
+        monkeypatch.setenv("OPENAI_API_KEY", "   \t\n")
+        assert _openai_api_key_is_set() is False
