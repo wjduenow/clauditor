@@ -46,25 +46,38 @@ from clauditor.runner import (
 # scheduler ticks are not clobbered.
 _monotonic = time.monotonic
 
-# Env vars stripped by :func:`env_without_api_key`. Both are
-# documented Anthropic SDK env-auth paths (DEC-007 of
-# ``plans/super/64-runner-auth-timeout.md``). Non-auth Anthropic env
-# vars such as ``ANTHROPIC_BASE_URL`` are intentionally preserved
-# (DEC-016).
-_API_KEY_ENV_VARS = frozenset({"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"})
+# Env vars stripped by :func:`env_without_api_key`. The Anthropic
+# entries are documented Anthropic SDK env-auth paths (DEC-007 of
+# ``plans/super/64-runner-auth-timeout.md``); ``OPENAI_API_KEY`` was
+# added in DEC-008 of ``plans/super/145-openai-provider.md`` so an
+# untrusted skill subprocess running under ``--transport cli`` cannot
+# silently spend the operator's OpenAI quota (parity with the
+# Anthropic stripping when grading via OpenAI). Non-auth env vars such
+# as ``ANTHROPIC_BASE_URL`` and ``OPENAI_BASE_URL`` /
+# ``OPENAI_ORG_ID`` / ``OPENAI_PROJECT_ID`` are intentionally
+# preserved (DEC-016 of #64; #145 §"Auth env var").
+_API_KEY_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY")
 
 
 def env_without_api_key(
     base_env: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Return a new env dict with both auth env vars removed.
+    """Return a new env dict with provider auth env vars removed.
 
     Pure, non-mutating helper per
     ``.claude/rules/non-mutating-scrub.md``. When ``base_env`` is
     ``None``, reads from ``os.environ``. Always returns a new dict
-    (never mutates the input). Strips ``ANTHROPIC_API_KEY`` and
-    ``ANTHROPIC_AUTH_TOKEN``; preserves every other key (including
-    ``ANTHROPIC_BASE_URL``).
+    (never mutates the input). Strips ``ANTHROPIC_API_KEY``,
+    ``ANTHROPIC_AUTH_TOKEN``, and ``OPENAI_API_KEY``; preserves every
+    other key (including ``ANTHROPIC_BASE_URL``, ``OPENAI_BASE_URL``,
+    ``OPENAI_ORG_ID``, and ``OPENAI_PROJECT_ID``).
+
+    ``OPENAI_API_KEY`` is included for parity with the Anthropic
+    stripping when grading via OpenAI under ``--transport cli``: a
+    skill subprocess could spawn a child that calls the OpenAI API,
+    so the operator's quota must not be implicitly delegated to an
+    untrusted skill (DEC-008 of
+    ``plans/super/145-openai-provider.md``).
     """
     source = base_env if base_env is not None else os.environ
     return {k: v for k, v in source.items() if k not in _API_KEY_ENV_VARS}
