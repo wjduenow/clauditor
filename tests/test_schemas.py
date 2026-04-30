@@ -2082,6 +2082,101 @@ class TestEvalSpecTransport:
         assert "transport" not in round_tripped
 
 
+class TestGradingProviderValidation:
+    """US-007 / DEC-003 of #145: ``EvalSpec.grading_provider`` parsing.
+
+    Optional field with default ``None``. When set, must be a non-bool
+    string in the literal set ``{"anthropic", "openai"}``; ``null`` is
+    permitted (equivalent to omission). Unknown strings, non-strings,
+    bools, lists, etc. are rejected at load time with a ``ValueError``
+    that names the field and the allowed values per
+    ``.claude/rules/constant-with-type-info.md``.
+    """
+
+    # --- Reject cases (write FIRST per TDD) ---
+
+    def test_unknown_string_claude_rejects(self, tmp_path):
+        """``"claude"`` is not in the literal set — rejected with an
+        error naming ``grading_provider``, ``anthropic``, ``openai``.
+        """
+        data = {"skill_name": "s", "grading_provider": "claude"}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_provider" in msg
+        assert "anthropic" in msg
+        assert "openai" in msg
+
+    def test_unknown_string_gpt_rejects(self, tmp_path):
+        """``"gpt"`` is not in the literal set."""
+        data = {"skill_name": "s", "grading_provider": "gpt"}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_provider" in msg
+        assert "anthropic" in msg
+        assert "openai" in msg
+
+    def test_int_rejects(self, tmp_path):
+        """Non-string int rejected."""
+        data = {"skill_name": "s", "grading_provider": 1}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_provider" in msg
+        assert "anthropic" in msg
+        assert "openai" in msg
+
+    def test_bool_rejects(self, tmp_path):
+        """Bool guard: ``isinstance(True, str)`` is False, but we still
+        reject explicitly with a type error per
+        ``.claude/rules/constant-with-type-info.md``.
+        """
+        data = {"skill_name": "s", "grading_provider": True}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_provider" in msg
+        assert "anthropic" in msg
+        assert "openai" in msg
+
+    def test_list_rejects(self, tmp_path):
+        """Non-string list rejected."""
+        data = {"skill_name": "s", "grading_provider": []}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_provider" in msg
+        assert "anthropic" in msg
+        assert "openai" in msg
+
+    # --- Accept cases ---
+
+    def test_missing_defaults_to_none(self, tmp_path):
+        """No ``grading_provider`` key → ``.grading_provider is None``."""
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_provider is None
+
+    def test_explicit_null_is_none(self, tmp_path):
+        """``{"grading_provider": null}`` → ``.grading_provider is None``."""
+        data = {"skill_name": "s", "grading_provider": None}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_provider is None
+
+    def test_anthropic_loads(self, tmp_path):
+        """``"anthropic"`` is a valid value."""
+        data = {"skill_name": "s", "grading_provider": "anthropic"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_provider == "anthropic"
+
+    def test_openai_loads(self, tmp_path):
+        """``"openai"`` is a valid value."""
+        data = {"skill_name": "s", "grading_provider": "openai"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_provider == "openai"
+
+
 class TestAssertionKeySpec:
     """Tests for ``AssertionKeySpec`` + ``ASSERTION_TYPE_REQUIRED_KEYS``
     (DEC-008 of #61, DEC-001/DEC-012 of #67). The constant is the
