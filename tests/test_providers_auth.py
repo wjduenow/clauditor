@@ -451,3 +451,115 @@ class TestExceptionClassIdentity:
         )
 
         assert ShimClass is CanonicalClass
+
+    def test_helper_error_class_identity(self) -> None:
+        """``AnthropicHelperError`` — used in ``except`` ladders across
+        grader / CLI / triggers code; must be the same class regardless
+        of import path."""
+        from clauditor._anthropic import (
+            AnthropicHelperError as ShimClass,
+        )
+        from clauditor._providers import (
+            AnthropicHelperError as CanonicalClass,
+        )
+
+        assert ShimClass is CanonicalClass
+
+    def test_claude_cli_error_class_identity(self) -> None:
+        """``ClaudeCLIError`` — subclass of ``AnthropicHelperError``;
+        same identity invariant applies."""
+        from clauditor._anthropic import ClaudeCLIError as ShimClass
+        from clauditor._providers import ClaudeCLIError as CanonicalClass
+
+        assert ShimClass is CanonicalClass
+
+    def test_model_result_class_identity(self) -> None:
+        """``ModelResult`` — used by every grader; ``isinstance`` checks
+        across both import paths must agree."""
+        from clauditor._anthropic import ModelResult as ShimClass
+        from clauditor._providers import ModelResult as CanonicalClass
+
+        assert ShimClass is CanonicalClass
+
+    def test_anthropic_result_aliases_model_result(self) -> None:
+        """``AnthropicResult is ModelResult`` — the back-compat alias is
+        the same class object, not a subclass or wrapper. Existing
+        fixtures and docstrings naming ``AnthropicResult`` keep
+        working."""
+        from clauditor._anthropic import AnthropicResult, ModelResult
+
+        assert AnthropicResult is ModelResult
+
+
+class TestApiKeyIsSet:
+    """Direct unit coverage for ``_api_key_is_set()``.
+
+    Helper is exercised transitively through ``TestCheckAnyAuthAvailable``
+    and ``TestCheckApiKeyOnly``, but the plan's US-009 acceptance bullet
+    calls out a dedicated test class for the helper. These tests pin
+    the whitespace-only-is-absent contract documented in the helper's
+    docstring.
+    """
+
+    def test_returns_true_when_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers._auth import _api_key_is_set
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-real-key")
+        assert _api_key_is_set() is True
+
+    def test_returns_false_when_unset(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers._auth import _api_key_is_set
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        assert _api_key_is_set() is False
+
+    def test_returns_false_when_empty_string(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers._auth import _api_key_is_set
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        assert _api_key_is_set() is False
+
+    def test_returns_false_when_whitespace_only(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Whitespace-only counts as absent — the SDK's own "could not
+        resolve authentication method" path triggers on these shapes,
+        and the pre-flight guard's whole point is to catch that with
+        an actionable message upstream."""
+        from clauditor._providers._auth import _api_key_is_set
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "   \t\n  ")
+        assert _api_key_is_set() is False
+
+
+class TestClaudeCliIsAvailable:
+    """Direct unit coverage for ``_claude_cli_is_available()``.
+
+    Helper is exercised transitively through ``TestCheckAnyAuthAvailable``,
+    but the plan's US-009 acceptance bullet calls out a dedicated test
+    class. These tests pin the presence-only contract — the helper does
+    NOT verify the CLI is authenticated or functional, only that the
+    binary is on PATH.
+    """
+
+    def test_returns_true_when_on_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers._auth import _claude_cli_is_available
+
+        _patch_which(monkeypatch, "/usr/local/bin/claude")
+        assert _claude_cli_is_available() is True
+
+    def test_returns_false_when_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers._auth import _claude_cli_is_available
+
+        _patch_which(monkeypatch, None)
+        assert _claude_cli_is_available() is False

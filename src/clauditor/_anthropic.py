@@ -45,13 +45,15 @@ from typing import Literal
 #
 # The mutable one-shot announcement flags
 # (``_announced_implicit_no_api_key``,
-# ``_announced_call_anthropic_deprecation``) are intentionally NOT
-# re-exported here. ``from X import Y`` would frozen-copy the initial
-# ``False`` value into this module, but the helpers rebind the flag on
-# their source module via ``global`` — the alias here would silently
-# diverge after the first call. Code that needs to read or reset a
-# flag must target its canonical location in
-# ``clauditor._providers._auth``.
+# ``_announced_call_anthropic_deprecation``,
+# ``_announced_cli_transport``) are intentionally NOT re-exported here.
+# ``from X import Y`` would frozen-copy the initial ``False`` value
+# into this module, but the helpers rebind the flag on their source
+# module via ``global`` — the alias here would silently diverge after
+# the first call. Code that needs to read or reset a flag must target
+# its canonical location: auth-coupled and deprecation-coupled flags
+# live in ``clauditor._providers._auth``; transport-coupled flags live
+# in ``clauditor._providers._anthropic``.
 from clauditor._providers import (
     _AUTH_MISSING_TEMPLATE,  # noqa: F401
     _AUTH_MISSING_TEMPLATE_KEY_ONLY,  # noqa: F401
@@ -84,7 +86,6 @@ from clauditor._providers._anthropic import (  # noqa: F401, E402
     _RATE_LIMIT_MAX_RETRIES,
     _SERVER_MAX_RETRIES,
     _VALID_TRANSPORT_VALUES,
-    _announced_cli_transport,
     _body_excerpt,
     _build_default_harness,
     _call_via_claude_cli,

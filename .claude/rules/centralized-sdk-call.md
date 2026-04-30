@@ -259,8 +259,9 @@ coupled notices in `_providers/_anthropic.py`. Reset mechanism for
 tests is the `monkeypatch.setattr(..., False)` autouse fixture
 pattern — see
 `tests/test_providers_anthropic.py::TestStderrAnnouncement`,
-`TestAnnounceImplicitNoApiKey`, and
-`TestCallAnthropicDeprecationAnnouncement` for the shape.
+`tests/test_providers_auth.py::TestAnnounceImplicitNoApiKey`, and
+`tests/test_providers_auth.py::TestCallAnthropicDeprecationAnnouncement`
+for the shape.
 
 ## When this rule applies
 

@@ -43,9 +43,11 @@ from clauditor._providers import AnthropicAuthMissingError
 # DEC-003 / DEC-009 / DEC-011 (#95 US-002): one-shot stderr announcement
 # when ``--transport cli`` implicitly strips ``ANTHROPIC_API_KEY`` /
 # ``ANTHROPIC_AUTH_TOKEN`` from the skill subprocess env. Flipped to
-# ``True`` after the first emission per Python process. Co-located with
-# the (still-in-``_anthropic.py``) ``_announced_cli_transport`` flag
-# because the announcement flags form an emerging family (DEC-009 of
+# ``True`` after the first emission per Python process. Sibling to the
+# transport-coupled ``_announced_cli_transport`` flag in
+# ``clauditor._providers._anthropic`` and the deprecation-coupled
+# ``_announced_call_anthropic_deprecation`` flag below; together they
+# form the emerging announcement family (DEC-009 of
 # ``plans/super/95-subscription-auth-flag.md``).
 _announced_implicit_no_api_key: bool = False
 
