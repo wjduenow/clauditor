@@ -189,6 +189,229 @@ def make_fake_interactive_hang_stream(
     return _FakePopen([json.dumps(m) for m in messages])
 
 
+class _CodexFakeStdin:
+    """Tiny stand-in for ``proc.stdin`` that captures every write into
+    an in-memory buffer accessible AFTER ``close()`` (unlike a plain
+    :class:`io.StringIO`, whose ``getvalue()`` raises after close).
+    """
+
+    def __init__(self) -> None:
+        self._buf: list[str] = []
+        self.closed = False
+
+    def write(self, data: str) -> int:
+        if self.closed:
+            raise ValueError("I/O operation on closed file")
+        self._buf.append(data)
+        return len(data)
+
+    def close(self) -> None:
+        self.closed = True
+
+    def getvalue(self) -> str:
+        return "".join(self._buf)
+
+
+class _FakeCodexPopen:
+    """Minimal ``subprocess.Popen`` stand-in for Codex NDJSON tests.
+
+    Mirrors :class:`_FakePopen` but adds a writable ``stdin`` (so the
+    harness can write the prompt then close) and tracks construction
+    kwargs so tests can assert argv shape, ``cwd``, ``env``, and the
+    POSIX ``start_new_session`` flag without spinning up a real Codex
+    subprocess.
+
+    Stderr defaults to an empty iterator; tests that need to exercise
+    the stderr-drainer / filter path pass a non-empty ``stderr_lines``
+    list which is materialized into an in-memory iterator.
+    """
+
+    def __init__(
+        self,
+        lines: list[str],
+        returncode: int = 0,
+        stderr_lines: list[str] | None = None,
+    ) -> None:
+        body = "\n".join(lines)
+        if body and not body.endswith("\n"):
+            body += "\n"
+        self.stdout = io.StringIO(body)
+        if stderr_lines:
+            self.stderr = iter(line + "\n" for line in stderr_lines)
+        else:
+            self.stderr = iter(())
+        self.stdin = _CodexFakeStdin()
+        self.returncode = returncode
+        self.kill_called = False
+        self.terminate_called = False
+        self._killed = False
+
+    def wait(self, timeout=None):  # noqa: ARG002 — timeout ignored for fake
+        return self.returncode
+
+    def kill(self) -> None:
+        self.kill_called = True
+        self._killed = True
+        if self.returncode == 0:
+            self.returncode = -9
+
+    def terminate(self) -> None:
+        self.terminate_called = True
+        self._killed = True
+        if self.returncode == 0:
+            self.returncode = -15
+
+    def poll(self) -> int | None:
+        if self._killed:
+            return self.returncode
+        return None
+
+
+def make_fake_codex_agent_message_item(text: str, item_id: str = "agent_1") -> dict:
+    """Build a Codex ``item.completed`` event with item.type=agent_message."""
+    return {
+        "type": "item.completed",
+        "item": {"id": item_id, "type": "agent_message", "text": text},
+    }
+
+
+def make_fake_codex_reasoning_item(text: str, item_id: str = "reasoning_1") -> dict:
+    """Build a Codex ``item.completed`` event with item.type=reasoning."""
+    return {
+        "type": "item.completed",
+        "item": {"id": item_id, "type": "reasoning", "text": text},
+    }
+
+
+def make_fake_codex_command_execution_item(
+    command: str = "ls",
+    aggregated_output: str = "",
+    exit_code: int = 0,
+    status: str = "completed",
+    item_id: str = "cmd_1",
+) -> dict:
+    """Build a Codex ``item.completed`` event with item.type=command_execution."""
+    return {
+        "type": "item.completed",
+        "item": {
+            "id": item_id,
+            "type": "command_execution",
+            "command": command,
+            "aggregated_output": aggregated_output,
+            "exit_code": exit_code,
+            "status": status,
+        },
+    }
+
+
+def make_fake_codex_file_change_item(
+    path: str = "foo.txt",
+    kind: str = "update",
+    status: str = "completed",
+    item_id: str = "fc_1",
+) -> dict:
+    """Build a Codex ``item.completed`` event with item.type=file_change."""
+    return {
+        "type": "item.completed",
+        "item": {
+            "id": item_id,
+            "type": "file_change",
+            "changes": [{"path": path, "kind": kind}],
+            "status": status,
+        },
+    }
+
+
+def make_fake_codex_mcp_tool_call_item(
+    server: str = "fs",
+    tool: str = "read",
+    item_id: str = "mcp_1",
+) -> dict:
+    """Build a Codex ``item.completed`` event with item.type=mcp_tool_call."""
+    return {
+        "type": "item.completed",
+        "item": {
+            "id": item_id,
+            "type": "mcp_tool_call",
+            "server": server,
+            "tool": tool,
+        },
+    }
+
+
+def make_fake_codex_web_search_item(
+    query: str = "weather", item_id: str = "ws_1"
+) -> dict:
+    """Build a Codex ``item.completed`` event with item.type=web_search."""
+    return {
+        "type": "item.completed",
+        "item": {"id": item_id, "type": "web_search", "query": query},
+    }
+
+
+def make_fake_codex_todo_list_item(
+    items: list[str] | None = None, item_id: str = "todo_1"
+) -> dict:
+    """Build a Codex ``item.completed`` event with item.type=todo_list."""
+    return {
+        "type": "item.completed",
+        "item": {
+            "id": item_id,
+            "type": "todo_list",
+            "items": items or ["step a", "step b"],
+        },
+    }
+
+
+def make_fake_codex_stream(
+    text: str = "answer",
+    thread_id: str = "thread-1",
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+    cached_input_tokens: int = 0,
+    reasoning_output_tokens: int = 0,
+    extra_items: list[dict] | None = None,
+    returncode: int = 0,
+    stderr_lines: list[str] | None = None,
+) -> _FakeCodexPopen:
+    """Build a ``_FakeCodexPopen`` emitting a realistic Codex NDJSON sequence.
+
+    Produces (in order):
+      1. ``thread.started`` with the given ``thread_id``
+      2. ``turn.started``
+      3. one ``item.completed[agent_message]`` carrying ``text``
+      4. any extra item-completed events from ``extra_items``
+      5. ``turn.completed`` with the given usage counters
+
+    For tests that need a different shape (no agent message, multiple
+    turns, ``turn.failed``, malformed lines) compose with the per-item
+    builders or assemble the lines list directly.
+    """
+    messages: list[dict] = [
+        {"type": "thread.started", "thread_id": thread_id},
+        {"type": "turn.started"},
+        make_fake_codex_agent_message_item(text),
+    ]
+    if extra_items:
+        messages.extend(extra_items)
+    messages.append(
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "cached_input_tokens": cached_input_tokens,
+                "reasoning_output_tokens": reasoning_output_tokens,
+            },
+        }
+    )
+    return _FakeCodexPopen(
+        [json.dumps(m) for m in messages],
+        returncode=returncode,
+        stderr_lines=stderr_lines,
+    )
+
+
 def make_fake_background_task_stream(
     text: str = "Waiting on editorial agent.",
     launches: int = 1,

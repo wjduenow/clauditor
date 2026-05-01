@@ -19,11 +19,22 @@ covers only the pure-helper surface.
 from __future__ import annotations
 
 import importlib
+import os
 
 # Reload the module under test so coverage instrumentation (which
 # starts after collection) sees every line. Mirrors the pattern in
 # ``tests/test_runner.py`` for ``_claude_code``.
 import clauditor._harnesses._codex as _codex_mod
+from tests.conftest import (
+    make_fake_codex_agent_message_item,
+    make_fake_codex_command_execution_item,
+    make_fake_codex_file_change_item,
+    make_fake_codex_mcp_tool_call_item,
+    make_fake_codex_reasoning_item,
+    make_fake_codex_stream,
+    make_fake_codex_todo_list_item,
+    make_fake_codex_web_search_item,
+)
 
 importlib.reload(_codex_mod)
 
@@ -594,3 +605,487 @@ class TestCodexHarnessBuildPrompt:
         format string applied with ``args == ""``."""
         result = CodexHarness().build_prompt("foo", "", system_prompt="hello")
         assert result == "hello\n\n"
+
+
+# ---------------------------------------------------------------------------
+# CodexHarness.invoke happy path (DEC-001/003/005/008/009/010/014/015/016/017,
+# US-003)
+# ---------------------------------------------------------------------------
+
+
+class TestInvokeCodexExec:
+    """Happy-path tests for :meth:`CodexHarness.invoke`.
+
+    Mirrors :class:`tests.test_runner.TestInvokeViaClaudeCode` shape but
+    exercises Codex-specific behavior: argv assembly per DEC-001,
+    process-group flag per DEC-014, ``--output-last-message`` tempfile
+    per DEC-005, ``harness_metadata`` keys per DEC-008, the auth-source
+    + sandbox stderr lines per DEC-009/017, and the harness=codex tag
+    on every appended event per DEC-010.
+
+    Error paths (timeout, codex-bin missing, ``turn.failed``, malformed
+    lines, envelope cap) land in US-004 and are filtered out here via
+    ``-k 'TestInvokeCodexExec and not error and not timeout'``.
+    """
+
+    def _patch_popen(self, monkeypatch, fake):
+        """Helper: patch ``subprocess.Popen`` in the codex module."""
+        import clauditor._harnesses._codex as _codex_mod
+
+        calls = []
+
+        def _fake_popen(*args, **kwargs):
+            calls.append((args, kwargs))
+            return fake
+
+        monkeypatch.setattr(_codex_mod.subprocess, "Popen", _fake_popen)
+        return calls
+
+    def test_argv_assembled_per_dec_001(self, monkeypatch, tmp_path):
+        """DEC-001: argv is ``[codex_bin, "exec", "--json",
+        "--output-last-message", <path>, "--skip-git-repo-check",
+        "-s", "workspace-write", "-m", model, "-"]``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        calls = self._patch_popen(monkeypatch, fake)
+        harness = CodexHarness(model="gpt-5-codex")
+        harness.invoke("prompt body", cwd=tmp_path, env=None, timeout=30)
+        assert len(calls) == 1
+        argv = calls[0][0][0]
+        assert argv[0] == "codex"
+        assert argv[1] == "exec"
+        assert argv[2] == "--json"
+        assert argv[3] == "--output-last-message"
+        # argv[4] is the tempfile path — checked separately below.
+        assert isinstance(argv[4], str)
+        assert argv[5] == "--skip-git-repo-check"
+        assert argv[6] == "-s"
+        assert argv[7] == "workspace-write"
+        assert argv[8] == "-m"
+        assert argv[9] == "gpt-5-codex"
+        assert argv[10] == "-"
+
+    def test_codex_bin_override(self, monkeypatch, tmp_path):
+        """``codex_bin`` constructor kwarg is honored in argv[0]."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        calls = self._patch_popen(monkeypatch, fake)
+        harness = CodexHarness(codex_bin="/opt/codex/bin/codex", model="gpt-5")
+        harness.invoke("p", cwd=tmp_path, env=None, timeout=30)
+        argv = calls[0][0][0]
+        assert argv[0] == "/opt/codex/bin/codex"
+
+    def test_per_call_model_override(self, monkeypatch, tmp_path):
+        """``invoke(model=...)`` overrides ``self.model``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        calls = self._patch_popen(monkeypatch, fake)
+        harness = CodexHarness(model="gpt-5-codex")
+        harness.invoke("p", cwd=tmp_path, env=None, timeout=30, model="o4-mini")
+        argv = calls[0][0][0]
+        assert "o4-mini" in argv
+        assert "gpt-5-codex" not in argv
+
+    def test_default_model_when_none(self, monkeypatch, tmp_path):
+        """When neither ``self.model`` nor the per-call override are set,
+        the harness falls back to a documented default model id."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        calls = self._patch_popen(monkeypatch, fake)
+        harness = CodexHarness()  # model=None
+        harness.invoke("p", cwd=tmp_path, env=None, timeout=30)
+        argv = calls[0][0][0]
+        # ``-m`` flag is present and the value is a non-empty str.
+        i = argv.index("-m")
+        assert isinstance(argv[i + 1], str)
+        assert argv[i + 1] != ""
+
+    def test_prompt_written_to_stdin_then_closed(self, monkeypatch, tmp_path):
+        """The prompt is written verbatim to ``proc.stdin`` and stdin
+        is closed before the read loop starts (codex reads-from-stdin
+        when invoked with the trailing ``-`` argv)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+        CodexHarness().invoke("hello world", cwd=tmp_path, env=None, timeout=30)
+        # StringIO.getvalue() returns the entire written buffer regardless
+        # of close state — verify the prompt landed there.
+        assert fake.stdin.getvalue() == "hello world"
+        # And that stdin was closed.
+        assert fake.stdin.closed
+
+    def test_cwd_forwarded_to_popen(self, monkeypatch, tmp_path):
+        """``cwd`` is forwarded as a string to ``Popen``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        calls = self._patch_popen(monkeypatch, fake)
+        CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert calls[0][1]["cwd"] == str(tmp_path)
+
+    def test_env_forwarded_verbatim_to_popen(self, monkeypatch, tmp_path):
+        """``env`` dict is forwarded verbatim (no auth-stripping at this
+        layer; the caller does that)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        calls = self._patch_popen(monkeypatch, fake)
+        env = {"CODEX_API_KEY": "kept-by-caller", "PATH": "/usr/bin"}
+        CodexHarness().invoke("p", cwd=tmp_path, env=env, timeout=30)
+        assert calls[0][1]["env"] == env
+
+    def test_posix_uses_start_new_session(self, monkeypatch, tmp_path):
+        """DEC-014: on POSIX, ``start_new_session=True`` is passed so
+        the Codex subprocess gets its own process group for clean
+        teardown if subprocesses (e.g. ``command_execution``) orphan."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        calls = self._patch_popen(monkeypatch, fake)
+        # Force POSIX semantics regardless of the host.
+        import clauditor._harnesses._codex as _codex_mod
+
+        monkeypatch.setattr(_codex_mod.os, "name", "posix")
+        CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert calls[0][1].get("start_new_session") is True
+
+    def test_windows_skips_start_new_session(self, monkeypatch, tmp_path):
+        """DEC-014: on Windows, ``start_new_session`` is NOT passed
+        (no equivalent — Windows uses CREATE_NEW_PROCESS_GROUP, but
+        Codex CLI on Windows is a tier-2 path; we fall back to single-
+        pid kill per DEC-014's Windows clause)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        calls = self._patch_popen(monkeypatch, fake)
+        import clauditor._harnesses._codex as _codex_mod
+
+        monkeypatch.setattr(_codex_mod.os, "name", "nt")
+        CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        # ``start_new_session`` is either absent or False on Windows.
+        assert not calls[0][1].get("start_new_session")
+
+    def test_thread_started_populates_thread_id(self, monkeypatch, tmp_path):
+        """DEC-008: ``thread.started.thread_id`` lands in
+        ``harness_metadata["thread_id"]``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi", thread_id="t-abc-123")
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert result.harness_metadata["thread_id"] == "t-abc-123"
+
+    def test_turn_completed_populates_token_metadata(self, monkeypatch, tmp_path):
+        """DEC-008: ``turn.completed.usage`` populates
+        :attr:`InvokeResult.input_tokens`,
+        :attr:`InvokeResult.output_tokens`,
+        ``harness_metadata["cached_input_tokens"]``, and
+        ``harness_metadata["reasoning_output_tokens"]``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream(
+            "answer",
+            input_tokens=123,
+            output_tokens=45,
+            cached_input_tokens=12,
+            reasoning_output_tokens=7,
+        )
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert result.input_tokens == 123
+        assert result.output_tokens == 45
+        assert result.harness_metadata["cached_input_tokens"] == 12
+        assert result.harness_metadata["reasoning_output_tokens"] == 7
+
+    def test_agent_message_text_concatenated_into_output(
+        self, monkeypatch, tmp_path
+    ):
+        """``item.completed[agent_message]`` text events are joined
+        (newline) and surfaced on :attr:`InvokeResult.output`."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        extra = [make_fake_codex_agent_message_item("second", item_id="agent_2")]
+        fake = make_fake_codex_stream("first", extra_items=extra)
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert result.output == "first\nsecond"
+
+    def test_reasoning_in_stream_events_not_in_output(
+        self, monkeypatch, tmp_path
+    ):
+        """``item.completed[reasoning]`` lands in ``stream_events`` but
+        is NOT concatenated into ``output`` (so reasoning text never
+        shows up as if it were the answer)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        extra = [make_fake_codex_reasoning_item("internal scratchpad")]
+        fake = make_fake_codex_stream("answer", extra_items=extra)
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert result.output == "answer"
+        # The reasoning item is recorded on stream_events.
+        reasoning_events = [
+            e
+            for e in result.stream_events
+            if isinstance(e, dict)
+            and e.get("type") == "item.completed"
+            and isinstance(e.get("item"), dict)
+            and e["item"].get("type") == "reasoning"
+        ]
+        assert len(reasoning_events) == 1
+        assert reasoning_events[0]["item"]["text"] == "internal scratchpad"
+
+    def test_every_appended_event_tagged_harness_codex(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-010: every event in ``stream_events`` carries the
+        top-level ``"harness": "codex"`` discriminator."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        extra = [
+            make_fake_codex_reasoning_item("r"),
+            make_fake_codex_command_execution_item(
+                command="echo hi", aggregated_output="hi"
+            ),
+            make_fake_codex_file_change_item(),
+            make_fake_codex_mcp_tool_call_item(),
+            make_fake_codex_web_search_item(),
+            make_fake_codex_todo_list_item(),
+        ]
+        fake = make_fake_codex_stream("done", extra_items=extra)
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert len(result.stream_events) > 0
+        for event in result.stream_events:
+            assert event.get("harness") == "codex", event
+
+    def test_command_execution_aggregated_output_softcap(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-015: ``command_execution.aggregated_output`` over 64 KB
+        is truncated with a ``... (truncated)`` suffix and emits one
+        warning per invoke."""
+        from clauditor._harnesses._codex import (
+            _CODEX_COMMAND_OUTPUT_MAX_CHARS,
+            CodexHarness,
+        )
+
+        big = "X" * (_CODEX_COMMAND_OUTPUT_MAX_CHARS + 5000)
+        extra = [
+            make_fake_codex_command_execution_item(aggregated_output=big),
+        ]
+        fake = make_fake_codex_stream("done", extra_items=extra)
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        # The truncated event surfaces in stream_events with the cap.
+        cmd_events = [
+            e
+            for e in result.stream_events
+            if isinstance(e, dict)
+            and e.get("type") == "item.completed"
+            and isinstance(e.get("item"), dict)
+            and e["item"].get("type") == "command_execution"
+        ]
+        assert len(cmd_events) == 1
+        out = cmd_events[0]["item"]["aggregated_output"]
+        assert out.endswith("... (truncated)")
+        assert len(out) == _CODEX_COMMAND_OUTPUT_MAX_CHARS + len("... (truncated)")
+        # Exactly one warning emitted (avoid log flooding).
+        truncation_warnings = [
+            w for w in result.warnings if "command_execution aggregated_output" in w
+        ]
+        assert len(truncation_warnings) == 1
+
+    def test_last_message_path_recorded_in_metadata(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-005/008/016: the ``--output-last-message`` tempfile path
+        is captured into ``harness_metadata["last_message_path"]``
+        BEFORE deletion (so #154's consumer has a string label)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert "last_message_path" in result.harness_metadata
+        assert isinstance(result.harness_metadata["last_message_path"], str)
+        assert result.harness_metadata["last_message_path"] != ""
+        # The path's basename is "last_message.txt" per DEC-016.
+        assert result.harness_metadata["last_message_path"].endswith(
+            "last_message.txt"
+        )
+
+    def test_temporary_directory_deleted_on_success(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-016: the per-invocation TemporaryDirectory is cleaned up
+        on success (the recorded ``last_message_path`` no longer exists
+        after invoke returns)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        last_path = result.harness_metadata["last_message_path"]
+        assert not os.path.exists(last_path)
+
+    def test_sandbox_mode_in_metadata(self, monkeypatch, tmp_path):
+        """DEC-008: ``harness_metadata["sandbox_mode"]`` is the literal
+        string ``"workspace-write"`` (DEC-001)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert result.harness_metadata["sandbox_mode"] == "workspace-write"
+
+    def test_auth_source_recorded_when_codex_api_key_set(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-017: ``CODEX_API_KEY`` set → ``auth_source="CODEX_API_KEY"``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+        env = {"CODEX_API_KEY": "sk-codex", "PATH": "/usr/bin"}
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=env, timeout=30)
+        assert result.harness_metadata["auth_source"] == "CODEX_API_KEY"
+
+    def test_auth_source_recorded_when_openai_api_key_set(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-017: ``OPENAI_API_KEY`` set (no ``CODEX_API_KEY``) →
+        ``auth_source="OPENAI_API_KEY"``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+        env = {"OPENAI_API_KEY": "sk-openai", "PATH": "/usr/bin"}
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=env, timeout=30)
+        assert result.harness_metadata["auth_source"] == "OPENAI_API_KEY"
+
+    def test_auth_source_unknown_when_no_keys(self, monkeypatch, tmp_path):
+        """DEC-017: no ``CODEX_API_KEY``, no ``OPENAI_API_KEY``, and no
+        ``$CODEX_HOME/auth.json`` → ``auth_source="unknown"``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+        # Empty env + point CODEX_HOME at a dir with no auth.json.
+        env = {"CODEX_HOME": str(tmp_path / "codex_home_empty"), "PATH": "/usr/bin"}
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=env, timeout=30)
+        assert result.harness_metadata["auth_source"] == "unknown"
+
+    def test_auth_source_cached_when_auth_json_exists(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-017: ``$CODEX_HOME/auth.json`` exists (and no env keys)
+        → ``auth_source="cached"``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_text("{}")
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+        env = {"CODEX_HOME": str(codex_home), "PATH": "/usr/bin"}
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=env, timeout=30)
+        assert result.harness_metadata["auth_source"] == "cached"
+
+    def test_subject_sanitization(self, monkeypatch, tmp_path, capsys):
+        """DEC-009: subject is sanitized — CR/LF → space, strip, 200-char
+        cap. The sanitized form lands in the ``codex sandbox=`` /
+        ``codex auth=`` stderr lines."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+        env = {"CODEX_API_KEY": "sk-codex", "PATH": "/usr/bin"}
+        # Embedded \r\n in subject — must be replaced with space.
+        evil_subject = "  L2 extraction\r\nhostile-line\n  "
+        CodexHarness().invoke(
+            "p", cwd=tmp_path, env=env, timeout=30, subject=evil_subject
+        )
+        err = capsys.readouterr().err
+        # Sanitized subject appears (no embedded CR/LF, trimmed).
+        # Mirrors Claude's pattern of replacing ``\r`` and ``\n``
+        # individually — a ``\r\n`` becomes two spaces, not one.
+        assert "L2 extraction  hostile-line" in err
+        # No raw newline-in-subject leakage.
+        assert "L2 extraction\n" not in err
+        assert "L2 extraction\r" not in err
+
+    def test_subject_capped_at_200_chars(self, monkeypatch, tmp_path, capsys):
+        """DEC-009: subject longer than 200 chars is truncated to 200."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+        long_subject = "a" * 500
+        env = {"CODEX_API_KEY": "sk-codex"}
+        CodexHarness().invoke(
+            "p", cwd=tmp_path, env=env, timeout=30, subject=long_subject
+        )
+        err = capsys.readouterr().err
+        # The "(aaaa...)"-shaped suffix is at most 200 chars of 'a' + parens.
+        # Find the parenthesized suffix on the auth line.
+        for line in err.splitlines():
+            if "auth=" in line and "(" in line:
+                # Extract substring inside parens.
+                lparen = line.index("(")
+                rparen = line.rindex(")")
+                inside = line[lparen + 1 : rparen]
+                # Sanitized + capped at 200 chars.
+                assert len(inside) <= 200
+                assert inside == "a" * 200
+                break
+        else:  # pragma: no cover
+            raise AssertionError(f"no auth= line found: {err!r}")
+
+    def test_stderr_lines_emitted_with_subject(self, monkeypatch, tmp_path, capsys):
+        """DEC-009/017: ``codex sandbox=workspace-write`` and
+        ``codex auth=<source>`` lines emitted to stderr with subject
+        suffix when subject is non-empty."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+        env = {"CODEX_API_KEY": "sk-codex"}
+        CodexHarness().invoke(
+            "p", cwd=tmp_path, env=env, timeout=30, subject="L3 grading"
+        )
+        err = capsys.readouterr().err
+        assert "codex sandbox=workspace-write (L3 grading)" in err
+        assert "codex auth=CODEX_API_KEY (L3 grading)" in err
+
+    def test_duration_seconds_populated(self, monkeypatch, tmp_path):
+        """``duration_seconds`` is populated on every exit path
+        (mirrors Claude's pattern)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+
+        # Pin _monotonic so duration arithmetic is deterministic.
+        import clauditor._harnesses._codex as _codex_mod
+
+        seq = iter([10.0, 12.5])
+        monkeypatch.setattr(_codex_mod, "_monotonic", lambda: next(seq))
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert result.duration_seconds == 2.5
+
+    def test_exit_code_zero_on_clean_run(self, monkeypatch, tmp_path):
+        """A clean run yields ``exit_code=0`` and ``error=None``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi", returncode=0)
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert result.exit_code == 0
+        assert result.error is None
+        assert result.error_category is None

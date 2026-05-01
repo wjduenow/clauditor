@@ -32,10 +32,15 @@ calls.
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
+import sys
+import tempfile
+import threading
 import time
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from clauditor.runner import InvokeResult
 
@@ -182,6 +187,23 @@ _REDACTED_LINE_SENTINEL = "<line redacted: matched auth-leak pattern>"
 # ``"API error (no detail)"`` shape so cross-harness CLI-side
 # rendering stays uniform.
 _NO_DETAIL_SENTINEL = "API error (no detail)"
+
+
+# DEC-001: hardcoded sandbox mode for v1. Configurability deferred to
+# #151 (the ``EvalSpec.harness`` flag ticket).
+_SANDBOX_MODE = "workspace-write"
+
+
+# Default Codex model used when neither the constructor nor the
+# per-call ``model=`` override pins a value. Documented as a single
+# source of truth so future bumps land in one place. Matches the
+# Codex CLI's own documented default at the time of #149.
+_DEFAULT_MODEL = "gpt-5-codex"
+
+
+# Truncation suffix appended on
+# ``command_execution.aggregated_output`` overflow per DEC-015.
+_TRUNCATED_SUFFIX = "... (truncated)"
 
 
 # ---------------------------------------------------------------------------
@@ -477,12 +499,446 @@ class CodexHarness:
     ) -> InvokeResult:
         """Run ``codex exec --json`` and return an :class:`InvokeResult`.
 
-        US-002 stub: present so :class:`CodexHarness` satisfies the
-        ``Harness`` runtime-checkable protocol, but the body lands in
-        US-003 (happy path) and US-004 (error paths) of issue #149.
-        Raises :class:`NotImplementedError` if invoked before those
-        stories ship.
+        US-003 happy-path implementation. Mirrors
+        :meth:`clauditor._harnesses._claude_code.ClaudeCodeHarness.invoke`
+        structural shape (subprocess + drainer + watchdog + NDJSON
+        loop + ``try/finally`` cleanup) but substitutes Codex's argv,
+        event-type dispatch, ``--output-last-message`` tempfile, and
+        process-group cleanup per DEC-014.
+
+        Error paths (timeout, FileNotFoundError, ``turn.failed``,
+        malformed lines, envelope cap) land in US-004. The happy
+        path here populates every documented ``harness_metadata`` key
+        (DEC-008), tags every appended event with ``harness="codex"``
+        (DEC-010), emits the two stderr lines (DEC-009 / DEC-017),
+        and applies the per-event command-output soft-cap (DEC-015).
         """
-        raise NotImplementedError(
-            "CodexHarness.invoke lands in US-003/US-004 of issue #149"
+        effective_model = (
+            model if model is not None else (self.model or _DEFAULT_MODEL)
         )
+
+        start = _monotonic()
+        raw_messages: list[dict] = []
+        stream_events: list[dict] = []
+        text_chunks: list[str] = []
+        input_tokens = 0
+        output_tokens = 0
+        cached_input_tokens = 0
+        reasoning_output_tokens = 0
+        thread_id: str | None = None
+        turn_count = 0
+        # Running byte count for the DEC-015 envelope cap. US-004
+        # enforces; US-003 populates the accumulator so the seam is
+        # in place.
+        stream_events_size = 0  # noqa: F841 — populated for US-004 enforcement
+        # One-shot warning flag for the command-output cap to avoid
+        # log flooding under tool-heavy runs.
+        cmd_output_truncated = False
+        warnings: list[str] = []
+        proc: subprocess.Popen | None = None
+        stderr_thread: threading.Thread | None = None
+        stderr_warnings_lock = threading.Lock()
+        stderr_warnings: list[str] = []
+
+        # DEC-017: pre-Popen auth-source detection. Read from ``env``
+        # when provided, else ``os.environ``. Order is deterministic
+        # per DEC-017: CODEX_API_KEY → OPENAI_API_KEY → cached-auth
+        # file → unknown.
+        auth_source = self._detect_auth_source(env)
+
+        # DEC-009 + DEC-017: sanitize subject once for both stderr
+        # lines so they share the same suffix shape.
+        sanitized_subject = self._sanitize_subject(subject)
+        subject_suffix = (
+            f" ({sanitized_subject})" if sanitized_subject else ""
+        )
+
+        # Sandbox-line is unconditional per DEC-009. Auth-line is
+        # unconditional per DEC-017 (auth_source is always populated,
+        # even if it is the ``"unknown"`` sentinel).
+        print(
+            f"clauditor.runner: codex sandbox={_SANDBOX_MODE}{subject_suffix}",
+            file=sys.stderr,
+        )
+        print(
+            f"clauditor.runner: codex auth={auth_source}{subject_suffix}",
+            file=sys.stderr,
+        )
+
+        # DEC-016: per-invocation TemporaryDirectory wrapping the
+        # entire body. Cleanup is automatic on context exit (success,
+        # exception, or timeout).
+        with tempfile.TemporaryDirectory(prefix="clauditor_codex_") as tmpdir:
+            last_message_path = os.path.join(tmpdir, "last_message.txt")
+            try:
+                argv = [
+                    self.codex_bin,
+                    "exec",
+                    "--json",
+                    "--output-last-message",
+                    last_message_path,
+                    "--skip-git-repo-check",
+                    "-s",
+                    _SANDBOX_MODE,
+                    "-m",
+                    effective_model,
+                    "-",
+                ]
+
+                # DEC-014: process-group cleanup on POSIX, single-pid
+                # fallback on Windows. ``start_new_session=True`` is
+                # honored by Popen on POSIX only; passing it on
+                # Windows would be a TypeError, hence the branch.
+                popen_kwargs: dict[str, Any] = {
+                    "stdin": subprocess.PIPE,
+                    "stdout": subprocess.PIPE,
+                    "stderr": subprocess.PIPE,
+                    "text": True,
+                    "cwd": str(cwd) if cwd is not None else None,
+                    "env": env,
+                }
+                if os.name != "nt":
+                    popen_kwargs["start_new_session"] = True
+
+                proc = subprocess.Popen(argv, **popen_kwargs)
+
+                # Write the prompt to stdin (Codex reads from stdin
+                # when invoked with the trailing ``-`` argv) and close
+                # so the child sees EOF.
+                if proc.stdin is not None:
+                    try:
+                        proc.stdin.write(prompt)
+                    finally:
+                        proc.stdin.close()
+
+                # Drain stderr on a background thread so a chatty
+                # child does not deadlock by filling its PIPE buffer
+                # while we read stdout.
+                stderr_chunks: list[str] = []
+
+                def _drain_stderr() -> None:
+                    if proc is None or proc.stderr is None:  # pragma: no cover
+                        return
+                    try:
+                        for chunk in proc.stderr:
+                            stderr_chunks.append(chunk)
+                    except (EOFError, OSError) as exc:
+                        with stderr_warnings_lock:
+                            stderr_warnings.append(
+                                "stderr drainer stopped: "
+                                f"{type(exc).__name__}: {exc}"
+                            )
+                    except Exception as exc:  # noqa: BLE001 — defensive
+                        with stderr_warnings_lock:
+                            stderr_warnings.append(
+                                "stderr drainer raised unexpected "
+                                f"{type(exc).__name__}: {exc}"
+                            )
+
+                stderr_thread = threading.Thread(
+                    target=_drain_stderr, daemon=True
+                )
+                stderr_thread.start()
+
+                # Watchdog: kill the child if it runs past the
+                # configured timeout. US-004 wires the kill / killpg
+                # escalation; US-003 keeps the timer skeleton in
+                # place so happy-path runs cancel cleanly.
+                timed_out = {"hit": False}
+
+                def _on_timeout() -> None:
+                    if proc is None:  # pragma: no cover
+                        return
+                    if proc.poll() is not None:
+                        return
+                    timed_out["hit"] = True
+                    try:
+                        proc.kill()
+                    except (OSError, ProcessLookupError) as exc:  # pragma: no cover
+                        with stderr_warnings_lock:
+                            stderr_warnings.append(
+                                "watchdog kill failed: "
+                                f"{type(exc).__name__}: {exc}"
+                            )
+
+                watchdog = threading.Timer(timeout, _on_timeout)
+                watchdog.daemon = True
+                watchdog.start()
+
+                try:
+                    if proc.stdout is not None:
+                        for raw_line in proc.stdout:
+                            line = raw_line.strip()
+                            if not line:
+                                continue
+                            try:
+                                msg = json.loads(line)
+                            except json.JSONDecodeError as exc:
+                                # Per ``.claude/rules/stream-json-schema.md``
+                                # the parser MUST skip + warn on
+                                # malformed lines and keep reading.
+                                # US-004 expands the warning surface;
+                                # the happy-path tests do not exercise
+                                # this branch.
+                                print(
+                                    "clauditor.runner: skipping malformed "
+                                    f"codex stream-json line: {exc}",
+                                    file=sys.stderr,
+                                )
+                                warnings.append(
+                                    "malformed codex stream-json line "
+                                    f"skipped: {exc}"
+                                )
+                                continue
+                            if not isinstance(msg, dict):
+                                continue
+
+                            raw_messages.append(msg)
+                            mtype = msg.get("type")
+
+                            # DEC-010: tag every appended event with
+                            # ``harness="codex"``. Build a NEW event
+                            # dict (non-mutating per
+                            # ``.claude/rules/non-mutating-scrub.md``)
+                            # so we don't mutate the caller's parsed
+                            # JSON.
+                            tagged_event: dict = {**msg, "harness": "codex"}
+
+                            # Per-type processing. Soft-cap on
+                            # ``command_execution.aggregated_output``
+                            # rebuilds the item dict so the cap is
+                            # visible in stream_events as well as in
+                            # any downstream consumer.
+                            if mtype == "item.completed":
+                                item = msg.get("item")
+                                if isinstance(item, dict):
+                                    item_type = item.get("type")
+                                    if item_type == "agent_message":
+                                        text = item.get("text", "")
+                                        if isinstance(text, str):
+                                            text_chunks.append(text)
+                                    elif item_type == "command_execution":
+                                        capped_item, fired = (
+                                            self._maybe_truncate_command_output(
+                                                item
+                                            )
+                                        )
+                                        if fired and not cmd_output_truncated:
+                                            cmd_output_truncated = True
+                                            cap = _CODEX_COMMAND_OUTPUT_MAX_CHARS
+                                            warnings.append(
+                                                "command_execution "
+                                                "aggregated_output truncated "
+                                                f"at {cap} chars"
+                                            )
+                                        tagged_event["item"] = capped_item
+
+                            elif mtype == "thread.started":
+                                # First thread.started wins (Codex
+                                # emits one per process).
+                                if thread_id is None:
+                                    val = msg.get("thread_id")
+                                    if isinstance(val, str):
+                                        thread_id = val
+
+                            elif mtype == "turn.started":
+                                turn_count += 1
+
+                            elif mtype == "turn.completed":
+                                usage = msg.get("usage") or {}
+                                if isinstance(usage, dict):
+                                    input_tokens = self._safe_int(
+                                        usage.get("input_tokens")
+                                    )
+                                    output_tokens = self._safe_int(
+                                        usage.get("output_tokens")
+                                    )
+                                    cached_input_tokens = self._safe_int(
+                                        usage.get("cached_input_tokens")
+                                    )
+                                    reasoning_output_tokens = self._safe_int(
+                                        usage.get("reasoning_output_tokens")
+                                    )
+
+                            stream_events.append(tagged_event)
+                            stream_events_size += len(line)
+
+                    returncode = proc.wait()
+                finally:
+                    watchdog.cancel()
+
+                # Join the drainer before reading stderr_chunks to
+                # avoid a race with the in-progress ``.append()``.
+                if stderr_thread is not None:
+                    stderr_thread.join(timeout=2.0)
+                stderr_text = "".join(stderr_chunks)
+                if stderr_text:
+                    # US-004 wires the DEC-013 redact + cap pipeline.
+                    # For US-003 the happy-path emits stderr as a
+                    # warning only when present (most happy runs have
+                    # no stderr; the fixture default is empty).
+                    warnings.append(_filter_stderr(stderr_text))
+
+                # DEC-013-ish: surface drainer + watchdog channel
+                # errors on the result.
+                with stderr_warnings_lock:
+                    if stderr_warnings:
+                        warnings.extend(stderr_warnings)
+
+                # DEC-008: build the harness_metadata dict. Absent
+                # keys are OMITTED, never None. The four always-
+                # populated keys (``sandbox_mode``, ``auth_source``,
+                # ``last_message_path``, ``turn_count``) land
+                # unconditionally.
+                metadata: dict[str, Any] = {
+                    "sandbox_mode": _SANDBOX_MODE,
+                    "auth_source": auth_source,
+                    "last_message_path": last_message_path,
+                    "turn_count": turn_count,
+                    "model": effective_model,
+                }
+                if thread_id is not None:
+                    metadata["thread_id"] = thread_id
+                # cached + reasoning token counts always populated
+                # when turn.completed landed (token totals default
+                # to 0). Test bar in DEC-008 is "available", which
+                # we interpret as "we saw at least one turn.completed"
+                # — but a 0 count is meaningful, so we emit them
+                # whenever they are computed (not just non-zero).
+                metadata["cached_input_tokens"] = cached_input_tokens
+                metadata["reasoning_output_tokens"] = reasoning_output_tokens
+
+                duration = _monotonic() - start
+
+                return InvokeResult(
+                    output="\n".join(text_chunks),
+                    exit_code=returncode,
+                    duration_seconds=duration,
+                    error=None,
+                    error_category=None,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    raw_messages=raw_messages,
+                    stream_events=stream_events,
+                    warnings=list(warnings),
+                    api_key_source=None,
+                    harness_metadata=metadata,
+                )
+
+            finally:
+                # Defensive cleanup: if an exception escaped the
+                # inner try, the subprocess could still be running.
+                # US-004 expands the kill / killpg escalation;
+                # US-003 keeps the minimum-viable cleanup that
+                # always reaps the child.
+                if proc is not None and proc.poll() is None:
+                    try:
+                        proc.terminate()
+                    except (OSError, ProcessLookupError) as exc:
+                        warnings.append(
+                            "cleanup terminate failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
+                    try:
+                        proc.wait(timeout=1)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            proc.kill()
+                        except (OSError, ProcessLookupError):
+                            pass
+                        try:
+                            proc.wait(timeout=1)
+                        except (subprocess.TimeoutExpired, OSError):
+                            pass
+                if proc is not None:
+                    for stream in (proc.stdout, proc.stderr, proc.stdin):
+                        if stream is None or not hasattr(stream, "close"):
+                            continue
+                        try:
+                            stream.close()
+                        except OSError:
+                            pass
+
+    @staticmethod
+    def _safe_int(value: Any) -> int:
+        """Defensive ``int()`` cast for token-usage fields per
+        ``.claude/rules/stream-json-schema.md`` — falls back to 0 on
+        ``None`` / non-numeric / non-string values."""
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _maybe_truncate_command_output(item: dict) -> tuple[dict, bool]:
+        """Apply DEC-015 soft-cap to ``aggregated_output``.
+
+        Returns a tuple of ``(maybe_capped_item, fired)`` where
+        ``fired`` is ``True`` iff the cap was applied. The returned
+        item dict is a NEW object (non-mutating per
+        ``.claude/rules/non-mutating-scrub.md``) so the caller can
+        store both the capped form on ``stream_events`` and the
+        original raw form on ``raw_messages`` if needed.
+        """
+        agg = item.get("aggregated_output")
+        if not isinstance(agg, str):
+            return item, False
+        if len(agg) <= _CODEX_COMMAND_OUTPUT_MAX_CHARS:
+            return item, False
+        capped = agg[:_CODEX_COMMAND_OUTPUT_MAX_CHARS] + _TRUNCATED_SUFFIX
+        return {**item, "aggregated_output": capped}, True
+
+    @staticmethod
+    def _detect_auth_source(env: dict[str, str] | None) -> str:
+        """Resolve the active Codex auth source per DEC-017.
+
+        Pure compute over the supplied env dict (or ``os.environ``
+        when ``None``). Order: ``CODEX_API_KEY`` → ``OPENAI_API_KEY``
+        → cached-auth file at ``$CODEX_HOME/auth.json`` (default
+        ``~/.codex/auth.json``) → ``"unknown"`` sentinel.
+
+        Uses ``os.path`` (not :class:`pathlib.Path`) for the cached-
+        file check because :class:`Path` consults ``os.name`` to pick
+        ``PosixPath`` vs ``WindowsPath`` — tests that monkeypatch
+        ``os.name`` to ``"nt"`` (to exercise the DEC-014 Windows
+        fallback) would otherwise hit a ``WindowsPath`` instantiation
+        error on a POSIX host.
+        """
+        source = env if env is not None else os.environ
+        if source.get("CODEX_API_KEY"):
+            return "CODEX_API_KEY"
+        if source.get("OPENAI_API_KEY"):
+            return "OPENAI_API_KEY"
+        codex_home = source.get("CODEX_HOME")
+        if codex_home:
+            auth_path = os.path.join(codex_home, "auth.json")
+        else:
+            try:
+                home = os.path.expanduser("~")
+            except OSError:
+                home = ""
+            if not home or home == "~":
+                return "unknown"
+            auth_path = os.path.join(home, ".codex", "auth.json")
+        try:
+            if os.path.isfile(auth_path):
+                return "cached"
+        except OSError:
+            # Permission denied / path traversal guard — fall through
+            # to unknown rather than raise.
+            pass
+        return "unknown"
+
+    @staticmethod
+    def _sanitize_subject(subject: str | None) -> str | None:
+        """Apply DEC-009 sanitization: CRLF→space, strip, 200-char cap.
+
+        Returns the sanitized string, or ``None`` if the input was
+        ``None`` / empty after sanitization.
+        """
+        if not subject:
+            return None
+        cleaned = subject.replace("\r", " ").replace("\n", " ").strip()
+        if not cleaned:
+            return None
+        return cleaned[:200]
