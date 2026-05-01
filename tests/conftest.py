@@ -379,7 +379,10 @@ def make_fake_codex_todo_list_item(
         "item": {
             "id": item_id,
             "type": "todo_list",
-            "items": items or ["step a", "step b"],
+            # Use explicit ``is None`` check (not truthiness) so callers
+            # can pass ``items=[]`` to test empty-todo-list payloads
+            # without the helper substituting the default.
+            "items": ["step a", "step b"] if items is None else items,
         },
     }
 

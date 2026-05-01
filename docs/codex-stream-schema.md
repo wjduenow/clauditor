@@ -156,9 +156,9 @@ type CommandExecution = {
 ```
 
 Sandbox shell exec result. `aggregated_output` soft-capped at 64 KB
-per DEC-015 (see `_maybe_truncate_command_output` in `_codex.py:1135`).
-Truncated text gets a `... (truncated)` suffix; one warning fires per
-invoke (not per event).
+per DEC-015 (see `_maybe_truncate_command_output` in
+`src/clauditor/_harnesses/_codex.py`). Truncated text gets a
+`...(truncated)` suffix; one warning fires per invoke (not per event).
 
 ### `file_change`
 
@@ -209,10 +209,11 @@ metadata.
 
 ## Auth source detection (clauditor's probe order)
 
-`_detect_auth_source` (see `_codex.py:1154`) probes auth sources in
-this deterministic order: (1) `CODEX_API_KEY`, (2) `OPENAI_API_KEY`,
-(3) cached auth at `$CODEX_HOME/auth.json` (default
-`~/.codex/auth.json`), (4) `"unknown"` sentinel.
+`_detect_auth_source` (in `src/clauditor/_harnesses/_codex.py`)
+probes auth sources in this deterministic order: (1)
+`CODEX_API_KEY`, (2) `OPENAI_API_KEY`, (3) cached auth at
+`$CODEX_HOME/auth.json` (default `~/.codex/auth.json`), (4)
+`"unknown"` sentinel.
 
 Codex's own runtime precedence is `cached $CODEX_HOME/auth.json →
 CODEX_API_KEY → OPENAI_API_KEY → interactive`. Clauditor's probe
@@ -263,7 +264,7 @@ precedence runs first.
 
 Empty / `None` / non-string messages return `"API error (no detail)"`
 with category `api`. Messages over 4096 chars are truncated with a
-` ... (truncated)` suffix; classification runs against the
+`...(truncated)` suffix; classification runs against the
 truncated text.
 
 ## `harness_metadata` key contract (DEC-008)
@@ -338,7 +339,7 @@ consumer reads it).
 | Line parses as non-dict JSON | Silently skip |
 | `turn.completed` with missing/broken `usage` | Token counts default to 0 |
 | `turn.failed.error.message` empty / non-string | `error="API error (no detail)"`, category `api` |
-| `turn.failed.error.message` over 4 KB | Truncate with ` ... (truncated)` suffix |
+| `turn.failed.error.message` over 4 KB | Truncate with `...(truncated)` suffix |
 | Multiple `turn.failed` / `error` events | First wins |
 | Subprocess times out | Killpg-escalate (POSIX) or terminate+kill (Windows); `exit_code=-1`, `error="timeout"`, category `timeout` |
 | `codex` binary not found | `InvokeResult(exit_code=-1, error="Codex CLI not found: …")`, category `None` |

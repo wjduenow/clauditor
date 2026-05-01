@@ -1,17 +1,22 @@
-"""Codex-specific pure helpers (US-001 of issue #149).
+"""Codex harness — ``codex exec --json`` skill runner (issue #149).
 
-This module hosts the pure (no-I/O, no-global-state) helpers that
-classify and detect harness-specific signals on a ``codex exec
---json`` capture. Each helper traces back to a DEC in
-``plans/super/149-codex-harness.md`` and is the canonical
-**Seventh anchor** of ``.claude/rules/pure-compute-vs-io-split.md``
-(landed via US-007 of #149).
+This module hosts both:
 
-US-001 ships only the module skeleton, constants, and four pure
-helpers — :func:`_classify_codex_failure`,
-:func:`_detect_codex_dropped_events`,
-:func:`_detect_codex_truncated_output`, and :func:`_filter_stderr`.
-The :class:`CodexHarness` class itself lands in US-002.
+- The pure (no-I/O, no-global-state) helpers that classify and detect
+  harness-specific signals on a ``codex exec --json`` capture —
+  :func:`_classify_codex_failure`, :func:`_detect_codex_dropped_events`,
+  :func:`_detect_codex_truncated_output`, and :func:`_filter_stderr`.
+  Each helper is the canonical **Seventh anchor** of
+  ``.claude/rules/pure-compute-vs-io-split.md`` (landed via US-007).
+- The :class:`CodexHarness` class — a :class:`clauditor.runner.Harness`
+  protocol implementation that invokes ``codex exec --json`` as a
+  subprocess, parses the resulting NDJSON stream, applies DEC-013
+  stderr filtering / DEC-015 envelope caps / DEC-014 process-group
+  cleanup, and returns a fully-populated
+  :class:`clauditor.runner.InvokeResult`.
+
+Each member traces back to a DEC in
+``plans/super/149-codex-harness.md``.
 
 The three advisory warning-prefix constants
 (``_DROPPED_EVENTS_WARNING_PREFIX``,
@@ -289,9 +294,10 @@ def _classify_codex_failure(
 
     Truncation: if ``message`` exceeds
     :data:`_RESULT_TEXT_MAX_CHARS` (4096), the returned text is
-    clipped and suffixed with ``" ... (truncated)"``. Classification
-    runs against the truncated text, so a keyword in the surviving
-    prefix still routes correctly.
+    clipped and suffixed with :data:`_TRUNCATED_SUFFIX`
+    (``"... (truncated)"``). Classification runs against the
+    truncated text, so a keyword in the surviving prefix still
+    routes correctly.
 
     Sentinel handling: ``message`` of ``None``, empty string, or
     non-string types returns
@@ -304,7 +310,7 @@ def _classify_codex_failure(
 
     text = message
     if len(text) > _RESULT_TEXT_MAX_CHARS:
-        text = text[:_RESULT_TEXT_MAX_CHARS] + " ... (truncated)"
+        text = text[:_RESULT_TEXT_MAX_CHARS] + _TRUNCATED_SUFFIX
 
     lowered = text.lower()
     if any(p.lower() in lowered for p in _RATE_LIMIT_PATTERNS):
@@ -617,6 +623,14 @@ class CodexHarness:
         reasoning_output_tokens = 0
         thread_id: str | None = None
         turn_count = 0
+        # Tracks whether at least one ``turn.completed`` event landed
+        # in the stream. Used to gate emission of
+        # ``cached_input_tokens`` / ``reasoning_output_tokens`` on
+        # ``harness_metadata`` so a real 0 count (a turn that ran but
+        # used no cached / reasoning tokens) is preserved while
+        # "never observed a completed turn" yields key-omission per the
+        # DEC-008 absent-keys-are-omitted contract.
+        saw_turn_completed = False
         # Running byte count for the DEC-015 envelope cap. Once the
         # accumulator exceeds :data:`_CODEX_STREAM_EVENTS_MAX_SIZE`, we
         # stop appending events but keep reading stdout so the final
@@ -884,6 +898,7 @@ class CodexHarness:
                                 turn_count += 1
 
                             elif mtype == "turn.completed":
+                                saw_turn_completed = True
                                 usage = msg.get("usage") or {}
                                 if isinstance(usage, dict):
                                     input_tokens = self._safe_int(
@@ -1053,14 +1068,19 @@ class CodexHarness:
                 }
                 if thread_id is not None:
                     metadata["thread_id"] = thread_id
-                # cached + reasoning token counts always populated
-                # when turn.completed landed (token totals default
-                # to 0). Test bar in DEC-008 is "available", which
-                # we interpret as "we saw at least one turn.completed"
-                # — but a 0 count is meaningful, so we emit them
-                # whenever they are computed (not just non-zero).
-                metadata["cached_input_tokens"] = cached_input_tokens
-                metadata["reasoning_output_tokens"] = reasoning_output_tokens
+                # cached + reasoning token counts are only available
+                # once a ``turn.completed`` event has landed. A real 0
+                # count is meaningful (turn ran with no cached /
+                # reasoning tokens), so emit these keys when at least
+                # one completed turn was observed — NOT on streams
+                # that ended in a top-level ``error`` / ``turn.failed``
+                # before any turn completed (where 0 would falsely
+                # imply "we measured zero" instead of "not observed").
+                # Per DEC-008 the absent-keys-are-omitted contract
+                # requires the gate.
+                if saw_turn_completed:
+                    metadata["cached_input_tokens"] = cached_input_tokens
+                    metadata["reasoning_output_tokens"] = reasoning_output_tokens
                 if dropped_count > 0:
                     metadata["dropped_events_count"] = dropped_count
                 if stream_events_truncated:

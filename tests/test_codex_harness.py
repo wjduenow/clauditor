@@ -1,6 +1,10 @@
-"""Tests for :mod:`clauditor._harnesses._codex` — pure helpers.
+"""Tests for :mod:`clauditor._harnesses._codex` — full harness surface.
 
-US-001 of issue #149 covers the module skeleton and pure helpers:
+Covers the pure helpers shipped in US-001 (DEC-007 / DEC-013 /
+DEC-018) and the :class:`CodexHarness` class shipped in US-002 +
+US-003 + US-004 (subprocess lifecycle, NDJSON parsing, error
+classification, watchdog/timeout, stderr filter, advisory
+detectors):
 
 - :func:`_classify_codex_failure` — substring-classify Codex error
   text into one of the closed ``error_category`` Literal values
@@ -11,15 +15,19 @@ US-001 of issue #149 covers the module skeleton and pure helpers:
 - :func:`_detect_codex_truncated_output` — flag the case where the
   Codex stream produced no ``agent_message`` items but the
   ``--output-last-message`` tempfile contains text per DEC-018.
-
-The :class:`CodexHarness` class itself lands in US-002; this file
-covers only the pure-helper surface.
+- :func:`_filter_stderr` — auth-leak redaction + 8 KB cap per DEC-013.
+- :class:`CodexHarness` — protocol drift-guard, ``strip_auth_keys``,
+  ``build_prompt``, and the full ``invoke`` body (happy path, error
+  paths, timeout, stderr drainer, kill-proc escalation, harness
+  metadata).
 """
 
 from __future__ import annotations
 
 import importlib
 import os
+
+import pytest
 
 # Reload the module under test so coverage instrumentation (which
 # starts after collection) sees every line. Mirrors the pattern in
@@ -244,8 +252,8 @@ class TestClassifyCodexFailure:
         """Long text clipped at the soft cap with the suffix."""
         big = "X" * 5000
         text, category = _classify_codex_failure(big)
-        assert text.endswith(" ... (truncated)")
-        assert len(text) == _RESULT_TEXT_MAX_CHARS + len(" ... (truncated)")
+        assert text.endswith("... (truncated)")
+        assert len(text) == _RESULT_TEXT_MAX_CHARS + len("... (truncated)")
         assert category == "api"
 
     def test_truncation_preserves_classification(self) -> None:
@@ -253,7 +261,7 @@ class TestClassifyCodexFailure:
         msg = "rate limit exceeded — " + "X" * 5000
         text, category = _classify_codex_failure(msg)
         assert category == "rate_limit"
-        assert text.endswith(" ... (truncated)")
+        assert text.endswith("... (truncated)")
 
 
 # ---------------------------------------------------------------------------
@@ -2096,3 +2104,759 @@ class TestInvokeCodexExecErrorPaths:
         assert "deprecated" in deprecation_warnings[0]
         # Advisory: NOT a failure.
         assert result.error_category is None
+
+
+# ---------------------------------------------------------------------------
+# Defensive-branch coverage (cif.8 — codecov/patch coverage gate)
+# ---------------------------------------------------------------------------
+#
+# The harness exposes many defensive ``try/except OSError`` branches
+# whose purpose is "absorb a race-to-exit (ESRCH) into the warnings
+# sink rather than crashing cleanup". Coverage on these branches is
+# required for codecov/patch to pass; the tests below exercise each
+# one directly through the harness's static helpers (``_kill_proc``,
+# ``_safe_int``, ``_maybe_truncate_command_output``,
+# ``_detect_auth_source``) plus a handful of integration cases that
+# inject failing fakes into the ``invoke`` body's stdin / stdout /
+# stderr streams.
+
+
+class TestSafeIntDefensive:
+    """Direct tests for :meth:`CodexHarness._safe_int` defensive
+    branches — ``TypeError`` / ``ValueError`` fall through to 0."""
+
+    def test_handles_typeerror_on_non_string_object(self) -> None:
+        from clauditor._harnesses._codex import CodexHarness
+
+        # An object whose ``int()`` raises ``TypeError`` (no ``__int__``
+        # / ``__index__``). The ``or 0`` fallback short-circuits on
+        # falsy values, so we need a truthy object.
+        class _NotIntable:
+            def __bool__(self) -> bool:
+                return True
+
+        assert CodexHarness._safe_int(_NotIntable()) == 0
+
+    def test_handles_valueerror_on_unparseable_string(self) -> None:
+        from clauditor._harnesses._codex import CodexHarness
+
+        assert CodexHarness._safe_int("not-a-number") == 0
+
+
+class TestMaybeTruncateCommandOutputDefensive:
+    """``_maybe_truncate_command_output`` non-string branch (DEC-015
+    soft-cap is only meaningful on string ``aggregated_output``)."""
+
+    def test_non_string_aggregated_output_returns_unchanged(self) -> None:
+        from clauditor._harnesses._codex import CodexHarness
+
+        item = {"id": "x", "type": "command_execution", "aggregated_output": 42}
+        capped, fired = CodexHarness._maybe_truncate_command_output(item)
+        assert fired is False
+        # Same object reference (no rebuild) per the early-return shape.
+        assert capped is item
+
+    def test_missing_aggregated_output_returns_unchanged(self) -> None:
+        from clauditor._harnesses._codex import CodexHarness
+
+        item = {"id": "x", "type": "command_execution"}
+        capped, fired = CodexHarness._maybe_truncate_command_output(item)
+        assert fired is False
+        assert capped is item
+
+
+class TestDetectAuthSourceDefensive:
+    """``_detect_auth_source`` defensive branches: ``OSError`` on
+    ``expanduser``, ``OSError`` on ``isfile``, ``home==""`` fallback."""
+
+    def test_expanduser_oserror_falls_through_to_unknown(self, monkeypatch) -> None:
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        def _raise(_path: str) -> str:
+            raise OSError("HOME unreadable")
+
+        monkeypatch.setattr(_codex_mod.os.path, "expanduser", _raise)
+        # Pass an empty env so neither key is set and CODEX_HOME is
+        # absent — the function falls through to ``expanduser("~")``.
+        assert CodexHarness._detect_auth_source({}) == "unknown"
+
+    def test_expanduser_returns_tilde_falls_through_to_unknown(
+        self, monkeypatch
+    ) -> None:
+        """When ``expanduser`` returns the literal ``"~"`` (Python's
+        documented sentinel for "no home"), the function returns
+        ``"unknown"`` rather than probing a tilde-prefixed path."""
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.setattr(_codex_mod.os.path, "expanduser", lambda _: "~")
+        assert CodexHarness._detect_auth_source({}) == "unknown"
+
+    def test_isfile_oserror_falls_through_to_unknown(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A permission-denied / traversal-guard ``OSError`` from
+        ``os.path.isfile`` is absorbed; result is ``"unknown"``."""
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        def _raise_isfile(path: str) -> bool:
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(_codex_mod.os.path, "isfile", _raise_isfile)
+        env = {"CODEX_HOME": str(tmp_path)}
+        assert CodexHarness._detect_auth_source(env) == "unknown"
+
+
+class TestKillProcDefensive:
+    """Direct tests for :meth:`CodexHarness._kill_proc` covering each
+    defensive ``except`` branch on POSIX and Windows.
+
+    The kill helper must absorb every OS-level failure into the
+    ``warnings_sink`` so cleanup never raises. Each branch corresponds
+    to one syscall failing while the others succeed; we drive each
+    branch by patching :mod:`os` / :mod:`subprocess` selectively.
+    """
+
+    def _build_fake_proc(self, *, alive: bool = True, pid: int = 12345):
+        """Produce a minimal duck-typed Popen stand-in for ``_kill_proc``."""
+        import subprocess as _sp
+
+        class _Proc:
+            def __init__(self) -> None:
+                self.pid = pid
+                self._alive = alive
+                self.terminate_called = False
+                self.kill_called = False
+
+            def poll(self):
+                return None if self._alive else 0
+
+            def wait(self, timeout=None):
+                if self._alive and timeout is not None:
+                    raise _sp.TimeoutExpired(cmd="codex", timeout=timeout)
+                return 0
+
+            def terminate(self) -> None:
+                self.terminate_called = True
+
+            def kill(self) -> None:
+                self.kill_called = True
+                self._alive = False
+
+        return _Proc()
+
+    def test_warnings_lock_branch_synchronizes_append(self, monkeypatch) -> None:
+        """When ``warnings_lock`` is supplied (watchdog-thread caller),
+        ``_record`` must take the lock before appending — exercises the
+        ``with warnings_lock:`` branch in ``_record``."""
+        import threading as _threading
+
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.setattr(_codex_mod.os, "name", "posix")
+
+        # getpgid raises so we hit ``_record`` immediately.
+        def _raise_getpgid(_pid: int) -> int:
+            raise ProcessLookupError("no such process")
+
+        monkeypatch.setattr(_codex_mod.os, "getpgid", _raise_getpgid)
+
+        proc = self._build_fake_proc()
+        sink: list[str] = []
+        lock = _threading.Lock()
+        CodexHarness._kill_proc(proc, sink, lock)
+        # The lock branch ran (cannot detect directly, but the warning
+        # landed via the locked path).
+        assert any("getpgid failed" in w for w in sink)
+
+    def test_posix_killpg_sigterm_oserror_records_warning(
+        self, monkeypatch
+    ) -> None:
+        """``killpg(SIGTERM)`` raising ``OSError`` lands a warning and
+        the helper continues to the wait-then-SIGKILL branch."""
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.setattr(_codex_mod.os, "name", "posix")
+        monkeypatch.setattr(_codex_mod.os, "getpgid", lambda pid: pid + 1)
+
+        def _killpg(_pgid: int, _sig: int) -> None:
+            raise OSError("killpg fail")
+
+        monkeypatch.setattr(_codex_mod.os, "killpg", _killpg)
+
+        proc = self._build_fake_proc(alive=False)  # wait succeeds → return
+        sink: list[str] = []
+        CodexHarness._kill_proc(proc, sink, None)
+        assert any("killpg(SIGTERM) failed" in w for w in sink)
+
+    def test_posix_wait_after_sigterm_oserror_returns_early(
+        self, monkeypatch
+    ) -> None:
+        """``proc.wait`` raising ``OSError`` (not ``TimeoutExpired``)
+        after SIGTERM lands a warning and the helper returns before
+        SIGKILL."""
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.setattr(_codex_mod.os, "name", "posix")
+        monkeypatch.setattr(_codex_mod.os, "getpgid", lambda pid: pid + 1)
+        killpg_calls: list[int] = []
+        monkeypatch.setattr(
+            _codex_mod.os,
+            "killpg",
+            lambda _p, sig: killpg_calls.append(sig),
+        )
+
+        proc = self._build_fake_proc()
+
+        def _wait(timeout=None):
+            raise OSError("wait fail")
+
+        proc.wait = _wait  # type: ignore[method-assign]
+        sink: list[str] = []
+        CodexHarness._kill_proc(proc, sink, None)
+        assert any("wait after SIGTERM failed" in w for w in sink)
+        # Only SIGTERM fired; SIGKILL not reached.
+        assert _codex_mod.signal.SIGKILL not in killpg_calls
+
+    def test_posix_killpg_sigkill_oserror_records_warning(
+        self, monkeypatch
+    ) -> None:
+        """``killpg(SIGKILL)`` raising ``OSError`` after wait timed out
+        lands a warning. Exercises the final ``except`` branch in the
+        POSIX arm."""
+        import subprocess as _sp
+
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.setattr(_codex_mod.os, "name", "posix")
+        monkeypatch.setattr(_codex_mod.os, "getpgid", lambda pid: pid + 1)
+
+        killpg_calls: list[int] = []
+
+        def _killpg(_pgid: int, sig: int) -> None:
+            killpg_calls.append(sig)
+            if sig == _codex_mod.signal.SIGKILL:
+                raise OSError("killpg(SIGKILL) fail")
+
+        monkeypatch.setattr(_codex_mod.os, "killpg", _killpg)
+
+        proc = self._build_fake_proc()
+
+        def _wait(timeout=None):
+            raise _sp.TimeoutExpired(cmd="codex", timeout=timeout)
+
+        proc.wait = _wait  # type: ignore[method-assign]
+        sink: list[str] = []
+        CodexHarness._kill_proc(proc, sink, None)
+        assert _codex_mod.signal.SIGTERM in killpg_calls
+        assert _codex_mod.signal.SIGKILL in killpg_calls
+        assert any("killpg(SIGKILL) failed" in w for w in sink)
+
+    def test_windows_terminate_oserror_records_warning(
+        self, monkeypatch
+    ) -> None:
+        """On Windows, ``proc.terminate()`` raising ``OSError`` lands a
+        warning and the helper continues to wait/kill."""
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.setattr(_codex_mod.os, "name", "nt")
+        proc = self._build_fake_proc(alive=False)  # wait succeeds → return
+
+        def _terminate() -> None:
+            raise OSError("terminate fail")
+
+        proc.terminate = _terminate  # type: ignore[method-assign]
+        sink: list[str] = []
+        CodexHarness._kill_proc(proc, sink, None)
+        assert any("terminate failed" in w for w in sink)
+
+    def test_windows_wait_after_terminate_oserror_returns_early(
+        self, monkeypatch
+    ) -> None:
+        """On Windows, ``proc.wait`` raising a non-Timeout ``OSError``
+        after ``terminate()`` lands a warning and returns early."""
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.setattr(_codex_mod.os, "name", "nt")
+        proc = self._build_fake_proc()
+
+        def _wait(timeout=None):
+            raise OSError("wait fail")
+
+        proc.wait = _wait  # type: ignore[method-assign]
+        sink: list[str] = []
+        CodexHarness._kill_proc(proc, sink, None)
+        assert any("wait after terminate failed" in w for w in sink)
+        # ``proc.kill()`` was NOT reached (early return on OSError).
+        assert proc.kill_called is False
+
+    def test_windows_kill_oserror_records_warning(self, monkeypatch) -> None:
+        """On Windows, ``proc.kill()`` raising ``OSError`` after
+        wait-timeout lands a warning. Final ``except`` branch in the
+        Windows arm."""
+        import subprocess as _sp
+
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.setattr(_codex_mod.os, "name", "nt")
+        proc = self._build_fake_proc()
+
+        def _wait(timeout=None):
+            raise _sp.TimeoutExpired(cmd="codex", timeout=timeout)
+
+        proc.wait = _wait  # type: ignore[method-assign]
+
+        def _kill() -> None:
+            raise OSError("kill fail")
+
+        proc.kill = _kill  # type: ignore[method-assign]
+        sink: list[str] = []
+        CodexHarness._kill_proc(proc, sink, None)
+        assert any("kill failed" in w for w in sink)
+
+
+class TestInvokeDefensiveBranches:
+    """Defensive branches inside :meth:`CodexHarness.invoke` — stdin
+    write/close, malformed-but-non-dict JSON lines, empty stream
+    lines, stderr drainer EOFError, drainer-still-alive warning,
+    tempfile-read OSError, watchdog-already-exited early-return."""
+
+    def _patch_popen(self, monkeypatch, fake):
+        import clauditor._harnesses._codex as _codex_mod
+
+        monkeypatch.setattr(
+            _codex_mod.subprocess, "Popen", lambda *a, **kw: fake
+        )
+
+    def test_stdin_write_brokenpipe_appends_warning(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """``proc.stdin.write`` raising ``BrokenPipeError`` lands a
+        ``codex stdin closed`` warning (line 764-765 branch)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+
+        def _write(_data: str) -> int:
+            raise BrokenPipeError("broken pipe")
+
+        fake.stdin.write = _write  # type: ignore[method-assign]
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        assert any(
+            "stdin closed before prompt fully written" in w
+            for w in result.warnings
+        )
+
+    def test_stdin_close_oserror_swallowed(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """``proc.stdin.close`` raising ``OSError`` is swallowed
+        (line 772-773 branch)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+
+        def _close() -> None:
+            raise OSError("close fail")
+
+        fake.stdin.close = _close  # type: ignore[method-assign]
+        self._patch_popen(monkeypatch, fake)
+        # Should not raise — the OSError on close is silently absorbed.
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        assert result.exit_code == 0
+
+    def test_empty_stdout_line_skipped(self, monkeypatch, tmp_path) -> None:
+        """A stdout line that is empty after ``.strip()`` is skipped
+        without parsing (the strip-then-continue branch)."""
+        # Inject blank lines amid the stream.
+        import json as _json
+
+        from clauditor._harnesses._codex import CodexHarness
+
+        events = [
+            _json.dumps({"type": "thread.started", "thread_id": "t1"}),
+            "",  # blank line — exercises strip-then-continue
+            "   ",  # whitespace-only — same branch
+            _json.dumps({"type": "turn.started"}),
+            _json.dumps(make_fake_codex_agent_message_item("hi")),
+            _json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                }
+            ),
+        ]
+        fake = _FakeCodexPopen(events, returncode=0)
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        # Blanks were skipped; output still produced.
+        assert result.output == "hi"
+
+    def test_non_dict_json_line_skipped(self, monkeypatch, tmp_path) -> None:
+        """A JSON line that parses to a non-dict (list, scalar, null)
+        is silently skipped (the non-dict-continue branch)."""
+        import json as _json
+
+        from clauditor._harnesses._codex import CodexHarness
+
+        events = [
+            _json.dumps({"type": "thread.started", "thread_id": "t1"}),
+            "[1, 2, 3]",  # JSON array — non-dict; skipped
+            "null",  # JSON null — non-dict; skipped
+            "42",  # JSON number — non-dict; skipped
+            _json.dumps({"type": "turn.started"}),
+            _json.dumps(make_fake_codex_agent_message_item("ok")),
+            _json.dumps(
+                {
+                    "type": "turn.completed",
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                }
+            ),
+        ]
+        fake = _FakeCodexPopen(events, returncode=0)
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        # The non-dict lines were silently skipped, agent_message landed.
+        assert result.output == "ok"
+        # raw_messages contains only the dict messages (not the non-dicts).
+        assert all(isinstance(m, dict) for m in result.raw_messages)
+
+    def test_stderr_drainer_oserror_recorded(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """When the stderr drainer iterator raises ``OSError`` mid-loop,
+        the failure is captured into ``stderr_warnings`` and surfaced on
+        the final result (line 786-791 branch)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+
+        # Replace stderr with an iterator that yields one chunk then
+        # raises OSError on the next ``__next__`` call.
+        class _BadStderr:
+            def __init__(self) -> None:
+                self._yielded = False
+
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> str:
+                if not self._yielded:
+                    self._yielded = True
+                    return "first chunk\n"
+                raise OSError("stderr broken")
+
+        fake.stderr = _BadStderr()
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        assert any("stderr drainer stopped" in w for w in result.warnings)
+
+    def test_stderr_drainer_unexpected_exception_recorded(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """A surprise exception (not ``EOFError`` / ``OSError``) on the
+        stderr drainer is caught by the bare-``except`` branch and
+        recorded with the ``unexpected`` prefix (line 792-797)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+
+        class _BadError(Exception):
+            pass
+
+        class _BadStderr:
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> str:
+                raise _BadError("totally unexpected")
+
+        fake.stderr = _BadStderr()
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        assert any(
+            "stderr drainer raised unexpected" in w for w in result.warnings
+        )
+
+    def test_stderr_drainer_still_alive_emits_warning(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """When the stderr drainer thread does not terminate within 2s,
+        a partial-capture warning is appended."""
+        import threading as _real_threading
+
+        from clauditor._harnesses._codex import CodexHarness
+
+        # Build a stderr that blocks indefinitely so the drainer thread
+        # is genuinely stuck. We use a sentinel iterator that returns
+        # an empty string forever (the drainer's ``for chunk in
+        # proc.stderr`` loop does not terminate). We pair this with a
+        # patched ``join(timeout=2.0)`` that returns immediately so the
+        # ``is_alive()`` branch fires without a real 2-second wait.
+        fake = make_fake_codex_stream("hi")
+
+        # Create a real thread-like object whose join returns
+        # immediately and is_alive returns True. Track the drainer
+        # thread by capturing the first ``Thread`` instance with a
+        # ``target`` whose qualname contains ``_drain_stderr``.
+        original_thread_init = _real_threading.Thread.__init__
+        captured: list[_real_threading.Thread] = []
+
+        def _patched_init(self, *args, **kwargs):
+            target = kwargs.get("target")
+            original_thread_init(self, *args, **kwargs)
+            if target is not None and getattr(target, "__name__", "") == (
+                "_drain_stderr"
+            ):
+                captured.append(self)
+
+        monkeypatch.setattr(
+            _real_threading.Thread, "__init__", _patched_init
+        )
+        # Force is_alive to True after join for the captured drainer.
+        original_is_alive = _real_threading.Thread.is_alive
+
+        def _patched_is_alive(self):
+            if self in captured:
+                return True
+            return original_is_alive(self)
+
+        monkeypatch.setattr(
+            _real_threading.Thread, "is_alive", _patched_is_alive
+        )
+        # Patch join to return immediately without raising for the
+        # captured drainer.
+        original_join = _real_threading.Thread.join
+
+        def _patched_join(self, timeout=None):
+            if self in captured:
+                return None
+            return original_join(self, timeout)
+
+        monkeypatch.setattr(_real_threading.Thread, "join", _patched_join)
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        assert any(
+            "drainer still running after 2s" in w for w in result.warnings
+        )
+
+    def test_tempfile_read_oserror_appends_warning(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """If the ``--output-last-message`` tempfile is unreadable
+        (``OSError`` from ``open``), a warning is appended (line
+        1033-1037 branch)."""
+        import builtins
+
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+
+        # Make ``os.path.isfile`` return True so the open is reached;
+        # then make ``open`` raise OSError when called against the
+        # tempfile path.
+        monkeypatch.setattr(_codex_mod.os.path, "isfile", lambda _p: True)
+
+        real_open = builtins.open
+
+        def _bad_open(path, *a, **kw):
+            if str(path).endswith("last_message.txt"):
+                raise OSError("permission denied")
+            return real_open(path, *a, **kw)
+
+        monkeypatch.setattr(builtins, "open", _bad_open)
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        assert any(
+            "failed to read --output-last-message tempfile" in w
+            for w in result.warnings
+        )
+
+    def test_watchdog_already_exited_short_circuits(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """When the watchdog timer fires AFTER the child has already
+        exited (poll returns non-None), ``_on_timeout`` short-circuits
+        without invoking ``_kill_proc`` (line 815-816 branch)."""
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        # Force poll to report "already exited" so the watchdog sees
+        # ``proc.poll() is not None`` and returns early.
+        fake.poll = lambda: 0  # type: ignore[method-assign]
+        self._patch_popen(monkeypatch, fake)
+
+        kill_calls: list[int] = []
+
+        def _bad_killpg(_pgid: int, _sig: int) -> None:
+            kill_calls.append(_sig)
+
+        monkeypatch.setattr(_codex_mod.os, "killpg", _bad_killpg)
+
+        # Fire the watchdog synchronously so the short-circuit branch
+        # exercises within the test thread.
+        class _ImmediateTimer:
+            def __init__(self, interval, function) -> None:
+                self._function = function
+
+            def start(self) -> None:
+                self._function()
+
+            def cancel(self) -> None:
+                pass
+
+            @property
+            def daemon(self) -> bool:
+                return True
+
+            @daemon.setter
+            def daemon(self, value: bool) -> None:
+                pass
+
+        monkeypatch.setattr(_codex_mod.threading, "Timer", _ImmediateTimer)
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        # Timeout did NOT fire; killpg was NOT called.
+        assert result.error != "timeout"
+        assert kill_calls == []
+
+    def test_finally_cleanup_kills_lingering_proc(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """Defensive ``finally`` cleanup: if ``proc.poll() is None``
+        after the try-block exits, ``_kill_proc`` is invoked and a
+        bounded ``proc.wait(timeout=1)`` runs. We drive this by making
+        ``proc.wait`` (the inner-block wait) raise an unexpected
+        exception so the finally arm runs, and the bounded wait in
+        the finally also raises ``TimeoutExpired`` to exercise the
+        defensive ``except (TimeoutExpired, OSError)`` swallow."""
+        import subprocess as _sp
+
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+        # First wait() (inner-loop) raises; second wait(timeout=1) in
+        # the finally branch raises TimeoutExpired so the defensive
+        # ``except (TimeoutExpired, OSError)`` arm fires.
+        wait_calls = {"n": 0}
+
+        def _wait(timeout=None):
+            wait_calls["n"] += 1
+            if wait_calls["n"] == 1:
+                raise RuntimeError("simulated mid-stream abort")
+            # Second call: the finally-bounded wait(timeout=1).
+            raise _sp.TimeoutExpired(cmd="codex", timeout=timeout)
+
+        fake.wait = _wait  # type: ignore[method-assign]
+        # poll reports alive throughout so the finally arm enters
+        # the kill branch and tries the bounded wait.
+        fake.poll = lambda: None  # type: ignore[method-assign]
+
+        # Patch killpg / getpgid so the kill arm runs without raising.
+        monkeypatch.setattr(_codex_mod.os, "name", "posix")
+        monkeypatch.setattr(_codex_mod.os, "getpgid", lambda pid: pid)
+        monkeypatch.setattr(_codex_mod.os, "killpg", lambda *a, **kw: None)
+        self._patch_popen(monkeypatch, fake)
+
+        with pytest.raises(RuntimeError, match="simulated mid-stream abort"):
+            CodexHarness().invoke(
+                "p", cwd=tmp_path, env=None, timeout=30
+            )
+        # Both wait calls happened: the in-loop one (raised) and the
+        # finally bounded wait(timeout=1) (raised TimeoutExpired,
+        # swallowed by the defensive except arm).
+        assert wait_calls["n"] >= 2
+
+    def test_finally_cleanup_stream_close_oserror_swallowed(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The ``stream.close()`` defensive branch in the finally arm
+        absorbs ``OSError`` (lines 1149-1152)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+
+        # Mark stdout.close to raise. The finally arm should swallow it.
+        original_close = fake.stdout.close
+
+        def _close():
+            try:
+                original_close()
+            finally:
+                raise OSError("close fail")
+
+        fake.stdout.close = _close  # type: ignore[method-assign]
+        import clauditor._harnesses._codex as _codex_mod
+
+        monkeypatch.setattr(
+            _codex_mod.subprocess, "Popen", lambda *a, **kw: fake
+        )
+        # Should not raise — the OSError from stream.close is swallowed.
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        assert result.exit_code == 0
+
+
+class TestStderrWarningsExtended:
+    """Coverage for the ``stderr_warnings.extend(warnings)`` branch
+    (line 1016-1018) — surfaced when watchdog-thread warnings landed
+    during the run via the locked sink."""
+
+    def test_drainer_warning_extends_to_result_warnings(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """When the stderr drainer recorded a warning into the locked
+        sink, the post-loop ``warnings.extend(stderr_warnings)`` arm
+        surfaces it on ``result.warnings``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream("hi")
+
+        class _BadStderr:
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> str:
+                raise OSError("stderr broken")
+
+        fake.stderr = _BadStderr()
+        import clauditor._harnesses._codex as _codex_mod
+
+        monkeypatch.setattr(
+            _codex_mod.subprocess, "Popen", lambda *a, **kw: fake
+        )
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        assert any("stderr drainer stopped" in w for w in result.warnings)

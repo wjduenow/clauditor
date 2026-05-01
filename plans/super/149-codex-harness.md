@@ -289,7 +289,7 @@ Populated keys when available (absent keys *omitted*, never `None`):
 
 ### DEC-009 — `subject` kwarg → stderr parity line
 On every invoke, after the first `thread.started` event lands, emit one line to stderr:
-```
+```text
 clauditor.runner: codex sandbox=workspace-write[ (subject)]
 ```
 Subject sanitization mirrors `_claude_code.py:705–717` exactly: replace `\r\n` with space, strip, cap at 200 chars, append in parens.
