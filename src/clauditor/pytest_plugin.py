@@ -442,10 +442,10 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
         # ``eval_spec.grading_provider`` / ``grading_model``. The guard
         # still fires before any SDK call.
         spec = clauditor_spec(skill_path, eval_path)
+        if spec.eval_spec is None:
+            raise ValueError(f"No eval spec found for {skill_path}")
         _dispatch_fixture_auth_guard(spec.eval_spec, "blind_compare")
-        provider = _resolve_fixture_provider(
-            spec.eval_spec if spec is not None else None
-        )
+        provider = _resolve_fixture_provider(spec.eval_spec)
         effective_model = model or request.config.getoption("--clauditor-model")
         return asyncio.run(
             blind_compare_from_spec(

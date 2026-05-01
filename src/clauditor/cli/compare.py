@@ -310,8 +310,14 @@ def _run_blind_compare(
     effective_transport = _resolve_grader_transport(
         args if args is not None else _argparse.Namespace(), skill_spec.eval_spec
     )
+    # Resolve the effective model the orchestrator will actually use,
+    # so the stderr progress line agrees with what blind_compare_from_spec
+    # passes to call_model. Avoids "Running blind A/B judge (None)" when
+    # grading_model is unset (post-#146 nullable migration).
+    from clauditor._providers import resolve_grading_model
+    effective_model = resolve_grading_model(skill_spec.eval_spec, provider)
     print(
-        f"Running blind A/B judge ({skill_spec.eval_spec.grading_model}) "
+        f"Running blind A/B judge ({effective_model}) "
         "— 2 API calls...",
         file=sys.stderr,
     )

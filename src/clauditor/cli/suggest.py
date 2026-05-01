@@ -53,8 +53,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p_suggest.add_argument(
         "--model",
-        default="claude-sonnet-4-6",
-        help="Proposer model (default: claude-sonnet-4-6)",
+        default=None,
+        help=(
+            "Proposer model. When unset, defaults to the resolved "
+            "provider's standard model (claude-sonnet-4-6 for "
+            "anthropic, gpt-5.4 for openai)."
+        ),
     )
     p_suggest.add_argument(
         "--json",
@@ -226,6 +230,27 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
     # The resolved provider is threaded down to ``propose_edits`` per
     # #146 US-006.
     from clauditor.cli import _resolve_grading_provider
+
+    # Provider-aware default-model pick (QG pass 2 of #146): peek at
+    # the explicit provider signals (CLI flag, env) BEFORE running the
+    # resolver, so the no-args case (no --grading-provider, no --model)
+    # gets an Anthropic-default model that lets the resolver auto-infer
+    # provider="anthropic". This matches the propose-eval pattern. If
+    # the operator passed --grading-provider openai without --model,
+    # we pre-stamp the OpenAI default so the resolver routes correctly
+    # and the orchestrator gets a coherent (provider, model) pair.
+    if args.model is None:
+        import os as _os
+        explicit_provider = (
+            getattr(args, "grading_provider", None)
+            or _os.environ.get("CLAUDITOR_GRADING_PROVIDER", "").strip()
+            or None
+        )
+        if explicit_provider == "openai":
+            from clauditor._providers._openai import DEFAULT_MODEL_L3
+            args.model = DEFAULT_MODEL_L3
+        else:
+            args.model = "claude-sonnet-4-6"
 
     provider = _resolve_grading_provider(args, None)
     try:

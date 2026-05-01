@@ -139,20 +139,13 @@ def cmd_triggers(args: argparse.Namespace) -> int:
     # #146 US-006 / DEC-004: when the operator did not pass ``--model``
     # AND the spec did not set ``grading_model``, pick the per-provider
     # default via the pure helper. An explicit ``--model`` always wins.
+    # Schema validation rejects empty/whitespace strings at load time
+    # per QG pass 1 of #146, so ``model`` is guaranteed non-empty after
+    # this resolution.
     if not model:
         from clauditor._providers import resolve_grading_model
 
         model = resolve_grading_model(spec.eval_spec, provider)
-    # An explicitly-empty ``grading_model: ""`` (vs ``null``) bypasses
-    # the per-provider default — preserve the pre-#146 exit-2 surface
-    # for that pathological case.
-    if not model:
-        print(
-            "ERROR: No grading model specified. Set grading_model in "
-            "the eval spec or pass --model.",
-            file=sys.stderr,
-        )
-        return 2
 
     from clauditor.cli import _resolve_grader_transport
     from clauditor.triggers import test_triggers

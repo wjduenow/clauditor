@@ -331,7 +331,11 @@ def cmd_grade(args: argparse.Namespace) -> int:
     if args.dry_run:
         from clauditor.quality_grader import build_grading_prompt
 
-        preview_model = args.model or spec.eval_spec.grading_model
+        preview_model = (
+            args.model
+            or spec.eval_spec.grading_model
+            or "<auto, resolved from provider>"
+        )
         prompt = build_grading_prompt(spec.eval_spec)
         print(f"Model: {preview_model}")
         print(f"Prompt:\n{prompt}")
