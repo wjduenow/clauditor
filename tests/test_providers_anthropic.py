@@ -1799,3 +1799,96 @@ class TestNoProductionImportsFromAnthropicShim:
             "back-compat shim ``clauditor._anthropic`` is the only "
             "exempt file. Offenders:\n" + "\n".join(offenders)
         )
+
+
+class TestCallAnthropicBaseErrorCatchAll:
+    """Bare base ``anthropic.AnthropicError`` catch-all (US-004 of #162).
+
+    Pins DEC-003 (message format ``f"API request failed:
+    {type(exc).__name__}: {str(exc)[:500]}"``), DEC-005 (two tests:
+    catch-all wraps + ordering regression), and DEC-008 (the
+    catch-all test MUST construct an ``AnthropicError`` instance NOT
+    in any typed branch's hierarchy — otherwise the test passes via
+    the typed branch and the catch-all is dead code).
+    """
+
+    @pytest.mark.asyncio
+    async def test_bare_anthropic_error_wraps_to_helper_error(self) -> None:
+        # DEC-008: define a one-line subclass guaranteed NOT to match
+        # any typed branch (RateLimitError, APIStatusError,
+        # AuthenticationError, PermissionDeniedError,
+        # APIConnectionError, TypeError). This proves the catch-all
+        # branch is exercised — using a bare AnthropicError() also
+        # works since AnthropicError itself is not in any typed
+        # branch's hierarchy, but the explicit subclass is more
+        # robust against future SDK changes that might promote
+        # AnthropicError to a typed alias.
+        from anthropic import AnthropicError
+
+        class _UnknownAnthropicError(AnthropicError):
+            pass
+
+        sdk_text = "simulated unknown failure with payload " + "x" * 600
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(
+            side_effect=_UnknownAnthropicError(sdk_text)
+        )
+        sleep_mock = AsyncMock()
+        with patch(
+            "anthropic.AsyncAnthropic", return_value=mock_client
+        ), patch(
+            "clauditor._providers._anthropic._sleep", sleep_mock
+        ):
+            with pytest.raises(AnthropicHelperError) as exc_info:
+                await call_anthropic("p", model="m", transport="api")
+        msg = str(exc_info.value)
+        # DEC-003: message format anchors.
+        assert msg.startswith("API request failed:")
+        assert "_UnknownAnthropicError" in msg
+        # ``str(exc)[:500]`` cap: the full 600-char tail is NOT in
+        # the user-facing message, but a 500-char prefix IS.
+        assert sdk_text not in msg
+        assert sdk_text[:500] in msg
+        # Not retried: without category info, the catch-all cannot
+        # make a sound retry decision.
+        assert mock_client.messages.create.await_count == 1
+        assert sleep_mock.await_count == 0
+        # Original exception preserved on ``__cause__``.
+        assert isinstance(exc_info.value.__cause__, _UnknownAnthropicError)
+        assert isinstance(exc_info.value.__cause__, AnthropicError)
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_subclass_routes_to_specific_branch_not_catch_all(
+        self,
+    ) -> None:
+        # DEC-005 ordering regression: ``RateLimitError`` is a
+        # subclass of ``AnthropicError``, so without correct branch
+        # ordering the bare catch-all would swallow it. Exhaust the
+        # rate-limit retries and assert the message indicates the
+        # rate-limit-specific branch (NOT the generic catch-all
+        # phrasing) and the retry count proves the rate-limit
+        # ladder applied.
+        errors = [
+            _make_rate_limit_error(body={"attempt": i}) for i in range(4)
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=errors)
+        sleep_mock = AsyncMock()
+        with patch(
+            "anthropic.AsyncAnthropic", return_value=mock_client
+        ), patch(
+            "clauditor._providers._anthropic._sleep", sleep_mock
+        ), patch(
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
+        ):
+            with pytest.raises(AnthropicHelperError) as exc_info:
+                await call_anthropic("p", model="m", transport="api")
+        msg = str(exc_info.value)
+        # Rate-limit-specific branch fired: message says "rate
+        # limit", NOT the generic catch-all "API request failed:".
+        assert "rate limit" in msg.lower()
+        assert "429" in msg
+        assert not msg.startswith("API request failed:")
+        # The rate-limit ladder applied: 4 attempts (initial + 3
+        # retries) per RATE_LIMIT_MAX_RETRIES=3.
+        assert mock_client.messages.create.await_count == 4

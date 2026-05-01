@@ -471,6 +471,7 @@ async def _call_via_sdk(
     """SDK (HTTP) transport branch. See :func:`call_anthropic` for policy."""
     try:
         from anthropic import (
+            AnthropicError,
             APIConnectionError,
             APIStatusError,
             AsyncAnthropic,
@@ -595,6 +596,24 @@ async def _call_via_sdk(
             raise AnthropicHelperError(
                 "Anthropic SDK client initialization failed — "
                 "verify ANTHROPIC_API_KEY is set."
+            ) from exc
+        except AnthropicError as exc:
+            # US-004 of #162 (DEC-003, DEC-005, DEC-008): bare base
+            # ``anthropic.AnthropicError`` catch-all. Any future SDK
+            # version that raises a typed exception not in the ladder
+            # above (e.g. a new subclass not yet anticipated) would
+            # otherwise escape uncaught and bypass the exit-3 routing.
+            # This branch lands AFTER all typed branches so subclass
+            # matching takes precedence per Python's ``except``
+            # first-match semantics. Message format: class name
+            # (always safe) + ``str(exc)[:500]`` (bounded to cap any
+            # prompt/body leakage). Original exception preserved on
+            # ``__cause__`` via ``raise ... from exc``. Not retried:
+            # without category information we cannot make a sound
+            # retry decision.
+            raise AnthropicHelperError(
+                f"API request failed: {type(exc).__name__}: "
+                f"{str(exc)[:500]}"
             ) from exc
 
         duration = _monotonic() - start
