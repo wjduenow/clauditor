@@ -32,7 +32,12 @@ calls.
 
 from __future__ import annotations
 
+import os
 import time
+from pathlib import Path
+from typing import ClassVar
+
+from clauditor.runner import InvokeResult
 
 # ---------------------------------------------------------------------------
 # Module-level test indirections
@@ -360,3 +365,124 @@ def _filter_stderr(stderr_text: str) -> str:
     if len(rebuilt) > _CODEX_STDERR_MAX_CHARS:
         rebuilt = rebuilt[:_CODEX_STDERR_MAX_CHARS] + "... (truncated)"
     return rebuilt
+
+
+# ---------------------------------------------------------------------------
+# CodexHarness — class surface (US-002)
+# ---------------------------------------------------------------------------
+
+
+class CodexHarness:
+    """Harness implementation that drives the ``codex exec --json`` CLI.
+
+    Concrete implementation of the :class:`clauditor._harnesses.Harness`
+    structural protocol introduced in US-001 of issue #148, parallel to
+    :class:`clauditor._harnesses._claude_code.ClaudeCodeHarness` but
+    targeting OpenAI's Codex CLI (per #149).
+
+    Per DEC-011 of ``plans/super/149-codex-harness.md`` the class lives
+    in this private module and is intentionally NOT exported from
+    :mod:`clauditor._harnesses` — instantiation goes through
+    ``from clauditor._harnesses._codex import CodexHarness`` only,
+    mirroring Claude's privacy.
+
+    Per DEC-006 the construction surface is two kwargs only:
+    ``codex_bin`` (CLI binary path; default ``"codex"``) and ``model``
+    (default ``None`` — the per-call ``invoke(model=...)`` override
+    lands in US-003). There is intentionally NO ``allow_hang_heuristic``
+    knob: Codex has no hang-detection heuristics and
+    :mod:`clauditor.runner` short-circuits on the missing attribute via
+    ``getattr(self.harness, "allow_hang_heuristic", None)``.
+
+    The :meth:`invoke` body lands in US-003/US-004; this class provides
+    the three protocol methods that don't require a subprocess
+    (``__init__``, :meth:`strip_auth_keys`, :meth:`build_prompt`).
+    """
+
+    name: ClassVar[str] = "codex"
+
+    def __init__(
+        self,
+        *,
+        codex_bin: str = "codex",
+        model: str | None = None,
+    ) -> None:
+        """Construct a Codex harness with optional binary path / model override.
+
+        Both kwargs are keyword-only per DEC-006 — no positional surface
+        to grow into. ``codex_bin`` is the path to the ``codex`` CLI
+        executable (the default ``"codex"`` resolves via ``$PATH``).
+        ``model`` is the default model id used when :meth:`invoke` is
+        called without a per-call ``model=`` override (US-003).
+        """
+        self.codex_bin = codex_bin
+        self.model = model
+
+    def strip_auth_keys(
+        self, env: dict[str, str] | None = None
+    ) -> dict[str, str]:
+        """Return a new env dict with Codex/OpenAI auth env vars removed.
+
+        Pure, non-mutating per ``.claude/rules/non-mutating-scrub.md``.
+        Removes the three env vars listed in :data:`_STRIP_ENV_VARS`
+        (``CODEX_API_KEY``, ``OPENAI_API_KEY``, ``OPENAI_BASE_URL``)
+        per DEC-012. ``OPENAI_BASE_URL`` is included in the strip set
+        to prevent an attacker-controlled value from routing Codex
+        traffic to a malicious endpoint.
+
+        When ``env`` is ``None``, reads from :data:`os.environ` so the
+        helper composes with future ``call_codex(env=None)`` callers
+        without forcing each caller to materialize an env snapshot.
+        """
+        source = env if env is not None else os.environ
+        return {k: v for k, v in source.items() if k not in _STRIP_ENV_VARS}
+
+    def build_prompt(
+        self,
+        skill_name: str,
+        args: str,
+        *,
+        system_prompt: str | None,
+    ) -> str:
+        """Compose a flat prompt string from ``system_prompt`` and ``args``.
+
+        Per DEC-011 of ``plans/super/149-codex-harness.md`` Codex has no
+        slash-command analog, so ``skill_name`` is intentionally ignored
+        — every harness still receives it for cross-harness signature
+        parity. When ``system_prompt`` is truthy, returns
+        ``f"{system_prompt}\\n\\n{args}"``; when ``system_prompt`` is
+        ``None`` or the empty string, returns ``args`` alone (no leading
+        separator).
+
+        ``system_prompt`` is keyword-only per
+        ``.claude/rules/harness-protocol-shape.md`` (it is a positional-
+        swap risk against ``args``: both are strings).
+
+        Pure compute (no I/O, no global state) per
+        ``.claude/rules/pure-compute-vs-io-split.md``.
+        """
+        if system_prompt:
+            return f"{system_prompt}\n\n{args}"
+        return args
+
+    def invoke(
+        self,
+        prompt: str,
+        *,
+        cwd: Path | None,
+        env: dict[str, str] | None,
+        timeout: int,
+        model: str | None = None,
+        subject: str | None = None,
+    ) -> InvokeResult:
+        """Run ``codex exec --json`` and return an :class:`InvokeResult`.
+
+        US-002 stub: present so :class:`CodexHarness` satisfies the
+        ``Harness`` runtime-checkable protocol, but the body lands in
+        US-003 (happy path) and US-004 (error paths) of issue #149.
+        Raises :class:`NotImplementedError` if invoked before those
+        stories ship.
+        """
+        raise NotImplementedError(
+            "CodexHarness.invoke lands in US-003/US-004 of issue #149"
+        )

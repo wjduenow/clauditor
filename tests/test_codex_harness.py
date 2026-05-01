@@ -36,6 +36,7 @@ from clauditor._harnesses._codex import (  # noqa: E402
     _RATE_LIMIT_PATTERNS,
     _RESULT_TEXT_MAX_CHARS,
     _STRIP_ENV_VARS,
+    CodexHarness,
     _classify_codex_failure,
     _detect_codex_dropped_events,
     _detect_codex_truncated_output,
@@ -418,3 +419,178 @@ class TestFilterStderr:
         assert out.endswith("... (truncated)")
         # Total length: cap + suffix.
         assert len(out) == _CODEX_STDERR_MAX_CHARS + len("... (truncated)")
+
+
+# ---------------------------------------------------------------------------
+# CodexHarness.strip_auth_keys (DEC-012, US-002)
+# ---------------------------------------------------------------------------
+
+
+class TestCodexHarnessStripAuthKeys:
+    """``CodexHarness.strip_auth_keys`` removes the three Codex/OpenAI
+    credential env vars per DEC-012, returns a NEW dict (non-mutating per
+    ``.claude/rules/non-mutating-scrub.md``), preserves every other key
+    (including the six explicitly documented preserved vars), and reads
+    from ``os.environ`` when called with ``None``.
+    """
+
+    def test_strips_three_named_credentials(self) -> None:
+        """DEC-012: ``CODEX_API_KEY``, ``OPENAI_API_KEY``, ``OPENAI_BASE_URL``
+        are removed. ``OPENAI_BASE_URL`` is included to prevent attacker-
+        routed Codex traffic to a malicious endpoint."""
+        env = {
+            "CODEX_API_KEY": "sk-codex",
+            "OPENAI_API_KEY": "sk-openai",
+            "OPENAI_BASE_URL": "https://evil.example/v1",
+            "PATH": "/usr/bin",
+        }
+        scrubbed = CodexHarness().strip_auth_keys(env)
+        assert "CODEX_API_KEY" not in scrubbed
+        assert "OPENAI_API_KEY" not in scrubbed
+        assert "OPENAI_BASE_URL" not in scrubbed
+        assert scrubbed["PATH"] == "/usr/bin"
+
+    def test_preserves_six_named_non_credentials_and_arbitrary_others(self) -> None:
+        """DEC-012: the six documented preserved vars and arbitrary
+        unrelated env vars survive the scrub."""
+        env = {
+            # The three stripped:
+            "CODEX_API_KEY": "sk-codex",
+            "OPENAI_API_KEY": "sk-openai",
+            "OPENAI_BASE_URL": "https://api.openai.com/v1",
+            # The six preserved per DEC-012:
+            "CODEX_HOME": "/home/u/.codex",
+            "SSL_CERT_FILE": "/etc/ssl/ca.pem",
+            "HTTPS_PROXY": "http://proxy:8080",
+            "HTTP_PROXY": "http://proxy:8080",
+            "NO_PROXY": "localhost",
+            "CODEX_CA_CERTIFICATE": "/etc/ssl/codex.pem",
+            # Non-credential metadata also preserved:
+            "OPENAI_ORG_ID": "org-abc",
+            "OPENAI_API_VERSION": "2024-10-01",
+            # Arbitrary unrelated env:
+            "PATH": "/usr/bin",
+            "HOME": "/home/u",
+            "FOO": "bar",
+        }
+        scrubbed = CodexHarness().strip_auth_keys(env)
+        for stripped_key in ("CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"):
+            assert stripped_key not in scrubbed
+        for preserved_key in (
+            "CODEX_HOME",
+            "SSL_CERT_FILE",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "NO_PROXY",
+            "CODEX_CA_CERTIFICATE",
+            "OPENAI_ORG_ID",
+            "OPENAI_API_VERSION",
+            "PATH",
+            "HOME",
+            "FOO",
+        ):
+            assert preserved_key in scrubbed
+            assert scrubbed[preserved_key] == env[preserved_key]
+
+    def test_non_mutating_input_unchanged(self) -> None:
+        """The input dict is not mutated; the original credentials
+        survive on the caller's reference per
+        ``.claude/rules/non-mutating-scrub.md``."""
+        env = {
+            "CODEX_API_KEY": "sk-codex",
+            "OPENAI_API_KEY": "sk-openai",
+            "OPENAI_BASE_URL": "https://api.openai.com/v1",
+            "PATH": "/usr/bin",
+        }
+        snapshot = dict(env)
+        scrubbed = CodexHarness().strip_auth_keys(env)
+        # Caller's dict survives intact.
+        assert env == snapshot
+        # And the returned dict is genuinely a different object.
+        assert scrubbed is not env
+
+    def test_none_input_reads_os_environ(self, monkeypatch) -> None:
+        """``strip_auth_keys(None)`` reads ``os.environ`` so the
+        helper composes with ``call_codex(env=None)`` callers."""
+        monkeypatch.setenv("CODEX_API_KEY", "sk-from-env")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-also-from-env")
+        monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        monkeypatch.setenv("FOO_FROM_ENV", "preserved")
+        scrubbed = CodexHarness().strip_auth_keys(None)
+        assert "CODEX_API_KEY" not in scrubbed
+        assert "OPENAI_API_KEY" not in scrubbed
+        assert "OPENAI_BASE_URL" not in scrubbed
+        assert scrubbed.get("FOO_FROM_ENV") == "preserved"
+
+    def test_empty_input_returns_empty_dict(self) -> None:
+        """Edge case: empty input dict yields empty output dict
+        (not the same object — non-mutating contract)."""
+        env: dict[str, str] = {}
+        scrubbed = CodexHarness().strip_auth_keys(env)
+        assert scrubbed == {}
+        assert scrubbed is not env
+
+
+# ---------------------------------------------------------------------------
+# CodexHarness.build_prompt (DEC-011, US-002)
+# ---------------------------------------------------------------------------
+
+
+class TestCodexHarnessBuildPrompt:
+    """``CodexHarness.build_prompt`` joins ``system_prompt`` and ``args``
+    with ``\\n\\n`` per DEC-011. ``skill_name`` is intentionally ignored
+    (Codex has no slash-command analog). ``system_prompt=""`` is treated
+    as falsy.
+    """
+
+    def test_system_prompt_none_returns_args_unchanged(self) -> None:
+        """``system_prompt=None`` → return ``args`` alone (no separator,
+        no leading newlines)."""
+        result = CodexHarness().build_prompt("foo", "do the thing", system_prompt=None)
+        assert result == "do the thing"
+
+    def test_empty_system_prompt_treated_as_none(self) -> None:
+        """DEC-011: ``system_prompt=""`` is treated as falsy, same as
+        ``None`` — no leading newlines or separator are emitted."""
+        result = CodexHarness().build_prompt("foo", "do the thing", system_prompt="")
+        assert result == "do the thing"
+
+    def test_truthy_system_prompt_joined_with_double_newline(self) -> None:
+        """DEC-011: non-empty ``system_prompt`` is joined to ``args``
+        with ``\\n\\n`` separator."""
+        result = CodexHarness().build_prompt(
+            "foo", "do the thing", system_prompt="You are an expert."
+        )
+        assert result == "You are an expert.\n\ndo the thing"
+
+    def test_preserves_embedded_newlines_in_both_inputs(self) -> None:
+        """Multi-line system_prompt and args are emitted verbatim with the
+        ``\\n\\n`` separator between them."""
+        sysp = "Line 1\nLine 2\nLine 3"
+        args = "Step A\nStep B"
+        result = CodexHarness().build_prompt("foo", args, system_prompt=sysp)
+        assert result == "Line 1\nLine 2\nLine 3\n\nStep A\nStep B"
+
+    def test_skill_name_is_ignored(self) -> None:
+        """DEC-011: Codex has no slash-command analog — ``skill_name``
+        does not appear anywhere in the rendered prompt regardless of
+        value."""
+        sysp = "system"
+        args = "args"
+        result_a = CodexHarness().build_prompt("alpha", args, system_prompt=sysp)
+        result_b = CodexHarness().build_prompt(
+            "beta-different", args, system_prompt=sysp
+        )
+        # Same output regardless of skill_name.
+        assert result_a == result_b
+        # And no skill_name substring appears in either.
+        assert "alpha" not in result_a
+        assert "beta-different" not in result_b
+
+    def test_empty_args_with_system_prompt(self) -> None:
+        """Empty ``args`` with truthy ``system_prompt`` → keeps the
+        ``\\n\\n`` separator (i.e. ``f"{system_prompt}\\n\\n"``).
+        This is the documented behavior per DEC-011's ``f"{sysp}\\n\\n{args}"``
+        format string applied with ``args == ""``."""
+        result = CodexHarness().build_prompt("foo", "", system_prompt="hello")
+        assert result == "hello\n\n"
