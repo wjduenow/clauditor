@@ -247,12 +247,19 @@ async def call_openai(
   not yet in the ladder would otherwise escape uncaught and
   bypass the exit-3 routing in CLI dispatchers; the catch-all
   wraps it as the corresponding `*HelperError` with message
-  `f"API request failed: {type(exc).__name__}: {str(exc)[:500]}"`
-  per DEC-003 of #162 — class name is always safe, 500-char cap
-  on `str(exc)` bounds prompt/body leakage. The branch does
-  NOT retry (without category info, no sound retry decision is
-  possible) and preserves `__cause__` via `raise ... from exc`
-  so debuggers can introspect the original SDK exception. File
+  `f"API request failed: {type(exc).__name__}"` — class name only
+  per the post-merge security tightening of DEC-003 of #162.
+  Earlier drafts truncated `str(exc)` to 500 chars, but a
+  CodeRabbit review pass on PR #163 surfaced a stronger argument:
+  this branch handles unknown SDK error shapes by definition, so
+  we cannot assume the SDK's `__str__` is well-behaved (a future
+  SDK error type's message could pack prompt fragments,
+  response-body excerpts, or echoed headers). Truncation bounds
+  size, not exposure. The class name alone is always safe;
+  diagnostic content is preserved on `__cause__` via
+  `raise ... from exc` so debuggers can introspect the full
+  original SDK exception. The branch does NOT retry (without
+  category info, no sound retry decision is possible). File
   anchors: `_providers/_anthropic.py::call_anthropic` retry
   loop, `_providers/_openai.py::call_openai` retry loop.
 

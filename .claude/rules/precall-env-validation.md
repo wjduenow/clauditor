@@ -188,10 +188,15 @@ def cmd_grade(args) -> int:
     # ... staging + call_model below ...
 ```
 
-The `suggest` command is a sixth LLM-mediated CLI seam but is
-single-provider today (no `eval_spec` to read at the call site);
-it calls `check_any_auth_available("suggest")` directly and
-catches `AnthropicAuthMissingError` only.
+The `suggest` command is a sixth LLM-mediated CLI seam. Post-#162
+US-003 it follows the same provider-aware pattern: loads
+`SkillSpec.from_file(args.skill)` at the CLI seam (after the
+zero-failing-signals early-exit), resolves `provider =
+skill_spec.eval_spec.grading_provider or "anthropic"`, and
+dispatches `check_provider_auth(provider, "suggest")` with
+distinct `AnthropicAuthMissingError` and `OpenAIAuthMissingError`
+exit-2 branches. The `provider=` value is plumbed into
+`propose_edits(...)`.
 
 ### Layer 3 — pytest fixtures raise the same exceptions
 
@@ -210,27 +215,30 @@ def clauditor_grader(request, clauditor_spec):
     from clauditor._providers import (
         check_any_auth_available,
         check_api_key_only,
+        check_provider_auth,
     )
     from clauditor.quality_grader import grade_quality
 
     def _factory(skill_path, eval_path=None, output=None):
-        # Pre-flight auth guard at factory-invocation time. Raises
-        # ``AnthropicAuthMissingError`` or ``OpenAIAuthMissingError``
-        # (same classes the CLI catches) so a CI run under
-        # subscription-only auth surfaces a clear error instead of
-        # silently skipping. Post-#162 the fixtures resolve the
-        # provider from the loaded spec and dispatch through
-        # ``check_provider_auth(provider, "grader")`` for non-Anthropic
-        # providers; the Anthropic branch retains the
-        # ``CLAUDITOR_FIXTURE_ALLOW_CLI`` opt-in for relaxed-vs-strict
-        # auth (env var is silently no-op when provider="openai" per
-        # DEC-004 of #162 — OpenAI has no CLI transport).
-        provider = (
-            spec.eval_spec.grading_provider
-            if spec.eval_spec is not None
-            and spec.eval_spec.grading_provider is not None
-            else "anthropic"
-        )
+        # Post-#162 US-001: load the spec FIRST so we can read
+        # ``eval_spec.grading_provider`` and dispatch the auth guard
+        # through the right provider. ``AnthropicAuthMissingError``
+        # or ``OpenAIAuthMissingError`` (same classes the CLI
+        # catches) propagate as pytest setup failures so a CI run
+        # under subscription-only auth surfaces a clear error
+        # instead of silently skipping.
+        spec = clauditor_spec(skill_path, eval_path)
+        # Validate spec shape BEFORE the auth dispatch so a missing
+        # eval.json surfaces as ``"No eval spec found..."`` rather
+        # than being masked by an auth-missing error (CodeRabbit
+        # finding on PR #163).
+        if spec.eval_spec is None:
+            raise ValueError(f"No eval spec found for {skill_path}")
+        provider = spec.eval_spec.grading_provider or "anthropic"
+        # Anthropic branch retains the ``CLAUDITOR_FIXTURE_ALLOW_CLI``
+        # opt-in for relaxed-vs-strict auth; for non-Anthropic
+        # providers the env var is silently no-op (DEC-004 of #162 —
+        # OpenAI has no CLI transport).
         if provider == "anthropic":
             if os.environ.get("CLAUDITOR_FIXTURE_ALLOW_CLI") == "1":
                 check_any_auth_available("grader")
@@ -520,7 +528,7 @@ provider-aware dispatcher
   `except` branch is forward-compat for a future
   `--proposer-provider` flag.
 
-Plus the single-provider seam:
+Plus the sixth LLM-mediated seam (post-#162 also provider-aware):
 
 - `src/clauditor/cli/suggest.py::_cmd_suggest_impl` — after
   zero-signal early-exit (no `--dry-run` on this command). Per

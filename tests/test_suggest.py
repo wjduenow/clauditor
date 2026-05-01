@@ -2484,4 +2484,43 @@ class TestCmdSuggestProviderPlumbing:
         # dispatcher.
         assert "ANTHROPIC_API_KEY" not in err
         assert "OPENAI_API_KEY" not in err
+
+    def test_spec_load_toctou_filenotfound_exits_cleanly(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """TOCTOU race: ``skill_path.exists()`` passed but
+        ``SkillSpec.from_file`` later hit ``FileNotFoundError`` (e.g.
+        the file was deleted between the early-exit check and the
+        spec load). The defensive branch routes to exit 1 with the
+        SDK's error message — distinct from the spec-validation
+        ``ValueError`` path (exit 2) since this is a parse-layer
+        failure (something happened to the file mid-flight) rather
+        than an input-validation failure.
+        """
+        from clauditor.cli import main
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        skill_md = self._setup_failing_run(tmp_path, monkeypatch)
+        call_mock = AsyncMock()
+
+        with (
+            patch(
+                "clauditor.cli.suggest.SkillSpec.from_file",
+                side_effect=FileNotFoundError(
+                    f"[Errno 2] No such file: {skill_md}"
+                ),
+            ),
+            patch("clauditor._providers.call_model", call_mock),
+        ):
+            rc = main(["suggest", str(skill_md.name)])
+
+        assert rc == 1, f"expected exit 1 (parse-layer); got {rc}"
+        err = capsys.readouterr().err
+        assert "Error:" in err
+        # No auth check fired — TOCTOU branch short-circuited first.
+        assert "ANTHROPIC_API_KEY" not in err
+        assert "OPENAI_API_KEY" not in err
+        assert call_mock.await_count == 0
         assert call_mock.await_count == 0

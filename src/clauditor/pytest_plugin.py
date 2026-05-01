@@ -251,12 +251,14 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
         # ``.claude/rules/multi-provider-dispatch.md``; both classes
         # propagate as pytest setup failures.
         spec = clauditor_spec(skill_path, eval_path)
-        provider = (
-            spec.eval_spec.grading_provider
-            if spec.eval_spec is not None
-            and spec.eval_spec.grading_provider is not None
-            else "anthropic"
-        )
+        # Validate spec shape BEFORE the auth dispatch (CodeRabbit
+        # finding on PR #163): otherwise a missing/invalid auth key
+        # would mask the more useful ``"No eval spec found..."``
+        # error for users whose underlying problem is a missing
+        # eval.json, sending them to debug their auth instead.
+        if spec.eval_spec is None:
+            raise ValueError(f"No eval spec found for {skill_path}")
+        provider = spec.eval_spec.grading_provider or "anthropic"
         if provider == "anthropic":
             if _fixture_allow_cli():
                 check_any_auth_available("grader")
@@ -264,8 +266,6 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
                 check_api_key_only("grader")
         else:
             check_provider_auth(provider, "grader")
-        if spec.eval_spec is None:
-            raise ValueError(f"No eval spec found for {skill_path}")
         if output is None:
             result = spec.run()
             output = result.output
@@ -345,12 +345,14 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
         # ``CLAUDITOR_FIXTURE_ALLOW_CLI=1`` is honored only on the
         # Anthropic branch (DEC-004 of #162); silently no-op for OpenAI.
         spec = clauditor_spec(skill_path, eval_path)
-        provider = (
-            spec.eval_spec.grading_provider
-            if spec.eval_spec is not None
-            and spec.eval_spec.grading_provider is not None
-            else "anthropic"
-        )
+        # Validate spec shape BEFORE the auth dispatch (CodeRabbit
+        # finding on PR #163): a missing/invalid auth key would
+        # otherwise mask the more useful ``ValueError`` raised by
+        # ``blind_compare_from_spec`` when ``eval_spec`` /
+        # ``user_prompt`` are absent.
+        if spec.eval_spec is None:
+            raise ValueError(f"No eval spec found for {skill_path}")
+        provider = spec.eval_spec.grading_provider or "anthropic"
         if provider == "anthropic":
             if _fixture_allow_cli():
                 check_any_auth_available("blind_compare")
@@ -392,12 +394,14 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
         # ``CLAUDITOR_FIXTURE_ALLOW_CLI=1`` is honored only on the
         # Anthropic branch (DEC-004 of #162); silently no-op for OpenAI.
         spec = clauditor_spec(skill_path, eval_path)
-        provider = (
-            spec.eval_spec.grading_provider
-            if spec.eval_spec is not None
-            and spec.eval_spec.grading_provider is not None
-            else "anthropic"
-        )
+        # Validate spec shape BEFORE the auth dispatch (CodeRabbit
+        # finding on PR #163): a missing/invalid auth key would
+        # otherwise mask the more useful ``"No eval spec found..."``
+        # error for users whose underlying problem is a missing
+        # eval.json.
+        if spec.eval_spec is None:
+            raise ValueError(f"No eval spec found for {skill_path}")
+        provider = spec.eval_spec.grading_provider or "anthropic"
         if provider == "anthropic":
             if _fixture_allow_cli():
                 check_any_auth_available("triggers")
@@ -405,8 +409,6 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
                 check_api_key_only("triggers")
         else:
             check_provider_auth(provider, "triggers")
-        if spec.eval_spec is None:
-            raise ValueError(f"No eval spec found for {skill_path}")
         return asyncio.run(run_triggers(spec.eval_spec, model))
 
     return _factory

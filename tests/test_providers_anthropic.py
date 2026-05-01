@@ -1805,11 +1805,15 @@ class TestCallAnthropicBaseErrorCatchAll:
     """Bare base ``anthropic.AnthropicError`` catch-all (US-004 of #162).
 
     Pins DEC-003 (message format ``f"API request failed:
-    {type(exc).__name__}: {str(exc)[:500]}"``), DEC-005 (two tests:
-    catch-all wraps + ordering regression), and DEC-008 (the
-    catch-all test MUST construct an ``AnthropicError`` instance NOT
-    in any typed branch's hierarchy — otherwise the test passes via
-    the typed branch and the catch-all is dead code).
+    {type(exc).__name__}"`` — class name only, no ``str(exc)`` per the
+    post-merge security tightening: this branch handles unknown SDK
+    error shapes by definition, so we cannot assume the SDK's
+    ``__str__`` is well-behaved; diagnostic content is preserved on
+    ``__cause__``), DEC-005 (two tests: catch-all wraps + ordering
+    regression), and DEC-008 (the catch-all test MUST construct an
+    ``AnthropicError`` instance NOT in any typed branch's hierarchy —
+    otherwise the test passes via the typed branch and the catch-all
+    is dead code).
     """
 
     @pytest.mark.asyncio
@@ -1828,7 +1832,11 @@ class TestCallAnthropicBaseErrorCatchAll:
         class _UnknownAnthropicError(AnthropicError):
             pass
 
-        sdk_text = "simulated unknown failure with payload " + "x" * 600
+        # Use a payload that would be considered sensitive (simulates
+        # a hypothetical future SDK error type echoing prompt text).
+        # The catch-all message MUST NOT surface this content — it
+        # only names the exception class.
+        sdk_text = "user prompt fragment: SECRET_TOKEN abc123 " + "x" * 600
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(
             side_effect=_UnknownAnthropicError(sdk_text)
@@ -1842,20 +1850,28 @@ class TestCallAnthropicBaseErrorCatchAll:
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="api")
         msg = str(exc_info.value)
-        # DEC-003: message format anchors.
+        # DEC-003 (post-merge security tightening): message format is
+        # exactly ``API request failed: <ClassName>`` — class name
+        # only, no SDK message content.
         assert msg.startswith("API request failed:")
         assert "_UnknownAnthropicError" in msg
-        # ``str(exc)[:500]`` cap: the full 600-char tail is NOT in
-        # the user-facing message, but a 500-char prefix IS.
+        # Security: NONE of the SDK's ``str(exc)`` content reaches the
+        # user-facing message. Even a single-char prefix from the
+        # untrusted payload would be a regression.
+        assert "user prompt fragment" not in msg
+        assert "SECRET_TOKEN" not in msg
         assert sdk_text not in msg
-        assert sdk_text[:500] in msg
+        assert sdk_text[:50] not in msg
         # Not retried: without category info, the catch-all cannot
         # make a sound retry decision.
         assert mock_client.messages.create.await_count == 1
         assert sleep_mock.await_count == 0
-        # Original exception preserved on ``__cause__``.
+        # Diagnostic content preserved on ``__cause__`` — debuggers
+        # can introspect the original exception (full ``str(exc)``
+        # available via ``str(exc_info.value.__cause__)``).
         assert isinstance(exc_info.value.__cause__, _UnknownAnthropicError)
         assert isinstance(exc_info.value.__cause__, AnthropicError)
+        assert "SECRET_TOKEN" in str(exc_info.value.__cause__)
 
     @pytest.mark.asyncio
     async def test_rate_limit_subclass_routes_to_specific_branch_not_catch_all(

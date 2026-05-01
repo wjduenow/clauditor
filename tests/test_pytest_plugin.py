@@ -1050,22 +1050,19 @@ class TestPytestFixturesStrictMode:
             _anthropic.shutil, "which", lambda name: path
         )
 
-    def _stub_spec_factory(self, *, grading_provider=None, raises=None):
+    def _stub_spec_factory(self, *, grading_provider=None):
         """Build a fake ``clauditor_spec`` for the strict-mode tests.
 
-        Per US-001 of #162 the fixture loads the spec FIRST. Tests that
-        want the auth guard to fire pass ``raises=None`` so resolution
-        falls through to ``"anthropic"``. Tests that want to confirm
-        "guard passed → spec factory reached" pass a sentinel exception
-        as ``raises`` and the stub raises it after returning the spec
-        access the auth guard needs.
+        Per US-001 of #162 the fixture loads the spec FIRST and reads
+        ``spec.eval_spec.grading_provider`` to pick the auth helper.
+        ``grading_provider=None`` exercises the default-to-anthropic
+        path; passing ``"openai"`` (or another provider string)
+        exercises the dispatcher branch.
         """
         eval_spec = MagicMock()
         eval_spec.grading_provider = grading_provider
 
         def factory(skill_path, eval_path=None):
-            if raises is not None:
-                raise raises
             spec = MagicMock()
             spec.eval_spec = eval_spec
             return spec
@@ -1495,12 +1492,18 @@ class TestClauditorFixturesAuthGuardOpenAI:
             factory(tmp_path / "skill.md")
         assert excinfo.value is _sentinel
 
-    def test_grader_eval_spec_none_falls_back_to_anthropic(
+    def test_grader_eval_spec_none_raises_value_error_before_auth(
         self, tmp_path, monkeypatch
     ):
-        """Spec with ``eval_spec=None`` resolves provider to ``"anthropic"``."""
-        from clauditor._providers import AnthropicAuthMissingError
-
+        """Spec with ``eval_spec=None`` raises ``ValueError`` BEFORE
+        the auth guard fires (CodeRabbit fix on PR #163). Otherwise a
+        missing/invalid auth key would mask the more useful "no eval
+        spec found" error for users whose underlying problem is a
+        missing eval.json — they'd debug auth instead of fixing the
+        spec.
+        """
+        # Both keys unset — proves the auth guard was NOT reached
+        # (otherwise we'd see ``AnthropicAuthMissingError``).
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         request = self._request()
@@ -1511,9 +1514,9 @@ class TestClauditorFixturesAuthGuardOpenAI:
             return spec
 
         factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
-        with pytest.raises(AnthropicAuthMissingError) as excinfo:
+        with pytest.raises(ValueError) as excinfo:
             factory(tmp_path / "skill.md")
-        assert "ANTHROPIC_API_KEY" in str(excinfo.value)
+        assert "No eval spec found" in str(excinfo.value)
 
     # ------------------------------------------------------------------
     # T5: provider="anthropic" explicit + CLAUDITOR_FIXTURE_ALLOW_CLI=1
