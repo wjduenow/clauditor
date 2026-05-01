@@ -5,6 +5,7 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/146
 - **Branch:** `feature/146-grading-provider-precedence`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/146-grading-provider-precedence`
+- **PR:** https://github.com/wjduenow/clauditor/pull/164
 - **Phase:** published
 - **Sessions:** 1 (2026-05-01)
 - **Total decisions:** 10 (DEC-001 through DEC-010)
