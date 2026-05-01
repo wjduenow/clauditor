@@ -2777,7 +2777,7 @@ class TestCmdCompareBlindProviderAuth:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         before, after = _write_pair(tmp_path)
         eval_spec = _make_eval_spec(user_prompt="Write a hello world")
-        assert eval_spec.grading_provider == "auto"
+        assert eval_spec.grading_provider is None
         spec = _make_spec(eval_spec=eval_spec)
         report = _make_blind_report()
         with (
@@ -7033,7 +7033,7 @@ class TestCmdGradeProviderAuth:
 
         eval_spec = _make_eval_spec()
         # Default: no grading_provider override.
-        assert eval_spec.grading_provider == "auto"
+        assert eval_spec.grading_provider is None
         spec = _make_spec(eval_spec=eval_spec)
         report = make_grading_report(passed=True)
 
@@ -7137,7 +7137,7 @@ class TestCmdExtractProviderAuth:
         output_file.write_text("some skill output with results")
 
         eval_spec = _make_eval_spec(sections=_make_sections())
-        assert eval_spec.grading_provider == "auto"
+        assert eval_spec.grading_provider is None
         spec = _make_spec(eval_spec=eval_spec)
         results = self._make_extraction_set()
 
@@ -7253,7 +7253,7 @@ class TestCmdTriggersProviderAuth:
                 should_not_trigger=["weather today"],
             ),
         )
-        assert eval_spec.grading_provider == "auto"
+        assert eval_spec.grading_provider is None
         spec = _make_spec(eval_spec=eval_spec)
         report = self._make_trigger_report()
 

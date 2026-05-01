@@ -299,24 +299,25 @@ class EvalSpec:
     # guarded at load time per
     # ``.claude/rules/constant-with-type-info.md``.
     sync_tasks: bool = False
-    # DEC-001 of #146: per-spec grading provider selector. Promoted
-    # from #145's ``str | None = None`` sentinel to an explicit
-    # Literal-typed default. ``"auto"`` (default) is the
-    # subscription-first resolution token: the future
-    # ``_resolve_grading_provider`` helper (US-001 / US-004 of #146)
-    # infers Anthropic vs OpenAI from the resolved ``grading_model``
-    # prefix. ``"anthropic"`` and ``"openai"`` pin a specific
-    # backend. Validated at load time against the literal set;
-    # non-string / bool / unknown-string values rejected per
-    # ``.claude/rules/constant-with-type-info.md``. Legacy
-    # ``"grading_provider": null`` (post-JSON-decode ``None`` from
-    # #145-vintage eval.json files) is silently coerced to
-    # ``"auto"`` per DEC-008 of #146 — runtime semantics are
-    # byte-identical between ``null`` and ``"auto"``. The full
+    # DEC-001 of #146 (split into a/b — see Refinement Log): per-spec
+    # grading provider selector. US-002 lands DEC-001a — accept the
+    # new ``"auto"`` literal value alongside the existing
+    # ``"anthropic"`` and ``"openai"``, while keeping the dataclass
+    # default at ``None``. Default flip from ``None`` → ``"auto"``
+    # is deferred to a follow-up story after US-005 (CLI seam) and
+    # US-006 (orchestrator normalization) eliminate the call sites
+    # that rely on the falsy-``None`` ``or "anthropic"`` short-circuit.
+    # ``"auto"`` will be the subscription-first resolution token (the
+    # ``_resolve_grading_provider`` helper from US-001 / US-004 infers
+    # Anthropic vs OpenAI from the resolved ``grading_model`` prefix).
+    # ``"anthropic"`` and ``"openai"`` pin a specific backend.
+    # Validated at load time against the literal set; non-string /
+    # bool / unknown-string values rejected per
+    # ``.claude/rules/constant-with-type-info.md``. The full
     # four-layer precedence resolver (CLI ``--grading-provider`` >
     # ``CLAUDITOR_GRADING_PROVIDER`` env > this field > default
-    # ``"auto"``) lands in US-004 of #146.
-    grading_provider: Literal["anthropic", "openai", "auto"] = "auto"
+    # ``"auto"``) lives in US-004 of #146.
+    grading_provider: Literal["anthropic", "openai", "auto"] | None = None
 
     @classmethod
     def from_file(cls, path: str | Path) -> EvalSpec:
@@ -758,20 +759,20 @@ class EvalSpec:
                 )
             sync_tasks = raw_sync_tasks
 
-        # DEC-001 / DEC-008 of #146: per-spec grading provider
-        # selector. Default ``"auto"`` (subscription-first resolution
-        # token). Accepts the literal set
-        # ``{"anthropic", "openai", "auto"}`` AND legacy ``null``
-        # (post-JSON-decode ``None`` from #145-vintage eval.json
-        # files), silently coerced to ``"auto"`` per DEC-008 — quiet
-        # migration path with byte-identical runtime semantics. Bool
-        # guard first per ``.claude/rules/constant-with-type-info.md``.
-        grading_provider: Literal["anthropic", "openai", "auto"] = "auto"
+        # DEC-001a of #146 (US-002 scope): per-spec grading provider
+        # selector. Adds ``"auto"`` to the accepted literal set
+        # alongside ``"anthropic"`` and ``"openai"``; missing or
+        # explicit ``null`` continues to round-trip as ``None`` per
+        # #145's behavior. The default-flip from ``None`` to
+        # ``"auto"`` is deferred until US-005 / US-006 normalize the
+        # downstream call sites that currently rely on the falsy-
+        # ``None`` ``or "anthropic"`` short-circuit. Bool guard first
+        # per ``.claude/rules/constant-with-type-info.md``.
+        grading_provider: Literal["anthropic", "openai", "auto"] | None = None
         if "grading_provider" in data:
             raw_grading_provider = data["grading_provider"]
             if raw_grading_provider is None:
-                # DEC-008: silent coercion of legacy ``null``.
-                grading_provider = "auto"
+                grading_provider = None
             elif (
                 isinstance(raw_grading_provider, bool)
                 or not isinstance(raw_grading_provider, str)
@@ -904,11 +905,11 @@ class EvalSpec:
             # Tier 1.5 of GitHub #103: emit only on non-default.
             # Omission at load time means default ``False``.
             result["sync_tasks"] = True
-        # DEC-001 of #146: emit unconditionally now that the default
-        # is a real string (``"auto"``) rather than ``None``. Round-
-        # trip stays minimal-diff because ``"auto"`` round-trips
-        # byte-identically.
-        result["grading_provider"] = self.grading_provider
+        # DEC-001a of #146: default still ``None`` (default-flip to
+        # ``"auto"`` deferred until US-005 / US-006 normalize call
+        # sites). Emit only on non-default, matching #145 behavior.
+        if self.grading_provider is not None:
+            result["grading_provider"] = self.grading_provider
         if self.output_file is not None:
             result["output_file"] = self.output_file
         if self.output_files:

@@ -2227,29 +2227,29 @@ class TestGradingProviderValidation:
 
     # --- Accept cases ---
 
-    def test_grading_provider_default_is_auto(self, tmp_path):
-        """No ``grading_provider`` key → ``.grading_provider == "auto"``.
+    def test_grading_provider_default_is_none(self, tmp_path):
+        """No ``grading_provider`` key → ``.grading_provider is None``.
 
-        DEC-001 of #146: default promoted from ``None`` to ``"auto"``.
+        DEC-001a of #146 (US-002 scope): default stays ``None``;
+        the flip to ``"auto"`` is deferred to a follow-up after the
+        downstream ``or "anthropic"`` call sites are normalized in
+        US-005 / US-006.
         """
         data = {"skill_name": "s"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
-        assert spec.grading_provider == "auto"
+        assert spec.grading_provider is None
 
-    def test_grading_provider_legacy_null_coerced_to_auto(
+    def test_grading_provider_explicit_null_loads_as_none(
         self, tmp_path
     ):
-        """``{"grading_provider": null}`` (legacy #145-vintage spec)
-        silently coerces to ``"auto"`` per DEC-008 of #146.
+        """``{"grading_provider": null}`` round-trips as ``None``.
 
-        Quiet migration path: the validator treats post-JSON-decode
-        ``None`` as equivalent to ``"auto"``. Round-trip behavior:
-        re-saving a ``null``-bearing file produces ``"auto"`` on
-        disk (the file changes once, then stays stable).
+        DEC-001a: legacy #145-vintage specs continue to load as
+        ``None`` until the default-flip ships (deferred).
         """
         data = {"skill_name": "s", "grading_provider": None}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
-        assert spec.grading_provider == "auto"
+        assert spec.grading_provider is None
 
     def test_grading_provider_accepts_auto(self, tmp_path):
         """``"auto"`` is a valid value (the new default token)."""
@@ -2275,23 +2275,28 @@ class TestGradingProviderValidation:
         """``to_dict()`` emits ``grading_provider`` when explicitly
         set to a non-default value.
 
-        QG pass 3 of #145 caught the original writer-side gap. Per
-        DEC-001 of #146 the field is now emitted unconditionally.
+        QG pass 3 of #145 caught the original writer-side gap.
         """
         data = {"skill_name": "s", "grading_provider": "openai"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         result = spec.to_dict()
         assert result["grading_provider"] == "openai"
 
-    def test_grading_provider_to_dict_emits_auto_unconditionally(
+    def test_grading_provider_to_dict_omits_when_none(
         self, tmp_path
     ):
-        """Default ``"auto"`` is emitted unconditionally per DEC-001
-        of #146 (the conditional ``if non-None`` emit was retired
-        when the default became a real string). Round-trip stays
-        minimal-diff because ``"auto"`` round-trips byte-identically.
+        """Default ``None`` is omitted from ``to_dict`` per DEC-001a
+        of #146 (default-flip deferred). Round-trip stays minimal-
+        diff for #145-vintage specs that don't set the field.
         """
         data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        result = spec.to_dict()
+        assert "grading_provider" not in result
+
+    def test_grading_provider_accepts_auto_round_trip(self, tmp_path):
+        """When explicitly set to ``"auto"``, round-trip preserves it."""
+        data = {"skill_name": "s", "grading_provider": "auto"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         result = spec.to_dict()
         assert result["grading_provider"] == "auto"
@@ -2324,19 +2329,21 @@ class TestGradingProviderValidation:
         spec2 = EvalSpec.from_dict(spec1.to_dict(), spec_dir=tmp_path)
         assert spec2.grading_provider == "auto"
 
-    def test_to_dict_round_trip_legacy_null_stable_as_auto(
+    def test_to_dict_round_trip_legacy_null_stays_unset(
         self, tmp_path
     ):
-        """Legacy ``null`` round-trips: from_dict coerces to ``"auto"``,
-        to_dict emits ``"auto"``, re-load stays ``"auto"``. The file
-        changes once (null → auto) then stays stable per DEC-008.
+        """Legacy ``null`` round-trips: from_dict yields ``None``,
+        to_dict omits the field, re-load yields ``None`` (default).
+
+        DEC-001a defers the default-flip; the runtime semantics for
+        legacy ``null`` specs stay byte-identical to #145 behavior.
         """
         data = {"skill_name": "s", "grading_provider": None}
         spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
         round_tripped = spec1.to_dict()
-        assert round_tripped["grading_provider"] == "auto"
+        assert "grading_provider" not in round_tripped
         spec2 = EvalSpec.from_dict(round_tripped, spec_dir=tmp_path)
-        assert spec2.grading_provider == "auto"
+        assert spec2.grading_provider is None
 
 
 class TestAssertionKeySpec:
