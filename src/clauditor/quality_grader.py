@@ -30,6 +30,39 @@ if TYPE_CHECKING:
 # an OpenAI model when ``grading_provider="openai"``.
 DEFAULT_GRADING_MODEL = "claude-sonnet-4-6"
 
+
+def _validate_provider_model(provider: str, model: str, ctx: str) -> None:
+    """Fail fast when ``provider="openai"`` is paired with a Claude model.
+
+    PR #160 review (CodeRabbit): the runtime previously allowed the
+    Anthropic-default ``DEFAULT_GRADING_MODEL`` to flow into the OpenAI
+    backend when an eval spec set ``grading_provider="openai"`` without
+    overriding ``grading_model``. The OpenAI SDK then rejected the
+    request with a 4xx model-not-found, surfacing as a generic API
+    error several layers downstream — opaque, hard to map back to the
+    spec author's missing-field bug.
+
+    This guard runs at every orchestrator entry point that accepts a
+    ``provider`` parameter and raises ``ValueError`` so the caller's
+    pre-call validation surface (CLI exit 2 per
+    ``.claude/rules/llm-cli-exit-code-taxonomy.md``) catches it before
+    spending an API call. The model-name check uses the ``"claude-"``
+    prefix because that namespace is Anthropic-exclusive on every
+    public release; an OpenAI model that happened to start with
+    ``"claude-"`` would be a future-incompatible naming collision and
+    is outside the scope of this guard.
+
+    Removable once #146 ships per-provider default-model precedence.
+    """
+    if provider == "openai" and model.startswith("claude-"):
+        raise ValueError(
+            f"{ctx}: provider='openai' requires an OpenAI model name; "
+            f"got Anthropic-default model {model!r}. Set "
+            "EvalSpec.grading_model explicitly (e.g. 'gpt-5.4') when "
+            "using grading_provider='openai'. Tracked in #146."
+        )
+
+
 # Indirection so tests can patch blind_compare timing without affecting
 # the asyncio event loop's own time.monotonic() calls.
 _monotonic = time.monotonic
@@ -688,6 +721,7 @@ async def blind_compare(
     import asyncio as _asyncio
 
     _validate_blind_inputs(user_prompt, output_a, output_b)
+    _validate_provider_model(provider, model, "blind_compare")
     m1, m2 = _pick_blind_mappings(rng)
     args = (user_prompt, output_a, output_b, rubric_hint)
     p1 = _build_blind_prompt_for_mapping(m1, *args)
@@ -1161,6 +1195,7 @@ async def grade_quality(
     # ``"anthropic"`` for back-compat. Pulled out of the retry loop so
     # every attempt routes to the same backend.
     provider = eval_spec.grading_provider or "anthropic"
+    _validate_provider_model(provider, model, "grade_quality")
 
     start = _monotonic()
     total_input_tokens = 0

@@ -280,6 +280,12 @@ async def test_triggers(
     # ``"anthropic"`` for back-compat. Threaded into every per-query
     # ``classify_query`` call.
     provider = eval_spec.grading_provider or "anthropic"
+    # PR #160 review: fail fast when openai is paired with the
+    # Anthropic-default model so the spec author sees a crisp
+    # actionable error rather than a downstream 4xx model-not-found.
+    from clauditor.quality_grader import _validate_provider_model
+
+    _validate_provider_model(provider, model, "test_triggers")
 
     tasks = [
         classify_query(

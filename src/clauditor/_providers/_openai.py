@@ -337,8 +337,16 @@ async def call_openai(
     # not from ``AsyncOpenAI()`` construction — so this site only sees
     # the bare ``OpenAIError`` (or ``TypeError`` for legacy SDK config
     # errors).
+    # ``max_retries=0`` disables the SDK's built-in retry loop so the
+    # wrapper's per-category retries (``RATE_LIMIT_MAX_RETRIES``,
+    # ``SERVER_MAX_RETRIES``, ``CONN_MAX_RETRIES``) are the sole retry
+    # mechanism. Without this, the SDK retries 429/5xx/connection
+    # errors itself (default ``max_retries=2`` ≡ 3 attempts) and the
+    # wrapper then catches the exhausted error and retries again,
+    # double-retrying with compounded backoff and obscuring the
+    # actual retry budget. CodeRabbit flagged this on PR #160.
     try:
-        client = AsyncOpenAI()
+        client = AsyncOpenAI(max_retries=0)
     except ImportError:
         raise
     except (TypeError, OpenAIError) as exc:

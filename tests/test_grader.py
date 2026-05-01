@@ -1965,7 +1965,11 @@ class TestExtractAndReportGradingProviderOpenAI:
         )
         call_mock = AsyncMock(return_value=fake)
         with patch("clauditor._providers.call_model", call_mock):
-            report = await extract_and_report("output", spec)
+            # PR #160 review: openai+claude-default raises ``ValueError``
+            # per the new fail-fast guard; pass an explicit OpenAI model.
+            report = await extract_and_report(
+                "output", spec, model="gpt-5.4-mini"
+            )
         assert report.provider_source == "openai"
         # Verify ``provider="openai"`` flowed through to call_model.
         assert call_mock.await_args.kwargs["provider"] == "openai"
@@ -1991,7 +1995,8 @@ class TestExtractAndReportGradingProviderOpenAI:
         )
         call_mock = AsyncMock(return_value=fake)
         with patch("clauditor._providers.call_model", call_mock):
-            await extract_and_grade("output", spec)
+            # PR #160 review: pass explicit OpenAI model.
+            await extract_and_grade("output", spec, model="gpt-5.4-mini")
         # ``extract_and_grade`` returns an ``AssertionSet`` (no
         # provider_source field) — verify the resolved provider flowed
         # through to ``call_model``.
@@ -2554,8 +2559,10 @@ class TestExtractAndReportWithOpenAI:
         )
         call_mock = AsyncMock(return_value=fake)
         with patch("clauditor._providers.call_model", call_mock):
+            # PR #160 review: openai+claude-default raises ``ValueError``;
+            # pass an explicit OpenAI model name.
             report = await extract_and_report(
-                "fake skill output text", spec
+                "fake skill output text", spec, model="gpt-5.4-mini"
             )
 
         # Provider stamping (acceptance criterion 2 — primary signal).

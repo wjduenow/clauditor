@@ -199,6 +199,25 @@ class TestCallOpenAISuccess:
         assert result.source == "api"
 
     @pytest.mark.asyncio
+    async def test_async_openai_constructed_with_max_retries_zero(
+        self,
+    ) -> None:
+        # PR #160 review (CodeRabbit): the AsyncOpenAI client must be
+        # constructed with ``max_retries=0`` so the SDK's built-in
+        # retry loop (default 2 retries on 429/5xx/connection) does
+        # NOT compound with the wrapper's per-category retries
+        # (RATE_LIMIT_MAX_RETRIES=3, SERVER_MAX_RETRIES=1,
+        # CONN_MAX_RETRIES=1). Without this, a single 429 from the
+        # SDK's perspective is actually 3 SDK-level attempts hidden
+        # inside one wrapper-level retry index, double-retrying with
+        # compounded backoff and obscuring the actual retry budget.
+        resp = _mock_response()
+        ctx, _ = _patch_async_openai(resp)
+        with ctx as fake_class:
+            await call_openai("p", model="gpt-5.4")
+        fake_class.assert_called_once_with(max_retries=0)
+
+    @pytest.mark.asyncio
     async def test_subject_kwarg_accepted_and_ignored(self) -> None:
         # subject is Anthropic-CLI-specific (apiKeySource telemetry).
         # OpenAI accepts the kwarg for signature uniformity but does
