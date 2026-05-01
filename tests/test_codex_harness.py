@@ -26,14 +26,20 @@ import os
 # ``tests/test_runner.py`` for ``_claude_code``.
 import clauditor._harnesses._codex as _codex_mod
 from tests.conftest import (
+    _FakeCodexPopen,
     make_fake_codex_agent_message_item,
     make_fake_codex_command_execution_item,
     make_fake_codex_file_change_item,
+    make_fake_codex_malformed_line_in_stream,
     make_fake_codex_mcp_tool_call_item,
+    make_fake_codex_no_agent_message,
     make_fake_codex_reasoning_item,
     make_fake_codex_stream,
     make_fake_codex_todo_list_item,
+    make_fake_codex_top_level_error,
+    make_fake_codex_turn_failed,
     make_fake_codex_web_search_item,
+    make_fake_codex_with_lagged_event,
 )
 
 importlib.reload(_codex_mod)
@@ -1089,3 +1095,548 @@ class TestInvokeCodexExec:
         assert result.exit_code == 0
         assert result.error is None
         assert result.error_category is None
+
+
+class TestInvokeCodexExecErrorPaths:
+    """Error-path tests for :meth:`CodexHarness.invoke` (US-004).
+
+    Covers ``turn.failed`` / top-level ``error`` classification (DEC-007),
+    ``FileNotFoundError`` on Popen, watchdog timeout + POSIX killpg
+    escalation (DEC-014), malformed JSON line skip+warn, stderr
+    redact + cap (DEC-013), envelope cap enforcement (DEC-015), and
+    the two advisory detectors with the corresponding warning prefixes
+    (DEC-018). Tempfile cleanup is also asserted on every exit path.
+    """
+
+    def _patch_popen(self, monkeypatch, fake):
+        import clauditor._harnesses._codex as _codex_mod
+
+        calls = []
+
+        def _fake_popen(*args, **kwargs):
+            calls.append((args, kwargs))
+            return fake
+
+        monkeypatch.setattr(_codex_mod.subprocess, "Popen", _fake_popen)
+        return calls
+
+    # ---- DEC-007 classification of turn.failed and top-level error ----
+
+    def test_turn_failed_rate_limit_classifies_as_rate_limit(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-007: ``turn.failed.error.message`` containing ``"rate
+        limit"`` classifies as ``error_category="rate_limit"``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_turn_failed(
+            error_message="rate limit exceeded; retry after 60s"
+        )
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert result.error_category == "rate_limit"
+        assert result.error is not None
+        assert "rate limit" in result.error
+
+    def test_turn_failed_401_classifies_as_auth(self, monkeypatch, tmp_path):
+        """DEC-007: ``"401 unauthorized"`` classifies as ``"auth"``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_turn_failed(error_message="401 unauthorized")
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert result.error_category == "auth"
+        assert "401" in result.error
+
+    def test_turn_failed_generic_classifies_as_api(self, monkeypatch, tmp_path):
+        """DEC-007: generic message → ``"api"`` (catchall)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_turn_failed(
+            error_message="internal server error"
+        )
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert result.error_category == "api"
+        assert "internal server error" in result.error
+
+    def test_top_level_error_classifies_via_message(self, monkeypatch, tmp_path):
+        """DEC-007: top-level ``error`` event also routes through
+        :func:`_classify_codex_failure`. ``error.message`` populates
+        :attr:`InvokeResult.error`."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_top_level_error(error_message="quota exceeded")
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert result.error_category == "rate_limit"  # quota → rate_limit
+        assert "quota" in result.error
+
+    def test_first_error_wins_over_subsequent(self, monkeypatch, tmp_path):
+        """When both ``turn.failed`` and a later ``error`` event land
+        in the stream, the FIRST classification wins (defensive — in
+        practice Codex emits at most one)."""
+        # Build a stream with turn.failed (rate_limit) followed by a
+        # top-level error (would otherwise classify as auth).
+        import json
+
+        from clauditor._harnesses._codex import CodexHarness
+
+        lines = [
+            json.dumps({"type": "thread.started", "thread_id": "t-1"}),
+            json.dumps({"type": "turn.started"}),
+            json.dumps(
+                {
+                    "type": "turn.failed",
+                    "error": {"message": "rate limit exceeded"},
+                }
+            ),
+            json.dumps({"type": "error", "message": "401 unauthorized"}),
+        ]
+        fake = _FakeCodexPopen(lines, returncode=1)
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert result.error_category == "rate_limit"
+
+    # ---- Malformed JSON line skip+warn ----
+
+    def test_malformed_json_line_skipped_with_warning(
+        self, monkeypatch, tmp_path
+    ):
+        """Per ``stream-json-schema.md``, a malformed JSON line is
+        skipped, a warning is appended, and parsing continues so the
+        run still picks up subsequent valid events (token usage,
+        agent_message)."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_malformed_line_in_stream(text="answer")
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        # Subsequent valid events still landed.
+        assert result.output == "answer"
+        assert result.input_tokens == 100
+        assert result.output_tokens == 50
+        # Warning recorded for the malformed line.
+        assert any(
+            "malformed codex stream-json line" in w for w in result.warnings
+        )
+
+    # ---- FileNotFoundError ----
+
+    def test_codex_binary_missing_returns_minus_one_error(
+        self, monkeypatch, tmp_path
+    ):
+        """``FileNotFoundError`` on Popen surfaces as
+        ``InvokeResult(exit_code=-1, error="Codex CLI not found: ...")``."""
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        def _raises(*args, **kwargs):
+            raise FileNotFoundError("[Errno 2] No such file: 'codex'")
+
+        monkeypatch.setattr(_codex_mod.subprocess, "Popen", _raises)
+        result = CodexHarness(codex_bin="/nonexistent/codex").invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        assert result.exit_code == -1
+        assert result.error is not None
+        assert "Codex CLI not found" in result.error
+        assert "/nonexistent/codex" in result.error
+        # Local failure — no stream-level error category.
+        assert result.error_category is None
+
+    # ---- Watchdog timeout + POSIX killpg path ----
+
+    def test_timeout_invokes_killpg_on_posix(self, monkeypatch, tmp_path):
+        """DEC-014: on POSIX, the watchdog escalates to
+        ``os.killpg(os.getpgid(pid), SIGTERM)``. We force timeout via a
+        zero-second timer and verify the killpg path was taken."""
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        # Force POSIX semantics regardless of host.
+        monkeypatch.setattr(_codex_mod.os, "name", "posix")
+
+        # Build a fake whose stdout never delivers a final "done" event;
+        # the watchdog timer drives the kill path. We use an empty
+        # stdout (read loop exits immediately) — the watchdog runs
+        # synchronously when invoked from the main thread via the
+        # lock-side path, but here we trigger it manually by calling
+        # ``_kill_proc`` directly through the timeout simulation: just
+        # set a 0.0-second timeout so the timer fires before
+        # ``proc.wait()`` returns.
+        fake = make_fake_codex_stream("hi")
+        # Override poll() to mark "alive" until kill_called fires, so
+        # the watchdog path triggers killpg.
+        original_poll = fake.poll
+        fake._fake_alive = True
+
+        def _poll() -> int | None:
+            if fake._fake_alive:
+                return None
+            return original_poll()
+
+        fake.poll = _poll  # type: ignore[method-assign]
+
+        killpg_calls: list[tuple[int, int]] = []
+        getpgid_calls: list[int] = []
+
+        def _fake_getpgid(pid: int) -> int:
+            getpgid_calls.append(pid)
+            return pid + 1000  # arbitrary "process group id"
+
+        def _fake_killpg(pgid: int, sig: int) -> None:
+            killpg_calls.append((pgid, sig))
+            fake._fake_alive = False  # simulate the kill landing
+            # Mark the fake popen as killed so subsequent poll/wait
+            # returns the right code.
+            fake._killed = True
+            fake.returncode = -9
+
+        monkeypatch.setattr(_codex_mod.os, "getpgid", _fake_getpgid)
+        monkeypatch.setattr(_codex_mod.os, "killpg", _fake_killpg)
+        self._patch_popen(monkeypatch, fake)
+
+        # Patch ``threading.Timer`` to fire synchronously so the test is
+        # deterministic (no flake from a real timer race).
+        class _FakeTimer:
+            def __init__(self, interval, function):
+                self._function = function
+
+            def start(self) -> None:
+                # Fire immediately — emulates the timeout having
+                # already elapsed by the time we start reading stdout.
+                self._function()
+
+            def cancel(self) -> None:
+                pass
+
+            @property
+            def daemon(self) -> bool:
+                return True
+
+            @daemon.setter
+            def daemon(self, value: bool) -> None:
+                pass
+
+        monkeypatch.setattr(_codex_mod.threading, "Timer", _FakeTimer)
+
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        # killpg fired with SIGTERM; getpgid was consulted.
+        assert len(getpgid_calls) >= 1
+        assert any(sig == _codex_mod.signal.SIGTERM for _, sig in killpg_calls)
+        # The result reflects the timeout.
+        assert result.error == "timeout"
+        assert result.error_category == "timeout"
+        assert result.exit_code == -1
+
+    def test_timeout_on_windows_uses_terminate(self, monkeypatch, tmp_path):
+        """DEC-014: on Windows (``os.name == "nt"``), kill path uses
+        ``proc.terminate()`` / ``proc.kill()``, NOT ``killpg``."""
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.setattr(_codex_mod.os, "name", "nt")
+
+        fake = make_fake_codex_stream("hi")
+        fake._fake_alive = True
+        original_poll = fake.poll
+
+        def _poll() -> int | None:
+            if fake._fake_alive:
+                return None
+            return original_poll()
+
+        fake.poll = _poll  # type: ignore[method-assign]
+
+        # Wrap terminate() so we can confirm it was called via the
+        # kill helper path (NOT via the cleanup-finally branch).
+        original_terminate = fake.terminate
+        terminate_calls: list[int] = []
+
+        def _terminate() -> None:
+            terminate_calls.append(1)
+            fake._fake_alive = False
+            original_terminate()
+
+        fake.terminate = _terminate  # type: ignore[method-assign]
+
+        # Forbid killpg — should never be called on Windows.
+        def _killpg_forbidden(*args, **kwargs):
+            raise AssertionError(
+                "killpg must not be called on Windows path"
+            )
+
+        monkeypatch.setattr(_codex_mod.os, "killpg", _killpg_forbidden)
+        self._patch_popen(monkeypatch, fake)
+
+        # Synchronous timer for determinism.
+        class _FakeTimer:
+            def __init__(self, interval, function):
+                self._function = function
+
+            def start(self) -> None:
+                self._function()
+
+            def cancel(self) -> None:
+                pass
+
+            @property
+            def daemon(self) -> bool:
+                return True
+
+            @daemon.setter
+            def daemon(self, value: bool) -> None:
+                pass
+
+        monkeypatch.setattr(_codex_mod.threading, "Timer", _FakeTimer)
+
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        assert len(terminate_calls) >= 1
+        assert result.error == "timeout"
+        assert result.error_category == "timeout"
+
+    # ---- DEC-013 stderr filter + cap ----
+
+    def test_stderr_redacted_for_auth_leak(self, monkeypatch, tmp_path):
+        """DEC-013: stderr lines containing auth-leak patterns are
+        replaced by the redaction sentinel before landing on warnings.
+        Content (the actual key value) must NOT appear in warnings."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream(
+            "hi",
+            stderr_lines=[
+                "starting up",
+                "OPENAI_API_KEY=sk-leaky-secret-12345",
+                "shutting down",
+            ],
+        )
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        all_warnings = "\n".join(result.warnings)
+        # Redaction sentinel landed.
+        assert "<line redacted: matched auth-leak pattern>" in all_warnings
+        # Secret content did NOT.
+        assert "sk-leaky-secret-12345" not in all_warnings
+        # Non-leaking lines pass through.
+        assert "starting up" in all_warnings
+        assert "shutting down" in all_warnings
+
+    def test_stderr_capped_at_8kb(self, monkeypatch, tmp_path):
+        """DEC-013: captured stderr text > 8 KB is truncated with
+        ``"... (truncated)"`` suffix."""
+        from clauditor._harnesses._codex import (
+            _CODEX_STDERR_MAX_CHARS,
+            CodexHarness,
+        )
+
+        # Build a single line longer than the cap.
+        big_line = "x" * (_CODEX_STDERR_MAX_CHARS + 4096)
+        fake = make_fake_codex_stream("hi", stderr_lines=[big_line])
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        # The stderr warning is one of the entries.
+        stderr_warnings = [
+            w for w in result.warnings if w.endswith("... (truncated)")
+        ]
+        assert len(stderr_warnings) >= 1
+        # The captured text fits the cap.
+        assert (
+            len(stderr_warnings[0])
+            == _CODEX_STDERR_MAX_CHARS + len("... (truncated)")
+        )
+
+    # ---- DEC-015 envelope cap enforcement ----
+
+    def test_envelope_cap_truncates_stream_events_keeps_token_usage(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-015: once ``stream_events_size`` crosses
+        :data:`_CODEX_STREAM_EVENTS_MAX_SIZE`, subsequent events are
+        NOT appended but parsing continues so the final
+        ``turn.completed`` token usage still lands. The
+        ``stream_events_truncated`` metadata flag is set; a warning
+        with the ``stream-events-truncated:`` prefix lands."""
+        import json
+
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        # Patch the cap to a tiny value so we can blow through it
+        # cheaply with normal-sized fixtures.
+        monkeypatch.setattr(_codex_mod, "_CODEX_STREAM_EVENTS_MAX_SIZE", 200)
+
+        # Build many small events that overflow the patched cap.
+        # The final turn.completed must land for token assertions.
+        msgs: list[dict] = [
+            {"type": "thread.started", "thread_id": "t-1"},
+            {"type": "turn.started"},
+        ]
+        for i in range(20):
+            msgs.append(
+                make_fake_codex_agent_message_item(
+                    f"chunk-{i:03d}", item_id=f"agent_{i}"
+                )
+            )
+        msgs.append(
+            {
+                "type": "turn.completed",
+                "usage": {"input_tokens": 999, "output_tokens": 111},
+            }
+        )
+        fake = _FakeCodexPopen([json.dumps(m) for m in msgs])
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+
+        # The truncated flag landed.
+        assert result.harness_metadata.get("stream_events_truncated") is True
+        # Token usage from the final turn.completed still landed.
+        assert result.input_tokens == 999
+        assert result.output_tokens == 111
+        # Warning with the documented prefix is present.
+        assert any(
+            "stream-events-truncated:" in w for w in result.warnings
+        )
+
+    # ---- DEC-018 advisory detectors ----
+
+    def test_dropped_events_advisory_warning_with_count(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-018: a ``Lagged`` synthetic event in the stream produces
+        a ``dropped-events:``-prefixed warning AND populates
+        ``harness_metadata["dropped_events_count"]``. This is advisory
+        — ``error_category`` stays ``None``."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_with_lagged_event(
+            text="answer", dropped_count=42
+        )
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+
+        assert result.harness_metadata.get("dropped_events_count") == 42
+        assert any(
+            w.startswith("dropped-events:") for w in result.warnings
+        )
+        # Advisory: NOT a failure category.
+        assert result.error_category is None
+        assert result.error is None
+
+    def test_truncated_output_falls_back_to_tempfile(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-018 + DEC-005: when the stream produced no
+        ``agent_message`` items and the
+        ``--output-last-message`` tempfile contains text, the harness
+        falls back to the tempfile content for ``output`` and emits a
+        ``last-message-empty:``-prefixed advisory warning."""
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_no_agent_message()
+        self._patch_popen(monkeypatch, fake)
+
+        # Patch ``open`` inside the codex module so the fallback read
+        # of ``last_message_path`` returns a known string regardless
+        # of whether the real path was created.
+        canned_text = "answer-from-tempfile-fallback"
+
+        # Patch os.path.isfile + open to simulate the tempfile being
+        # populated by Codex (which our fake popen does not do).
+        original_isfile = _codex_mod.os.path.isfile
+
+        def _isfile(p):
+            if "last_message.txt" in str(p):
+                return True
+            return original_isfile(p)
+
+        monkeypatch.setattr(_codex_mod.os.path, "isfile", _isfile)
+
+        import builtins
+
+        original_open = builtins.open
+
+        def _fake_open(path, *args, **kwargs):
+            if "last_message.txt" in str(path):
+                from io import StringIO
+
+                return StringIO(canned_text)
+            return original_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", _fake_open)
+
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        assert result.output == canned_text
+        assert any(
+            w.startswith("last-message-empty:") for w in result.warnings
+        )
+        # Advisory: NOT a failure category.
+        assert result.error_category is None
+
+    # ---- Cleanup invariants ----
+
+    def test_temp_directory_deleted_on_turn_failed(
+        self, monkeypatch, tmp_path
+    ):
+        """The per-invocation TemporaryDirectory is cleaned up even on
+        the ``turn.failed`` path."""
+        import os as _os
+
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_turn_failed(error_message="api error")
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+        last_path = result.harness_metadata.get("last_message_path")
+        # Path was recorded BEFORE deletion per DEC-016.
+        assert isinstance(last_path, str)
+        # The tmpdir is gone — neither the file nor its parent dir
+        # should still exist.
+        assert not _os.path.exists(last_path)
+        assert not _os.path.exists(_os.path.dirname(last_path))
+
+    def test_temp_directory_deleted_on_file_not_found(
+        self, monkeypatch, tmp_path
+    ):
+        """Tempfile cleanup runs even when ``Popen`` raises
+        ``FileNotFoundError`` (the early-return path through the
+        ``TemporaryDirectory`` context)."""
+        import os as _os
+        import tempfile as _tempfile
+
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        # Snapshot the tempdir before the call so we can detect leaks
+        # of ``clauditor_codex_*`` dirs (the prefix the harness uses).
+        tempdir_root = _tempfile.gettempdir()
+        before = {
+            d
+            for d in _os.listdir(tempdir_root)
+            if d.startswith("clauditor_codex_")
+        }
+
+        def _raises(*args, **kwargs):
+            raise FileNotFoundError("not on PATH")
+
+        monkeypatch.setattr(_codex_mod.subprocess, "Popen", _raises)
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        assert result.exit_code == -1
+        # Verify no clauditor_codex_* dir leaked.
+        after = {
+            d
+            for d in _os.listdir(tempdir_root)
+            if d.startswith("clauditor_codex_")
+        }
+        leaked = sorted(after - before)
+        assert leaked == [], (
+            f"clauditor_codex_* dirs leaked into {tempdir_root}: {leaked}"
+        )

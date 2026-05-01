@@ -231,6 +231,7 @@ class _FakeCodexPopen:
         lines: list[str],
         returncode: int = 0,
         stderr_lines: list[str] | None = None,
+        pid: int = 12345,
     ) -> None:
         body = "\n".join(lines)
         if body and not body.endswith("\n"):
@@ -245,6 +246,10 @@ class _FakeCodexPopen:
         self.kill_called = False
         self.terminate_called = False
         self._killed = False
+        # ``pid`` is only consulted by the POSIX kill path (``os.getpgid(pid)``
+        # → ``os.killpg(...)``). Tests that exercise the timeout/kill branch
+        # patch ``os.getpgid`` and ``os.killpg`` so the value is opaque.
+        self.pid = pid
 
     def wait(self, timeout=None):  # noqa: ARG002 — timeout ignored for fake
         return self.returncode
@@ -410,6 +415,165 @@ def make_fake_codex_stream(
         returncode=returncode,
         stderr_lines=stderr_lines,
     )
+
+
+def make_fake_codex_turn_failed(
+    error_message: str = "rate limit exceeded",
+    thread_id: str = "thread-1",
+    input_tokens: int = 0,
+    output_tokens: int = 0,
+    returncode: int = 1,
+    stderr_lines: list[str] | None = None,
+) -> _FakeCodexPopen:
+    """Build a ``_FakeCodexPopen`` whose stream contains a ``turn.failed``
+    event carrying an ``error.message`` string.
+
+    Per DEC-007: ``turn.failed.error.message`` substring-classifies into
+    ``"rate_limit"``, ``"auth"``, or ``"api"``. Unlike ``turn.completed``,
+    a failed turn typically does NOT carry token usage; tests that need
+    token assertions on a failure path can override ``input_tokens`` /
+    ``output_tokens``.
+    """
+    messages: list[dict] = [
+        {"type": "thread.started", "thread_id": thread_id},
+        {"type": "turn.started"},
+        {
+            "type": "turn.failed",
+            "error": {"message": error_message},
+        },
+    ]
+    if input_tokens or output_tokens:
+        messages.append(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                },
+            }
+        )
+    return _FakeCodexPopen(
+        [json.dumps(m) for m in messages],
+        returncode=returncode,
+        stderr_lines=stderr_lines,
+    )
+
+
+def make_fake_codex_top_level_error(
+    error_message: str = "internal server error",
+    returncode: int = 1,
+) -> _FakeCodexPopen:
+    """Build a ``_FakeCodexPopen`` whose stream contains a top-level
+    ``error`` event (fatal stream-level failure per DEC-007).
+
+    The ``error`` event has no ``thread.started`` / ``turn.started``
+    parents — Codex emits it when something goes wrong before any turn
+    can run (e.g. auth failure on the first request).
+    """
+    messages: list[dict] = [
+        {"type": "error", "message": error_message},
+    ]
+    return _FakeCodexPopen(
+        [json.dumps(m) for m in messages],
+        returncode=returncode,
+    )
+
+
+def make_fake_codex_with_lagged_event(
+    text: str = "answer",
+    dropped_count: int = 17,
+    thread_id: str = "thread-1",
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+) -> _FakeCodexPopen:
+    """Build a stream that includes a synthetic ``Lagged`` event per DEC-018.
+
+    Codex surfaces in-process channel overflow as a synthetic
+    ``item.completed`` event whose ``item.type == "error"`` and whose
+    ``item.message`` carries a leading integer count. The detector
+    :func:`_detect_codex_dropped_events` parses the leading integer
+    and sums across all such events.
+    """
+    messages: list[dict] = [
+        {"type": "thread.started", "thread_id": thread_id},
+        {"type": "turn.started"},
+        make_fake_codex_agent_message_item(text),
+        {
+            "type": "item.completed",
+            "item": {
+                "id": "lagged_1",
+                "type": "error",
+                "message": f"{dropped_count} events were dropped due to lag",
+            },
+        },
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            },
+        },
+    ]
+    return _FakeCodexPopen([json.dumps(m) for m in messages])
+
+
+def make_fake_codex_malformed_line_in_stream(
+    text: str = "answer",
+    thread_id: str = "thread-1",
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+) -> _FakeCodexPopen:
+    """Build a stream that includes a single non-JSON line between valid events.
+
+    The defensive parser must skip the malformed line, append a warning,
+    and keep reading subsequent valid events per
+    ``.claude/rules/stream-json-schema.md``.
+    """
+    valid_lines = [
+        json.dumps({"type": "thread.started", "thread_id": thread_id}),
+        json.dumps({"type": "turn.started"}),
+        # MALFORMED — invalid JSON that the parser must skip + warn on.
+        "{this is not valid json",
+        json.dumps(make_fake_codex_agent_message_item(text)),
+        json.dumps(
+            {
+                "type": "turn.completed",
+                "usage": {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                },
+            }
+        ),
+    ]
+    return _FakeCodexPopen(valid_lines)
+
+
+def make_fake_codex_no_agent_message(
+    thread_id: str = "thread-1",
+    input_tokens: int = 100,
+    output_tokens: int = 50,
+) -> _FakeCodexPopen:
+    """Build a stream with no ``agent_message`` items (truncated-output case).
+
+    Per DEC-018, when the stream has no ``agent_message`` items but the
+    ``--output-last-message`` tempfile contains text, the harness falls
+    back to reading the tempfile and emits a ``last-message-empty:``
+    advisory warning.
+    """
+    messages: list[dict] = [
+        {"type": "thread.started", "thread_id": thread_id},
+        {"type": "turn.started"},
+        # No agent_message item — only reasoning.
+        make_fake_codex_reasoning_item("internal scratchpad"),
+        {
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            },
+        },
+    ]
+    return _FakeCodexPopen([json.dumps(m) for m in messages])
 
 
 def make_fake_background_task_stream(

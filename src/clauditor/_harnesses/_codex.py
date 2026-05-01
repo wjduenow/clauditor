@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -42,7 +43,11 @@ import time
 from pathlib import Path
 from typing import Any, ClassVar
 
-from clauditor.runner import InvokeResult
+from clauditor.runner import (
+    _DROPPED_EVENTS_WARNING_PREFIX,
+    _LAST_MESSAGE_EMPTY_WARNING_PREFIX,
+    InvokeResult,
+)
 
 # ---------------------------------------------------------------------------
 # Module-level test indirections
@@ -204,6 +209,15 @@ _DEFAULT_MODEL = "gpt-5-codex"
 # Truncation suffix appended on
 # ``command_execution.aggregated_output`` overflow per DEC-015.
 _TRUNCATED_SUFFIX = "... (truncated)"
+
+
+# Warning prefix for the DEC-015 envelope-cap overflow path. Lives in
+# this module (not :mod:`clauditor.runner`) because it is purely
+# observability-internal — :attr:`SkillResult.succeeded_cleanly` does
+# NOT inspect it (the envelope cap is advisory and does not down-
+# classify success). Mirrors the locality of Claude's own
+# observability-internal substrings.
+_STREAM_EVENTS_TRUNCATED_WARNING_PREFIX = "stream-events-truncated:"
 
 
 # ---------------------------------------------------------------------------
@@ -499,19 +513,41 @@ class CodexHarness:
     ) -> InvokeResult:
         """Run ``codex exec --json`` and return an :class:`InvokeResult`.
 
-        US-003 happy-path implementation. Mirrors
+        Full implementation across US-003 (happy path) and US-004
+        (error paths). Mirrors
         :meth:`clauditor._harnesses._claude_code.ClaudeCodeHarness.invoke`
         structural shape (subprocess + drainer + watchdog + NDJSON
         loop + ``try/finally`` cleanup) but substitutes Codex's argv,
         event-type dispatch, ``--output-last-message`` tempfile, and
         process-group cleanup per DEC-014.
 
-        Error paths (timeout, FileNotFoundError, ``turn.failed``,
-        malformed lines, envelope cap) land in US-004. The happy
-        path here populates every documented ``harness_metadata`` key
-        (DEC-008), tags every appended event with ``harness="codex"``
-        (DEC-010), emits the two stderr lines (DEC-009 / DEC-017),
-        and applies the per-event command-output soft-cap (DEC-015).
+        Error paths covered (US-004):
+
+        - ``FileNotFoundError`` on Popen — :attr:`InvokeResult.exit_code`
+          set to ``-1`` with a ``"Codex CLI not found: ..."`` message.
+        - Watchdog timeout — POSIX ``os.killpg(getpgid(pid), SIGTERM)``
+          then SIGKILL escalation per DEC-014; Windows uses single-pid
+          ``terminate()`` / ``kill()``. Returns
+          ``error="timeout"``, ``error_category="timeout"``.
+        - ``turn.failed`` and top-level ``error`` events classify via
+          :func:`_classify_codex_failure` per DEC-007 (closed Literal,
+          ``"rate_limit" | "auth" | "api"``).
+        - Malformed JSON line — skip + append warning per
+          ``.claude/rules/stream-json-schema.md``.
+        - Stream-events envelope cap (DEC-015) — once the running byte
+          count crosses :data:`_CODEX_STREAM_EVENTS_MAX_SIZE`, stop
+          appending events but keep parsing stdout for the final
+          ``turn.completed`` so token usage still lands.
+        - Advisory detectors (DEC-018) — both
+          :func:`_detect_codex_dropped_events` and
+          :func:`_detect_codex_truncated_output` run after the parse
+          loop and append warnings with the
+          :data:`_DROPPED_EVENTS_WARNING_PREFIX` /
+          :data:`_LAST_MESSAGE_EMPTY_WARNING_PREFIX` prefixes. They are
+          advisory: ``error_category`` stays ``None`` and
+          ``succeeded_cleanly`` is NOT down-classified.
+        - Stderr capture wraps every line through
+          :func:`_filter_stderr` (DEC-013 redact + 8 KB cap).
         """
         effective_model = (
             model if model is not None else (self.model or _DEFAULT_MODEL)
@@ -527,10 +563,13 @@ class CodexHarness:
         reasoning_output_tokens = 0
         thread_id: str | None = None
         turn_count = 0
-        # Running byte count for the DEC-015 envelope cap. US-004
-        # enforces; US-003 populates the accumulator so the seam is
-        # in place.
-        stream_events_size = 0  # noqa: F841 — populated for US-004 enforcement
+        # Running byte count for the DEC-015 envelope cap. Once the
+        # accumulator exceeds :data:`_CODEX_STREAM_EVENTS_MAX_SIZE`, we
+        # stop appending events but keep reading stdout so the final
+        # ``turn.completed`` (with token usage) still lands in
+        # observability.
+        stream_events_size = 0
+        stream_events_truncated = False
         # One-shot warning flag for the command-output cap to avoid
         # log flooding under tool-heavy runs.
         cmd_output_truncated = False
@@ -539,6 +578,13 @@ class CodexHarness:
         stderr_thread: threading.Thread | None = None
         stderr_warnings_lock = threading.Lock()
         stderr_warnings: list[str] = []
+        # Stream-level error classification populated by
+        # :func:`_classify_codex_failure` when ``turn.failed`` /
+        # top-level ``error`` events land. Once set, stays set for the
+        # remainder of the run (defensive — in practice one error per
+        # stream).
+        stream_error_text: str | None = None
+        stream_error_category: str | None = None
 
         # DEC-017: pre-Popen auth-source detection. Read from ``env``
         # when provided, else ``os.environ``. Order is deterministic
@@ -570,6 +616,7 @@ class CodexHarness:
         # exception, or timeout).
         with tempfile.TemporaryDirectory(prefix="clauditor_codex_") as tmpdir:
             last_message_path = os.path.join(tmpdir, "last_message.txt")
+            timed_out = {"hit": False}
             try:
                 argv = [
                     self.codex_bin,
@@ -600,7 +647,27 @@ class CodexHarness:
                 if os.name != "nt":
                     popen_kwargs["start_new_session"] = True
 
-                proc = subprocess.Popen(argv, **popen_kwargs)
+                try:
+                    proc = subprocess.Popen(argv, **popen_kwargs)
+                except FileNotFoundError:
+                    # Codex CLI not on PATH (or ``codex_bin`` typo).
+                    # Surface a crisp, operator-actionable error rather
+                    # than a raw OSError traceback. ``error_category``
+                    # stays ``None`` because the failure is local
+                    # (subprocess never spawned), not provider-side.
+                    duration = _monotonic() - start
+                    return InvokeResult(
+                        output="",
+                        exit_code=-1,
+                        duration_seconds=duration,
+                        error=f"Codex CLI not found: {self.codex_bin}",
+                        error_category=None,
+                        harness_metadata={
+                            "sandbox_mode": _SANDBOX_MODE,
+                            "auth_source": auth_source,
+                            "model": effective_model,
+                        },
+                    )
 
                 # Write the prompt to stdin (Codex reads from stdin
                 # when invoked with the trailing ``-`` argv) and close
@@ -641,25 +708,20 @@ class CodexHarness:
                 stderr_thread.start()
 
                 # Watchdog: kill the child if it runs past the
-                # configured timeout. US-004 wires the kill / killpg
-                # escalation; US-003 keeps the timer skeleton in
-                # place so happy-path runs cancel cleanly.
-                timed_out = {"hit": False}
-
+                # configured timeout. DEC-014: on POSIX, escalate via
+                # ``os.killpg(getpgid(pid), SIGTERM)`` first then
+                # SIGKILL after a brief grace period; on Windows fall
+                # back to ``proc.terminate()`` / ``proc.kill()``. Each
+                # syscall is wrapped in ``try / except OSError`` so a
+                # race-to-exit (ESRCH "no such process") never crashes
+                # the harness.
                 def _on_timeout() -> None:
                     if proc is None:  # pragma: no cover
                         return
                     if proc.poll() is not None:
                         return
                     timed_out["hit"] = True
-                    try:
-                        proc.kill()
-                    except (OSError, ProcessLookupError) as exc:  # pragma: no cover
-                        with stderr_warnings_lock:
-                            stderr_warnings.append(
-                                "watchdog kill failed: "
-                                f"{type(exc).__name__}: {exc}"
-                            )
+                    self._kill_proc(proc, stderr_warnings, stderr_warnings_lock)
 
                 watchdog = threading.Timer(timeout, _on_timeout)
                 watchdog.daemon = True
@@ -677,9 +739,6 @@ class CodexHarness:
                                 # Per ``.claude/rules/stream-json-schema.md``
                                 # the parser MUST skip + warn on
                                 # malformed lines and keep reading.
-                                # US-004 expands the warning surface;
-                                # the happy-path tests do not exercise
-                                # this branch.
                                 print(
                                     "clauditor.runner: skipping malformed "
                                     f"codex stream-json line: {exc}",
@@ -760,8 +819,61 @@ class CodexHarness:
                                         usage.get("reasoning_output_tokens")
                                     )
 
-                            stream_events.append(tagged_event)
-                            stream_events_size += len(line)
+                            elif mtype == "turn.failed":
+                                # DEC-007: per-turn failure carries
+                                # ``error.message``. Classify only the
+                                # FIRST such message so a benign later
+                                # event does not erase a prior
+                                # classification.
+                                if stream_error_text is None:
+                                    err_obj = msg.get("error")
+                                    err_msg = (
+                                        err_obj.get("message")
+                                        if isinstance(err_obj, dict)
+                                        else None
+                                    )
+                                    text, category = _classify_codex_failure(
+                                        err_msg
+                                    )
+                                    stream_error_text = text
+                                    stream_error_category = category
+
+                            elif mtype == "error":
+                                # DEC-007: top-level fatal error event
+                                # — Codex emits this when something
+                                # goes wrong before any turn can run
+                                # (e.g. auth failure on first request).
+                                if stream_error_text is None:
+                                    err_msg = msg.get("message")
+                                    text, category = _classify_codex_failure(
+                                        err_msg
+                                    )
+                                    stream_error_text = text
+                                    stream_error_category = category
+
+                            # DEC-015 envelope cap: track the running
+                            # byte count and stop appending once the
+                            # accumulator crosses the threshold. Keep
+                            # parsing subsequent lines so the final
+                            # ``turn.completed`` token usage still
+                            # lands. Emit one warning the first time
+                            # the cap fires.
+                            if not stream_events_truncated:
+                                stream_events.append(tagged_event)
+                                stream_events_size += len(line)
+                                if (
+                                    stream_events_size
+                                    > _CODEX_STREAM_EVENTS_MAX_SIZE
+                                ):
+                                    stream_events_truncated = True
+                                    cap = _CODEX_STREAM_EVENTS_MAX_SIZE
+                                    warnings.append(
+                                        f"{_STREAM_EVENTS_TRUNCATED_WARNING_PREFIX} "
+                                        f"stream_events accumulator exceeded "
+                                        f"{cap} bytes; subsequent events "
+                                        "dropped (parsing continues for "
+                                        "turn.completed)"
+                                    )
 
                     returncode = proc.wait()
                 finally:
@@ -772,11 +884,9 @@ class CodexHarness:
                 if stderr_thread is not None:
                     stderr_thread.join(timeout=2.0)
                 stderr_text = "".join(stderr_chunks)
+                # DEC-013 hybrid stderr surfacing: filter (auth-leak
+                # redact) + cap at 8 KB before emitting as a warning.
                 if stderr_text:
-                    # US-004 wires the DEC-013 redact + cap pipeline.
-                    # For US-003 the happy-path emits stderr as a
-                    # warning only when present (most happy runs have
-                    # no stderr; the fixture default is empty).
                     warnings.append(_filter_stderr(stderr_text))
 
                 # DEC-013-ish: surface drainer + watchdog channel
@@ -784,6 +894,43 @@ class CodexHarness:
                 with stderr_warnings_lock:
                     if stderr_warnings:
                         warnings.extend(stderr_warnings)
+
+                # DEC-018 advisory detectors. Both run regardless of
+                # error category (they are advisory observability,
+                # NOT failure classifiers). When the truncated-output
+                # detector fires AND there is no agent_message text,
+                # fall back to reading the ``--output-last-message``
+                # tempfile content per DEC-005.
+                last_message_text = ""
+                try:
+                    if os.path.isfile(last_message_path):
+                        with open(
+                            last_message_path, encoding="utf-8", errors="replace"
+                        ) as f:
+                            last_message_text = f.read()
+                except OSError as exc:
+                    warnings.append(
+                        "failed to read --output-last-message tempfile: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+
+                dropped_count = _detect_codex_dropped_events(stream_events)
+                if dropped_count > 0:
+                    warnings.append(
+                        f"{_DROPPED_EVENTS_WARNING_PREFIX} {dropped_count} "
+                        "events dropped from Codex in-process channel "
+                        "(see Lagged synthetic events in stream_events)"
+                    )
+
+                truncated_output = _detect_codex_truncated_output(
+                    stream_events, last_message_text
+                )
+                if truncated_output:
+                    warnings.append(
+                        f"{_LAST_MESSAGE_EMPTY_WARNING_PREFIX} stream "
+                        "produced no agent_message items; falling back "
+                        "to --output-last-message tempfile content"
+                    )
 
                 # DEC-008: build the harness_metadata dict. Absent
                 # keys are OMITTED, never None. The four always-
@@ -807,15 +954,43 @@ class CodexHarness:
                 # whenever they are computed (not just non-zero).
                 metadata["cached_input_tokens"] = cached_input_tokens
                 metadata["reasoning_output_tokens"] = reasoning_output_tokens
+                if dropped_count > 0:
+                    metadata["dropped_events_count"] = dropped_count
+                if stream_events_truncated:
+                    metadata["stream_events_truncated"] = True
+
+                # Determine the final output. DEC-005 fallback: when
+                # the stream produced no agent_message items but the
+                # tempfile is non-empty, use the tempfile content as
+                # ``output``. Otherwise concatenate the streamed
+                # ``agent_message`` text chunks.
+                if text_chunks:
+                    final_output = "\n".join(text_chunks)
+                elif truncated_output:
+                    final_output = last_message_text
+                else:
+                    final_output = ""
+
+                # Timeout takes precedence over stream-level error:
+                # the user-facing message is "timeout", not the
+                # provider's last error before the watchdog fired.
+                if timed_out["hit"]:
+                    final_error: str | None = "timeout"
+                    final_category: str | None = "timeout"
+                    final_exit_code = -1
+                else:
+                    final_error = stream_error_text
+                    final_category = stream_error_category
+                    final_exit_code = returncode
 
                 duration = _monotonic() - start
 
                 return InvokeResult(
-                    output="\n".join(text_chunks),
-                    exit_code=returncode,
+                    output=final_output,
+                    exit_code=final_exit_code,
                     duration_seconds=duration,
-                    error=None,
-                    error_category=None,
+                    error=final_error,
+                    error_category=final_category,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
                     raw_messages=raw_messages,
@@ -828,28 +1003,15 @@ class CodexHarness:
             finally:
                 # Defensive cleanup: if an exception escaped the
                 # inner try, the subprocess could still be running.
-                # US-004 expands the kill / killpg escalation;
-                # US-003 keeps the minimum-viable cleanup that
-                # always reaps the child.
+                # Mirrors Claude's terminate→wait→kill escalation per
+                # DEC-014, but routes through ``_kill_proc`` so the
+                # POSIX-vs-Windows branching lives in one place.
                 if proc is not None and proc.poll() is None:
-                    try:
-                        proc.terminate()
-                    except (OSError, ProcessLookupError) as exc:
-                        warnings.append(
-                            "cleanup terminate failed: "
-                            f"{type(exc).__name__}: {exc}"
-                        )
+                    self._kill_proc(proc, warnings, None)
                     try:
                         proc.wait(timeout=1)
-                    except subprocess.TimeoutExpired:
-                        try:
-                            proc.kill()
-                        except (OSError, ProcessLookupError):
-                            pass
-                        try:
-                            proc.wait(timeout=1)
-                        except (subprocess.TimeoutExpired, OSError):
-                            pass
+                    except (subprocess.TimeoutExpired, OSError):
+                        pass
                 if proc is not None:
                     for stream in (proc.stdout, proc.stderr, proc.stdin):
                         if stream is None or not hasattr(stream, "close"):
@@ -858,6 +1020,106 @@ class CodexHarness:
                             stream.close()
                         except OSError:
                             pass
+
+    @staticmethod
+    def _kill_proc(
+        proc: subprocess.Popen,
+        warnings_sink: list[str],
+        warnings_lock: threading.Lock | None,
+    ) -> None:
+        """Kill ``proc`` via DEC-014's POSIX-killpg / Windows-fallback path.
+
+        On POSIX (``os.name != "nt"``): send SIGTERM to the process
+        group via ``os.killpg(os.getpgid(pid), SIGTERM)``, sleep ~250
+        ms, escalate to SIGKILL if the child is still alive. Each
+        syscall is wrapped in ``try / except OSError`` so a
+        race-to-exit (ESRCH "no such process") does not crash the
+        harness.
+
+        On Windows: fall back to ``proc.terminate()`` / ``proc.kill()``.
+        Windows has no process-group equivalent — Codex on Windows is
+        a tier-2 path per DEC-014.
+
+        ``warnings_lock`` is the optional thread-safe lock the
+        watchdog timer uses (which runs on a separate thread).
+        ``None`` means the caller is on the main thread and the
+        list-mutation does not need synchronization. The kill helper
+        must absorb every OS-level failure into the warnings sink so
+        cleanup never raises.
+        """
+
+        def _record(msg: str) -> None:
+            if warnings_lock is not None:
+                with warnings_lock:
+                    warnings_sink.append(msg)
+            else:
+                warnings_sink.append(msg)
+
+        if os.name != "nt":
+            # POSIX: process-group kill so any orphaned subprocesses
+            # spawned by Codex (e.g. ``command_execution`` shell
+            # invocations) get cleaned up too.
+            try:
+                pgid = os.getpgid(proc.pid)
+            except (OSError, ProcessLookupError) as exc:
+                # Child already reaped — nothing to kill.
+                _record(
+                    "kill: getpgid failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                return
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except (OSError, ProcessLookupError) as exc:
+                _record(
+                    "kill: killpg(SIGTERM) failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            try:
+                proc.wait(timeout=0.25)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+            except OSError as exc:
+                _record(
+                    "kill: wait after SIGTERM failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                return
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (OSError, ProcessLookupError) as exc:
+                _record(
+                    "kill: killpg(SIGKILL) failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        else:
+            # Windows: single-pid terminate/kill fallback.
+            try:
+                proc.terminate()
+            except (OSError, ProcessLookupError) as exc:
+                _record(
+                    "kill: terminate failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            try:
+                proc.wait(timeout=0.25)
+                return
+            except subprocess.TimeoutExpired:
+                pass
+            except OSError as exc:
+                _record(
+                    "kill: wait after terminate failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+                return
+            try:
+                proc.kill()
+            except (OSError, ProcessLookupError) as exc:
+                _record(
+                    "kill: kill failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
 
     @staticmethod
     def _safe_int(value: Any) -> int:
