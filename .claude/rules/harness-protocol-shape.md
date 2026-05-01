@@ -82,7 +82,7 @@ harness-specific knobs cannot leak into cross-harness code.
 Sidecar comparability (`audit`, `trend`, `compare`) groups by harness
 identity. Class-level so the value is immutable per harness type — no
 instance variance. `ClaudeCodeHarness.name = "claude-code"`,
-`MockHarness.name = "mock"`. Future: `CodexHarness.name = "codex"`.
+`MockHarness.name = "mock"`, `CodexHarness.name = "codex"`.
 
 ### Why `invoke` accepts `subject: str | None = None`
 
@@ -99,8 +99,8 @@ substitutable for any conforming harness.
 Two reasons: (1) per-call overrides matter for provider-axis evaluation
 (grading the same prompt against multiple models); (2) parity with the
 `subject` kwarg keeps the per-call surface uniform. A harness MAY ignore
-`model` (Codex pinned to `gpt-5-mini` ignores it; raw-API uses it as a
-default override).
+`model` (Codex defaults to `gpt-5-codex` and uses `model=` as a per-call
+override; raw-API uses it as a default override).
 
 ### Why `allow_hang_heuristic` is NOT on `invoke`
 
@@ -163,6 +163,18 @@ fixed value internally.
   `MockHarness` is a real protocol implementation, every protocol
   addition MUST update it in the same PR** — otherwise `isinstance(mock,
   Harness)` silently breaks for any test that relied on it.
+- `src/clauditor/_harnesses/_codex.py::CodexHarness` — second non-mock
+  implementation; subprocess of `codex exec --json` plus an NDJSON parse
+  loop. Defaults to `model="gpt-5-codex"` (`_DEFAULT_MODEL` constant) and
+  forwards per-call `model=` overrides. `build_prompt` joins
+  `system_prompt` with `args` via `\n\n` (Codex consumes a flat prompt;
+  there is no slash-command concept), and `skill_name` is accepted-and-
+  ignored on this harness. `strip_auth_keys` strips `CODEX_API_KEY`,
+  `OPENAI_API_KEY`, `OPENAI_BASE_URL` (case-insensitively). NOT exported
+  from `_harnesses/__init__.py` per DEC-011 of #149 — instantiable via
+  `from clauditor._harnesses._codex import CodexHarness`. Canonical
+  example for the four pure helpers + thin orchestrator pattern (see
+  `.claude/rules/pure-compute-vs-io-split.md` Seventh anchor).
 
 ## Adding a new protocol member — checklist
 

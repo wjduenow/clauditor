@@ -322,6 +322,99 @@ Traces to bead `clauditor-cha.11` (US-011) of
 stream-json-parsing contract the two parser-side helpers
 honor.
 
+### Seventh anchor (Codex helper composition)
+
+The #149 CodexHarness work introduced four pure helpers that
+collectively drive the harness's failure-classification, advisory-
+detection, and stderr-redaction surface — each at a natural "plain
+types at the boundary" seam, testable without `subprocess.Popen`
+mocks or live `codex exec` invocations:
+
+- `src/clauditor/_harnesses/_codex.py::_classify_codex_failure(message:
+  str | None) -> tuple[str, Literal["rate_limit", "auth", "api"]]`
+  — consumes a raw failure string (Codex surfaces text on
+  `turn.failed.error.message` per-turn and on top-level `error.message`
+  for stream-fatal errors, NOT one stream-event dict like Claude).
+  Returns `(truncated_text, category)`; closed Literal stays closed
+  per DEC-007 of `plans/super/149-codex-harness.md`. 4 KB truncation
+  with classification preserved across the cap. `CodexHarness.invoke`
+  calls it from both the `turn.failed` and top-level `error` arms.
+- `src/clauditor/_harnesses/_codex.py::_detect_codex_dropped_events(
+  stream_events: list[dict]) -> int` — sums the leading integer on
+  Lagged-synthetic `item.completed` events (`item.type == "error"`,
+  message matches `<N> events were dropped...`). Defensive read posture
+  per `.claude/rules/stream-json-schema.md`: every malformed/missing-
+  field branch degrades to 0 without raising. Wired post-parse-loop
+  to surface a `dropped-events:` advisory warning (DEC-018) without
+  setting `error_category`.
+- `src/clauditor/_harnesses/_codex.py::_detect_codex_truncated_output(
+  stream_events: list[dict], last_message_text: str) -> bool` —
+  returns True when no `agent_message` items appeared but the
+  `--output-last-message` tempfile is non-empty. Surfaces the
+  `last-message-empty:` advisory warning per DEC-018 and triggers
+  the DEC-005 fallback that promotes the tempfile content into
+  `InvokeResult.output`.
+- `src/clauditor/_harnesses/_codex.py::_filter_stderr(stderr_text:
+  str) -> str` — hybrid redact-then-cap pipeline per DEC-013:
+  per-line regex redaction of bare `sk-...` tokens and `Bearer ...`
+  prefixes, then per-line substring redaction against
+  `_AUTH_LEAK_PATTERNS`, then 8 KB byte cap (cap last so a redacted
+  line that lands inside the cap is still safely redacted). Pure +
+  non-mutating per `.claude/rules/non-mutating-scrub.md`.
+
+All four tested directly via dedicated test classes
+(`TestClassifyCodexFailure`, `TestDetectCodexDroppedEvents`,
+`TestDetectCodexTruncatedOutput`, `TestFilterStderr`) that pass
+plain strings/dicts and assert on the return value — no
+`patch("subprocess.Popen")`, no `_FakeCodexPopen`, no Codex CLI on
+PATH. Every keyword-priority edge case (rate_limit before auth
+before api per DEC-007), every Lagged-event count parse branch,
+every redaction pattern, every truncation-boundary check is a
+one-line construction away.
+
+The async `CodexHarness.invoke` wrapper that wires these four
+helpers is the canonical thin-orchestrator shape: argv assembly,
+TemporaryDirectory + drainer-thread + watchdog setup, NDJSON parse
+loop, post-parse advisory pass, then `InvokeResult` construction.
+None of the verdict logic, classification logic, or redaction
+logic lives inside `invoke`; all four pure helpers stay at the
+boundary.
+
+Why the split mattered specifically here:
+
+- **Two distinct error surfaces, one classifier**: Codex emits
+  errors via two different shapes (per-turn `turn.failed.error` and
+  stream-fatal top-level `error`). A single
+  `_classify_codex_failure` taking the raw message string keeps
+  the dispatch site simple — `invoke` reads the message from
+  whichever event arrived and hands it to one classifier. An inline
+  classifier-per-arm would have produced two near-identical keyword
+  ladders that drift over time.
+- **Advisory vs failure separation enforced structurally**: the
+  two `_detect_codex_*` advisory helpers return primitive types
+  (int, bool); they cannot accidentally set `error_category` or
+  down-classify `succeeded_cleanly`. The orchestrator translates
+  their returns into `warnings: list[str]` entries with the DEC-018
+  prefixes (`dropped-events:`, `last-message-empty:`). A future
+  contributor extending the advisory surface gets a structurally-
+  enforced "advisory means warning, not failure" guarantee.
+- **Stderr redaction is the load-bearing security boundary**:
+  `_filter_stderr` is the last line of defense before stderr text
+  is appended to `SkillResult.warnings` and persisted to sidecars.
+  Keeping it pure + tested independently lets the redaction-pattern
+  set evolve (e.g. adding new key shapes) without re-validating the
+  surrounding subprocess plumbing.
+
+Traces to bead `clauditor-cif.1` (US-001) of
+`plans/super/149-codex-harness.md`. Convention rules: C2 (this
+rule) and C4 (`monotonic-time-indirection.md` for the `_monotonic`
+alias). Companion rules: `.claude/rules/non-mutating-scrub.md`
+(the `_filter_stderr` non-mutating contract),
+`.claude/rules/stream-json-schema.md` (the defensive parse-loop
+shape the orchestrator uses around the four helpers),
+`.claude/rules/harness-protocol-shape.md` (lists CodexHarness as
+the second non-mock canonical implementation).
+
 ## When this rule applies
 
 Any new code that combines spec/config resolution with a

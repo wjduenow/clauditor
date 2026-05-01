@@ -263,6 +263,88 @@ class TestHarnessProtocol:
             "Harness.build_prompt return annotation must be 'str'"
         )
 
+    def test_codex_harness_satisfies_harness_protocol(self):
+        """Drift-guard for ``CodexHarness`` (US-002 of #149).
+
+        Parallel to ``test_stub_satisfies_harness_protocol`` but pinned
+        to the real ``CodexHarness`` class. Locks: (1) instances satisfy
+        the runtime-checkable ``Harness`` protocol; (2) the four protocol
+        methods carry the parameter sets / kinds / return annotations the
+        protocol declares. ``runtime_checkable`` only verifies member
+        presence, so the explicit ``inspect.signature`` checks here are
+        what catch shape drift (e.g. dropping keyword-only on
+        ``system_prompt``, renaming a parameter on ``invoke``).
+        """
+        import inspect
+
+        from clauditor._harnesses import Harness
+        from clauditor._harnesses._codex import CodexHarness
+
+        codex = CodexHarness()
+
+        # Runtime member-presence check (the protocol is @runtime_checkable).
+        assert isinstance(codex, Harness)
+
+        # ``name`` ClassVar present and non-empty.
+        assert CodexHarness.name == "codex"
+
+        # Signature drift-guard for ``invoke``: parameter superset of
+        # ``Harness.invoke``. Compare without ``self`` per the existing
+        # stub-protocol test pattern.
+        protocol_invoke_params = (
+            set(inspect.signature(Harness.invoke).parameters) - {"self"}
+        )
+        codex_invoke_params = set(inspect.signature(codex.invoke).parameters)
+        missing_invoke = protocol_invoke_params - codex_invoke_params
+        assert not missing_invoke, (
+            f"CodexHarness.invoke missing protocol parameters: {missing_invoke}"
+        )
+
+        # Per ``.claude/rules/harness-protocol-shape.md``: ``runtime_checkable``
+        # does NOT enforce parameter kinds (positional vs keyword-only), so
+        # the explicit kind assertions below are what catch drift. ``cwd``,
+        # ``env``, ``timeout``, ``model``, ``subject`` are all keyword-only
+        # on the protocol — a refactor that drops the ``*,`` separator on
+        # ``CodexHarness.invoke`` would silently regress the signature parity
+        # this test is meant to enforce.
+        codex_invoke_sig = inspect.signature(codex.invoke)
+        for kw_only_param in ("cwd", "env", "timeout", "model", "subject"):
+            assert kw_only_param in codex_invoke_sig.parameters, (
+                f"CodexHarness.invoke missing parameter: {kw_only_param}"
+            )
+            kind = codex_invoke_sig.parameters[kw_only_param].kind
+            assert kind is inspect.Parameter.KEYWORD_ONLY, (
+                f"CodexHarness.invoke.{kw_only_param} must be keyword-only "
+                f"(got {kind!r})"
+            )
+
+        # ``strip_auth_keys`` exists, takes ``env`` (positional), returns
+        # a dict.
+        strip_sig = inspect.signature(codex.strip_auth_keys)
+        assert "env" in strip_sig.parameters, (
+            "CodexHarness.strip_auth_keys missing 'env' parameter"
+        )
+
+        # ``build_prompt`` shape per DEC-011: ``(skill_name, args, *,
+        # system_prompt) -> str`` with ``system_prompt`` keyword-only.
+        bp_sig = inspect.signature(codex.build_prompt)
+        bp_params = bp_sig.parameters
+        assert "skill_name" in bp_params, (
+            "CodexHarness.build_prompt missing 'skill_name' parameter"
+        )
+        assert "args" in bp_params, (
+            "CodexHarness.build_prompt missing 'args' parameter"
+        )
+        assert "system_prompt" in bp_params, (
+            "CodexHarness.build_prompt missing 'system_prompt' parameter"
+        )
+        assert (
+            bp_params["system_prompt"].kind is inspect.Parameter.KEYWORD_ONLY
+        ), "CodexHarness.build_prompt.system_prompt must be keyword-only"
+        assert bp_sig.return_annotation == "str", (
+            "CodexHarness.build_prompt return annotation must be 'str'"
+        )
+
 
 class TestInvokeResultHarnessMetadata:
     """``InvokeResult`` gains a ``harness_metadata`` dict in US-001 to

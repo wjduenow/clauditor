@@ -12,6 +12,10 @@ This schema reflects the Anthropic CLI streaming format as verified live
 against `claude` 2.1.x. If a future CLI version changes the shape, update
 this document and `.claude/rules/stream-json-schema.md` in the same commit.
 
+See also: [Codex stream-JSON schema](codex-stream-schema.md) — sibling
+reference for the OpenAI Codex CLI's NDJSON format consumed by
+`CodexHarness` (#149).
+
 ## Transport
 
 - Each line of `claude`'s stdout is one JSON object (NDJSON / JSON Lines).
