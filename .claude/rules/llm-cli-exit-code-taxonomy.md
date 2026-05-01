@@ -135,7 +135,13 @@ Two commands share this taxonomy verbatim:
 - `src/clauditor/cli/suggest.py::_cmd_suggest_impl` — DEC-008 in
   `plans/super/27-suggest-proposer.md`. Uses `SuggestReport` with
   `api_error`, `parse_error`, `validation_errors` (anchor
-  failures).
+  failures). Per US-003 of #162 also loads
+  `SkillSpec.from_file(args.skill)` at the seam, resolves
+  `provider = skill_spec.eval_spec.grading_provider or
+  "anthropic"`, and dispatches `check_provider_auth(provider,
+  "suggest")` with distinct `AnthropicAuthMissingError` and
+  `OpenAIAuthMissingError` except branches — both routing to
+  exit 2, structurally separate from `*HelperError` (exit 3).
 - `src/clauditor/cli/propose_eval.py::_cmd_propose_eval_impl` —
   DEC-006 in `plans/super/52-propose-eval.md`. Uses
   `ProposeEvalReport` with `api_error` and `validation_errors`;

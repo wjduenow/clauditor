@@ -258,12 +258,19 @@ class.
 - Non-LLM CLI commands (`validate`, `capture`, `run`, `lint`,
   `init`, `badge`, `audit`, `trend`). They do not call
   `call_model` and need no auth guard.
-- Pytest fixtures. The three grader fixtures
+- Pytest fixtures. Post-#162 the three grader fixtures
   (`clauditor_grader`, `clauditor_blind_compare`,
-  `clauditor_triggers`) currently route through
-  `check_api_key_only` / `check_any_auth_available` directly
-  rather than `check_provider_auth`; per-provider fixture
-  dispatch is forward-compat work for a future ticket once
-  fixtures grow OpenAI-graded test cases.
+  `clauditor_triggers`) load the spec first, resolve
+  `provider = spec.eval_spec.grading_provider or "anthropic"`,
+  then dispatch: the Anthropic branch retains the
+  `CLAUDITOR_FIXTURE_ALLOW_CLI` opt-in toggle (relaxed
+  `check_any_auth_available` vs strict `check_api_key_only`); any
+  non-Anthropic provider routes through
+  `check_provider_auth(provider, fixture_label)`. Per DEC-004 of
+  #162, `CLAUDITOR_FIXTURE_ALLOW_CLI=1` is silently no-op when
+  the resolved provider is `"openai"` (OpenAI has no CLI
+  transport). File anchor: `src/clauditor/pytest_plugin.py`
+  (the three fixture factories ~lines 220-432).
+- One-off diagnostic scripts in `scripts/` that hit a provider
 - One-off diagnostic scripts in `scripts/` that hit a provider
   SDK directly. They can rely on the SDK's own error path.

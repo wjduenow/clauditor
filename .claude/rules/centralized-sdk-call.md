@@ -235,6 +235,26 @@ async def call_openai(
   This preserves the existing `pip install clauditor[grader]`
   install-hint path every grader entry point already produces
   when users run the tool without the optional extra.
+- **Base-class catch-all defends the exit-3 routing** (US-004 of
+  #162). Each provider's retry loop ends with a final
+  `except AnthropicError as exc:` (in `call_anthropic`) /
+  `except OpenAIError as exc:` (in `call_openai`) branch — the
+  bare SDK base class. This lands AFTER all typed branches
+  (`RateLimitError`, `APIStatusError`, `AuthenticationError`,
+  `PermissionDeniedError`, `APIConnectionError`, `TypeError`)
+  so subclass matching takes precedence per Python's `except`
+  first-match semantics. A future SDK version's new typed error
+  not yet in the ladder would otherwise escape uncaught and
+  bypass the exit-3 routing in CLI dispatchers; the catch-all
+  wraps it as the corresponding `*HelperError` with message
+  `f"API request failed: {type(exc).__name__}: {str(exc)[:500]}"`
+  per DEC-003 of #162 — class name is always safe, 500-char cap
+  on `str(exc)` bounds prompt/body leakage. The branch does
+  NOT retry (without category info, no sound retry decision is
+  possible) and preserves `__cause__` via `raise ... from exc`
+  so debuggers can introspect the original SDK exception. File
+  anchors: `_providers/_anthropic.py::call_anthropic` retry
+  loop, `_providers/_openai.py::call_openai` retry loop.
 
 ## Canonical implementation
 
