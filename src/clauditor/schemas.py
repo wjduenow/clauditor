@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -298,16 +299,24 @@ class EvalSpec:
     # guarded at load time per
     # ``.claude/rules/constant-with-type-info.md``.
     sync_tasks: bool = False
-    # DEC-003 of #145: optional per-spec grading provider selector.
-    # ``None`` (default) preserves the pre-#145 behavior: grader call
-    # sites read ``eval_spec.grading_provider or "anthropic"`` and pass
-    # that to ``call_model(provider=...)``. When set, must be one of
-    # ``"anthropic"`` or ``"openai"``. Validated at load time against
-    # the literal set; non-string / bool values rejected per
-    # ``.claude/rules/constant-with-type-info.md``. The CLI flag
-    # ``--grading-provider`` and ``CLAUDITOR_GRADING_PROVIDER`` env-var
-    # land in #146 (full four-layer precedence resolver).
-    grading_provider: str | None = None
+    # DEC-001 of #146: per-spec grading provider selector. Promoted
+    # from #145's ``str | None = None`` sentinel to an explicit
+    # Literal-typed default. ``"auto"`` (default) is the
+    # subscription-first resolution token: the future
+    # ``_resolve_grading_provider`` helper (US-001 / US-004 of #146)
+    # infers Anthropic vs OpenAI from the resolved ``grading_model``
+    # prefix. ``"anthropic"`` and ``"openai"`` pin a specific
+    # backend. Validated at load time against the literal set;
+    # non-string / bool / unknown-string values rejected per
+    # ``.claude/rules/constant-with-type-info.md``. Legacy
+    # ``"grading_provider": null`` (post-JSON-decode ``None`` from
+    # #145-vintage eval.json files) is silently coerced to
+    # ``"auto"`` per DEC-008 of #146 — runtime semantics are
+    # byte-identical between ``null`` and ``"auto"``. The full
+    # four-layer precedence resolver (CLI ``--grading-provider`` >
+    # ``CLAUDITOR_GRADING_PROVIDER`` env > this field > default
+    # ``"auto"``) lands in US-004 of #146.
+    grading_provider: Literal["anthropic", "openai", "auto"] = "auto"
 
     @classmethod
     def from_file(cls, path: str | Path) -> EvalSpec:
@@ -749,25 +758,30 @@ class EvalSpec:
                 )
             sync_tasks = raw_sync_tasks
 
-        # DEC-003 of #145: optional per-spec grading provider selector.
-        # Missing or explicit ``null`` → ``None`` (default; grader call
-        # sites fall back to ``"anthropic"``). When set, must be a
-        # non-bool string in the literal set ``{"anthropic", "openai"}``.
-        # Bool guard first per ``.claude/rules/constant-with-type-info.md``.
-        grading_provider: str | None = None
+        # DEC-001 / DEC-008 of #146: per-spec grading provider
+        # selector. Default ``"auto"`` (subscription-first resolution
+        # token). Accepts the literal set
+        # ``{"anthropic", "openai", "auto"}`` AND legacy ``null``
+        # (post-JSON-decode ``None`` from #145-vintage eval.json
+        # files), silently coerced to ``"auto"`` per DEC-008 — quiet
+        # migration path with byte-identical runtime semantics. Bool
+        # guard first per ``.claude/rules/constant-with-type-info.md``.
+        grading_provider: Literal["anthropic", "openai", "auto"] = "auto"
         if "grading_provider" in data:
             raw_grading_provider = data["grading_provider"]
             if raw_grading_provider is None:
-                grading_provider = None
+                # DEC-008: silent coercion of legacy ``null``.
+                grading_provider = "auto"
             elif (
                 isinstance(raw_grading_provider, bool)
                 or not isinstance(raw_grading_provider, str)
-                or raw_grading_provider not in ("anthropic", "openai")
+                or raw_grading_provider
+                not in ("anthropic", "openai", "auto")
             ):
                 raise ValueError(
                     f"EvalSpec(skill_name={skill_name!r}): "
                     "'grading_provider' must be one of 'anthropic', "
-                    f"'openai' (or null), got "
+                    f"'openai', 'auto' (or null), got "
                     f"{type(raw_grading_provider).__name__} "
                     f"{raw_grading_provider!r}"
                 )
@@ -890,12 +904,11 @@ class EvalSpec:
             # Tier 1.5 of GitHub #103: emit only on non-default.
             # Omission at load time means default ``False``.
             result["sync_tasks"] = True
-        if self.grading_provider is not None:
-            # DEC-003 of #145: emit only on non-default. Omission at
-            # load time means ``None``, which the four grader call
-            # sites read as ``"anthropic"``. QG pass 3 (#145) caught
-            # the round-trip data-loss when this writer was missed.
-            result["grading_provider"] = self.grading_provider
+        # DEC-001 of #146: emit unconditionally now that the default
+        # is a real string (``"auto"``) rather than ``None``. Round-
+        # trip stays minimal-diff because ``"auto"`` round-trips
+        # byte-identically.
+        result["grading_provider"] = self.grading_provider
         if self.output_file is not None:
             result["output_file"] = self.output_file
         if self.output_files:

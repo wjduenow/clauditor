@@ -2769,14 +2769,15 @@ class TestCmdCompareBlindProviderAuth:
     def test_compare_blind_with_default_anthropic_provider_unchanged(
         self, tmp_path, monkeypatch
     ):
-        """Regression check: spec with ``grading_provider=None`` (default)
-        still routes through the Anthropic auth guard.
+        """Regression check: spec with default ``grading_provider``
+        (post-#146 the default is ``"auto"``) still routes through
+        the Anthropic auth guard once the resolver lands.
         """
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         before, after = _write_pair(tmp_path)
         eval_spec = _make_eval_spec(user_prompt="Write a hello world")
-        assert eval_spec.grading_provider is None
+        assert eval_spec.grading_provider == "auto"
         spec = _make_spec(eval_spec=eval_spec)
         report = _make_blind_report()
         with (
@@ -7019,9 +7020,10 @@ class TestCmdGradeProviderAuth:
     def test_grade_with_default_anthropic_provider_unchanged(
         self, tmp_path, monkeypatch
     ):
-        """Regression check: spec with ``grading_provider=None`` (default)
-        still routes through the Anthropic guard and proceeds when an
-        ``ANTHROPIC_API_KEY`` is set.
+        """Regression check: spec with default ``grading_provider``
+        (post-#146 the default is ``"auto"``) still routes through
+        the Anthropic guard and proceeds when an ``ANTHROPIC_API_KEY``
+        is set, once the resolver lands.
         """
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
@@ -7031,7 +7033,7 @@ class TestCmdGradeProviderAuth:
 
         eval_spec = _make_eval_spec()
         # Default: no grading_provider override.
-        assert eval_spec.grading_provider is None
+        assert eval_spec.grading_provider == "auto"
         spec = _make_spec(eval_spec=eval_spec)
         report = make_grading_report(passed=True)
 
@@ -7125,8 +7127,9 @@ class TestCmdExtractProviderAuth:
     def test_extract_with_default_anthropic_provider_unchanged(
         self, tmp_path, monkeypatch
     ):
-        """Regression check: spec with ``grading_provider=None`` (default)
-        still routes through the Anthropic guard.
+        """Regression check: spec with default ``grading_provider``
+        (post-#146 the default is ``"auto"``) still routes through
+        the Anthropic guard once the resolver lands.
         """
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -7134,7 +7137,7 @@ class TestCmdExtractProviderAuth:
         output_file.write_text("some skill output with results")
 
         eval_spec = _make_eval_spec(sections=_make_sections())
-        assert eval_spec.grading_provider is None
+        assert eval_spec.grading_provider == "auto"
         spec = _make_spec(eval_spec=eval_spec)
         results = self._make_extraction_set()
 
@@ -7237,8 +7240,9 @@ class TestCmdTriggersProviderAuth:
     def test_triggers_with_default_anthropic_provider_unchanged(
         self, monkeypatch
     ):
-        """Regression check: spec with ``grading_provider=None`` (default)
-        still routes through the Anthropic guard.
+        """Regression check: spec with default ``grading_provider``
+        (post-#146 the default is ``"auto"``) still routes through
+        the Anthropic guard once the resolver lands.
         """
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -7249,7 +7253,7 @@ class TestCmdTriggersProviderAuth:
                 should_not_trigger=["weather today"],
             ),
         )
-        assert eval_spec.grading_provider is None
+        assert eval_spec.grading_provider == "auto"
         spec = _make_spec(eval_spec=eval_spec)
         report = self._make_trigger_report()
 

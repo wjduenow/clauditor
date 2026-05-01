@@ -2147,13 +2147,18 @@ class TestEvalSpecTransport:
 
 
 class TestGradingProviderValidation:
-    """US-007 / DEC-003 of #145: ``EvalSpec.grading_provider`` parsing.
+    """US-002 / DEC-001 / DEC-008 of #146: ``EvalSpec.grading_provider``
+    parsing.
 
-    Optional field with default ``None``. When set, must be a non-bool
-    string in the literal set ``{"anthropic", "openai"}``; ``null`` is
-    permitted (equivalent to omission). Unknown strings, non-strings,
-    bools, lists, etc. are rejected at load time with a ``ValueError``
-    that names the field and the allowed values per
+    Field promoted from #145's ``str | None = None`` sentinel to
+    ``Literal["anthropic", "openai", "auto"] = "auto"``. ``"auto"``
+    is the subscription-first resolution token; ``"anthropic"`` and
+    ``"openai"`` pin a specific backend. Legacy ``"grading_provider":
+    null`` (from #145-vintage eval.json files) is silently coerced
+    to ``"auto"`` per DEC-008 — runtime semantics are byte-identical.
+    Unknown strings, non-strings, bools, lists, etc. are rejected at
+    load time with a ``ValueError`` that names the field and the
+    allowed values per
     ``.claude/rules/constant-with-type-info.md``.
     """
 
@@ -2161,7 +2166,8 @@ class TestGradingProviderValidation:
 
     def test_unknown_string_claude_rejects(self, tmp_path):
         """``"claude"`` is not in the literal set — rejected with an
-        error naming ``grading_provider``, ``anthropic``, ``openai``.
+        error naming ``grading_provider``, ``anthropic``, ``openai``,
+        ``auto``.
         """
         data = {"skill_name": "s", "grading_provider": "claude"}
         with pytest.raises(ValueError) as exc_info:
@@ -2170,6 +2176,7 @@ class TestGradingProviderValidation:
         assert "grading_provider" in msg
         assert "anthropic" in msg
         assert "openai" in msg
+        assert "auto" in msg
 
     def test_unknown_string_gpt_rejects(self, tmp_path):
         """``"gpt"`` is not in the literal set."""
@@ -2180,6 +2187,7 @@ class TestGradingProviderValidation:
         assert "grading_provider" in msg
         assert "anthropic" in msg
         assert "openai" in msg
+        assert "auto" in msg
 
     def test_int_rejects(self, tmp_path):
         """Non-string int rejected."""
@@ -2190,6 +2198,7 @@ class TestGradingProviderValidation:
         assert "grading_provider" in msg
         assert "anthropic" in msg
         assert "openai" in msg
+        assert "auto" in msg
 
     def test_bool_rejects(self, tmp_path):
         """Bool guard: ``isinstance(True, str)`` is False, but we still
@@ -2203,6 +2212,7 @@ class TestGradingProviderValidation:
         assert "grading_provider" in msg
         assert "anthropic" in msg
         assert "openai" in msg
+        assert "auto" in msg
 
     def test_list_rejects(self, tmp_path):
         """Non-string list rejected."""
@@ -2213,20 +2223,39 @@ class TestGradingProviderValidation:
         assert "grading_provider" in msg
         assert "anthropic" in msg
         assert "openai" in msg
+        assert "auto" in msg
 
     # --- Accept cases ---
 
-    def test_missing_defaults_to_none(self, tmp_path):
-        """No ``grading_provider`` key → ``.grading_provider is None``."""
+    def test_grading_provider_default_is_auto(self, tmp_path):
+        """No ``grading_provider`` key → ``.grading_provider == "auto"``.
+
+        DEC-001 of #146: default promoted from ``None`` to ``"auto"``.
+        """
         data = {"skill_name": "s"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
-        assert spec.grading_provider is None
+        assert spec.grading_provider == "auto"
 
-    def test_explicit_null_is_none(self, tmp_path):
-        """``{"grading_provider": null}`` → ``.grading_provider is None``."""
+    def test_grading_provider_legacy_null_coerced_to_auto(
+        self, tmp_path
+    ):
+        """``{"grading_provider": null}`` (legacy #145-vintage spec)
+        silently coerces to ``"auto"`` per DEC-008 of #146.
+
+        Quiet migration path: the validator treats post-JSON-decode
+        ``None`` as equivalent to ``"auto"``. Round-trip behavior:
+        re-saving a ``null``-bearing file produces ``"auto"`` on
+        disk (the file changes once, then stays stable).
+        """
         data = {"skill_name": "s", "grading_provider": None}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
-        assert spec.grading_provider is None
+        assert spec.grading_provider == "auto"
+
+    def test_grading_provider_accepts_auto(self, tmp_path):
+        """``"auto"`` is a valid value (the new default token)."""
+        data = {"skill_name": "s", "grading_provider": "auto"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_provider == "auto"
 
     def test_anthropic_loads(self, tmp_path):
         """``"anthropic"`` is a valid value."""
@@ -2240,39 +2269,38 @@ class TestGradingProviderValidation:
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         assert spec.grading_provider == "openai"
 
-    # --- Round-trip via to_dict (QG pass 3 fix) ---
+    # --- Round-trip via to_dict ---
 
     def test_to_dict_includes_grading_provider_when_set(self, tmp_path):
-        """``to_dict()`` emits ``grading_provider`` when non-default.
+        """``to_dict()`` emits ``grading_provider`` when explicitly
+        set to a non-default value.
 
-        QG pass 3 caught the writer-side gap: US-007 added the field
-        to ``__init__`` / ``from_dict`` but missed ``to_dict``. A spec
-        loaded with ``grading_provider="openai"`` and round-tripped
-        via ``to_dict`` would silently lose the field, downgrading
-        downstream grader calls to Anthropic.
+        QG pass 3 of #145 caught the original writer-side gap. Per
+        DEC-001 of #146 the field is now emitted unconditionally.
         """
         data = {"skill_name": "s", "grading_provider": "openai"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         result = spec.to_dict()
         assert result["grading_provider"] == "openai"
 
-    def test_to_dict_omits_grading_provider_when_none(self, tmp_path):
-        """Default ``None`` is omitted from ``to_dict`` output to
-        keep diffs minimal — matches the convention for other optional
-        fields (``transport``, ``sync_tasks``, ``allow_hang_heuristic``).
-        Reload of the omitted form yields ``None``.
+    def test_grading_provider_to_dict_emits_auto_unconditionally(
+        self, tmp_path
+    ):
+        """Default ``"auto"`` is emitted unconditionally per DEC-001
+        of #146 (the conditional ``if non-None`` emit was retired
+        when the default became a real string). Round-trip stays
+        minimal-diff because ``"auto"`` round-trips byte-identically.
         """
         data = {"skill_name": "s"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         result = spec.to_dict()
-        assert "grading_provider" not in result
+        assert result["grading_provider"] == "auto"
 
     def test_to_dict_round_trip_preserves_grading_provider(
         self, tmp_path
     ):
         """End-to-end: from_dict → to_dict → from_dict yields a spec
-        whose ``grading_provider`` matches the original. Pins the
-        QG pass 3 round-trip data-loss regression.
+        whose ``grading_provider`` matches the original.
         """
         data = {"skill_name": "s", "grading_provider": "openai"}
         spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
@@ -2286,6 +2314,29 @@ class TestGradingProviderValidation:
         spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
         spec2 = EvalSpec.from_dict(spec1.to_dict(), spec_dir=tmp_path)
         assert spec2.grading_provider == "anthropic"
+
+    def test_to_dict_round_trip_auto(self, tmp_path):
+        """Round-trip stability for the new default ``"auto"`` —
+        from_dict → to_dict → from_dict yields ``"auto"``.
+        """
+        data = {"skill_name": "s", "grading_provider": "auto"}
+        spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        spec2 = EvalSpec.from_dict(spec1.to_dict(), spec_dir=tmp_path)
+        assert spec2.grading_provider == "auto"
+
+    def test_to_dict_round_trip_legacy_null_stable_as_auto(
+        self, tmp_path
+    ):
+        """Legacy ``null`` round-trips: from_dict coerces to ``"auto"``,
+        to_dict emits ``"auto"``, re-load stays ``"auto"``. The file
+        changes once (null → auto) then stays stable per DEC-008.
+        """
+        data = {"skill_name": "s", "grading_provider": None}
+        spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        round_tripped = spec1.to_dict()
+        assert round_tripped["grading_provider"] == "auto"
+        spec2 = EvalSpec.from_dict(round_tripped, spec_dir=tmp_path)
+        assert spec2.grading_provider == "auto"
 
 
 class TestAssertionKeySpec:
