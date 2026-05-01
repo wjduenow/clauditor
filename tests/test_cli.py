@@ -2769,8 +2769,9 @@ class TestCmdCompareBlindProviderAuth:
     def test_compare_blind_with_default_anthropic_provider_unchanged(
         self, tmp_path, monkeypatch
     ):
-        """Regression check: spec with ``grading_provider=None`` (default)
-        still routes through the Anthropic auth guard.
+        """Regression check: spec with default ``grading_provider``
+        (post-#146 the default is ``"auto"``) still routes through
+        the Anthropic auth guard once the resolver lands.
         """
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -7019,9 +7020,10 @@ class TestCmdGradeProviderAuth:
     def test_grade_with_default_anthropic_provider_unchanged(
         self, tmp_path, monkeypatch
     ):
-        """Regression check: spec with ``grading_provider=None`` (default)
-        still routes through the Anthropic guard and proceeds when an
-        ``ANTHROPIC_API_KEY`` is set.
+        """Regression check: spec with default ``grading_provider``
+        (post-#146 the default is ``"auto"``) still routes through
+        the Anthropic guard and proceeds when an ``ANTHROPIC_API_KEY``
+        is set, once the resolver lands.
         """
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
@@ -7125,8 +7127,9 @@ class TestCmdExtractProviderAuth:
     def test_extract_with_default_anthropic_provider_unchanged(
         self, tmp_path, monkeypatch
     ):
-        """Regression check: spec with ``grading_provider=None`` (default)
-        still routes through the Anthropic guard.
+        """Regression check: spec with default ``grading_provider``
+        (post-#146 the default is ``"auto"``) still routes through
+        the Anthropic guard once the resolver lands.
         """
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -7237,8 +7240,9 @@ class TestCmdTriggersProviderAuth:
     def test_triggers_with_default_anthropic_provider_unchanged(
         self, monkeypatch
     ):
-        """Regression check: spec with ``grading_provider=None`` (default)
-        still routes through the Anthropic guard.
+        """Regression check: spec with default ``grading_provider``
+        (post-#146 the default is ``"auto"``) still routes through
+        the Anthropic guard once the resolver lands.
         """
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
