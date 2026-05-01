@@ -5,7 +5,7 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/162
 - **Branch:** `feature/162-polish-followups`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/162-polish-followups`
-- **Phase:** approved
+- **Phase:** devolved
 - **PR:** https://github.com/wjduenow/clauditor/pull/163
 - **Epic:** TBD (created at devolve)
 - **Sessions:** 1 (2026-05-01)
@@ -317,4 +317,22 @@ Six stories total. Stories US-001 through US-004 are independent (no cross-depen
 
 ## Beads Manifest
 
-To be filled in at devolve time.
+- **Epic:** `clauditor-3dy` — `#162: Follow-ups from #145 — 4 polish items (C1–C4)` (P3)
+- **Worktree:** `/home/wesd/Projects/worktrees/clauditor/162-polish-followups`
+- **Branch:** `feature/162-polish-followups`
+- **PR:** https://github.com/wjduenow/clauditor/pull/163
+
+### Tasks (all parented under `clauditor-3dy`)
+
+| Story | Bead | Title | Priority | Depends on |
+|-------|------|-------|----------|------------|
+| US-001 | `clauditor-pjm` | C1: pytest fixtures provider-aware auth | P3 | none |
+| US-002 | `clauditor-edb` | C2: clauditor doctor checks `OPENAI_API_KEY` | P4 | none |
+| US-003 | `clauditor-nl7` | C3: cli/suggest.py provider plumbing | P4 | none |
+| US-004 | `clauditor-m0m` | C4: base helper-error catch-all | P4 | none |
+| US-005 | `clauditor-3dy.1` | Quality Gate — code review x4 + CodeRabbit | P3 | clauditor-pjm, clauditor-edb, clauditor-nl7, clauditor-m0m |
+| US-006 | `clauditor-3dy.2` | Patterns & Memory — refresh 4 `.claude/rules/*.md` | P3 | clauditor-3dy.1 |
+
+US-001 through US-004 (the four `C*` source beads) are independent and Ralph-parallelizable — `bd ready` shows them all as unblocked.
+
+Each implementation bead carries an appended `notes` block pointing to its US-### in this plan and the DEC-### entries it traces to (so a Ralph worker reading the bead in isolation has the full context: plan path, story id, decisions, test discipline guardrails).
