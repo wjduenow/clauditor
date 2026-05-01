@@ -671,13 +671,21 @@ class TestClauditorGraderFactory:
         with pytest.raises(ValueError, match="No eval spec found"):
             factory(tmp_path / "skill.md")
 
-    def test_output_none_triggers_spec_run(self, tmp_path):
+    def test_output_none_triggers_spec_run(self, tmp_path, monkeypatch):
         """output=None path calls spec.run() and feeds its output into
         grade_quality — covers the branch that tests typically bypass
         by passing output= directly.
         """
+        # US-001 of #162: provider resolves from
+        # ``eval_spec.grading_provider``; an unconstrained MagicMock
+        # would yield a non-None ``grading_provider`` MagicMock and
+        # trip the dispatcher's unknown-provider ``ValueError``. Pin
+        # the attribute to ``None`` so resolution falls through to
+        # ``"anthropic"``.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         request = self._request_with_model()
         mock_eval_spec = MagicMock()
+        mock_eval_spec.grading_provider = None
 
         mock_run_result = MagicMock()
         mock_run_result.output = "captured skill output"
@@ -904,6 +912,26 @@ class TestClauditorFixturesAuthGuard:
         )
         return request
 
+    def _stub_spec_factory(self, *, grading_provider=None):
+        """Build a fake ``clauditor_spec`` that returns a stub spec.
+
+        Per US-001 of #162 the fixture loads the spec BEFORE running the
+        auth guard so it can resolve ``provider =
+        eval_spec.grading_provider or "anthropic"``. Existing tests that
+        expect Anthropic-path behavior pass ``grading_provider=None``
+        (or ``"anthropic"``) so resolution falls through to the
+        Anthropic auth branch and the legacy assertions still hold.
+        """
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = grading_provider
+
+        def factory(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        return factory
+
     def test_clauditor_grader_raises_on_missing_key(
         self, tmp_path, monkeypatch
     ):
@@ -914,12 +942,9 @@ class TestClauditorFixturesAuthGuard:
 
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         request = self._request()
-
-        def fake_clauditor_spec(skill_path, eval_path=None):
-            # Should never be reached — guard fires first.
-            raise AssertionError("spec factory called before auth guard")
-
-        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        factory = clauditor_grader.__wrapped__(
+            request, self._stub_spec_factory()
+        )
         with pytest.raises(AnthropicAuthMissingError) as excinfo:
             factory(tmp_path / "skill.md")
         msg = str(excinfo.value)
@@ -938,11 +963,9 @@ class TestClauditorFixturesAuthGuard:
 
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         request = self._request()
-
-        def fake_clauditor_spec(skill_path, eval_path=None):
-            raise AssertionError("spec factory called before auth guard")
-
-        factory = clauditor_triggers.__wrapped__(request, fake_clauditor_spec)
+        factory = clauditor_triggers.__wrapped__(
+            request, self._stub_spec_factory()
+        )
         with pytest.raises(AnthropicAuthMissingError) as excinfo:
             factory(tmp_path / "skill.md")
         msg = str(excinfo.value)
@@ -970,12 +993,8 @@ class TestClauditorFixturesAuthGuard:
                 "--clauditor-no-api-key": False,
             }.get(opt)
         )
-
-        def fake_clauditor_spec(skill_path, eval_path=None):
-            raise AssertionError("spec factory called before auth guard")
-
         factory = clauditor_blind_compare.__wrapped__(
-            request, fake_clauditor_spec
+            request, self._stub_spec_factory()
         )
         with pytest.raises(AnthropicAuthMissingError) as excinfo:
             factory(tmp_path / "skill.md", "a", "b")
@@ -1031,6 +1050,28 @@ class TestPytestFixturesStrictMode:
             _anthropic.shutil, "which", lambda name: path
         )
 
+    def _stub_spec_factory(self, *, grading_provider=None, raises=None):
+        """Build a fake ``clauditor_spec`` for the strict-mode tests.
+
+        Per US-001 of #162 the fixture loads the spec FIRST. Tests that
+        want the auth guard to fire pass ``raises=None`` so resolution
+        falls through to ``"anthropic"``. Tests that want to confirm
+        "guard passed → spec factory reached" pass a sentinel exception
+        as ``raises`` and the stub raises it after returning the spec
+        access the auth guard needs.
+        """
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = grading_provider
+
+        def factory(skill_path, eval_path=None):
+            if raises is not None:
+                raise raises
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        return factory
+
     def test_grader_strict_default_cli_on_path_still_raises(
         self, tmp_path, monkeypatch
     ):
@@ -1041,11 +1082,9 @@ class TestPytestFixturesStrictMode:
         # CLAUDITOR_FIXTURE_ALLOW_CLI auto-cleared by conftest.
         self._patch_which(monkeypatch, "/usr/local/bin/claude")
         request = self._request()
-
-        def fake_clauditor_spec(skill_path, eval_path=None):
-            raise AssertionError("spec factory called before auth guard")
-
-        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        factory = clauditor_grader.__wrapped__(
+            request, self._stub_spec_factory()
+        )
         with pytest.raises(AnthropicAuthMissingError) as excinfo:
             factory(tmp_path / "skill.md")
         assert "ANTHROPIC_API_KEY" in str(excinfo.value)
@@ -1058,11 +1097,9 @@ class TestPytestFixturesStrictMode:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         self._patch_which(monkeypatch, "/usr/local/bin/claude")
         request = self._request()
-
-        def fake_clauditor_spec(skill_path, eval_path=None):
-            raise AssertionError("spec factory called before auth guard")
-
-        factory = clauditor_triggers.__wrapped__(request, fake_clauditor_spec)
+        factory = clauditor_triggers.__wrapped__(
+            request, self._stub_spec_factory()
+        )
         with pytest.raises(AnthropicAuthMissingError) as excinfo:
             factory(tmp_path / "skill.md")
         assert "ANTHROPIC_API_KEY" in str(excinfo.value)
@@ -1075,12 +1112,8 @@ class TestPytestFixturesStrictMode:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         self._patch_which(monkeypatch, "/usr/local/bin/claude")
         request = self._blind_compare_request()
-
-        def fake_clauditor_spec(skill_path, eval_path=None):
-            raise AssertionError("spec factory called before auth guard")
-
         factory = clauditor_blind_compare.__wrapped__(
-            request, fake_clauditor_spec
+            request, self._stub_spec_factory()
         )
         with pytest.raises(AnthropicAuthMissingError) as excinfo:
             factory(tmp_path / "skill.md", "a", "b")
@@ -1095,14 +1128,19 @@ class TestPytestFixturesStrictMode:
         self._patch_which(monkeypatch, "/usr/local/bin/claude")
         request = self._request()
 
-        # If the guard passes, the factory proceeds to call
-        # clauditor_spec. We raise a sentinel from the spec factory so
-        # the test proves "guard did NOT raise" without invoking a real
-        # grading call.
-        _sentinel = RuntimeError("guard passed; spec factory reached")
+        # If the guard passes, the factory proceeds past the auth check.
+        # Per US-001 of #162 the spec is loaded BEFORE the guard, so we
+        # raise the sentinel from spec.run() to prove the guard did NOT
+        # raise: the test reaches the post-guard ``spec.run()`` call.
+        _sentinel = RuntimeError("guard passed; spec.run reached")
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = None
 
         def fake_clauditor_spec(skill_path, eval_path=None):
-            raise _sentinel
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            spec.run.side_effect = _sentinel
+            return spec
 
         factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
         with pytest.raises(RuntimeError) as excinfo:
@@ -1116,14 +1154,27 @@ class TestPytestFixturesStrictMode:
         monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "1")
         self._patch_which(monkeypatch, "/usr/local/bin/claude")
         request = self._request()
-        _sentinel = RuntimeError("guard passed; spec factory reached")
+
+        # Guard passes → factory reaches ``run_triggers`` which fires
+        # the sentinel via the patched ``test_triggers`` import below.
+        _sentinel = RuntimeError("guard passed; run_triggers reached")
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = None
 
         def fake_clauditor_spec(skill_path, eval_path=None):
-            raise _sentinel
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
 
-        factory = clauditor_triggers.__wrapped__(request, fake_clauditor_spec)
-        with pytest.raises(RuntimeError) as excinfo:
-            factory(tmp_path / "skill.md")
+        with patch(
+            "clauditor.triggers.test_triggers",
+            side_effect=_sentinel,
+        ):
+            factory = clauditor_triggers.__wrapped__(
+                request, fake_clauditor_spec
+            )
+            with pytest.raises(RuntimeError) as excinfo:
+                factory(tmp_path / "skill.md")
         assert excinfo.value is _sentinel
 
     def test_blind_compare_allow_cli_opt_in_cli_on_path_passes_guard(
@@ -1133,16 +1184,25 @@ class TestPytestFixturesStrictMode:
         monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "1")
         self._patch_which(monkeypatch, "/usr/local/bin/claude")
         request = self._blind_compare_request()
-        _sentinel = RuntimeError("guard passed; spec factory reached")
+
+        _sentinel = RuntimeError("guard passed; blind_compare_from_spec reached")
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = None
 
         def fake_clauditor_spec(skill_path, eval_path=None):
-            raise _sentinel
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
 
-        factory = clauditor_blind_compare.__wrapped__(
-            request, fake_clauditor_spec
-        )
-        with pytest.raises(RuntimeError) as excinfo:
-            factory(tmp_path / "skill.md", "a", "b")
+        with patch(
+            "clauditor.quality_grader.blind_compare_from_spec",
+            side_effect=_sentinel,
+        ):
+            factory = clauditor_blind_compare.__wrapped__(
+                request, fake_clauditor_spec
+            )
+            with pytest.raises(RuntimeError) as excinfo:
+                factory(tmp_path / "skill.md", "a", "b")
         assert excinfo.value is _sentinel
 
     def test_grader_allow_cli_opt_in_no_cli_still_raises(
@@ -1155,11 +1215,9 @@ class TestPytestFixturesStrictMode:
         monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "1")
         self._patch_which(monkeypatch, None)
         request = self._request()
-
-        def fake_clauditor_spec(skill_path, eval_path=None):
-            raise AssertionError("spec factory called before auth guard")
-
-        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        factory = clauditor_grader.__wrapped__(
+            request, self._stub_spec_factory()
+        )
         with pytest.raises(AnthropicAuthMissingError) as excinfo:
             factory(tmp_path / "skill.md")
         msg = str(excinfo.value)
@@ -1177,11 +1235,9 @@ class TestPytestFixturesStrictMode:
         monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "0")
         self._patch_which(monkeypatch, "/usr/local/bin/claude")
         request = self._request()
-
-        def fake_clauditor_spec(skill_path, eval_path=None):
-            raise AssertionError("spec factory called before auth guard")
-
-        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        factory = clauditor_grader.__wrapped__(
+            request, self._stub_spec_factory()
+        )
         with pytest.raises(AnthropicAuthMissingError) as excinfo:
             factory(tmp_path / "skill.md")
         msg = str(excinfo.value)
@@ -1189,3 +1245,307 @@ class TestPytestFixturesStrictMode:
         assert "ANTHROPIC_API_KEY" in msg
         assert "Claude Pro" in msg
         assert "console.anthropic.com" in msg
+
+
+class TestClauditorFixturesAuthGuardOpenAI:
+    """US-001 of #162: provider-aware auth in pytest fixtures.
+
+    Spec loads FIRST in each fixture; ``provider =
+    eval_spec.grading_provider or "anthropic"`` resolves to OpenAI
+    when the spec declares it; the auth dispatcher then routes to
+    :func:`check_openai_auth`, raising :class:`OpenAIAuthMissingError`
+    (a sibling of :class:`AnthropicAuthMissingError`, NOT a subclass)
+    when ``OPENAI_API_KEY`` is missing — even if ``ANTHROPIC_API_KEY``
+    is set.
+
+    DEC-004 of #162: ``CLAUDITOR_FIXTURE_ALLOW_CLI=1`` is silently
+    no-op for the OpenAI branch (OpenAI has no CLI transport).
+
+    All tests use ``__wrapped__`` direct calls per
+    ``.claude/rules/pytester-inprocess-coverage-hazard.md`` (DEC-006
+    of #162) — no ``pytester.runpytest_inprocess`` + ``mock.patch``
+    combinations under coverage.
+    """
+
+    def _request(self, model: str = "gpt-5.4"):
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {"--clauditor-model": model}.get(opt)
+        )
+        return request
+
+    def _blind_compare_request(self):
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": 300,
+                "--clauditor-claude-bin": "claude",
+                "--clauditor-model": None,
+                "--clauditor-no-api-key": False,
+            }.get(opt)
+        )
+        return request
+
+    def _stub_spec_factory(self, *, grading_provider="openai"):
+        """Build a fake ``clauditor_spec`` returning an OpenAI-graded spec."""
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = grading_provider
+
+        def factory(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        return factory
+
+    # ------------------------------------------------------------------
+    # T1: provider="openai" + OPENAI_API_KEY unset + ANTHROPIC_API_KEY set
+    #     → OpenAIAuthMissingError raised (no Anthropic fallback).
+    # ------------------------------------------------------------------
+
+    def test_grader_openai_provider_missing_key_raises_openai_error(
+        self, tmp_path, monkeypatch
+    ):
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # ANTHROPIC_API_KEY is set — proves no fallback.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        request = self._request()
+        factory = clauditor_grader.__wrapped__(
+            request, self._stub_spec_factory()
+        )
+        with pytest.raises(OpenAIAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md")
+        msg = str(excinfo.value)
+        assert "OPENAI_API_KEY" in msg
+        assert "platform.openai.com" in msg
+        assert "clauditor grader" in msg
+
+    def test_triggers_openai_provider_missing_key_raises_openai_error(
+        self, tmp_path, monkeypatch
+    ):
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        request = self._request()
+        factory = clauditor_triggers.__wrapped__(
+            request, self._stub_spec_factory()
+        )
+        with pytest.raises(OpenAIAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md")
+        msg = str(excinfo.value)
+        assert "OPENAI_API_KEY" in msg
+        assert "platform.openai.com" in msg
+        assert "clauditor triggers" in msg
+
+    def test_blind_compare_openai_provider_missing_key_raises_openai_error(
+        self, tmp_path, monkeypatch
+    ):
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        request = self._blind_compare_request()
+        factory = clauditor_blind_compare.__wrapped__(
+            request, self._stub_spec_factory()
+        )
+        with pytest.raises(OpenAIAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md", "a", "b")
+        msg = str(excinfo.value)
+        assert "OPENAI_API_KEY" in msg
+        assert "platform.openai.com" in msg
+        assert "clauditor blind_compare" in msg
+
+    # ------------------------------------------------------------------
+    # T2: provider="openai" + OPENAI_API_KEY set → guard passes,
+    #     factory proceeds past the auth seam.
+    # ------------------------------------------------------------------
+
+    def test_grader_openai_provider_with_key_passes_guard(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        request = self._request()
+
+        # Guard passes → factory reaches ``spec.run()``. Sentinel proves
+        # auth check did NOT raise.
+        _sentinel = RuntimeError("guard passed; spec.run reached")
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "openai"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            spec.run.side_effect = _sentinel
+            return spec
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(RuntimeError) as excinfo:
+            factory(tmp_path / "skill.md")
+        assert excinfo.value is _sentinel
+
+    # ------------------------------------------------------------------
+    # T3: provider="openai" + CLAUDITOR_FIXTURE_ALLOW_CLI=1 → strict
+    #     OpenAI key check still applied (env var is no-op for OpenAI
+    #     per DEC-004 of #162).
+    # ------------------------------------------------------------------
+
+    def test_grader_openai_provider_allow_cli_env_is_noop(
+        self, tmp_path, monkeypatch
+    ):
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        # CLAUDITOR_FIXTURE_ALLOW_CLI=1 is honored only for the
+        # Anthropic branch — OpenAI must still raise.
+        monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "1")
+        # Patch ``which`` so a ``claude`` binary appears available; if
+        # the fixture were (incorrectly) routing through the relaxed
+        # Anthropic guard this test would silently pass under it.
+        import clauditor._anthropic as _anthropic
+
+        monkeypatch.setattr(
+            _anthropic.shutil, "which", lambda name: "/usr/local/bin/claude"
+        )
+        request = self._request()
+        factory = clauditor_grader.__wrapped__(
+            request, self._stub_spec_factory()
+        )
+        with pytest.raises(OpenAIAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md")
+        # Confirm we surface the OPENAI message, not the Anthropic one.
+        msg = str(excinfo.value)
+        assert "OPENAI_API_KEY" in msg
+        assert "platform.openai.com" in msg
+
+    def test_triggers_openai_provider_allow_cli_env_is_noop(
+        self, tmp_path, monkeypatch
+    ):
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "1")
+        import clauditor._anthropic as _anthropic
+
+        monkeypatch.setattr(
+            _anthropic.shutil, "which", lambda name: "/usr/local/bin/claude"
+        )
+        request = self._request()
+        factory = clauditor_triggers.__wrapped__(
+            request, self._stub_spec_factory()
+        )
+        with pytest.raises(OpenAIAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md")
+        msg = str(excinfo.value)
+        assert "OPENAI_API_KEY" in msg
+
+    def test_blind_compare_openai_provider_allow_cli_env_is_noop(
+        self, tmp_path, monkeypatch
+    ):
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "1")
+        import clauditor._anthropic as _anthropic
+
+        monkeypatch.setattr(
+            _anthropic.shutil, "which", lambda name: "/usr/local/bin/claude"
+        )
+        request = self._blind_compare_request()
+        factory = clauditor_blind_compare.__wrapped__(
+            request, self._stub_spec_factory()
+        )
+        with pytest.raises(OpenAIAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md", "a", "b")
+        msg = str(excinfo.value)
+        assert "OPENAI_API_KEY" in msg
+
+    # ------------------------------------------------------------------
+    # T4: provider unset (None in spec) + ANTHROPIC_API_KEY set →
+    #     existing Anthropic happy path.
+    # ------------------------------------------------------------------
+
+    def test_grader_provider_none_falls_back_to_anthropic(
+        self, tmp_path, monkeypatch
+    ):
+        """Unset ``grading_provider`` defaults to ``"anthropic"``."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        request = self._request()
+
+        _sentinel = RuntimeError("anthropic happy path reached")
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = None
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            spec.run.side_effect = _sentinel
+            return spec
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(RuntimeError) as excinfo:
+            factory(tmp_path / "skill.md")
+        assert excinfo.value is _sentinel
+
+    def test_grader_eval_spec_none_falls_back_to_anthropic(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec with ``eval_spec=None`` resolves provider to ``"anthropic"``."""
+        from clauditor._providers import AnthropicAuthMissingError
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        request = self._request()
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = None
+            return spec
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(AnthropicAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md")
+        assert "ANTHROPIC_API_KEY" in str(excinfo.value)
+
+    # ------------------------------------------------------------------
+    # T5: provider="anthropic" explicit + CLAUDITOR_FIXTURE_ALLOW_CLI=1
+    #     → existing relaxed-guard behavior preserved (CLI on PATH
+    #     passes the guard).
+    # ------------------------------------------------------------------
+
+    def test_grader_anthropic_provider_explicit_allow_cli_relaxed(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "1")
+        import clauditor._anthropic as _anthropic
+
+        monkeypatch.setattr(
+            _anthropic.shutil, "which", lambda name: "/usr/local/bin/claude"
+        )
+        request = self._request()
+
+        # Guard passes → spec.run sentinel proves the relaxed check
+        # accepted CLI presence as auth.
+        _sentinel = RuntimeError("relaxed guard accepted CLI")
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "anthropic"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            spec.run.side_effect = _sentinel
+            return spec
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(RuntimeError) as excinfo:
+            factory(tmp_path / "skill.md")
+        assert excinfo.value is _sentinel
