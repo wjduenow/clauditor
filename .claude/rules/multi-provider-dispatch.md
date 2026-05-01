@@ -90,10 +90,12 @@ def check_provider_auth(provider: str, cmd_name: str) -> None:
 - **One dispatcher seam, N provider branches.** A future
   `provider="vertex"` is one new `if provider == "vertex"` branch
   in `check_provider_auth` plus one new `VertexAuthMissingError`
-  class. No CLI command needs editing — they already pass the
-  resolved provider through the dispatcher and catch all known
-  auth-missing exceptions. This is the linear-extensibility
-  property the centralized dispatcher buys.
+  class. CLI commands DO require one mechanical edit per
+  command — adding a new ``except VertexAuthMissingError``
+  branch to each ladder per the rollout recipe in "When this
+  rule applies" below. That edit shape is uniform copy-paste
+  with no new control-flow logic; uniformity is the
+  linear-extensibility property the centralized dispatcher buys.
 - **Distinct exception classes per provider.** A common ancestor
   (`AuthMissingError`) would defeat the structural-routing
   invariant: every `except AnthropicAuthMissingError` ladder

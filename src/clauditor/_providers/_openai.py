@@ -74,6 +74,7 @@ from clauditor._providers._retry import (
     RATE_LIMIT_MAX_RETRIES,
     SERVER_MAX_RETRIES,
     compute_backoff,
+    compute_retry_decision,
 )
 
 # Module-level alias per .claude/rules/monotonic-time-indirection.md.
@@ -373,7 +374,15 @@ async def call_openai(
                 max_output_tokens=max_tokens,
             )
         except RateLimitError as exc:
-            if rate_limit_retries >= RATE_LIMIT_MAX_RETRIES:
+            # PR #160 review (CodeRabbit): use the shared
+            # ``compute_retry_decision`` policy helper so the
+            # SDK and CLI branches (and the Anthropic backend)
+            # all consult the same per-category ladder. Per-attempt
+            # error messages stay byte-identical for fixture parity.
+            if (
+                compute_retry_decision("rate_limit", rate_limit_retries)
+                == "raise"
+            ):
                 raise OpenAIHelperError(
                     f"OpenAI rate limit (429) after "
                     f"{RATE_LIMIT_MAX_RETRIES} retries. Body: "
@@ -399,7 +408,7 @@ async def call_openai(
                     f"({status}): {exc.message}. Body: "
                     f"{_body_excerpt(exc)}"
                 ) from exc
-            if server_retries >= SERVER_MAX_RETRIES:
+            if compute_retry_decision("api", server_retries) == "raise":
                 raise OpenAIHelperError(
                     f"OpenAI server error ({status}) after "
                     f"{SERVER_MAX_RETRIES} retry. Body: "
@@ -410,7 +419,7 @@ async def call_openai(
             await _sleep(delay)
             continue
         except APIConnectionError as exc:
-            if conn_retries >= CONN_MAX_RETRIES:
+            if compute_retry_decision("connection", conn_retries) == "raise":
                 raise OpenAIHelperError(
                     f"OpenAI connection error after "
                     f"{CONN_MAX_RETRIES} retry: "

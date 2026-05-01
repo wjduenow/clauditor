@@ -50,7 +50,8 @@ except OpenAIHelperError as exc:
     # exception class keeps the CLI's ``except`` ladder structural.
     print(f"ERROR: {exc}", file=sys.stderr)
     raise
-response_text = result.text_blocks[0] if result.text_blocks else ""
+response_text = result.response_text  # joined text across all blocks
+# Per-block access still available via result.text_blocks if needed.
 # result.input_tokens / result.output_tokens for metrics
 # result.raw_message for refusal / tool-use inspection
 # result.provider in {"anthropic", "openai"}; result.source in
@@ -125,7 +126,7 @@ async def call_openai(
     prompt: str,
     *,
     model: str,
-    transport: str = "auto",  # accepted for signature parity; ignored
+    transport: Literal["api", "cli", "auto"] = "auto",  # accepted for signature parity; ignored
     max_tokens: int = 4096,
 ) -> ModelResult:
     # Defense-in-depth: catch (TypeError, OpenAIError) at AsyncOpenAI()
@@ -148,15 +149,23 @@ async def call_openai(
 
 ## Why this shape
 
-- **One retry taxonomy, consistently applied across providers**:
-  - `RateLimitError` (HTTP 429) → up to 3 retries (4 attempts total).
-  - `APIStatusError` with `status_code >= 500` → 1 retry then raise.
-  - `APIStatusError` 4xx (other than 401/403) → no retry; raise
-    immediately (bad request, not found, conflict, etc).
-  - `AuthenticationError` (401) / `PermissionDeniedError` (403) → no
-    retry; raise immediately with a message pointing at the
-    provider's API-key env var.
-  - `APIConnectionError` → 1 retry then raise.
+- **One retry taxonomy, consistently applied across providers**.
+  Categories are property-based (HTTP status / error kind), not
+  literal SDK exception class names — each provider's per-SDK
+  exceptions are mapped into these categories at the call site.
+  Contributors must NOT catch provider-specific exceptions at call
+  sites; the centralized helper owns categorization.
+  - **rate-limit category** (HTTP 429) → up to 3 retries (4 attempts
+    total). `RATE_LIMIT_MAX_RETRIES = 3`.
+  - **server-error category** (HTTP 5xx) → 1 retry then raise.
+    `SERVER_MAX_RETRIES = 1`.
+  - **client-error category** (HTTP 4xx other than 401/403) → no
+    retry; raise immediately (bad request, not found, conflict, etc).
+  - **auth/permission category** (401/403) → no retry; raise
+    immediately with a message pointing at the provider's API-key
+    env var.
+  - **connection category** (transport-level connection failure) →
+    1 retry then raise. `CONN_MAX_RETRIES = 1`.
   Both Anthropic and OpenAI backends share the same per-category
   retry caps (`RATE_LIMIT_MAX_RETRIES=3`, `SERVER_MAX_RETRIES=1`,
   `CONN_MAX_RETRIES=1`) and the same exponential-backoff formula

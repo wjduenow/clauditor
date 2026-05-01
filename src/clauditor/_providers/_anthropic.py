@@ -517,7 +517,16 @@ async def _call_via_sdk(
                 messages=[{"role": "user", "content": prompt}],
             )
         except RateLimitError as exc:
-            if rate_limit_retries >= RATE_LIMIT_MAX_RETRIES:
+            # PR #160 review (CodeRabbit): use the shared
+            # ``compute_retry_decision`` policy helper so the SDK
+            # branch and CLI branch (and the OpenAI backend) all
+            # consult the same per-category ladder. Per-attempt
+            # error messages stay byte-identical for fixture
+            # parity with prior tests.
+            if (
+                compute_retry_decision("rate_limit", rate_limit_retries)
+                == "raise"
+            ):
                 raise AnthropicHelperError(
                     f"Anthropic rate limit ({exc.status_code}) after "
                     f"{RATE_LIMIT_MAX_RETRIES} retries. Body: "
@@ -543,7 +552,7 @@ async def _call_via_sdk(
                     f"({status}): {exc.message}. Body: "
                     f"{_body_excerpt(exc)}"
                 ) from exc
-            if server_retries >= SERVER_MAX_RETRIES:
+            if compute_retry_decision("api", server_retries) == "raise":
                 raise AnthropicHelperError(
                     f"Anthropic server error ({status}) after "
                     f"{SERVER_MAX_RETRIES} retry. Body: "
@@ -554,7 +563,7 @@ async def _call_via_sdk(
             await _sleep(delay)
             continue
         except APIConnectionError as exc:
-            if conn_retries >= CONN_MAX_RETRIES:
+            if compute_retry_decision("connection", conn_retries) == "raise":
                 raise AnthropicHelperError(
                     f"Anthropic connection error after "
                     f"{CONN_MAX_RETRIES} retry: "
