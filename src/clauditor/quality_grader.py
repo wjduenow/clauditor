@@ -1175,7 +1175,7 @@ async def grade_quality(
     """Layer 3: Grade skill output against rubric criteria using an LLM.
 
     Thin async wrapper: builds a prompt, issues up to
-    :data:`_GRADER_PARSE_RETRY_LIMIT` Anthropic calls (one retry on
+    :data:`_GRADER_PARSE_RETRY_LIMIT` provider-routed model calls (one retry on
     malformed-JSON response — see clauditor-6cf / #94), parses the
     response, and returns a :class:`GradingReport`. Token counts and
     duration accumulate across attempts. Retry is NOT triggered on

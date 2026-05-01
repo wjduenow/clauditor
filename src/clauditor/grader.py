@@ -798,14 +798,17 @@ async def _extract_call_with_retry(
     transport: str,
     ctx: str,
 ) -> tuple[str, str, str, int, int]:
-    """Issue the extraction Anthropic call with parse retry.
+    """Issue the extraction model call with parse retry.
 
     Returns ``(response_text, source, provider, input_tokens, output_tokens)``
     — the final attempt's response text, the transport source, the
     provider that produced the response, and cumulative token counts
-    across attempts. One retry on ``kind == "json"`` (true decode
-    failures + empty-after-fence-strip) per clauditor-6cf / #94; no
-    retry on ``kind == "shape"`` (valid JSON, wrong top-level type) or
+    across attempts. Routes through ``call_model`` per the
+    spec-resolved provider (``eval_spec.grading_provider``), so the
+    retry semantics apply to whichever backend handles the call.
+    One retry on ``kind == "json"`` (true decode failures +
+    empty-after-fence-strip) per clauditor-6cf / #94; no retry on
+    ``kind == "shape"`` (valid JSON, wrong top-level type) or
     ``kind == "flat_list"`` (section tiering missing) — both indicate
     a model-protocol bug rather than a transient hiccup.
     """
@@ -869,7 +872,7 @@ async def extract_and_grade(
     """Layer 2: Extract structured data with Haiku, then validate against schema.
 
     Thin async wrapper: builds a prompt, issues up to
-    :data:`_GRADER_PARSE_RETRY_LIMIT` Anthropic calls (one retry on
+    :data:`_GRADER_PARSE_RETRY_LIMIT` provider-routed model calls (one retry on
     malformed-JSON response — see clauditor-6cf / #94), parses the
     response, and returns an :class:`AssertionSet`. All verdict logic
     lives in the pure helpers :func:`build_extraction_prompt`,
@@ -910,7 +913,7 @@ async def extract_and_report(
     """Layer 2 wrapper that returns a field-id-keyed :class:`ExtractionReport`.
 
     Thin async wrapper: builds a prompt, issues up to
-    :data:`_GRADER_PARSE_RETRY_LIMIT` Anthropic calls (one retry on
+    :data:`_GRADER_PARSE_RETRY_LIMIT` provider-routed model calls (one retry on
     malformed-JSON response — see clauditor-6cf / #94), parses the
     response, and aggregates an :class:`ExtractionReport`. All verdict
     logic lives in the pure helpers :func:`build_extraction_prompt`,
