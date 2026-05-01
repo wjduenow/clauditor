@@ -259,7 +259,20 @@ class EvalSpec:
     # str}`` when loaded via ``from_file`` per DEC-001 (#25). Consumers must
     # normalize via ``criterion_text()``.
     grading_criteria: list = field(default_factory=list)
-    grading_model: str = "claude-sonnet-4-6"
+    # DEC-004a of #146 (US-003 scope): nullable migration. Field type
+    # promoted from ``str`` to ``str | None`` so #145-vintage specs
+    # that emit ``"grading_model": null`` round-trip cleanly. The
+    # dataclass default is preserved (``"claude-sonnet-4-6"``) — the
+    # default-flip from a hardcoded string to ``None`` (so the
+    # provider-aware ``_resolve_grading_model`` helper from US-001
+    # can pick a sensible per-provider default) is deferred until a
+    # follow-up story normalizes the ~10 production call sites that
+    # read ``eval_spec.grading_model`` directly via patterns like
+    # ``args.model or spec.eval_spec.grading_model``. ``_validate_provider_model``
+    # in ``quality_grader.py`` continues to guard the live runtime
+    # invariants. Bool guard at load time per
+    # ``.claude/rules/constant-with-type-info.md``.
+    grading_model: str | None = "claude-sonnet-4-6"
     output_file: str | None = None  # Single output file path
     output_files: list[str] = field(default_factory=list)  # Multiple file paths/globs
     trigger_tests: TriggerTests | None = None
@@ -813,6 +826,29 @@ class EvalSpec:
                 min_mean_score=gt.get("min_mean_score", 0.5),
             )
 
+        # DEC-004a of #146 (US-003 scope): nullable migration for
+        # ``grading_model``. Default preserved (``"claude-sonnet-4-6"``);
+        # explicit ``null`` accepted and round-trips as ``None`` so
+        # #145-vintage specs that emit ``"grading_model": null`` keep
+        # loading cleanly. Bool guard first per
+        # ``.claude/rules/constant-with-type-info.md``.
+        grading_model: str | None = "claude-sonnet-4-6"
+        if "grading_model" in data:
+            raw_grading_model = data["grading_model"]
+            if raw_grading_model is None:
+                grading_model = None
+            elif isinstance(raw_grading_model, bool) or not isinstance(
+                raw_grading_model, str
+            ):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'grading_model' must be a string or null, got "
+                    f"{type(raw_grading_model).__name__} "
+                    f"{raw_grading_model!r}"
+                )
+            else:
+                grading_model = raw_grading_model
+
         return cls(
             skill_name=skill_name,
             description=data.get("description", ""),
@@ -823,7 +859,7 @@ class EvalSpec:
             assertions=data.get("assertions", []),
             sections=sections,
             grading_criteria=data.get("grading_criteria", []),
-            grading_model=data.get("grading_model", "claude-sonnet-4-6"),
+            grading_model=grading_model,
             output_file=data.get("output_file"),
             output_files=data.get("output_files", []),
             trigger_tests=trigger_tests,
@@ -891,6 +927,12 @@ class EvalSpec:
                 for s in self.sections
             ],
             "grading_criteria": self.grading_criteria,
+            # DEC-004a of #146 (US-003 scope): nullable migration. Field
+            # is now ``str | None``; default ``"claude-sonnet-4-6"``
+            # preserved. Emit unconditionally (including when ``None``,
+            # serialized as JSON ``null``) so explicit-null specs round-
+            # trip cleanly through the new from_dict accept-``None``
+            # branch and the existing default keeps emitting verbatim.
             "grading_model": self.grading_model,
         }
         if not self.allow_hang_heuristic:
