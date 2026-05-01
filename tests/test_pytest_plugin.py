@@ -735,6 +735,33 @@ class TestClauditorTriggersFactory:
             factory(tmp_path / "skill.md")
 
 
+class TestClauditorBlindCompareFactory:
+    """Direct coverage of clauditor_blind_compare error branch."""
+
+    def test_raises_value_error_when_spec_lacks_eval(self, tmp_path):
+        """Blind-compare factory raises ValueError if spec.eval_spec
+        is None — validates the spec shape BEFORE the auth dispatch
+        per CodeRabbit fix on PR #163, so a missing eval.json
+        surfaces as the actual problem rather than being masked by
+        an auth-missing error.
+        """
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {"--clauditor-model": "claude-sonnet-4-6"}.get(opt)
+        )
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            mock_spec = MagicMock()
+            mock_spec.eval_spec = None
+            return mock_spec
+
+        factory = clauditor_blind_compare.__wrapped__(
+            request, fake_clauditor_spec
+        )
+        with pytest.raises(ValueError, match="No eval spec found"):
+            factory(tmp_path / "skill.md", "output A", "output B")
+
+
 class TestClauditorNoApiKeyOption:
     """US-007: ``--clauditor-no-api-key`` pytest option parity.
 
