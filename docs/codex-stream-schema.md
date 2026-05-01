@@ -207,19 +207,30 @@ firing in that case. The tempfile **path** is recorded in
 consumer — the file itself is deleted by the time a caller reads
 metadata.
 
-## Auth precedence
+## Auth source detection (clauditor's probe order)
 
-Codex's auth lookup order: (1) `CODEX_API_KEY`, (2) `OPENAI_API_KEY`,
+`_detect_auth_source` (see `_codex.py:1154`) probes auth sources in
+this deterministic order: (1) `CODEX_API_KEY`, (2) `OPENAI_API_KEY`,
 (3) cached auth at `$CODEX_HOME/auth.json` (default
-`~/.codex/auth.json`), (4) interactive ChatGPT login (no-op in
-headless `codex exec --json` mode). `_detect_auth_source` (see
-`_codex.py:1154`) inspects the env (or `os.environ` when `env=None`)
-and resolves the first match. The result lands in
+`~/.codex/auth.json`), (4) `"unknown"` sentinel.
+
+Codex's own runtime precedence is `cached $CODEX_HOME/auth.json →
+CODEX_API_KEY → OPENAI_API_KEY → interactive`. Clauditor's probe
+order inverts this because env-var probes are cheaper than the
+cached-file probe — we resolve the first matching env var if set,
+falling through to the file probe only when no env var is present.
+For the headless `codex exec --json` invocation Codex never reaches
+its interactive-login fallback, so the four-state probe-order set
+(`{CODEX_API_KEY, OPENAI_API_KEY, cached, unknown}`) covers every
+detectable case.
+
+`_detect_auth_source` inspects the supplied `env` (or `os.environ`
+when `env=None`) and resolves the first match. The result lands in
 `harness_metadata["auth_source"]` and a one-shot stderr line per
-invoke (DEC-017): `clauditor.runner: codex auth=<source>[ (subject)]`
-where `<source>` ∈ `{CODEX_API_KEY, OPENAI_API_KEY, cached, unknown}`.
-Subject sanitization (CRLF → space, strip, 200-char cap) mirrors
-Claude's `apiKeySource` pattern.
+invoke (DEC-017): `clauditor.runner: codex auth=<source>[ (subject)]`.
+Subject sanitization (ANSI escape strip → CRLF → space → drop other
+C0/DEL controls → strip → 200-char cap) hardens the label against
+terminal-control-code injection in addition to the basic CRLF scrub.
 
 `strip_auth_keys` (DEC-012) removes three vars from a spawned child
 env: `CODEX_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL` (the

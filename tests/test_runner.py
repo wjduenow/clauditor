@@ -300,6 +300,24 @@ class TestHarnessProtocol:
             f"CodexHarness.invoke missing protocol parameters: {missing_invoke}"
         )
 
+        # Per ``.claude/rules/harness-protocol-shape.md``: ``runtime_checkable``
+        # does NOT enforce parameter kinds (positional vs keyword-only), so
+        # the explicit kind assertions below are what catch drift. ``cwd``,
+        # ``env``, ``timeout``, ``model``, ``subject`` are all keyword-only
+        # on the protocol — a refactor that drops the ``*,`` separator on
+        # ``CodexHarness.invoke`` would silently regress the signature parity
+        # this test is meant to enforce.
+        codex_invoke_sig = inspect.signature(codex.invoke)
+        for kw_only_param in ("cwd", "env", "timeout", "model", "subject"):
+            assert kw_only_param in codex_invoke_sig.parameters, (
+                f"CodexHarness.invoke missing parameter: {kw_only_param}"
+            )
+            kind = codex_invoke_sig.parameters[kw_only_param].kind
+            assert kind is inspect.Parameter.KEYWORD_ONLY, (
+                f"CodexHarness.invoke.{kw_only_param} must be keyword-only "
+                f"(got {kind!r})"
+            )
+
         # ``strip_auth_keys`` exists, takes ``env`` (positional), returns
         # a dict.
         strip_sig = inspect.signature(codex.strip_auth_keys)

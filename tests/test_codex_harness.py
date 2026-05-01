@@ -50,6 +50,7 @@ from clauditor._harnesses._codex import (  # noqa: E402
     _CODEX_COMMAND_OUTPUT_MAX_CHARS,
     _CODEX_STDERR_MAX_CHARS,
     _CODEX_STREAM_EVENTS_MAX_SIZE,
+    _PRESERVED_ENV_VARS_DOC,
     _RATE_LIMIT_PATTERNS,
     _RESULT_TEXT_MAX_CHARS,
     _STRIP_ENV_VARS,
@@ -122,6 +123,13 @@ class TestModuleConstants:
         assert "401" in lowered
         assert "403" in lowered
         assert "invalid api key" in lowered
+
+    def test_strip_set_disjoint_from_preserved_doc(self) -> None:
+        """DEC-012 drift-guard: every key in ``_STRIP_ENV_VARS`` must NOT
+        appear in ``_PRESERVED_ENV_VARS_DOC`` (and vice-versa). A future
+        contributor who adds a key to one set without realizing the other
+        already lists it would silently produce contradictory behavior."""
+        assert _STRIP_ENV_VARS.isdisjoint(_PRESERVED_ENV_VARS_DOC)
 
 
 class TestRunnerWarningPrefixes:
@@ -437,6 +445,41 @@ class TestFilterStderr:
         # Total length: cap + suffix.
         assert len(out) == _CODEX_STDERR_MAX_CHARS + len("... (truncated)")
 
+    def test_redacts_bare_sk_proj_key_without_anchor(self) -> None:
+        """Pass B regex layer: a stderr line carrying a bare
+        ``sk-proj-...`` key (no surrounding ``api_key`` /
+        ``Authorization`` anchor) is still redacted in full."""
+        text = "client init done\nsk-proj-abcDEF123456789012345xyz\nbye\n"
+        out = _filter_stderr(text)
+        assert "sk-proj-abcDEF123456789012345xyz" not in out
+        assert "<line redacted: matched auth-leak pattern>" in out
+        # Surrounding lines pass through untouched.
+        assert "client init done" in out
+        assert "bye" in out
+
+    def test_redacts_bare_bearer_token_without_anchor(self) -> None:
+        """Pass B regex layer: a bare ``Bearer <opaque>`` token (no
+        ``Authorization:`` label) is still redacted."""
+        text = "stack frame: Bearer abcdefghijklmnopqrstuvwx\n"
+        out = _filter_stderr(text)
+        assert "abcdefghijklmnopqrstuvwx" not in out
+        assert "<line redacted: matched auth-leak pattern>" in out
+
+    def test_multi_line_with_one_bad_line_only_that_line_redacted(self) -> None:
+        """Defense: only the line containing the key shape is redacted;
+        the surrounding clean lines pass through unmodified."""
+        text = (
+            "INFO 2026-04-30T01:02:03Z starting\n"
+            "DEBUG  http header sk-proj-LEAKEDsomething123456789x\n"
+            "INFO 2026-04-30T01:02:04Z done\n"
+        )
+        out = _filter_stderr(text)
+        assert "sk-proj-LEAKEDsomething123456789x" not in out
+        assert "<line redacted: matched auth-leak pattern>" in out
+        # Other lines preserved verbatim.
+        assert "INFO 2026-04-30T01:02:03Z starting" in out
+        assert "INFO 2026-04-30T01:02:04Z done" in out
+
 
 # ---------------------------------------------------------------------------
 # CodexHarness.strip_auth_keys (DEC-012, US-002)
@@ -526,18 +569,47 @@ class TestCodexHarnessStripAuthKeys:
         # And the returned dict is genuinely a different object.
         assert scrubbed is not env
 
-    def test_none_input_reads_os_environ(self, monkeypatch) -> None:
-        """``strip_auth_keys(None)`` reads ``os.environ`` so the
-        helper composes with ``call_codex(env=None)`` callers."""
+    def test_no_args_raises_typeerror(self) -> None:
+        """``strip_auth_keys`` mirrors the ``Harness`` protocol exactly:
+        ``env`` is a required positional parameter. Calling without args
+        raises ``TypeError``, matching ``ClaudeCodeHarness`` and
+        ``MockHarness``. Callers who want process-env behavior pass
+        :data:`os.environ` explicitly."""
+        import pytest
+
+        with pytest.raises(TypeError):
+            CodexHarness().strip_auth_keys()  # type: ignore[call-arg]
+
+    def test_explicit_os_environ_passthrough(self, monkeypatch) -> None:
+        """Operators who want to scrub the live process env pass
+        :data:`os.environ` explicitly rather than relying on a default."""
+        import os
+
         monkeypatch.setenv("CODEX_API_KEY", "sk-from-env")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-also-from-env")
         monkeypatch.setenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
         monkeypatch.setenv("FOO_FROM_ENV", "preserved")
-        scrubbed = CodexHarness().strip_auth_keys(None)
+        scrubbed = CodexHarness().strip_auth_keys(dict(os.environ))
         assert "CODEX_API_KEY" not in scrubbed
         assert "OPENAI_API_KEY" not in scrubbed
         assert "OPENAI_BASE_URL" not in scrubbed
         assert scrubbed.get("FOO_FROM_ENV") == "preserved"
+
+    def test_case_insensitive_strip(self) -> None:
+        """DEC-012 / Pass B: lowercase variants of the strip-set keys
+        are also removed — defense-in-depth against environments that
+        surface inconsistent casing."""
+        env = {
+            "openai_api_key": "sk-lower",
+            "OPENAI_API_KEY": "sk-upper",
+            "Codex_Api_Key": "sk-mixed",
+            "PATH": "/usr/bin",
+        }
+        scrubbed = CodexHarness().strip_auth_keys(env)
+        assert "openai_api_key" not in scrubbed
+        assert "OPENAI_API_KEY" not in scrubbed
+        assert "Codex_Api_Key" not in scrubbed
+        assert scrubbed["PATH"] == "/usr/bin"
 
     def test_empty_input_returns_empty_dict(self) -> None:
         """Edge case: empty input dict yields empty output dict
@@ -546,6 +618,73 @@ class TestCodexHarnessStripAuthKeys:
         scrubbed = CodexHarness().strip_auth_keys(env)
         assert scrubbed == {}
         assert scrubbed is not env
+
+
+# ---------------------------------------------------------------------------
+# CodexHarness._sanitize_subject (DEC-009 + Pass B hardening)
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeSubject:
+    """``_sanitize_subject`` strips ANSI escape sequences, C0 control
+    characters, and DEL — defense-in-depth around the
+    ``clauditor.runner: codex ... (subject)`` stderr line so a hostile
+    label cannot inject terminal-control codes (cursor moves, color
+    resets, OSC hyperlinks) into operator-facing output.
+    """
+
+    def test_none_input_returns_none(self) -> None:
+        assert CodexHarness._sanitize_subject(None) is None
+
+    def test_empty_string_returns_none(self) -> None:
+        assert CodexHarness._sanitize_subject("") is None
+
+    def test_whitespace_only_returns_none(self) -> None:
+        assert CodexHarness._sanitize_subject("   \t\n  ") is None
+
+    def test_basic_label_passthrough(self) -> None:
+        assert (
+            CodexHarness._sanitize_subject("L2 extraction") == "L2 extraction"
+        )
+
+    def test_crlf_replaced_with_spaces(self) -> None:
+        out = CodexHarness._sanitize_subject("a\r\nb")
+        assert out == "a  b"
+
+    def test_strips_ansi_color_codes(self) -> None:
+        """An ANSI CSI sequence (``\\x1b[31m...``) is stripped — the
+        visible characters survive, the escape itself is gone."""
+        out = CodexHarness._sanitize_subject("\x1b[31mFAIL\x1b[0m grading")
+        assert out == "FAIL grading"
+        assert "\x1b" not in out
+
+    def test_strips_tab_and_null_byte(self) -> None:
+        """C0 controls (NUL through US) are dropped, leaving the visible
+        text behind."""
+        out = CodexHarness._sanitize_subject("a\tb\x00c")
+        assert out == "abc"
+
+    def test_strips_del_character(self) -> None:
+        """DEL (``0x7F``) is also dropped per the C0 + DEL scrub."""
+        out = CodexHarness._sanitize_subject("foo\x7fbar")
+        assert out == "foobar"
+
+    def test_strips_osc_hyperlink(self) -> None:
+        """An ANSI OSC 8 hyperlink sequence (``\\x1b]8;;url\\x1b\\\\text...``)
+        is stripped before sanitization continues."""
+        out = CodexHarness._sanitize_subject(
+            "\x1b]8;;https://evil.example\x1b\\click here\x1b]8;;\x1b\\"
+        )
+        # The visible "click here" text survives; both OSC framings
+        # (open + close) are removed.
+        assert "click here" in out
+        assert "\x1b" not in out
+        assert "evil.example" not in out
+
+    def test_caps_at_200_chars(self) -> None:
+        out = CodexHarness._sanitize_subject("x" * 500)
+        assert out is not None
+        assert len(out) == 200
 
 
 # ---------------------------------------------------------------------------
@@ -1640,3 +1779,320 @@ class TestInvokeCodexExecErrorPaths:
         assert leaked == [], (
             f"clauditor_codex_* dirs leaked into {tempdir_root}: {leaked}"
         )
+
+    def test_temp_directory_deleted_on_timeout(
+        self, monkeypatch, tmp_path
+    ):
+        """The per-invocation TemporaryDirectory is cleaned up on the
+        watchdog-timeout path. Mirrors the turn-failed cleanup test, but
+        triggers via the synchronous ``_FakeTimer`` pattern from
+        ``test_timeout_invokes_killpg_on_posix``."""
+        import os as _os
+
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.setattr(_codex_mod.os, "name", "posix")
+
+        fake = make_fake_codex_stream("hi")
+        fake._fake_alive = True
+        original_poll = fake.poll
+
+        def _poll() -> int | None:
+            if fake._fake_alive:
+                return None
+            return original_poll()
+
+        fake.poll = _poll  # type: ignore[method-assign]
+
+        def _fake_getpgid(pid: int) -> int:
+            return pid + 1000
+
+        def _fake_killpg(pgid: int, sig: int) -> None:
+            fake._fake_alive = False
+            fake._killed = True
+            fake.returncode = -9
+
+        monkeypatch.setattr(_codex_mod.os, "getpgid", _fake_getpgid)
+        monkeypatch.setattr(_codex_mod.os, "killpg", _fake_killpg)
+        self._patch_popen(monkeypatch, fake)
+
+        class _FakeTimer:
+            def __init__(self, interval, function):
+                self._function = function
+
+            def start(self) -> None:
+                self._function()
+
+            def cancel(self) -> None:
+                pass
+
+            @property
+            def daemon(self) -> bool:
+                return True
+
+            @daemon.setter
+            def daemon(self, value: bool) -> None:
+                pass
+
+        monkeypatch.setattr(_codex_mod.threading, "Timer", _FakeTimer)
+
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        # Timeout fired and was recorded.
+        assert result.error == "timeout"
+        last_path = result.harness_metadata.get("last_message_path")
+        assert isinstance(last_path, str)
+        # Tempdir cleaned up by ``with TemporaryDirectory():`` context exit.
+        assert not _os.path.exists(last_path)
+        assert not _os.path.exists(_os.path.dirname(last_path))
+
+    def test_temp_directory_deleted_on_parse_exception(
+        self, monkeypatch, tmp_path
+    ):
+        """When an unexpected exception (NOT ``json.JSONDecodeError``)
+        escapes the parse loop, the per-invocation TemporaryDirectory
+        must still be cleaned up by the ``with TemporaryDirectory():``
+        context manager. Mirrors ClaudeCodeHarness's exception-during-
+        parse contract: only ``JSONDecodeError`` is swallowed; any
+        other exception propagates while cleanup runs."""
+        import os as _os
+        import tempfile as _tempfile
+
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        tempdir_root = _tempfile.gettempdir()
+        before = {
+            d
+            for d in _os.listdir(tempdir_root)
+            if d.startswith("clauditor_codex_")
+        }
+
+        original_loads = _codex_mod.json.loads
+
+        def _exploding_loads(*args, **kwargs):
+            # First and only call raises a non-JSONDecodeError exception
+            # so the parse loop's narrow ``except json.JSONDecodeError``
+            # does NOT catch it. The exception propagates out of the
+            # parse loop, but the surrounding ``with TemporaryDirectory()``
+            # context cleans up the staging dir on the way through.
+            raise RuntimeError("simulated parser internal error")
+
+        monkeypatch.setattr(_codex_mod.json, "loads", _exploding_loads)
+
+        fake = make_fake_codex_stream("hi")
+        self._patch_popen(monkeypatch, fake)
+
+        # The exception MUST propagate (matches ClaudeCodeHarness.invoke
+        # which only catches JSONDecodeError on the inner json.loads).
+        import pytest
+
+        with pytest.raises(RuntimeError, match="simulated parser"):
+            CodexHarness().invoke("p", cwd=tmp_path, env=None, timeout=30)
+
+        # Restore json.loads so any subsequent test fixtures work.
+        monkeypatch.setattr(_codex_mod.json, "loads", original_loads)
+
+        # No clauditor_codex_* dir leaked despite the exception.
+        after = {
+            d
+            for d in _os.listdir(tempdir_root)
+            if d.startswith("clauditor_codex_")
+        }
+        leaked = sorted(after - before)
+        assert leaked == [], (
+            f"clauditor_codex_* dirs leaked into {tempdir_root}: {leaked}"
+        )
+
+    def test_sigkill_after_sigterm_grace_when_codex_survives(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-014 (POSIX): if the child is still alive after SIGTERM
+        + 250 ms grace, the kill helper escalates to SIGKILL. Drive the
+        escalation by making ``proc.wait(timeout=0.25)`` raise
+        ``TimeoutExpired`` once via the ``_FakeCodexPopen.wait()``
+        knob, then verify two killpg calls (SIGTERM, SIGKILL)."""
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.setattr(_codex_mod.os, "name", "posix")
+
+        # ``wait_raises_timeout_count=1`` makes the post-SIGTERM
+        # ``proc.wait(timeout=0.25)`` raise once, so the kill helper
+        # escalates to SIGKILL on the same path.
+        fake = make_fake_codex_stream("hi")
+        fake._wait_raises_timeout_count = 1
+        fake._fake_alive = True
+        original_poll = fake.poll
+
+        def _poll() -> int | None:
+            if fake._fake_alive:
+                return None
+            return original_poll()
+
+        fake.poll = _poll  # type: ignore[method-assign]
+
+        killpg_calls: list[tuple[int, int]] = []
+
+        def _fake_getpgid(pid: int) -> int:
+            return pid + 1000
+
+        def _fake_killpg(pgid: int, sig: int) -> None:
+            killpg_calls.append((pgid, sig))
+            # Only mark dead AFTER SIGKILL escalates so the SIGTERM
+            # arm sees the wait timeout and falls through to SIGKILL.
+            if sig == _codex_mod.signal.SIGKILL:
+                fake._fake_alive = False
+                fake._killed = True
+                fake.returncode = -9
+
+        monkeypatch.setattr(_codex_mod.os, "getpgid", _fake_getpgid)
+        monkeypatch.setattr(_codex_mod.os, "killpg", _fake_killpg)
+        self._patch_popen(monkeypatch, fake)
+
+        class _FakeTimer:
+            def __init__(self, interval, function):
+                self._function = function
+
+            def start(self) -> None:
+                self._function()
+
+            def cancel(self) -> None:
+                pass
+
+            @property
+            def daemon(self) -> bool:
+                return True
+
+            @daemon.setter
+            def daemon(self, value: bool) -> None:
+                pass
+
+        monkeypatch.setattr(_codex_mod.threading, "Timer", _FakeTimer)
+
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        # Both SIGTERM and SIGKILL fired.
+        sigs = [sig for _, sig in killpg_calls]
+        assert _codex_mod.signal.SIGTERM in sigs
+        assert _codex_mod.signal.SIGKILL in sigs
+        # SIGTERM came first.
+        assert sigs.index(_codex_mod.signal.SIGTERM) < sigs.index(
+            _codex_mod.signal.SIGKILL
+        )
+        assert result.error == "timeout"
+
+    def test_windows_kill_after_terminate_grace(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-014 (Windows): if the child survives ``terminate()`` +
+        250 ms grace, the kill helper escalates to ``proc.kill()``.
+        Same shape as the POSIX SIGKILL escalation test but routed
+        through the Windows fallback path."""
+        import clauditor._harnesses._codex as _codex_mod
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.setattr(_codex_mod.os, "name", "nt")
+
+        fake = make_fake_codex_stream("hi")
+        fake._wait_raises_timeout_count = 1
+        fake._fake_alive = True
+        original_poll = fake.poll
+
+        def _poll() -> int | None:
+            if fake._fake_alive:
+                return None
+            return original_poll()
+
+        fake.poll = _poll  # type: ignore[method-assign]
+
+        # Wrap terminate() and kill() to record call order.
+        call_order: list[str] = []
+        original_terminate = fake.terminate
+        original_kill = fake.kill
+
+        def _terminate() -> None:
+            call_order.append("terminate")
+            original_terminate()
+            # Don't actually mark dead — let kill() do it.
+            fake._killed = False
+            fake.returncode = 0
+            fake._fake_alive = True
+
+        def _kill() -> None:
+            call_order.append("kill")
+            original_kill()
+            fake._fake_alive = False
+
+        fake.terminate = _terminate  # type: ignore[method-assign]
+        fake.kill = _kill  # type: ignore[method-assign]
+
+        # Forbid killpg on Windows.
+        def _killpg_forbidden(*args, **kwargs):
+            raise AssertionError(
+                "killpg must not be called on Windows path"
+            )
+
+        monkeypatch.setattr(_codex_mod.os, "killpg", _killpg_forbidden)
+        self._patch_popen(monkeypatch, fake)
+
+        class _FakeTimer:
+            def __init__(self, interval, function):
+                self._function = function
+
+            def start(self) -> None:
+                self._function()
+
+            def cancel(self) -> None:
+                pass
+
+            @property
+            def daemon(self) -> bool:
+                return True
+
+            @daemon.setter
+            def daemon(self, value: bool) -> None:
+                pass
+
+        monkeypatch.setattr(_codex_mod.threading, "Timer", _FakeTimer)
+
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        # Both terminate and kill fired, in order.
+        assert "terminate" in call_order
+        assert "kill" in call_order
+        assert call_order.index("terminate") < call_order.index("kill")
+        assert result.error == "timeout"
+
+    def test_codex_deprecation_warning_detected_on_stderr(
+        self, monkeypatch, tmp_path
+    ):
+        """DEC-018: a stderr line containing both ``warning:`` and
+        ``deprecated`` produces a single ``codex-deprecation:``-prefixed
+        advisory warning. Wires the previously-defined-but-unused
+        ``_CODEX_DEPRECATION_WARNING_PREFIX`` constant."""
+        from clauditor._harnesses._codex import CodexHarness
+
+        fake = make_fake_codex_stream(
+            "hi",
+            stderr_lines=[
+                "warning: --json flag is deprecated; use --jsonl instead",
+                "starting codex",
+            ],
+        )
+        self._patch_popen(monkeypatch, fake)
+        result = CodexHarness().invoke(
+            "p", cwd=tmp_path, env=None, timeout=30
+        )
+        # One advisory warning with the documented prefix.
+        deprecation_warnings = [
+            w for w in result.warnings if w.startswith("codex-deprecation:")
+        ]
+        assert len(deprecation_warnings) == 1
+        assert "deprecated" in deprecation_warnings[0]
+        # Advisory: NOT a failure.
+        assert result.error_category is None

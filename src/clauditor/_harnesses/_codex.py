@@ -3,9 +3,9 @@
 This module hosts the pure (no-I/O, no-global-state) helpers that
 classify and detect harness-specific signals on a ``codex exec
 --json`` capture. Each helper traces back to a DEC in
-``plans/super/149-codex-harness.md`` and is the canonical-
-implementation anchor in
-``.claude/rules/pure-compute-vs-io-split.md`` (sixth-anchor pattern).
+``plans/super/149-codex-harness.md`` and follows the anchor pattern
+codified in ``.claude/rules/pure-compute-vs-io-split.md`` (slated
+to land as the seventh anchor via US-007 of #149).
 
 US-001 ships only the module skeleton, constants, and four pure
 helpers — :func:`_classify_codex_failure`,
@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -41,9 +42,10 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from clauditor.runner import (
+    _CODEX_DEPRECATION_WARNING_PREFIX,
     _DROPPED_EVENTS_WARNING_PREFIX,
     _LAST_MESSAGE_EMPTY_WARNING_PREFIX,
     InvokeResult,
@@ -77,6 +79,15 @@ _STRIP_ENV_VARS = frozenset(
         "OPENAI_BASE_URL",
     }
 )
+
+
+# Case-insensitive lookup set used by :meth:`CodexHarness.strip_auth_keys`.
+# Built once at module import so the per-call filter is a constant-time
+# membership probe. Defense-in-depth against an environment that
+# accidentally surfaces a lowercase ``openai_api_key`` (some libraries
+# enforce key casing inconsistently on Windows / macOS); we match
+# regardless of case.
+_STRIP_ENV_VARS_LOWER = frozenset(s.lower() for s in _STRIP_ENV_VARS)
 
 
 # Documented preserved env vars per DEC-012. Listed here as a
@@ -181,6 +192,33 @@ _AUTH_LEAK_PATTERNS = (
 )
 
 
+# DEC-013 / Pass B — bare API-key-shaped tokens that must be redacted
+# even when no surrounding ``api_key`` / ``Authorization`` /
+# ``OPENAI_API_KEY=`` anchor is present. Two shapes:
+#
+# - ``sk-`` / ``sk-proj-`` keys (OpenAI key prefix) followed by a
+#   20+-char alphanumeric/underscore/dash body.
+# - ``Bearer <opaque>`` tokens — common in stack traces that surface
+#   a request header without a leading ``Authorization:`` label.
+#
+# Defense-in-depth: a stderr line carrying just ``sk-proj-XYZ...``
+# (or a bare ``Bearer`` token) would otherwise slip past the
+# substring-pattern filter, leaking the credential into warnings.
+_API_KEY_REGEX = re.compile(
+    r"(?:sk-(?:proj-)?[A-Za-z0-9_-]{20,})|(?:Bearer\s+\S{20,})"
+)
+
+
+# Pass B — ANSI escape sequence pattern used by :meth:`_sanitize_subject`.
+# Matches both CSI sequences (``\x1b[...<final>``) and OSC sequences
+# (``\x1b]...<terminator>``) so a stderr label carrying terminal color
+# codes or hyperlinks is stripped before landing in the
+# ``clauditor.runner: codex ... (subject)`` line.
+_ANSI_ESCAPE_RE = re.compile(
+    r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*[\x07\x1b]"
+)
+
+
 # Sentinel inserted in place of each redacted stderr line. The
 # parenthesized rationale tells the operator that *something* was
 # replaced (so silent-empty output is not the only signal).
@@ -227,7 +265,7 @@ _STREAM_EVENTS_TRUNCATED_WARNING_PREFIX = "stream-events-truncated:"
 
 def _classify_codex_failure(
     message: str | None,
-) -> tuple[str, str]:
+) -> tuple[str, Literal["rate_limit", "auth", "api"]]:
     """Classify a Codex error message string into ``(text, category)``.
 
     Pure helper. Codex surfaces failure text on
@@ -389,6 +427,14 @@ def _filter_stderr(stderr_text: str) -> str:
     # deterministic. If the input had a trailing newline, preserve it.
     trailing_newline = stderr_text.endswith("\n")
     for raw_line in stderr_text.splitlines():
+        # Layer 1 (Pass B): regex pass for bare API-key-shaped tokens
+        # that may appear without an ``api_key`` / ``Authorization``
+        # anchor. Runs BEFORE the substring layer so a redacted line
+        # is replaced atomically (we never half-redact).
+        if _API_KEY_REGEX.search(raw_line):
+            out_lines.append(_REDACTED_LINE_SENTINEL)
+            continue
+        # Layer 2: existing substring-anchor redaction (case-insensitive).
         lowered = raw_line.lower()
         if any(p.lower() in lowered for p in _AUTH_LEAK_PATTERNS):
             out_lines.append(_REDACTED_LINE_SENTINEL)
@@ -398,6 +444,9 @@ def _filter_stderr(stderr_text: str) -> str:
     if trailing_newline and rebuilt:
         rebuilt = rebuilt + "\n"
 
+    # Cap LAST so a redacted line that lands inside the cap stays fully
+    # redacted (substring-redaction is per-line, so a redacted prefix is
+    # already safe; this is defense-in-depth around the cap arithmetic).
     if len(rebuilt) > _CODEX_STDERR_MAX_CHARS:
         rebuilt = rebuilt[:_CODEX_STDERR_MAX_CHARS] + "... (truncated)"
     return rebuilt
@@ -454,9 +503,7 @@ class CodexHarness:
         self.codex_bin = codex_bin
         self.model = model
 
-    def strip_auth_keys(
-        self, env: dict[str, str] | None = None
-    ) -> dict[str, str]:
+    def strip_auth_keys(self, env: dict[str, str]) -> dict[str, str]:
         """Return a new env dict with Codex/OpenAI auth env vars removed.
 
         Pure, non-mutating per ``.claude/rules/non-mutating-scrub.md``.
@@ -466,12 +513,19 @@ class CodexHarness:
         to prevent an attacker-controlled value from routing Codex
         traffic to a malicious endpoint.
 
-        When ``env`` is ``None``, reads from :data:`os.environ` so the
-        helper composes with future ``call_codex(env=None)`` callers
-        without forcing each caller to materialize an env snapshot.
+        Comparison is case-insensitive: a key whose ``.lower()`` form
+        matches any entry in :data:`_STRIP_ENV_VARS_LOWER` is dropped.
+        Defense-in-depth against a host environment that surfaces a
+        lowercased ``openai_api_key`` (some libraries enforce key
+        casing inconsistently on Windows / macOS).
+
+        Signature parity with :class:`Harness` protocol — ``env`` is a
+        required positional parameter. Callers who want to read the
+        process environment must pass :data:`os.environ` explicitly.
         """
-        source = env if env is not None else os.environ
-        return {k: v for k, v in source.items() if k not in _STRIP_ENV_VARS}
+        return {
+            k: v for k, v in env.items() if k.lower() not in _STRIP_ENV_VARS_LOWER
+        }
 
     def build_prompt(
         self,
@@ -568,7 +622,9 @@ class CodexHarness:
         # stop appending events but keep reading stdout so the final
         # ``turn.completed`` (with token usage) still lands in
         # observability.
-        stream_events_size = 0
+        # Approximate byte count using raw line length; in-memory event
+        # size differs (tag added, command-output truncated). See DEC-015.
+        stream_events_bytes_seen = 0
         stream_events_truncated = False
         # One-shot warning flag for the command-output cap to avoid
         # log flooding under tool-heavy runs.
@@ -655,6 +711,13 @@ class CodexHarness:
                     # than a raw OSError traceback. ``error_category``
                     # stays ``None`` because the failure is local
                     # (subprocess never spawned), not provider-side.
+                    #
+                    # Per DEC-008 the four "always populated" metadata
+                    # keys land here too: ``last_message_path`` is the
+                    # empty string (no tempfile content was produced)
+                    # and ``turn_count`` is 0 (no turn started). The
+                    # contract is uniform regardless of which path
+                    # ``invoke`` returned through.
                     duration = _monotonic() - start
                     return InvokeResult(
                         output="",
@@ -665,18 +728,35 @@ class CodexHarness:
                         harness_metadata={
                             "sandbox_mode": _SANDBOX_MODE,
                             "auth_source": auth_source,
+                            "last_message_path": "",
+                            "turn_count": 0,
                             "model": effective_model,
                         },
                     )
 
                 # Write the prompt to stdin (Codex reads from stdin
                 # when invoked with the trailing ``-`` argv) and close
-                # so the child sees EOF.
+                # so the child sees EOF. ``BrokenPipeError`` /
+                # ``OSError`` here means the child closed its stdin
+                # before we finished writing — typically because Codex
+                # rejected the invocation early (auth failure, malformed
+                # argv) and is about to emit a top-level ``error`` event
+                # on stdout. Don't raise: append a warning and let the
+                # parse loop run normally — the watchdog/exit-code path
+                # produces a well-formed ``InvokeResult`` either way.
                 if proc.stdin is not None:
                     try:
                         proc.stdin.write(prompt)
+                    except (BrokenPipeError, OSError) as exc:
+                        warnings.append(
+                            "codex stdin closed before prompt fully written: "
+                            f"{type(exc).__name__}: {exc}"
+                        )
                     finally:
-                        proc.stdin.close()
+                        try:
+                            proc.stdin.close()
+                        except (BrokenPipeError, OSError):
+                            pass
 
                 # Drain stderr on a background thread so a chatty
                 # child does not deadlock by filling its PIPE buffer
@@ -860,9 +940,9 @@ class CodexHarness:
                             # the cap fires.
                             if not stream_events_truncated:
                                 stream_events.append(tagged_event)
-                                stream_events_size += len(line)
+                                stream_events_bytes_seen += len(line)
                                 if (
-                                    stream_events_size
+                                    stream_events_bytes_seen
                                     > _CODEX_STREAM_EVENTS_MAX_SIZE
                                 ):
                                     stream_events_truncated = True
@@ -883,11 +963,38 @@ class CodexHarness:
                 # avoid a race with the in-progress ``.append()``.
                 if stderr_thread is not None:
                     stderr_thread.join(timeout=2.0)
+                    if stderr_thread.is_alive():
+                        # Drainer didn't terminate in 2s — we'll read
+                        # ``stderr_chunks`` anyway, but operators need to
+                        # know the capture may be incomplete. The list
+                        # itself is append-only and Python's GIL makes a
+                        # snapshot read safe even mid-append; the
+                        # observability impact is "missing the trailing
+                        # bytes", not "garbled output".
+                        warnings.append(
+                            "codex stderr drainer still running after 2s; "
+                            "partial capture"
+                        )
                 stderr_text = "".join(stderr_chunks)
                 # DEC-013 hybrid stderr surfacing: filter (auth-leak
                 # redact) + cap at 8 KB before emitting as a warning.
                 if stderr_text:
-                    warnings.append(_filter_stderr(stderr_text))
+                    filtered = _filter_stderr(stderr_text)
+                    warnings.append(filtered)
+                    # DEC-018: detect a deprecation notice on Codex's
+                    # stderr (e.g. ``warning: --json is deprecated``)
+                    # AFTER redaction so a key-shaped token in the line
+                    # is not amplified into the warning channel. Emit a
+                    # single ``codex-deprecation:`` warning per invoke;
+                    # advisory — does NOT down-classify success.
+                    for raw_line in filtered.splitlines():
+                        lowered = raw_line.lower()
+                        if "warning:" in lowered and "deprecated" in lowered:
+                            warnings.append(
+                                f"{_CODEX_DEPRECATION_WARNING_PREFIX} "
+                                f"{raw_line}"
+                            )
+                            break
 
                 # DEC-013-ish: surface drainer + watchdog channel
                 # errors on the result.
@@ -974,9 +1081,12 @@ class CodexHarness:
                 # Timeout takes precedence over stream-level error:
                 # the user-facing message is "timeout", not the
                 # provider's last error before the watchdog fired.
+                final_category: (
+                    Literal["rate_limit", "auth", "api", "timeout"] | None
+                ) = None
                 if timed_out["hit"]:
                     final_error: str | None = "timeout"
-                    final_category: str | None = "timeout"
+                    final_category = "timeout"
                     final_exit_code = -1
                 else:
                     final_error = stream_error_text
@@ -1193,14 +1303,34 @@ class CodexHarness:
 
     @staticmethod
     def _sanitize_subject(subject: str | None) -> str | None:
-        """Apply DEC-009 sanitization: CRLF→space, strip, 200-char cap.
+        """Apply DEC-009 sanitization with defense-in-depth scrub.
 
-        Returns the sanitized string, or ``None`` if the input was
-        ``None`` / empty after sanitization.
+        Steps:
+
+        1. Strip ANSI CSI / OSC escape sequences (terminal color codes,
+           hyperlinks). A subject carrying ``\\x1b[31mFAIL\\x1b[0m`` would
+           otherwise corrupt the ``clauditor.runner: codex ... (subject)``
+           stderr line for every consumer that does not strip ANSI.
+        2. Translate CR / LF to spaces (existing DEC-009 behavior).
+        3. Drop every other C0 control character (``0x00``-``0x1F``)
+           and DEL (``0x7F``) — null bytes, tabs, vertical tabs, the
+           ``\\x07`` BEL, etc. all qualify. Visible characters survive.
+        4. Strip surrounding whitespace, then cap at 200 chars.
+
+        Returns ``None`` when the input was ``None`` or the result is
+        empty after sanitization.
         """
         if not subject:
             return None
-        cleaned = subject.replace("\r", " ").replace("\n", " ").strip()
+        cleaned = _ANSI_ESCAPE_RE.sub("", subject)
+        cleaned = cleaned.replace("\r", " ").replace("\n", " ")
+        cleaned = "".join(
+            ch
+            if (ord(ch) >= 0x20 and ord(ch) != 0x7F) or ch == " "
+            else ""
+            for ch in cleaned
+        )
+        cleaned = cleaned.strip()
         if not cleaned:
             return None
         return cleaned[:200]

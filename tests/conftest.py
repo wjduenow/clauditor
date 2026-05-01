@@ -232,6 +232,7 @@ class _FakeCodexPopen:
         returncode: int = 0,
         stderr_lines: list[str] | None = None,
         pid: int = 12345,
+        wait_raises_timeout_count: int = 0,
     ) -> None:
         body = "\n".join(lines)
         if body and not body.endswith("\n"):
@@ -250,8 +251,23 @@ class _FakeCodexPopen:
         # → ``os.killpg(...)``). Tests that exercise the timeout/kill branch
         # patch ``os.getpgid`` and ``os.killpg`` so the value is opaque.
         self.pid = pid
+        # Counter so tests can drive ``wait(timeout)`` to raise
+        # ``subprocess.TimeoutExpired`` a deterministic number of times
+        # before settling. Each timed wait decrements the counter; once
+        # zero, ``wait`` returns ``returncode`` normally. This unblocks
+        # the SIGKILL-after-SIGTERM-grace-period escalation path tests
+        # that need ``proc.wait(timeout=0.25)`` to time out at least once.
+        self._wait_raises_timeout_count = wait_raises_timeout_count
 
-    def wait(self, timeout=None):  # noqa: ARG002 — timeout ignored for fake
+    def wait(self, timeout=None):
+        if (
+            timeout is not None
+            and self._wait_raises_timeout_count > 0
+        ):
+            self._wait_raises_timeout_count -= 1
+            import subprocess as _sp
+
+            raise _sp.TimeoutExpired(cmd="codex", timeout=timeout)
         return self.returncode
 
     def kill(self) -> None:
