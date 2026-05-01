@@ -120,6 +120,28 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             )
         )
 
+    # OpenAI key is opt-in via ``grading_provider="openai"`` in the eval
+    # spec. Status is never ``[fail]`` — users grading exclusively with
+    # Anthropic don't need it. Report ``[ok]`` when set + non-whitespace,
+    # ``[info]`` otherwise. Output never echoes the key value itself.
+    openai_key_value = os.environ.get("OPENAI_API_KEY")
+    openai_key_available = (
+        openai_key_value is not None and openai_key_value.strip() != ""
+    )
+    if openai_key_available:
+        checks.append(
+            ("openai-api-key-available", "ok", "OPENAI_API_KEY is set")
+        )
+    else:
+        checks.append(
+            (
+                "openai-api-key-available",
+                "info",
+                "OPENAI_API_KEY not set "
+                "(only required for grading_provider=\"openai\")",
+            )
+        )
+
     cli_transport_available = claude_path is not None
     if cli_transport_available:
         checks.append(
