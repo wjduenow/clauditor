@@ -703,6 +703,50 @@ class TestProposeEvalGradingProviderFlag:
 
         assert excinfo.value.code == 2
 
+    def test_propose_eval_openai_provider_picks_openai_default_model(
+        self, tmp_path, monkeypatch
+    ):
+        """QG pass 1 / F1 regression guard: ``--grading-provider openai``
+        without ``--model`` must NOT push DEFAULT_PROPOSE_EVAL_MODEL
+        (Anthropic) into the OpenAI backend. The peek-at-explicit-provider
+        logic in ``cli/propose_eval.py`` should pre-stamp
+        ``args.model = gpt-5.4``.
+        """
+        from clauditor.propose_eval import ProposeEvalReport
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        skill_md = _write_skill_md(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        guard = MagicMock(return_value=None)
+        canned = ProposeEvalReport(skill_name="x", model="gpt-5.4")
+        proposer_mock = AsyncMock(return_value=canned)
+        with (
+            patch(
+                "clauditor.cli.propose_eval.check_provider_auth", new=guard
+            ),
+            patch(
+                "clauditor.cli.propose_eval.propose_eval", new=proposer_mock
+            ),
+        ):
+            main(
+                [
+                    "propose-eval",
+                    str(skill_md),
+                    "--grading-provider",
+                    "openai",
+                ]
+            )
+
+        assert guard.call_args[0][0] == "openai"
+        assert proposer_mock.call_count == 1
+        actual_model = proposer_mock.call_args.kwargs["model"]
+        assert actual_model.startswith("gpt-"), (
+            f"Expected OpenAI model name, got {actual_model!r} — "
+            "the Anthropic default leaked into the OpenAI backend."
+        )
+
 
 # ---------------------------------------------------------------------------
 # suggest
@@ -798,3 +842,60 @@ class TestSuggestGradingProviderFlag:
             )
 
         assert excinfo.value.code == 2
+
+    def test_suggest_openai_provider_picks_openai_default_model(
+        self, tmp_path, monkeypatch
+    ):
+        """QG pass 2 / F1 regression guard: ``--grading-provider openai``
+        without ``--model`` must NOT push the Anthropic default into the
+        OpenAI backend. The peek-at-explicit-provider logic in
+        ``cli/suggest.py`` should pre-stamp ``args.model = gpt-5.4``.
+        """
+        from clauditor.suggest import SuggestReport
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        skill_md = _stage_suggest_failing_run(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        guard = MagicMock(return_value=None)
+        # Use return_value (not side_effect=AssertionError) so we can
+        # observe the model kwarg the orchestrator received.
+        canned = SuggestReport(
+            skill_name="x",
+            model="gpt-5.4",
+            generated_at="",
+            source_iteration=0,
+            source_grading_path="",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+        )
+        proposer_mock = AsyncMock(return_value=canned)
+        with (
+            patch(
+                "clauditor.cli.suggest.check_provider_auth", new=guard
+            ),
+            patch(
+                "clauditor.cli.suggest.propose_edits", new=proposer_mock
+            ),
+        ):
+            main(
+                [
+                    "suggest",
+                    str(skill_md),
+                    "--grading-provider",
+                    "openai",
+                    "--json",
+                ]
+            )
+
+        assert guard.call_args[0][0] == "openai"
+        assert proposer_mock.call_count == 1
+        # Critical assertion: the model passed to the OpenAI provider
+        # must be an OpenAI model name, not a Claude default.
+        actual_model = proposer_mock.call_args.kwargs["model"]
+        assert actual_model.startswith("gpt-"), (
+            f"Expected OpenAI model name, got {actual_model!r} — "
+            "the Anthropic default leaked into the OpenAI backend."
+        )

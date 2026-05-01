@@ -19,7 +19,7 @@ class object regardless of which module raised it.
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 # Anthropic-default grading model used when ``grading_model`` is unset
 # AND the resolved provider is ``"anthropic"``. Mirrors
@@ -256,7 +256,9 @@ async def call_model(
     )
 
 
-def infer_provider_from_model(model: str | None) -> str:
+def infer_provider_from_model(
+    model: str | None,
+) -> Literal["anthropic", "openai"]:
     """Infer the grading provider from a model name via strict prefix match.
 
     Pure helper per ``.claude/rules/pure-compute-vs-io-split.md``:
@@ -326,7 +328,7 @@ def resolve_grading_provider(
     env_override: str | None,
     spec_value: str | None,
     model: str | None,
-) -> str:
+) -> Literal["anthropic", "openai"]:
     """Pick the winning grading provider via four-layer precedence.
 
     DEC-001 / DEC-003 / DEC-007 of
@@ -405,7 +407,11 @@ def resolve_grading_provider(
 
     if winner == "auto":
         return infer_provider_from_model(model)
-    return winner
+    # ``winner`` is one of ``{"anthropic", "openai", "auto"}`` after
+    # validation against ``_VALID_GRADING_PROVIDER_VALUES``; the
+    # ``"auto"`` branch returned above, so the remaining values are
+    # exactly the ``Literal["anthropic", "openai"]`` set.
+    return cast('Literal["anthropic", "openai"]', winner)
 
 
 def resolve_grading_model(eval_spec: Any, provider: str) -> str:

@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Literal
 
 from clauditor import history
 from clauditor.runner import SkillResult
@@ -108,7 +109,7 @@ def _resolve_grader_transport(args: argparse.Namespace, eval_spec=None) -> str:
 
 def _resolve_grading_provider(
     args: argparse.Namespace, eval_spec=None
-) -> str:
+) -> Literal["anthropic", "openai"]:
     """Resolve grading provider using four-layer precedence.
 
     DEC-001 / DEC-003 / DEC-007 of
