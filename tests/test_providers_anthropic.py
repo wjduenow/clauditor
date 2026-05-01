@@ -28,8 +28,6 @@ from clauditor._anthropic import (
     ClaudeCLIError,
     _body_excerpt,
     _classify_invoke_result,
-    _compute_backoff,
-    _compute_retry_decision,
     _extract_result,
     call_anthropic,
     resolve_transport,
@@ -214,54 +212,6 @@ class TestBodyExcerpt:
         assert _body_excerpt(exc) == "<unrenderable body>"
 
 
-class TestRandUniformDefault:
-    def test_default_path_returns_value_in_range(self) -> None:
-        # Most tests patch _rand_uniform; this one exercises the real
-        # implementation so the stdlib-random wrapper itself is
-        # covered. A few samples pin the contract: values stay inside
-        # the requested closed interval.
-        from clauditor._anthropic import _rand_uniform
-
-        for _ in range(10):
-            val = _rand_uniform(-0.25, 0.25)
-            assert -0.25 <= val <= 0.25
-
-
-class TestComputeBackoff:
-    def test_delay_grows_exponentially(self) -> None:
-        # With zero jitter, delays are 1, 2, 4 seconds.
-        with patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
-        ):
-            assert _compute_backoff(0) == pytest.approx(1.0)
-            assert _compute_backoff(1) == pytest.approx(2.0)
-            assert _compute_backoff(2) == pytest.approx(4.0)
-
-    def test_positive_jitter_extends_delay(self) -> None:
-        # Max positive jitter (0.25) → base * 1.25
-        with patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.25
-        ):
-            assert _compute_backoff(0) == pytest.approx(1.25)
-            assert _compute_backoff(2) == pytest.approx(5.0)
-
-    def test_negative_jitter_shortens_delay(self) -> None:
-        # Max negative jitter (-0.25) → base * 0.75
-        with patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=-0.25
-        ):
-            assert _compute_backoff(0) == pytest.approx(0.75)
-            assert _compute_backoff(1) == pytest.approx(1.5)
-
-    def test_delay_never_negative(self) -> None:
-        # Pathological jitter that tries to push delay negative is
-        # floored at 0.
-        with patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=-100.0
-        ):
-            assert _compute_backoff(0) == 0.0
-
-
 class TestCallAnthropicSuccess:
     @pytest.mark.asyncio
     async def test_success_returns_result_with_tokens(self) -> None:
@@ -330,7 +280,7 @@ class TestCallAnthropicRateLimit:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="api")
@@ -364,7 +314,7 @@ class TestCallAnthropicRateLimit:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="api")
         assert result.response_text == "recovered"
@@ -388,7 +338,7 @@ class TestCallAnthropicRateLimit:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform",
+            "clauditor._providers._retry._rand_uniform",
             side_effect=[0.25, -0.25, 0.25],
         ):
             with pytest.raises(AnthropicHelperError):
@@ -420,7 +370,7 @@ class TestCallAnthropicServerError:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="api")
@@ -444,7 +394,7 @@ class TestCallAnthropicServerError:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="api")
         assert result.response_text == "recovered"
@@ -547,7 +497,7 @@ class TestCallAnthropicConnectionError:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="api")
@@ -568,7 +518,7 @@ class TestCallAnthropicConnectionError:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="api")
         assert result.response_text == "got it"
@@ -675,47 +625,6 @@ class TestCallAnthropicTypeError:
 # ---------------------------------------------------------------------------
 
 
-class TestComputeRetryDecision:
-    """Pure helper extracted per DEC-005 retry parity.
-
-    Shared by SDK and CLI transport branches so a failure with the
-    same category retries the same number of times regardless of
-    which transport produced it.
-    """
-
-    def test_rate_limit_retries_up_to_three_times(self) -> None:
-        assert _compute_retry_decision("rate_limit", 0) == "retry"
-        assert _compute_retry_decision("rate_limit", 1) == "retry"
-        assert _compute_retry_decision("rate_limit", 2) == "retry"
-
-    def test_rate_limit_raises_after_third_retry(self) -> None:
-        assert _compute_retry_decision("rate_limit", 3) == "raise"
-
-    def test_auth_never_retries(self) -> None:
-        assert _compute_retry_decision("auth", 0) == "raise"
-        assert _compute_retry_decision("auth", 5) == "raise"
-
-    def test_api_retries_once_then_raises(self) -> None:
-        assert _compute_retry_decision("api", 0) == "retry"
-        assert _compute_retry_decision("api", 1) == "raise"
-
-    def test_connection_retries_once_then_raises(self) -> None:
-        assert _compute_retry_decision("connection", 0) == "retry"
-        assert _compute_retry_decision("connection", 1) == "raise"
-
-    def test_transport_retries_once_then_raises(self) -> None:
-        assert _compute_retry_decision("transport", 0) == "retry"
-        assert _compute_retry_decision("transport", 1) == "raise"
-
-    def test_unknown_category_raises(self) -> None:
-        """Defensive default: an unknown category is not retried."""
-        assert _compute_retry_decision("mystery", 0) == "raise"
-
-    def test_empty_string_category_raises(self) -> None:
-        """Defensive default: empty-string category is not retried."""
-        assert _compute_retry_decision("", 0) == "raise"
-
-
 # ---------------------------------------------------------------------------
 # _FakePopen-driven fixtures for CLI-transport tests. The real Popen is
 # mocked out at the ``clauditor.runner`` seam per the centralized
@@ -805,7 +714,7 @@ class TestCallViaClaudeCli:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(ClaudeCLIError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
@@ -831,7 +740,7 @@ class TestCallViaClaudeCli:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="cli")
         assert result.response_text == "recovered"
@@ -872,7 +781,7 @@ class TestCallViaClaudeCli:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(ClaudeCLIError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
@@ -893,7 +802,7 @@ class TestCallViaClaudeCli:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="cli")
         assert result.response_text == "recovered"
@@ -909,7 +818,7 @@ class TestCallViaClaudeCli:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(ClaudeCLIError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
@@ -952,7 +861,7 @@ class TestCallViaClaudeCli:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(ClaudeCLIError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
@@ -980,7 +889,7 @@ class TestCallViaClaudeCli:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="cli")
         assert result.response_text == "recovered after transport"
@@ -1023,7 +932,7 @@ class TestCallViaClaudeCli:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="cli")
         assert result.response_text == "healed"
@@ -1292,7 +1201,7 @@ class TestAutoTransportResolution:
         ), patch(
             "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._providers._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(ClaudeCLIError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
@@ -1635,9 +1544,12 @@ class TestModelResult:
 class TestCallModel:
     """Regression tests for the #144 US-003 ``call_model`` dispatcher.
 
-    Traces to DEC-001 (signature does not include ``subject``) and
-    DEC-002 (``provider="openai"`` raises :class:`NotImplementedError`)
-    of ``plans/super/144-providers-call-model.md``.
+    Traces to DEC-001 (signature does not include ``subject``) of
+    ``plans/super/144-providers-call-model.md`` and #145 US-005
+    (``provider="openai"`` dispatches to
+    :func:`clauditor._providers._openai.call_openai`; the prior
+    ``NotImplementedError`` placeholder from #144 DEC-002 was
+    replaced).
     """
 
     @pytest.mark.asyncio
@@ -1699,17 +1611,56 @@ class TestCallModel:
         assert result.output_tokens == 34
 
     @pytest.mark.asyncio
-    async def test_call_model_openai_raises_not_implemented(self) -> None:
-        """``provider="openai"`` raises :class:`NotImplementedError`
-        with a message pointing at #145 (DEC-002)."""
-        from clauditor._providers import call_model
+    async def test_call_model_dispatches_to_openai(self) -> None:
+        """#145 US-005: ``provider="openai"`` delegates to
+        :func:`clauditor._providers._openai.call_openai` with the
+        forwarded kwargs. Patches the canonical module path per
+        ``.claude/rules/back-compat-shim-discipline.md`` Pattern 3."""
+        from clauditor._providers import ModelResult, call_model
 
-        with pytest.raises(NotImplementedError, match="#145"):
-            await call_model(
-                "the prompt",
+        canned = ModelResult(
+            response_text="ok",
+            provider="openai",
+            source="api",
+            input_tokens=7,
+            output_tokens=11,
+        )
+        with patch(
+            "clauditor._providers._openai.call_openai",
+            new=AsyncMock(return_value=canned),
+        ) as mock_call:
+            result = await call_model(
+                "hi",
                 provider="openai",
-                model="gpt-4o-mini",
+                model="gpt-5.4",
             )
+
+        mock_call.assert_awaited_once_with(
+            "hi",
+            model="gpt-5.4",
+            transport="auto",
+            max_tokens=4096,
+        )
+        assert result is canned
+        assert result.provider == "openai"
+
+    @pytest.mark.asyncio
+    async def test_call_model_propagates_openai_helper_error(self) -> None:
+        """#145 US-005: an :class:`OpenAIHelperError` raised inside
+        :func:`call_openai` propagates verbatim through the
+        dispatcher — the dispatcher must NOT swallow or wrap it."""
+        from clauditor._providers import OpenAIHelperError, call_model
+
+        with patch(
+            "clauditor._providers._openai.call_openai",
+            new=AsyncMock(side_effect=OpenAIHelperError("simulated")),
+        ):
+            with pytest.raises(OpenAIHelperError, match="simulated"):
+                await call_model(
+                    "hi",
+                    provider="openai",
+                    model="gpt-5.4",
+                )
 
     def test_call_model_signature_does_not_include_subject(self) -> None:
         """DEC-001 guard: ``call_model`` MUST NOT carry a ``subject``

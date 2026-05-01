@@ -252,6 +252,135 @@ def check_any_auth_available(cmd_name: str) -> None:
     )
 
 
+# DEC-006 (#145 US-006): message template for :func:`check_openai_auth`,
+# the strict pre-flight guard for the OpenAI provider. Mirrors
+# :data:`_AUTH_MISSING_TEMPLATE_KEY_ONLY` (the Anthropic strict variant)
+# in shape — single ``{cmd_name}`` interpolation, naming the env-var
+# users must export, and listing the commands that don't require auth
+# so users see the escape hatch.
+#
+# Two durable substrings tests pin: ``OPENAI_API_KEY`` (the env-var
+# name) and ``platform.openai.com`` (the canonical place to obtain a
+# key — analogous to ``console.anthropic.com`` on the Anthropic side).
+_OPENAI_AUTH_MISSING_TEMPLATE = (
+    "ERROR: OPENAI_API_KEY is not set.\n"
+    "clauditor {cmd_name} calls the OpenAI API directly and needs an API\n"
+    "key. Get a key at https://platform.openai.com/api-keys, then export\n"
+    "OPENAI_API_KEY=... and re-run.\n"
+    "Commands that don't need a key: validate, capture, run, lint, init,\n"
+    "badge, audit, trend."
+)
+
+
+def _openai_api_key_is_set() -> bool:
+    """Return True when ``OPENAI_API_KEY`` is present and non-empty.
+
+    Whitespace-only values count as absent — same shape as
+    :func:`_api_key_is_set` for ``ANTHROPIC_API_KEY``. The OpenAI SDK's
+    own "could not resolve authentication" path triggers on these
+    shapes, and the pre-flight guard's whole point is to catch the
+    SDK's opaque failure with an actionable message upstream.
+    """
+    value = os.environ.get("OPENAI_API_KEY")
+    return value is not None and value.strip() != ""
+
+
+def check_openai_auth(cmd_name: str) -> None:
+    """Pre-flight guard: raise if ``OPENAI_API_KEY`` is missing.
+
+    DEC-006 of ``plans/super/145-openai-provider.md``. Pure helper
+    mirroring :func:`check_api_key_only`'s shape for the OpenAI
+    provider — reads ``os.environ["OPENAI_API_KEY"]`` and raises
+    :class:`OpenAIAuthMissingError` when the value is absent, an empty
+    string, or whitespace-only. There is no CLI-fallback branch (no
+    OpenAI equivalent of the ``claude`` CLI subscription path), so the
+    guard is unconditionally strict.
+
+    Pure function per ``.claude/rules/pure-compute-vs-io-split.md``:
+    reads ``os.environ`` only; does NOT print to stderr, does NOT call
+    ``sys.exit``, does NOT log. The CLI wrapper catches
+    :class:`OpenAIAuthMissingError` (a direct subclass of
+    :class:`Exception`, NOT :class:`AnthropicAuthMissingError` or any
+    helper-error class) and maps it to ``return 2`` per
+    ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+
+    Args:
+        cmd_name: Subcommand label (e.g. ``"grade"``, ``"extract"``,
+            ``"propose-eval"``, ``"triggers"``) interpolated into the
+            error message so users see ``clauditor grade`` for
+            immediately actionable UX.
+
+    Raises:
+        OpenAIAuthMissingError: when ``OPENAI_API_KEY`` is absent, an
+            empty string, or whitespace-only. Message contains the
+            two durable substrings (``OPENAI_API_KEY``,
+            ``platform.openai.com``) and the interpolated command
+            name.
+    """
+    if _openai_api_key_is_set():
+        return None
+    # Local import to avoid a module-load circular hazard analogous to
+    # ``AnthropicAuthMissingError`` (defined in ``_providers/__init__``
+    # so both the auth helpers and the SDK seam reference it). At call
+    # time the parent package is fully initialized.
+    from clauditor._providers import OpenAIAuthMissingError
+
+    raise OpenAIAuthMissingError(
+        _OPENAI_AUTH_MISSING_TEMPLATE.format(cmd_name=cmd_name)
+    )
+
+
+def check_provider_auth(provider: str, cmd_name: str) -> None:
+    """Public dispatcher routing pre-flight auth guards by provider.
+
+    DEC-006 of ``plans/super/145-openai-provider.md``. Single seam
+    every LLM-mediated CLI command targets after resolving
+    ``provider = eval_spec.grading_provider or "anthropic"``. The
+    branches:
+
+    - ``provider == "anthropic"`` →
+      :func:`check_any_auth_available` (the existing relaxed guard
+      preserving #86 DEC-008's key-OR-CLI semantics; raises
+      :class:`AnthropicAuthMissingError`).
+    - ``provider == "openai"`` → :func:`check_openai_auth` (the strict
+      key-only guard for OpenAI; raises
+      :class:`OpenAIAuthMissingError`).
+    - Unknown value → :class:`ValueError`.
+
+    Distinct exception classes per provider keep the CLI's
+    ``except`` ladder structural (one branch per class → one exit
+    code) per ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    Adding a future ``provider="vertex"`` or ``"bedrock"`` is one
+    branch in this dispatcher.
+
+    Pure function per ``.claude/rules/pure-compute-vs-io-split.md``:
+    delegates to pure helpers; does NOT print to stderr, does NOT
+    call ``sys.exit``, does NOT log.
+
+    Args:
+        provider: Either ``"anthropic"`` or ``"openai"``.
+        cmd_name: Subcommand label forwarded to the provider-specific
+            guard for error-message interpolation.
+
+    Raises:
+        AnthropicAuthMissingError: ``provider="anthropic"`` and no
+            usable Anthropic auth path is available.
+        OpenAIAuthMissingError: ``provider="openai"`` and
+            ``OPENAI_API_KEY`` is missing.
+        ValueError: ``provider`` is not one of the known values.
+    """
+    if provider == "anthropic":
+        check_any_auth_available(cmd_name)
+        return None
+    if provider == "openai":
+        check_openai_auth(cmd_name)
+        return None
+    raise ValueError(
+        f"check_provider_auth: unknown provider {provider!r} — "
+        "expected 'anthropic' or 'openai'"
+    )
+
+
 def check_api_key_only(cmd_name: str) -> None:
     """Strict pre-flight guard: raise if ``ANTHROPIC_API_KEY`` is missing.
 

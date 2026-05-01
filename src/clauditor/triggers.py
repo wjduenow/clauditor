@@ -176,6 +176,7 @@ async def classify_query(
     expected: bool,
     model: str,
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> TriggerResult:
     """Classify a single query using the LLM.
 
@@ -186,19 +187,23 @@ async def classify_query(
     inside the dispatcher's anthropic backend — this function just
     awaits the result and projects it onto :class:`TriggerResult`.
     """
-    from clauditor._providers import AnthropicHelperError, call_model
+    from clauditor._providers import (
+        AnthropicHelperError,
+        OpenAIHelperError,
+        call_model,
+    )
 
     prompt = build_trigger_prompt(skill_name, description, query)
 
     try:
         result = await call_model(
             prompt,
-            provider="anthropic",
+            provider=provider,
             model=model,
             transport=transport,
             max_tokens=1024,
         )
-    except AnthropicHelperError as exc:
+    except (AnthropicHelperError, OpenAIHelperError) as exc:
         # Graceful degradation: a single API failure (auth, 5xx
         # exhaustion, network) must not abort the entire trigger batch
         # in ``test_triggers``. ``passed=False`` always — an API error
@@ -271,6 +276,17 @@ async def test_triggers(
     for q in eval_spec.trigger_tests.should_not_trigger:
         queries.append((q, False))
 
+    # #145 US-010: Resolve provider from the spec; default to
+    # ``"anthropic"`` for back-compat. Threaded into every per-query
+    # ``classify_query`` call.
+    provider = eval_spec.grading_provider or "anthropic"
+    # PR #160 review: fail fast when openai is paired with the
+    # Anthropic-default model so the spec author sees a crisp
+    # actionable error rather than a downstream 4xx model-not-found.
+    from clauditor.quality_grader import _validate_provider_model
+
+    _validate_provider_model(provider, model, "test_triggers")
+
     tasks = [
         classify_query(
             skill_name=eval_spec.skill_name,
@@ -279,6 +295,7 @@ async def test_triggers(
             expected=expected,
             model=model,
             transport=transport,
+            provider=provider,
         )
         for q, expected in queries
     ]

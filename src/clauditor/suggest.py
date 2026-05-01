@@ -934,6 +934,7 @@ async def propose_edits(
     model: str = DEFAULT_SUGGEST_MODEL,
     max_tokens: int = 4096,
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> SuggestReport:
     """Call Sonnet, parse the response, validate anchors, return a report.
 
@@ -973,7 +974,16 @@ async def propose_edits(
             api_error=api_error,
         )
 
-    if AsyncAnthropic is None:  # pragma: no cover - import-guard branch
+    # PR #160 review (CodeRabbit): the SDK-installed guard must be
+    # gated on ``provider == "anthropic"`` so an openai-routed call
+    # is not blocked by a missing Anthropic SDK. The dispatcher's
+    # openai branch raises ``ImportError`` itself if the openai SDK
+    # is missing, which we surface via the broad-Exception handler
+    # below with a provider-aware error message.
+    if (
+        provider == "anthropic"
+        and AsyncAnthropic is None
+    ):  # pragma: no cover - import-guard branch
         return _empty_report(
             api_error=(
                 "anthropic SDK not installed — "
@@ -996,15 +1006,22 @@ async def propose_edits(
     from clauditor._providers import call_model
 
     try:
+        # #145 US-010: ``provider`` is plumbed by the caller so an
+        # eval spec with ``grading_provider="openai"`` routes through
+        # the OpenAI backend; default ``"anthropic"`` preserves
+        # back-compat for callers that don't set it.
         result = await call_model(
             prompt,
-            provider="anthropic",
+            provider=provider,
             model=model,
             transport=transport,
             max_tokens=max_tokens,
         )
     except Exception as exc:  # noqa: BLE001 — never raise out of propose_edits
-        return _empty_report(api_error=f"anthropic API error: {exc!r}")
+        # PR #160 review: include the resolved provider in the error
+        # message so an openai-routed run is not mislabeled as an
+        # Anthropic-side failure.
+        return _empty_report(api_error=f"{provider} API error: {exc!r}")
 
     input_tokens = result.input_tokens
     output_tokens = result.output_tokens

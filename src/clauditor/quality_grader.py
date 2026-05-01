@@ -21,7 +21,47 @@ if TYPE_CHECKING:
     from clauditor.spec import SkillSpec
 
 
+# TODO(#146): ``DEFAULT_GRADING_MODEL`` is Anthropic-specific. Callers
+# passing ``grading_provider="openai"`` (per #145 US-010) MUST also set
+# ``grading_model`` explicitly on the eval spec — handing this Anthropic
+# default to the OpenAI backend produces a 4xx model-not-found from the
+# OpenAI SDK. #146 owns the per-provider default-model precedence
+# resolver; until it lands, the spec author is responsible for naming
+# an OpenAI model when ``grading_provider="openai"``.
 DEFAULT_GRADING_MODEL = "claude-sonnet-4-6"
+
+
+def _validate_provider_model(provider: str, model: str, ctx: str) -> None:
+    """Fail fast when ``provider="openai"`` is paired with a Claude model.
+
+    PR #160 review (CodeRabbit): the runtime previously allowed the
+    Anthropic-default ``DEFAULT_GRADING_MODEL`` to flow into the OpenAI
+    backend when an eval spec set ``grading_provider="openai"`` without
+    overriding ``grading_model``. The OpenAI SDK then rejected the
+    request with a 4xx model-not-found, surfacing as a generic API
+    error several layers downstream — opaque, hard to map back to the
+    spec author's missing-field bug.
+
+    This guard runs at every orchestrator entry point that accepts a
+    ``provider`` parameter and raises ``ValueError`` so the caller's
+    pre-call validation surface (CLI exit 2 per
+    ``.claude/rules/llm-cli-exit-code-taxonomy.md``) catches it before
+    spending an API call. The model-name check uses the ``"claude-"``
+    prefix because that namespace is Anthropic-exclusive on every
+    public release; an OpenAI model that happened to start with
+    ``"claude-"`` would be a future-incompatible naming collision and
+    is outside the scope of this guard.
+
+    Removable once #146 ships per-provider default-model precedence.
+    """
+    if provider == "openai" and model.startswith("claude-"):
+        raise ValueError(
+            f"{ctx}: provider='openai' requires an OpenAI model name; "
+            f"got Anthropic-default model {model!r}. Set "
+            "EvalSpec.grading_model explicitly (e.g. 'gpt-5.4') when "
+            "using grading_provider='openai'. Tracked in #146."
+        )
+
 
 # Indirection so tests can patch blind_compare timing without affecting
 # the asyncio event loop's own time.monotonic() calls.
@@ -594,6 +634,7 @@ async def _call_blind_side_with_retry(
     model: str,
     transport: str,
     side_label: str,
+    provider: str = "anthropic",
 ) -> tuple[dict | None, str, str, str, int, int]:
     """Run one side of a blind-compare judge with parse retry.
 
@@ -611,12 +652,12 @@ async def _call_blind_side_with_retry(
     total_output = 0
     last_text = ""
     last_source = "api"
-    last_provider = "anthropic"
+    last_provider = provider
     parsed: dict | None = None
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
         r = await call_model(
             prompt,
-            provider="anthropic",
+            provider=provider,
             model=model,
             transport=transport,
             max_tokens=2048,
@@ -660,6 +701,7 @@ async def blind_compare(
     model: str = DEFAULT_GRADING_MODEL,
     rng: random.Random | None = None,
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> BlindReport:
     """Blind A/B judge: call Anthropic twice with swapped positions.
 
@@ -679,17 +721,25 @@ async def blind_compare(
     import asyncio as _asyncio
 
     _validate_blind_inputs(user_prompt, output_a, output_b)
+    _validate_provider_model(provider, model, "blind_compare")
     m1, m2 = _pick_blind_mappings(rng)
     args = (user_prompt, output_a, output_b, rubric_hint)
     p1 = _build_blind_prompt_for_mapping(m1, *args)
     p2 = _build_blind_prompt_for_mapping(m2, *args)
     start = _monotonic()
+    # #145 US-010: ``provider`` is resolved by the caller
+    # (``blind_compare_from_spec`` reads it from
+    # ``spec.eval_spec.grading_provider``) and threaded to BOTH
+    # parallel calls. Resolved once here so the two gather'd calls
+    # always agree — never read the spec twice.
     side1, side2 = await _asyncio.gather(
         _call_blind_side_with_retry(
-            p1, model=model, transport=transport, side_label="side1"
+            p1, model=model, transport=transport, side_label="side1",
+            provider=provider,
         ),
         _call_blind_side_with_retry(
-            p2, model=model, transport=transport, side_label="side2"
+            p2, model=model, transport=transport, side_label="side2",
+            provider=provider,
         ),
     )
     duration = _monotonic() - start
@@ -787,6 +837,11 @@ async def blind_compare_from_spec(
 
     effective_model = model if model is not None else spec.eval_spec.grading_model
 
+    # #145 US-010: Resolve provider from the spec; default to
+    # ``"anthropic"`` for back-compat. Single resolution shared
+    # between both parallel judges inside ``blind_compare``.
+    provider = spec.eval_spec.grading_provider or "anthropic"
+
     return await blind_compare(
         user_prompt,
         output_a,
@@ -795,6 +850,7 @@ async def blind_compare_from_spec(
         model=effective_model,
         rng=rng,
         transport=transport,
+        provider=provider,
     )
 
 
@@ -1119,7 +1175,7 @@ async def grade_quality(
     """Layer 3: Grade skill output against rubric criteria using an LLM.
 
     Thin async wrapper: builds a prompt, issues up to
-    :data:`_GRADER_PARSE_RETRY_LIMIT` Anthropic calls (one retry on
+    :data:`_GRADER_PARSE_RETRY_LIMIT` provider-routed model calls (one retry on
     malformed-JSON response — see clauditor-6cf / #94), parses the
     response, and returns a :class:`GradingReport`. Token counts and
     duration accumulate across attempts. Retry is NOT triggered on
@@ -1135,16 +1191,22 @@ async def grade_quality(
 
     prompt = build_grading_prompt(eval_spec, output)
 
+    # #145 US-010: Resolve provider from the spec; default to
+    # ``"anthropic"`` for back-compat. Pulled out of the retry loop so
+    # every attempt routes to the same backend.
+    provider = eval_spec.grading_provider or "anthropic"
+    _validate_provider_model(provider, model, "grade_quality")
+
     start = _monotonic()
     total_input_tokens = 0
     total_output_tokens = 0
     last_response_text = ""
     last_source = "api"
-    last_provider = "anthropic"
+    last_provider = provider
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
         api_result = await call_model(
             prompt,
-            provider="anthropic",
+            provider=provider,
             model=model,
             transport=transport,
             max_tokens=4096,

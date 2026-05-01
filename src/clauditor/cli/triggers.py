@@ -8,7 +8,8 @@ import sys
 
 from clauditor._providers import (
     AnthropicAuthMissingError,
-    check_any_auth_available,
+    OpenAIAuthMissingError,
+    check_provider_auth,
 )
 
 
@@ -102,13 +103,26 @@ def cmd_triggers(args: argparse.Namespace) -> int:
             print(prompt)
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
-    # ANTHROPIC_API_KEY nor the claude CLI binary is available. Guard
-    # lands AFTER --dry-run (dry-run is a cost-free preview — no API
-    # call, no key needed) and BEFORE test_triggers.
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009: fail fast when
+    # the provider's required auth is missing. Provider is resolved
+    # from ``eval_spec.grading_provider`` (defaults to ``"anthropic"``)
+    # so OpenAI-graded skills get an OpenAI-key-required guard.
+    # Guard lands AFTER --dry-run (dry-run is a cost-free preview — no
+    # API call, no key needed) and BEFORE test_triggers. Distinct
+    # ``except`` branches per
+    # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    provider = (
+        spec.eval_spec.grading_provider
+        if spec.eval_spec is not None
+        and spec.eval_spec.grading_provider is not None
+        else "anthropic"
+    )
     try:
-        check_any_auth_available("triggers")
+        check_provider_auth(provider, "triggers")
     except AnthropicAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except OpenAIAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
 

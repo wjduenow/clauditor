@@ -29,11 +29,14 @@ uniform ``±25%`` jitter band.
 
 Per ``.claude/rules/monotonic-time-indirection.md`` the helper is
 async, so ``time.monotonic`` and ``asyncio.sleep`` are aliased at
-module load. Tests patch ``clauditor._providers._anthropic._sleep``,
-``clauditor._providers._anthropic._rand_uniform``, and
-``clauditor._providers._anthropic._monotonic`` rather than the stdlib
-originals so the asyncio event loop's own scheduler calls are not
-disturbed and tests do not burn wallclock.
+module load. Tests patch ``clauditor._providers._anthropic._sleep``
+and ``clauditor._providers._anthropic._monotonic`` rather than the
+stdlib originals so the asyncio event loop's own scheduler calls
+are not disturbed and tests do not burn wallclock. The jitter
+indirection ``_rand_uniform`` lives in
+:mod:`clauditor._providers._retry` (DEC-007 of #145) — tests that
+need to pin jitter deterministically patch
+``clauditor._providers._retry._rand_uniform``.
 
 CLI transport (US-003 of ``plans/super/86-claude-cli-transport.md``):
 ``call_anthropic(prompt, model=..., transport="auto")`` accepts a
@@ -56,7 +59,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import random
 import shutil
 import sys
 import time
@@ -81,9 +83,24 @@ from clauditor._providers import (
     check_api_key_only,  # noqa: F401
 )
 
+# DEC-007 of ``plans/super/145-openai-provider.md``: the retry policy
+# (constants + decision logic + backoff curve) is byte-identical
+# between Anthropic and OpenAI, so it lives in a shared module.
+# ``compute_backoff`` and ``compute_retry_decision`` are imported and
+# used directly; the retry-cap constants are imported as their public
+# names. The per-provider ``_sleep`` / ``_monotonic`` indirections
+# stay here so a patch on ``_anthropic._sleep`` does not leak into
+# OpenAI's call loop.
+from clauditor._providers._retry import (
+    CONN_MAX_RETRIES,
+    RATE_LIMIT_MAX_RETRIES,
+    SERVER_MAX_RETRIES,
+    compute_backoff,
+    compute_retry_decision,
+)
+
 # Module-level alias per .claude/rules/monotonic-time-indirection.md.
 # ``_sleep`` is patched in retry-branch tests to avoid real wallclock.
-# ``_rand_uniform`` lets tests pin jitter to deterministic values.
 # ``_monotonic`` lets tests pin duration measurements deterministically
 # without clobbering the asyncio event loop's own scheduler ticks.
 _sleep = asyncio.sleep
@@ -94,26 +111,6 @@ _monotonic = time.monotonic
 # Python process; explicit ``transport="cli"`` never flips it.
 _announced_cli_transport = False
 
-
-def _rand_uniform(lo: float, hi: float) -> float:
-    """Return a uniform random float in ``[lo, hi]``.
-
-    Indirected so tests can patch jitter deterministically without
-    clobbering ``random.random`` globally. The default implementation
-    uses a module-local ``random.Random`` instance so patching the
-    stdlib ``random`` module does not affect this helper, and vice
-    versa.
-    """
-    return _rng.uniform(lo, hi)
-
-
-_rng = random.Random()
-
-
-# Per-exception retry caps (bead clauditor-24h.3 acceptance criteria).
-_RATE_LIMIT_MAX_RETRIES = 3
-_SERVER_MAX_RETRIES = 1
-_CONN_MAX_RETRIES = 1
 
 # Body excerpt length when surfacing APIStatusError messages. 512 is
 # enough to include the canonical ``{"error": {"type": "...", "message":
@@ -250,63 +247,6 @@ class ModelResult:
 # working unmodified. ``is`` returns True between the two names — they
 # are the same class object.
 AnthropicResult = ModelResult
-
-
-def _compute_backoff(retry_index: int) -> float:
-    """Return the sleep duration for the ``retry_index``-th retry.
-
-    Formula: ``2 ** retry_index`` seconds with ``±25%`` uniform
-    jitter. Retry indices start at 0, so the first retry waits
-    ``1 s`` (plus jitter), the second ``2 s``, the third ``4 s``.
-    """
-    base = float(2**retry_index)
-    jitter = _rand_uniform(-0.25, 0.25) * base
-    delay = base + jitter
-    # Floor at 0 defensively; negative jitter at retry_index=0 with
-    # deterministic seeds that push to the lower bound could otherwise
-    # bottom out near 0.75 — still positive, but we keep the guard in
-    # case future formula changes flip the sign.
-    return max(delay, 0.0)
-
-
-def _compute_retry_decision(
-    category: str, retry_index: int
-) -> Literal["retry", "raise"]:
-    """Return whether to retry a failure given its category + retry index.
-
-    Pure helper per ``.claude/rules/pure-compute-vs-io-split.md``.
-    Shared by the SDK and CLI transport branches so a failure with
-    the same category retries the same number of times regardless
-    of which transport produced it (DEC-005 retry parity).
-
-    Ladder (retry indices are 0-based — index ``i`` is "the decision
-    made before the ``i+1``-th attempt's delay"):
-
-    - ``"rate_limit"``: retry at indices 0, 1, 2; raise at 3 (matches
-      :data:`_RATE_LIMIT_MAX_RETRIES` = 3 — up to 3 retries ≡ 4
-      total attempts).
-    - ``"auth"``: always raise (no retry at any index).
-    - ``"api"``: retry at index 0; raise at 1 (one retry, matches
-      :data:`_SERVER_MAX_RETRIES` = 1 — used for 5xx SDK errors and
-      the analogous CLI ``api`` category).
-    - ``"connection"``: retry at index 0; raise at 1 (matches
-      :data:`_CONN_MAX_RETRIES` = 1 — SDK ``APIConnectionError``).
-    - ``"transport"``: retry at index 0; raise at 1 (CLI-only;
-      covers subprocess binary-missing, timeout, malformed output).
-    - Any other category: always raise (defensive default — an
-      unknown category is not something we should retry blindly).
-    """
-    if category == "rate_limit":
-        return "retry" if retry_index < _RATE_LIMIT_MAX_RETRIES else "raise"
-    if category == "auth":
-        return "raise"
-    if category == "api":
-        return "retry" if retry_index < _SERVER_MAX_RETRIES else "raise"
-    if category == "connection":
-        return "retry" if retry_index < _CONN_MAX_RETRIES else "raise"
-    if category == "transport":
-        return "retry" if retry_index < _CONN_MAX_RETRIES else "raise"
-    return "raise"
 
 
 def _body_excerpt(exc: Any) -> str:
@@ -577,13 +517,22 @@ async def _call_via_sdk(
                 messages=[{"role": "user", "content": prompt}],
             )
         except RateLimitError as exc:
-            if rate_limit_retries >= _RATE_LIMIT_MAX_RETRIES:
+            # PR #160 review (CodeRabbit): use the shared
+            # ``compute_retry_decision`` policy helper so the SDK
+            # branch and CLI branch (and the OpenAI backend) all
+            # consult the same per-category ladder. Per-attempt
+            # error messages stay byte-identical for fixture
+            # parity with prior tests.
+            if (
+                compute_retry_decision("rate_limit", rate_limit_retries)
+                == "raise"
+            ):
                 raise AnthropicHelperError(
                     f"Anthropic rate limit ({exc.status_code}) after "
-                    f"{_RATE_LIMIT_MAX_RETRIES} retries. Body: "
+                    f"{RATE_LIMIT_MAX_RETRIES} retries. Body: "
                     f"{_body_excerpt(exc)}"
                 ) from exc
-            delay = _compute_backoff(rate_limit_retries)
+            delay = compute_backoff(rate_limit_retries)
             rate_limit_retries += 1
             await _sleep(delay)
             continue
@@ -603,24 +552,24 @@ async def _call_via_sdk(
                     f"({status}): {exc.message}. Body: "
                     f"{_body_excerpt(exc)}"
                 ) from exc
-            if server_retries >= _SERVER_MAX_RETRIES:
+            if compute_retry_decision("api", server_retries) == "raise":
                 raise AnthropicHelperError(
                     f"Anthropic server error ({status}) after "
-                    f"{_SERVER_MAX_RETRIES} retry. Body: "
+                    f"{SERVER_MAX_RETRIES} retry. Body: "
                     f"{_body_excerpt(exc)}"
                 ) from exc
-            delay = _compute_backoff(server_retries)
+            delay = compute_backoff(server_retries)
             server_retries += 1
             await _sleep(delay)
             continue
         except APIConnectionError as exc:
-            if conn_retries >= _CONN_MAX_RETRIES:
+            if compute_retry_decision("connection", conn_retries) == "raise":
                 raise AnthropicHelperError(
                     f"Anthropic connection error after "
-                    f"{_CONN_MAX_RETRIES} retry: "
+                    f"{CONN_MAX_RETRIES} retry: "
                     f"{getattr(exc, 'message', repr(exc))}"
                 ) from exc
-            delay = _compute_backoff(conn_retries)
+            delay = compute_backoff(conn_retries)
             conn_retries += 1
             await _sleep(delay)
             continue
@@ -713,8 +662,8 @@ async def _call_via_claude_cli(
     retries; auth no retry; api / 5xx one retry; transport-level
     failures (binary missing, timeout, malformed output) one retry
     then raise. All retry decisions go through
-    :func:`_compute_retry_decision` so SDK and CLI ladders stay
-    lockstep.
+    :func:`clauditor._providers._retry.compute_retry_decision` so
+    SDK and CLI ladders stay lockstep.
 
     DEC-013: ``env=env_without_api_key(os.environ)`` — the parent's
     ``ANTHROPIC_API_KEY`` is never inherited by the child
@@ -779,7 +728,7 @@ async def _call_via_claude_cli(
 
         # Decide retry vs raise using the shared ladder.
         retry_index = retry_counts.get(category, 0)
-        decision = _compute_retry_decision(category, retry_index)
+        decision = compute_retry_decision(category, retry_index)
         if decision == "raise":
             template = _CLI_ERROR_TEMPLATES.get(
                 category, _CLI_ERROR_TEMPLATES["transport"]
@@ -799,7 +748,7 @@ async def _call_via_claude_cli(
 
         if category in retry_counts:
             retry_counts[category] += 1
-        delay = _compute_backoff(retry_index)
+        delay = compute_backoff(retry_index)
         await _sleep(delay)
         continue
 

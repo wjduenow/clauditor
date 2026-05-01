@@ -3220,6 +3220,31 @@ class TestEnvWithoutApiKey:
         assert result == base
         assert result is not base
 
+    def test_strips_openai_api_key(self):
+        """DEC-008 of plans/super/145-openai-provider.md (US-008).
+
+        ``OPENAI_API_KEY`` is stripped alongside the Anthropic auth
+        env vars so that under ``--transport cli`` an untrusted skill
+        subprocess cannot silently spend the operator's OpenAI quota.
+        Non-mutating per ``.claude/rules/non-mutating-scrub.md``.
+        """
+        base = {
+            "OPENAI_API_KEY": "secret",
+            "ANTHROPIC_API_KEY": "anth",
+            "FOO": "bar",
+        }
+        original = dict(base)
+        result = env_without_api_key(base)
+        # Both API keys stripped, unrelated key preserved.
+        assert "OPENAI_API_KEY" not in result
+        assert "ANTHROPIC_API_KEY" not in result
+        assert result["FOO"] == "bar"
+        # Non-mutating: input dict still has all three original keys.
+        assert base == original
+        assert "OPENAI_API_KEY" in base
+        assert "ANTHROPIC_API_KEY" in base
+        assert base["FOO"] == "bar"
+
 
 class TestEnvWithSyncTasks:
     """Pure-unit tests for :func:`clauditor.runner.env_with_sync_tasks`.

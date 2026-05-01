@@ -31,7 +31,8 @@ from pathlib import Path
 
 from clauditor._providers import (
     AnthropicAuthMissingError,
-    check_any_auth_available,
+    OpenAIAuthMissingError,
+    check_provider_auth,
 )
 from clauditor.capture_provenance import (
     read_capture_provenance,
@@ -371,13 +372,25 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
         print(prompt, end="" if prompt.endswith("\n") else "\n")
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
-    # ANTHROPIC_API_KEY nor the claude CLI binary is available. Guard
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009: fail fast when
+    # the proposer-provider's required auth is missing. ``propose-eval``
+    # is the eval-creation step itself, so there is no ``eval_spec`` to
+    # read ``grading_provider`` from — the proposer call is hardcoded
+    # to ``provider="anthropic"`` (see ``propose_eval.py``). The
+    # dispatcher is still routed through ``check_provider_auth`` for
+    # uniformity with the other 3 LLM-mediated CLI commands; the
+    # ``OpenAIAuthMissingError`` ``except`` branch is a forward-compat
+    # placeholder for a future ``--proposer-provider`` flag. Guard
     # lands AFTER --dry-run (dry-run is a cost-free preview — no API
     # call, no key needed) and BEFORE the propose_eval orchestrator.
+    # Distinct ``except`` branches per
+    # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
     try:
-        check_any_auth_available("propose-eval")
+        check_provider_auth("anthropic", "propose-eval")
     except AnthropicAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except OpenAIAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
 

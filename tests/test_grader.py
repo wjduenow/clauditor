@@ -1914,6 +1914,121 @@ class TestExtractAndReportProviderSource:
         assert report.provider_source == "anthropic"
 
 
+class TestExtractAndReportGradingProviderOpenAI:
+    """#145 US-010: when ``eval_spec.grading_provider == "openai"``,
+    ``extract_and_report`` and ``extract_and_grade`` route through the
+    OpenAI backend and stamp ``ExtractionReport.provider_source ==
+    "openai"``."""
+
+    def _spec(self, *, grading_provider: str | None = None) -> EvalSpec:
+        return EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Items",
+                    tiers=[
+                        TierRequirement(
+                            label="default",
+                            min_entries=1,
+                            fields=[
+                                FieldRequirement(
+                                    name="name",
+                                    required=True,
+                                    id="items-name",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+            grading_provider=grading_provider,
+        )
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_stamps_openai_when_grading_provider_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec(grading_provider="openai")
+        extraction_text = json.dumps(
+            {"Items": {"default": [{"name": "foo"}]}}
+        )
+        fake = ModelResult(
+            response_text=extraction_text,
+            text_blocks=[extraction_text],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            # PR #160 review: openai+claude-default raises ``ValueError``
+            # per the new fail-fast guard; pass an explicit OpenAI model.
+            report = await extract_and_report(
+                "output", spec, model="gpt-5.4-mini"
+            )
+        assert report.provider_source == "openai"
+        # Verify ``provider="openai"`` flowed through to call_model.
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_extract_and_grade_stamps_openai_when_grading_provider_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec(grading_provider="openai")
+        extraction_text = json.dumps(
+            {"Items": {"default": [{"name": "foo"}]}}
+        )
+        fake = ModelResult(
+            response_text=extraction_text,
+            text_blocks=[extraction_text],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            # PR #160 review: pass explicit OpenAI model.
+            await extract_and_grade("output", spec, model="gpt-5.4-mini")
+        # ``extract_and_grade`` returns an ``AssertionSet`` (no
+        # provider_source field) — verify the resolved provider flowed
+        # through to ``call_model``.
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_defaults_to_anthropic_when_unset(
+        self,
+    ) -> None:
+        """Back-compat regression: a spec with ``grading_provider=None``
+        (the default) still routes through anthropic."""
+        from clauditor._providers import ModelResult
+
+        spec = self._spec()  # grading_provider default = None
+        extraction_text = json.dumps(
+            {"Items": {"default": [{"name": "foo"}]}}
+        )
+        fake = ModelResult(
+            response_text=extraction_text,
+            text_blocks=[extraction_text],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            report = await extract_and_report("output", spec)
+        assert report.provider_source == "anthropic"
+        assert call_mock.await_args.kwargs["provider"] == "anthropic"
+
+
 class TestExtractionReportDeclaredFieldIds:
     """Copilot fix (PR #34): ``ExtractionReport.to_json`` pre-populates
     every declared field id with an empty list, so the on-disk contract
@@ -2361,3 +2476,113 @@ class TestExtractionParseErrorDataclass:
         )
         assert err.section == "Venues"
         assert err.raw == {"Venues": []}
+
+
+class TestExtractAndReportWithOpenAI:
+    """#145 US-011 — End-to-end: an :class:`EvalSpec` with
+    ``grading_provider="openai"`` runs L2 extraction through the full
+    pipeline (prompt build -> ``call_model`` -> parse -> report build)
+    and produces a populated :class:`ExtractionReport` with
+    ``provider_source == "openai"`` plus non-empty extracted data.
+
+    Acceptance criterion 2 of issue #145. Builds on the unit-level
+    wiring tests in :class:`TestExtractAndReportGradingProviderOpenAI`
+    by exercising a non-trivial section/tier shape and asserting on the
+    full report surface (extracted data, token counts, parse_errors).
+    """
+
+    def _spec(self) -> EvalSpec:
+        return EvalSpec(
+            skill_name="venues-skill",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            min_entries=2,
+                            fields=[
+                                FieldRequirement(
+                                    name="name",
+                                    required=True,
+                                    id="venues-name",
+                                ),
+                                FieldRequirement(
+                                    name="address",
+                                    required=True,
+                                    id="venues-address",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+            grading_provider="openai",
+        )
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_openai_e2e(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Full L2 path: spec.grading_provider="openai" flows through
+        ``call_model(provider="openai", ...)``, the mocked OpenAI
+        ``ModelResult`` is parsed into the per-section/tier shape, and
+        the returned :class:`ExtractionReport` is fully populated:
+
+        - ``provider_source == "openai"``
+        - per-field results present for every declared field
+        - token counts from the mocked ``ModelResult``
+        - no parse errors
+        """
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec()
+        # JSON shape that matches the non-trivial section/tier:
+        # two entries with both required fields populated.
+        extraction_payload = {
+            "Venues": {
+                "primary": [
+                    {"name": "The Blue Note", "address": "131 W 3rd St"},
+                    {"name": "Smalls Jazz", "address": "183 W 10th St"},
+                ],
+            },
+        }
+        extraction_text = json.dumps(extraction_payload)
+        fake = ModelResult(
+            response_text=extraction_text,
+            text_blocks=[extraction_text],
+            input_tokens=42,
+            output_tokens=17,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            # PR #160 review: openai+claude-default raises ``ValueError``;
+            # pass an explicit OpenAI model name.
+            report = await extract_and_report(
+                "fake skill output text", spec, model="gpt-5.4-mini"
+            )
+
+        # Provider stamping (acceptance criterion 2 — primary signal).
+        assert report.provider_source == "openai"
+        # ``call_model`` received ``provider="openai"`` — the spec
+        # field flowed through the resolver to the dispatcher.
+        assert call_mock.await_count == 1
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+        # Token counts propagated from the mocked ``ModelResult``.
+        assert report.input_tokens == 42
+        assert report.output_tokens == 17
+        # No parse errors: the JSON above is shape-valid for the spec.
+        assert report.parse_errors == []
+        # Non-empty extracted data: every declared field id has at
+        # least one record (two entries in this fixture).
+        assert {r.field_id for r in report.results} == {
+            "venues-name",
+            "venues-address",
+        }
+        assert len(report.results) == 4  # 2 entries * 2 fields
+        # Every per-field record passes presence (required fields,
+        # non-empty values).
+        assert all(r.presence_passed for r in report.results)

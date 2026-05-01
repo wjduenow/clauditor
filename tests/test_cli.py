@@ -2695,6 +2695,101 @@ class TestCmdCompareBlind:
         assert "file-pair form" in err
 
 
+class TestCmdCompareBlindProviderAuth:
+    """#145 QG pass 1 (Bug 3): ``compare --blind`` resolves provider and
+    dispatches the per-provider auth guard.
+
+    Pre-fix: ``_run_blind_compare`` called the Anthropic-only
+    ``check_any_auth_available("compare --blind")`` regardless of
+    ``eval_spec.grading_provider``. A spec declaring
+    ``grading_provider="openai"`` would surface a misleading
+    ANTHROPIC_API_KEY-required error when only OPENAI_API_KEY was set.
+    """
+
+    def test_compare_blind_with_openai_grading_provider_passes_when_key_set(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec with ``grading_provider="openai"`` and ``OPENAI_API_KEY`` set
+        → proceeds through the auth guard. Mocks the blind judge so the
+        test does not actually call OpenAI.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        before, after = _write_pair(tmp_path)
+        eval_spec = _make_eval_spec(
+            user_prompt="Write a hello world",
+            grading_provider="openai",
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = _make_blind_report()
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.blind_compare",
+                new=AsyncMock(return_value=report),
+            ),
+        ):
+            rc = main(_blind_argv(before, after))
+        assert rc == 0
+
+    def test_compare_blind_with_openai_grading_provider_exits_2_when_key_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Spec with ``grading_provider="openai"`` and missing
+        ``OPENAI_API_KEY`` → exit 2 with stderr mentioning the env var
+        (not ANTHROPIC_API_KEY).
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # Even if Anthropic key is present, OpenAI provider must require
+        # OPENAI_API_KEY — the spec's grading_provider is the source of
+        # truth.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-irrelevant")
+        before, after = _write_pair(tmp_path)
+        eval_spec = _make_eval_spec(
+            user_prompt="Write a hello world",
+            grading_provider="openai",
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = _make_blind_report()
+        # The blind_compare mock should never be reached.
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.blind_compare",
+                new_callable=AsyncMock,
+                return_value=report,
+            ) as mock_blind,
+        ):
+            rc = main(_blind_argv(before, after))
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "OPENAI_API_KEY" in err
+        assert mock_blind.await_count == 0
+
+    def test_compare_blind_with_default_anthropic_provider_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression check: spec with ``grading_provider=None`` (default)
+        still routes through the Anthropic auth guard.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        before, after = _write_pair(tmp_path)
+        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
+        assert eval_spec.grading_provider is None
+        spec = _make_spec(eval_spec=eval_spec)
+        report = _make_blind_report()
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.blind_compare",
+                new=AsyncMock(return_value=report),
+            ),
+        ):
+            rc = main(_blind_argv(before, after))
+        assert rc == 0
+
+
 class TestCmdGradeCompareFlagRemoved:
     """US-003: the legacy --compare flag on grade is gone."""
 
@@ -6823,3 +6918,349 @@ class TestResolveGraderTransport:
         captured = capsys.readouterr()
         assert "ERROR:" in captured.err
         assert "sdk" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# #145 US-009: ``check_provider_auth`` wiring on the 4 LLM-mediated CLI
+# commands. Each command (``grade``, ``extract``, ``triggers``) must:
+#   - resolve ``provider = eval_spec.grading_provider or "anthropic"``;
+#   - dispatch via ``check_provider_auth`` (catches both
+#     ``AnthropicAuthMissingError`` and ``OpenAIAuthMissingError``);
+#   - exit 2 with ``OPENAI_API_KEY`` mentioned in stderr when the spec
+#     declares ``grading_provider="openai"`` but no key is set.
+#   - keep working unchanged when ``grading_provider`` is ``None``
+#     (default Anthropic path).
+#
+# The ``propose-eval`` command is covered separately in
+# ``tests/test_cli_propose_eval.py`` — it has no ``eval_spec`` to
+# read ``grading_provider`` from (it's the eval-creation step) and is
+# hardcoded to ``provider="anthropic"`` for the proposer call.
+#
+# Traces to DEC-003, DEC-006 of ``plans/super/145-openai-provider.md``
+# and ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+# ---------------------------------------------------------------------------
+
+
+class TestCmdGradeProviderAuth:
+    """#145 US-009: ``cmd_grade`` resolves provider and dispatches auth."""
+
+    def _make_extraction_set(self):
+        return AssertionSet(
+            results=[
+                AssertionResult(
+                    name="contains hello",
+                    passed=True,
+                    message="ok",
+                    kind="contains",
+                ),
+            ]
+        )
+
+    def test_grade_with_openai_grading_provider_passes_when_key_set(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec with ``grading_provider="openai"`` and ``OPENAI_API_KEY`` set
+        → proceeds through the auth guard. Mocks the grader so the
+        test does not actually call OpenAI.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        eval_spec = _make_eval_spec(grading_provider="openai")
+        spec = _make_spec(eval_spec=eval_spec)
+        report = make_grading_report(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+
+    def test_grade_with_openai_grading_provider_exits_2_when_key_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Spec with ``grading_provider="openai"`` and missing
+        ``OPENAI_API_KEY`` → exit 2 with stderr mentioning the env var.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        eval_spec = _make_eval_spec(grading_provider="openai")
+        spec = _make_spec(eval_spec=eval_spec)
+        report = make_grading_report(passed=True)
+
+        # The grader mock should never be reached; the auth guard fires
+        # before allocate_iteration / grade_quality is awaited.
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ) as mock_grade,
+        ):
+            rc = main(["grade", "skill.md", "--output", str(output_file)])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "OPENAI_API_KEY" in err
+        assert mock_grade.await_count == 0
+
+    def test_grade_with_default_anthropic_provider_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression check: spec with ``grading_provider=None`` (default)
+        still routes through the Anthropic guard and proceeds when an
+        ``ANTHROPIC_API_KEY`` is set.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        eval_spec = _make_eval_spec()
+        # Default: no grading_provider override.
+        assert eval_spec.grading_provider is None
+        spec = _make_spec(eval_spec=eval_spec)
+        report = make_grading_report(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+
+
+class TestCmdExtractProviderAuth:
+    """#145 US-009: ``cmd_extract`` resolves provider and dispatches auth."""
+
+    def _make_extraction_set(self):
+        return AssertionSet(
+            results=[
+                AssertionResult(
+                    name="section:Results:count",
+                    passed=True,
+                    message="ok",
+                    kind="count",
+                ),
+            ]
+        )
+
+    def test_extract_with_openai_grading_provider_passes_when_key_set(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec with ``grading_provider="openai"`` and ``OPENAI_API_KEY`` set
+        → proceeds through the auth guard.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+
+        eval_spec = _make_eval_spec(
+            sections=_make_sections(), grading_provider="openai"
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        results = self._make_extraction_set()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+        ):
+            rc = main(["extract", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+
+    def test_extract_with_openai_grading_provider_exits_2_when_key_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Spec with ``grading_provider="openai"`` and missing
+        ``OPENAI_API_KEY`` → exit 2 with stderr mentioning the env var.
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+
+        eval_spec = _make_eval_spec(
+            sections=_make_sections(), grading_provider="openai"
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        results = self._make_extraction_set()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ) as mock_extract,
+        ):
+            rc = main(["extract", "skill.md", "--output", str(output_file)])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "OPENAI_API_KEY" in err
+        assert mock_extract.await_count == 0
+
+    def test_extract_with_default_anthropic_provider_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression check: spec with ``grading_provider=None`` (default)
+        still routes through the Anthropic guard.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        assert eval_spec.grading_provider is None
+        spec = _make_spec(eval_spec=eval_spec)
+        results = self._make_extraction_set()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+        ):
+            rc = main(["extract", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+
+
+class TestCmdTriggersProviderAuth:
+    """#145 US-009: ``cmd_triggers`` resolves provider and dispatches auth."""
+
+    def _make_trigger_report(self):
+        return TriggerReport(
+            skill_name="test-skill",
+            skill_description="A test skill",
+            model="claude-sonnet-4-6",
+            results=[
+                TriggerResult(
+                    query="find activities",
+                    expected_trigger=True,
+                    predicted_trigger=True,
+                    passed=True,
+                    confidence=0.95,
+                    reasoning="Matches skill intent",
+                ),
+            ],
+        )
+
+    def test_triggers_with_openai_grading_provider_passes_when_key_set(
+        self, monkeypatch
+    ):
+        """Spec with ``grading_provider="openai"`` and ``OPENAI_API_KEY`` set
+        → proceeds through the auth guard.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+        eval_spec = _make_eval_spec(
+            grading_provider="openai",
+            trigger_tests=TriggerTests(
+                should_trigger=["find activities"],
+                should_not_trigger=["weather today"],
+            ),
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_trigger_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.triggers.test_triggers",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["triggers", "skill.md"])
+
+        assert rc == 0
+
+    def test_triggers_with_openai_grading_provider_exits_2_when_key_missing(
+        self, monkeypatch, capsys
+    ):
+        """Spec with ``grading_provider="openai"`` and missing
+        ``OPENAI_API_KEY`` → exit 2 with stderr mentioning the env var.
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        eval_spec = _make_eval_spec(
+            grading_provider="openai",
+            trigger_tests=TriggerTests(
+                should_trigger=["find activities"],
+                should_not_trigger=["weather today"],
+            ),
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_trigger_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.triggers.test_triggers",
+                new_callable=AsyncMock,
+                return_value=report,
+            ) as mock_test_triggers,
+        ):
+            rc = main(["triggers", "skill.md"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "OPENAI_API_KEY" in err
+        assert mock_test_triggers.await_count == 0
+
+    def test_triggers_with_default_anthropic_provider_unchanged(
+        self, monkeypatch
+    ):
+        """Regression check: spec with ``grading_provider=None`` (default)
+        still routes through the Anthropic guard.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        eval_spec = _make_eval_spec(
+            trigger_tests=TriggerTests(
+                should_trigger=["find activities"],
+                should_not_trigger=["weather today"],
+            ),
+        )
+        assert eval_spec.grading_provider is None
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_trigger_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.triggers.test_triggers",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["triggers", "skill.md"])
+
+        assert rc == 0
