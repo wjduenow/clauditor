@@ -8,9 +8,11 @@ from pathlib import Path
 
 from clauditor._providers import (
     AnthropicAuthMissingError,
-    check_any_auth_available,
+    OpenAIAuthMissingError,
+    check_provider_auth,
 )
 from clauditor.paths import derive_skill_name, resolve_clauditor_dir
+from clauditor.spec import SkillSpec
 from clauditor.suggest import (
     NoPriorGradeError,
     load_suggest_input,
@@ -101,11 +103,19 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
     - exit 1 when no prior grading.json exists or the proposer returns
       unparseable JSON (no sidecar).
     - exit 2 when any proposal anchor fails validation (no sidecar),
-      OR when no usable authentication is available — the pre-flight
-      ``check_any_auth_available("suggest")`` guard raises
-      ``AnthropicAuthMissingError`` before any API call per #83
-      DEC-002/DEC-011 and #86 DEC-008 (no sidecar).
-    - exit 3 on Anthropic API errors (no sidecar).
+      OR when no usable authentication is available for the resolved
+      provider — the pre-flight ``check_provider_auth(provider,
+      "suggest")`` guard raises ``AnthropicAuthMissingError`` /
+      ``OpenAIAuthMissingError`` before any API call per #83
+      DEC-002/DEC-011, #86 DEC-008, and #145 DEC-006 (no sidecar).
+    - exit 3 on provider API errors (no sidecar).
+
+    #162 US-003: provider is resolved from
+    ``spec.eval_spec.grading_provider`` (defaults to ``"anthropic"``)
+    so OpenAI-graded skills route through OpenAI for the proposer
+    call. ``SkillSpec.from_file`` is loaded after the zero-failing-
+    signals early-exit and before the auth check, mirroring the
+    pattern in ``cli/triggers.py``.
     """
     skill_path = Path(args.skill)
     if not skill_path.exists():
@@ -195,15 +205,45 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
         )
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
-    # ANTHROPIC_API_KEY nor the claude CLI binary is available.
+    # #162 US-003: load the spec so we can read
+    # ``eval_spec.grading_provider`` for the auth dispatch + provider
+    # plumbing below. Mirrors ``cli/triggers.py:114-127`` per DEC-002.
+    # The early ``skill_path.exists()`` check above already covered the
+    # missing-skill-file case (rc=1); the try/except here covers a
+    # TOCTOU race plus ``EvalSpec.from_file`` validation failures.
+    try:
+        skill_spec = SkillSpec.from_file(skill_path)
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        print(
+            f"Error: cannot load spec for {skill_path}: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 DEC-006: fail fast when
+    # the provider's required auth is missing. Provider is resolved
+    # from ``eval_spec.grading_provider`` (defaults to ``"anthropic"``)
+    # so OpenAI-graded skills get an OpenAI-key-required guard.
     # ``suggest`` has no --dry-run; the guard lands AFTER the zero-
     # failing-signals early-exit (so the "all passed" path still works
-    # without auth — it never calls Anthropic) and BEFORE the
-    # propose_edits orchestrator.
+    # without auth — it never calls Anthropic / OpenAI) and BEFORE the
+    # propose_edits orchestrator. Distinct ``except`` branches per
+    # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    provider = (
+        skill_spec.eval_spec.grading_provider
+        if skill_spec.eval_spec is not None
+        and skill_spec.eval_spec.grading_provider is not None
+        else "anthropic"
+    )
     try:
-        check_any_auth_available("suggest")
+        check_provider_auth(provider, "suggest")
     except AnthropicAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except OpenAIAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
 
@@ -236,6 +276,7 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
         suggest_input,
         model=args.model,
         transport=_resolve_grader_transport(args),
+        provider=provider,
     )
 
     # DEC-008 row 3: API / prompt-build failure.
