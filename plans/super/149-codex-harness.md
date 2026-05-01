@@ -6,12 +6,12 @@
 - **Branch:** `feature/149-codex-harness`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/149-codex-harness`
 - **Base branch:** `dev`
-- **Phase:** `detailing → published` (awaiting approval)
+- **Phase:** `devolved`
 - **Sessions:** 1
 - **Last session:** 2026-04-30
 - **Total decisions:** 18
-- **PR URL:** _pending_
-- **Beads epic:** _pending_
+- **PR URL:** https://github.com/wjduenow/clauditor/pull/161
+- **Beads epic:** `clauditor-cif`
 
 ---
 
@@ -547,4 +547,19 @@ Seven stories: 5 implementation + Quality Gate + Patterns & Memory. Order follow
 
 ## Beads Manifest (Phase 7)
 
-_pending_
+Devolved 2026-04-30. Epic + 7 children created with strict linear `blocks` chain (US-001 → US-002 → US-003 → US-004 → US-005 → QG-001 → PM-001).
+
+| Bead ID | Title | Plan story | Priority | Blocks |
+|---|---|---|---|---|
+| `clauditor-cif` | `#149: add CodexHarness invoking codex exec --json (Epic B/multi-harness)` | epic | P2 | — |
+| `clauditor-cif.1` | `#149 US-001: Module skeleton + pure helpers + constants (TDD)` | US-001 | P3 | `cif.2` |
+| `clauditor-cif.2` | `#149 US-002: CodexHarness class surface + protocol drift-guard (TDD)` | US-002 | P3 | `cif.3` |
+| `clauditor-cif.3` | `#149 US-003: CodexHarness.invoke happy path (TDD)` | US-003 | P3 | `cif.4` |
+| `clauditor-cif.4` | `#149 US-004: CodexHarness.invoke error paths + stderr filter + advisory detectors` | US-004 | P3 | `cif.5` |
+| `clauditor-cif.5` | `#149 US-005: docs/codex-stream-schema.md` | US-005 | P3 | `cif.6` |
+| `clauditor-cif.6` | `#149 QG-001: Quality Gate — code review x4 + CodeRabbit` | US-006 | P3 | `cif.7` |
+| `clauditor-cif.7` | `#149 PM-001: Patterns & Memory` | US-007 | P4 | — |
+
+**Ralph entry point:** `clauditor-cif.1` is the only ready bead. Run `bd show clauditor-cif.1` for the full task description; it points back to plans/super/149-codex-harness.md US-001 for trace data and TDD spec.
+
+**Note on naming:** plan doc uses US-006 / US-007 for sequencing readability; bead titles use the project's convention `QG-001` / `PM-001` to match prior epics (e.g. `clauditor-4ke`).
