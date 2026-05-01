@@ -222,8 +222,6 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
     import asyncio
 
     from clauditor._providers import (
-        AnthropicAuthMissingError,
-        OpenAIAuthMissingError,
         check_any_auth_available,
         check_api_key_only,
         check_provider_auth,
@@ -259,18 +257,13 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
             and spec.eval_spec.grading_provider is not None
             else "anthropic"
         )
-        try:
-            if provider == "anthropic":
-                if _fixture_allow_cli():
-                    check_any_auth_available("grader")
-                else:
-                    check_api_key_only("grader")
+        if provider == "anthropic":
+            if _fixture_allow_cli():
+                check_any_auth_available("grader")
             else:
-                check_provider_auth(provider, "grader")
-        except AnthropicAuthMissingError:
-            raise
-        except OpenAIAuthMissingError:
-            raise
+                check_api_key_only("grader")
+        else:
+            check_provider_auth(provider, "grader")
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
         if output is None:
@@ -331,8 +324,6 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
     import asyncio
 
     from clauditor._providers import (
-        AnthropicAuthMissingError,
-        OpenAIAuthMissingError,
         check_any_auth_available,
         check_api_key_only,
         check_provider_auth,
@@ -360,18 +351,13 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
             and spec.eval_spec.grading_provider is not None
             else "anthropic"
         )
-        try:
-            if provider == "anthropic":
-                if _fixture_allow_cli():
-                    check_any_auth_available("blind_compare")
-                else:
-                    check_api_key_only("blind_compare")
+        if provider == "anthropic":
+            if _fixture_allow_cli():
+                check_any_auth_available("blind_compare")
             else:
-                check_provider_auth(provider, "blind_compare")
-        except AnthropicAuthMissingError:
-            raise
-        except OpenAIAuthMissingError:
-            raise
+                check_api_key_only("blind_compare")
+        else:
+            check_provider_auth(provider, "blind_compare")
         effective_model = model or request.config.getoption("--clauditor-model")
         return asyncio.run(
             blind_compare_from_spec(
@@ -388,8 +374,6 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
     import asyncio
 
     from clauditor._providers import (
-        AnthropicAuthMissingError,
-        OpenAIAuthMissingError,
         check_any_auth_available,
         check_api_key_only,
         check_provider_auth,
@@ -414,18 +398,13 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
             and spec.eval_spec.grading_provider is not None
             else "anthropic"
         )
-        try:
-            if provider == "anthropic":
-                if _fixture_allow_cli():
-                    check_any_auth_available("triggers")
-                else:
-                    check_api_key_only("triggers")
+        if provider == "anthropic":
+            if _fixture_allow_cli():
+                check_any_auth_available("triggers")
             else:
-                check_provider_auth(provider, "triggers")
-        except AnthropicAuthMissingError:
-            raise
-        except OpenAIAuthMissingError:
-            raise
+                check_api_key_only("triggers")
+        else:
+            check_provider_auth(provider, "triggers")
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
         return asyncio.run(run_triggers(spec.eval_spec, model))
