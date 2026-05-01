@@ -5,7 +5,7 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/162
 - **Branch:** `feature/162-polish-followups`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/162-polish-followups`
-- **Phase:** published
+- **Phase:** approved
 - **PR:** https://github.com/wjduenow/clauditor/pull/163
 - **Epic:** TBD (created at devolve)
 - **Sessions:** 1 (2026-05-01)
