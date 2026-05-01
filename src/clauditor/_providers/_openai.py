@@ -445,6 +445,30 @@ async def call_openai(
                 "OpenAI SDK client initialization failed — "
                 "verify OPENAI_API_KEY is set."
             ) from exc
+        except OpenAIError as exc:
+            # US-004 of #162 (DEC-003, DEC-005, DEC-008): bare base
+            # ``openai.OpenAIError`` catch-all. Any future SDK version
+            # that raises a typed exception not in the ladder above
+            # (e.g. a new subclass not yet anticipated) would
+            # otherwise escape uncaught and bypass the exit-3 routing.
+            # This branch lands AFTER all typed branches so subclass
+            # matching takes precedence per Python's ``except``
+            # first-match semantics. Message format: class name only
+            # — ``str(exc)`` is intentionally NOT surfaced here per
+            # the post-merge security tightening of DEC-003 (#162):
+            # this branch handles unknown SDK error shapes by
+            # definition, so we cannot assume the SDK's ``__str__``
+            # is well-behaved (a future SDK error type's message
+            # could pack prompt fragments, response-body excerpts,
+            # or echoed headers). Truncation bounds size, not
+            # exposure. Diagnostic content is preserved on
+            # ``__cause__`` via ``raise ... from exc`` — debuggers
+            # can introspect the original exception. Not retried:
+            # without category information we cannot make a sound
+            # retry decision.
+            raise OpenAIHelperError(
+                f"API request failed: {type(exc).__name__}"
+            ) from exc
 
         duration = _monotonic() - start
 
