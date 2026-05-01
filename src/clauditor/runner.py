@@ -149,6 +149,23 @@ _INTERACTIVE_HANG_WARNING_PREFIX = "interactive-hang:"
 _BACKGROUND_TASK_WARNING_PREFIX = "background-task:"
 
 
+# DEC-018 of ``plans/super/149-codex-harness.md``: three Codex-side
+# advisory warning prefixes. Co-located with Claude's prefixes for
+# symmetry — every harness's warning body strings live in the
+# harness module (e.g. ``clauditor._harnesses._codex``); the
+# *prefixes* live here so that any future
+# :attr:`SkillResult.succeeded_cleanly` extension that wants to
+# pattern-match across harnesses has one place to look.
+#
+# Unlike ``interactive-hang:`` and ``background-task:``, these three
+# are **advisory only** — they carry ``error_category=None`` and do
+# NOT down-classify ``succeeded_cleanly``. They are surfaced for
+# operator-visibility / observability via #154's context sidecar.
+_DROPPED_EVENTS_WARNING_PREFIX = "dropped-events:"
+_CODEX_DEPRECATION_WARNING_PREFIX = "codex-deprecation:"
+_LAST_MESSAGE_EMPTY_WARNING_PREFIX = "last-message-empty:"
+
+
 @dataclass
 class InvokeResult:
     """Transport-level result of a single ``claude -p`` subprocess invocation.
