@@ -2210,3 +2210,278 @@ class TestWriteSidecar:
         json_path, diff_path = write_sidecar(report, "", clauditor_dir)
         assert json_path.is_absolute()
         assert diff_path.is_absolute()
+
+
+class TestCmdSuggestProviderPlumbing:
+    """#162 US-003: ``cli/suggest.py`` resolves provider from spec and
+    threads it through to ``propose_edits`` / ``call_model``.
+
+    Per DEC-002 the spec is loaded from
+    ``SkillSpec.from_file(args.skill)`` and provider resolution
+    mirrors ``cli/triggers.py:114-127``. Per DEC-007 the OpenAI test
+    uses a *distinct* ``grading_provider="openai"`` value (NOT the
+    default-anthropic path) so a hardcoded ``provider="anthropic"``
+    bug at the CLI seam would fail the assertion — proving the field
+    is actually consulted, not just plumbed inertly.
+    """
+
+    def _setup_failing_run(self, tmp_path: Path, monkeypatch) -> Path:
+        """Stage a skill .md + iteration-1/<skill>/{grading.json,
+        assertions.json} fixture with failing signals so the
+        zero-failing-signals early-exit does not short-circuit.
+        """
+        from clauditor.quality_grader import GradingReport, GradingResult
+        from clauditor.schemas import GradeThresholds
+
+        (tmp_path / ".git").mkdir()
+        skill_md = tmp_path / "my-skill.md"
+        # Body contains the anchor ``_good_envelope_text`` defaults to
+        # ("Do the thing.") so propose_edits' anchor validation passes
+        # and the success path through call_model fires.
+        skill_md.write_text("# My Skill\n\nDo the thing.\n")
+
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+
+        grading = GradingReport(
+            skill_name="my-skill",
+            model="claude-sonnet-4-6",
+            results=[
+                GradingResult(
+                    id="c1",
+                    criterion="Is the output correct?",
+                    passed=False,
+                    score=0.2,
+                    evidence="e",
+                    reasoning="r",
+                ),
+            ],
+            duration_seconds=0.0,
+            thresholds=GradeThresholds(),
+            metrics={},
+        )
+        (skill_dir / "grading.json").write_text(grading.to_json())
+
+        # Failing assertions.json so suggest_input has at least one
+        # failing signal and the auth + provider plumbing path runs.
+        assertions_payload = {
+            "schema_version": 1,
+            "skill": "my-skill",
+            "iteration": 1,
+            "runs": [
+                {
+                    "run": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "results": [
+                        {
+                            "id": "a1",
+                            "name": "contains hello",
+                            "passed": False,
+                            "kind": "contains",
+                            "message": "no match",
+                            "transcript_path": None,
+                        }
+                    ],
+                }
+            ],
+        }
+        (skill_dir / "assertions.json").write_text(
+            json.dumps(assertions_payload)
+        )
+
+        monkeypatch.chdir(tmp_path)
+        return skill_md
+
+    def _make_spec_with_provider(self, provider: str | None):
+        """Build a MagicMock SkillSpec carrying an EvalSpec with the
+        requested ``grading_provider``."""
+        from unittest.mock import MagicMock
+
+        from clauditor.schemas import EvalSpec
+        from clauditor.spec import SkillSpec
+
+        eval_spec = EvalSpec(
+            skill_name="my-skill",
+            description="A test skill",
+            test_args="--depth quick",
+            assertions=[{"type": "contains", "needle": "hello"}],
+            sections=[],
+            grading_criteria=["Is the output relevant?"],
+            grading_model="claude-sonnet-4-6",
+            grading_provider=provider,
+        )
+        spec = MagicMock(spec=SkillSpec)
+        spec.skill_name = "my-skill"
+        spec.eval_spec = eval_spec
+        return spec
+
+    def test_openai_grading_provider_plumbs_provider_kwarg(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """T1 / DEC-007 vacuous-test guardrail: spec with a *distinct*
+        ``grading_provider="openai"`` value flows through to
+        ``call_model`` as ``provider="openai"``. A hardcoded
+        ``provider="anthropic"`` bug at the CLI seam would fail this
+        assertion.
+        """
+        from clauditor.cli import main
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        # ANTHROPIC_API_KEY left unset to prove no Anthropic
+        # fallback when the spec selects OpenAI.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+        skill_md = self._setup_failing_run(tmp_path, monkeypatch)
+        spec = self._make_spec_with_provider("openai")
+        result = _mock_anthropic_result(
+            text=_good_envelope_text(motivated_by=["a1"])
+        )
+        call_mock = AsyncMock(return_value=result)
+
+        with (
+            patch(
+                "clauditor.cli.suggest.SkillSpec.from_file",
+                return_value=spec,
+            ),
+            patch("clauditor._providers.call_model", call_mock),
+        ):
+            rc = main(["suggest", str(skill_md.name)])
+
+        assert rc == 0, f"expected exit 0; got {rc}"
+        call_mock.assert_awaited_once()
+        # DEC-007 distinct-value assertion: provider="openai" must
+        # have flowed all the way to call_model. A test that used
+        # the default "anthropic" value would silently pass even if
+        # provider= were hardcoded.
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+
+    def test_default_anthropic_when_grading_provider_unset(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """T2: spec with no ``grading_provider`` field (None) →
+        ``call_model`` receives ``provider="anthropic"`` (default
+        path).
+        """
+        from clauditor.cli import main
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        skill_md = self._setup_failing_run(tmp_path, monkeypatch)
+        spec = self._make_spec_with_provider(None)
+        assert spec.eval_spec.grading_provider is None
+        result = _mock_anthropic_result(
+            text=_good_envelope_text(motivated_by=["a1"])
+        )
+        call_mock = AsyncMock(return_value=result)
+
+        with (
+            patch(
+                "clauditor.cli.suggest.SkillSpec.from_file",
+                return_value=spec,
+            ),
+            patch("clauditor._providers.call_model", call_mock),
+        ):
+            rc = main(["suggest", str(skill_md.name)])
+
+        assert rc == 0, f"expected exit 0; got {rc}"
+        call_mock.assert_awaited_once()
+        assert call_mock.await_args.kwargs["provider"] == "anthropic"
+
+    def test_openai_grading_provider_exits_2_when_key_missing(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """T3: spec with ``grading_provider="openai"`` and missing
+        ``OPENAI_API_KEY`` → exit 2 with stderr mentioning
+        ``OPENAI_API_KEY``; no ``call_model`` invocation.
+        """
+        from clauditor.cli import main
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        skill_md = self._setup_failing_run(tmp_path, monkeypatch)
+        spec = self._make_spec_with_provider("openai")
+        call_mock = AsyncMock()
+
+        with (
+            patch(
+                "clauditor.cli.suggest.SkillSpec.from_file",
+                return_value=spec,
+            ),
+            patch("clauditor._providers.call_model", call_mock),
+        ):
+            rc = main(["suggest", str(skill_md.name)])
+
+        assert rc == 2, f"expected exit 2; got {rc}"
+        err = capsys.readouterr().err
+        assert "OPENAI_API_KEY" in err
+        # Auth guard fires before propose_edits / call_model.
+        assert call_mock.await_count == 0
+
+    def test_openai_provider_no_anthropic_fallback_when_anthropic_key_set(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """T4: spec with ``grading_provider="openai"`` +
+        ``ANTHROPIC_API_KEY`` set + ``OPENAI_API_KEY`` unset → still
+        exits 2. Anthropic auth must NOT satisfy an OpenAI-routed
+        skill — regression check that ``check_provider_auth`` does
+        not silently fall through.
+        """
+        from clauditor.cli import main
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        skill_md = self._setup_failing_run(tmp_path, monkeypatch)
+        spec = self._make_spec_with_provider("openai")
+        call_mock = AsyncMock()
+
+        with (
+            patch(
+                "clauditor.cli.suggest.SkillSpec.from_file",
+                return_value=spec,
+            ),
+            patch("clauditor._providers.call_model", call_mock),
+        ):
+            rc = main(["suggest", str(skill_md.name)])
+
+        assert rc == 2, f"expected exit 2; got {rc}"
+        err = capsys.readouterr().err
+        assert "OPENAI_API_KEY" in err
+        assert call_mock.await_count == 0
+
+    def test_spec_load_failure_exits_cleanly_before_auth_check(
+        self, tmp_path: Path, monkeypatch, capsys
+    ):
+        """T5: ``SkillSpec.from_file`` raising ``ValueError`` (e.g.
+        invalid eval.json) → exit 2 with crisp error message before
+        any auth check. Mirrors ``_load_spec_or_report`` shape from
+        ``cli/triggers.py``.
+        """
+        from clauditor.cli import main
+
+        # No env vars set — proves the auth check is not reached.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        skill_md = self._setup_failing_run(tmp_path, monkeypatch)
+        call_mock = AsyncMock()
+
+        with (
+            patch(
+                "clauditor.cli.suggest.SkillSpec.from_file",
+                side_effect=ValueError("eval.json: bad grading_provider value"),
+            ),
+            patch("clauditor._providers.call_model", call_mock),
+        ):
+            rc = main(["suggest", str(skill_md.name)])
+
+        assert rc == 2, f"expected exit 2; got {rc}"
+        err = capsys.readouterr().err
+        assert "cannot load spec" in err
+        # Auth-missing template substrings must NOT appear — proves
+        # the spec-load failure short-circuited before the auth
+        # dispatcher.
+        assert "ANTHROPIC_API_KEY" not in err
+        assert "OPENAI_API_KEY" not in err
+        assert call_mock.await_count == 0
