@@ -196,12 +196,13 @@ class TestResolveGradingProvider:
         captured = capsys.readouterr()
         assert "ERROR:" in captured.err
 
-    def test_auto_with_spec_grading_model_takes_precedence_over_args_model(
+    def test_auto_with_args_model_takes_precedence_over_spec_grading_model(
         self, monkeypatch
     ):
         """When both ``eval_spec.grading_model`` and ``args.model`` are
-        set, the spec value wins for auto-inference (per DEC-004 /
-        US-004 acceptance criteria).
+        set, the operator's ``--model`` wins over the spec's
+        ``grading_model`` for auto-inference (QG pass 1 of #146 per
+        ``.claude/rules/spec-cli-precedence.md`` operator > author).
         """
         monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
         from clauditor.cli import _resolve_grading_provider
@@ -213,9 +214,9 @@ class TestResolveGradingProvider:
             grading_provider=None, grading_model="claude-sonnet-4-6"
         )
         result = _resolve_grading_provider(args, eval_spec)
-        # spec.grading_model="claude-..." → "anthropic" wins over
-        # args.model="gpt-..." → "openai".
-        assert result == "anthropic"
+        # args.model="gpt-..." → "openai" wins over
+        # spec.grading_model="claude-..." → "anthropic".
+        assert result == "openai"
 
     def test_missing_grading_provider_attr_on_args(self, monkeypatch):
         """``args`` without a ``grading_provider`` attr falls through.

@@ -360,12 +360,28 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    model = args.model or DEFAULT_PROPOSE_EVAL_MODEL
-    # Stamp the resolved model back onto ``args`` so the downstream
-    # ``_resolve_grading_provider(args, None)`` call sees the effective
-    # value (not the raw ``None`` default) when auto-inferring the
-    # provider from the model prefix.
-    args.model = model
+    # Provider-aware model defaulting per #146 + QG pass 1.
+    # If the user didn't pass ``--model``, choose a sensible default
+    # by peeking at the CLI/env provider signals: explicit
+    # ``--grading-provider openai`` (or matching env) → OpenAI
+    # default; everything else → Anthropic default (preserves the
+    # pre-#146 behavior for the no-args case). The provider auto-
+    # inference layer in ``_resolve_grading_provider`` then sees the
+    # stamped model and picks the matching provider, so every path
+    # ends up self-consistent.
+    if args.model is None:
+        import os as _os
+        explicit_provider = (
+            getattr(args, "grading_provider", None)
+            or _os.environ.get("CLAUDITOR_GRADING_PROVIDER", "").strip()
+            or None
+        )
+        if explicit_provider == "openai":
+            from clauditor._providers._openai import DEFAULT_MODEL_L3
+            args.model = DEFAULT_MODEL_L3
+        else:
+            args.model = DEFAULT_PROPOSE_EVAL_MODEL
+    model = args.model
     if args.verbose:
         print(f"[propose-eval] model: {model}", file=sys.stderr)
 
@@ -418,6 +434,9 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
     except OpenAIAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+    if args.verbose:
+        print(f"[propose-eval] model: {model}", file=sys.stderr)
 
     from clauditor.cli import _resolve_grader_transport
 

@@ -341,7 +341,7 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
 
     from clauditor.quality_grader import grade_quality
 
-    model = request.config.getoption("--clauditor-model") or "claude-sonnet-4-6"
+    model_override = request.config.getoption("--clauditor-model")
 
     def _factory(
         skill_path: str | Path,
@@ -359,6 +359,16 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
             raise ValueError(f"No eval spec found for {skill_path}")
         _dispatch_fixture_auth_guard(spec.eval_spec, "grader")
         provider = _resolve_fixture_provider(spec.eval_spec)
+        # Provider-aware model defaulting (QG pass 1): explicit CLI
+        # override > spec.grading_model > per-provider default. Avoids
+        # passing an Anthropic-default model into an OpenAI-graded
+        # spec.
+        from clauditor._providers import resolve_grading_model
+        model = (
+            model_override
+            or spec.eval_spec.grading_model
+            or resolve_grading_model(spec.eval_spec, provider)
+        )
         if output is None:
             result = spec.run()
             output = result.output
@@ -457,7 +467,7 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
 
     from clauditor.triggers import test_triggers as run_triggers
 
-    model = request.config.getoption("--clauditor-model") or "claude-sonnet-4-6"
+    model_override = request.config.getoption("--clauditor-model")
 
     def _factory(
         skill_path: str | Path, eval_path: str | Path | None = None
@@ -470,6 +480,13 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
             raise ValueError(f"No eval spec found for {skill_path}")
         _dispatch_fixture_auth_guard(spec.eval_spec, "triggers")
         provider = _resolve_fixture_provider(spec.eval_spec)
+        # Provider-aware model defaulting (QG pass 1).
+        from clauditor._providers import resolve_grading_model
+        model = (
+            model_override
+            or spec.eval_spec.grading_model
+            or resolve_grading_model(spec.eval_spec, provider)
+        )
         return asyncio.run(run_triggers(spec.eval_spec, model, provider=provider))
 
     return _factory

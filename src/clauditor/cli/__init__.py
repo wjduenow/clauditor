@@ -154,16 +154,16 @@ def _resolve_grading_provider(
         eval_spec.grading_provider if eval_spec is not None else None
     )
 
-    # Effective model for auto-inference: prefer the spec's
-    # ``grading_model`` (when a spec is attached and the attribute is
-    # set), else fall back to a CLI ``--model`` flag if present, else
-    # ``None``. The pure resolver only consults this when the winning
-    # provider is ``"auto"``.
-    model: str | None = None
-    if eval_spec is not None:
+    # Effective model for auto-inference: operator intent (``--model``
+    # CLI flag) wins over author intent (``EvalSpec.grading_model``) per
+    # `.claude/rules/spec-cli-precedence.md` (operator > author > default)
+    # AND per QG pass 1 of #146 — otherwise a stale spec-side
+    # ``grading_model`` would silently misroute when the operator passed
+    # ``--model gpt-5.4 --grading-provider auto``. The pure resolver
+    # only consults this when the winning provider is ``"auto"``.
+    model: str | None = getattr(args, "model", None)
+    if model is None and eval_spec is not None:
         model = getattr(eval_spec, "grading_model", None)
-    if model is None:
-        model = getattr(args, "model", None)
 
     try:
         return resolve_grading_provider(

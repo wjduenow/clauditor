@@ -96,14 +96,21 @@ def cmd_extract(args: argparse.Namespace) -> int:
         print("ERROR: No sections defined in eval spec", file=sys.stderr)
         return 1
 
-    model = args.model or "claude-haiku-4-5-20251001"
+    # Provider-aware model defaulting: if the user didn't pass
+    # ``--model`` and the spec didn't set ``grading_model``, the model
+    # falls through to ``resolve_grading_model(spec.eval_spec,
+    # provider)`` once we've resolved the provider below. For the
+    # ``--dry-run`` preview we use the spec's value (or the legacy
+    # extract default) — the dry-run preview does not consult the
+    # provider yet because the auth guard hasn't fired.
+    model = args.model or spec.eval_spec.grading_model
 
     # --dry-run: print prompt and exit
     if args.dry_run:
         from clauditor.grader import build_extraction_prompt
 
         prompt = build_extraction_prompt(spec.eval_spec)
-        print(f"Model: {model}")
+        print(f"Model: {model or '<auto, resolved from provider>'}")
         print(f"Prompt:\n{prompt}")
         return 0
 
@@ -131,6 +138,12 @@ def cmd_extract(args: argparse.Namespace) -> int:
     except OpenAIAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+    # Now that provider is resolved, pick a per-provider default
+    # model when neither the user nor the spec supplied one.
+    if model is None:
+        from clauditor._providers import resolve_grading_model
+        model = resolve_grading_model(spec.eval_spec, provider)
 
     # Get output
     skill_result = None

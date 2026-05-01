@@ -846,6 +846,15 @@ class EvalSpec:
                     f"{type(raw_grading_model).__name__} "
                     f"{raw_grading_model!r}"
                 )
+            elif raw_grading_model.strip() == "":
+                # QG pass 1: reject empty/whitespace-only model names
+                # at load time. An empty string would otherwise survive
+                # through ``infer_provider_from_model`` and produce a
+                # downstream error with a worse message.
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'grading_model' must be a non-empty string or null"
+                )
             else:
                 grading_model = raw_grading_model
 

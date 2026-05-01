@@ -98,7 +98,7 @@ def cmd_triggers(args: argparse.Namespace) -> int:
     if args.dry_run:
         from clauditor.triggers import build_trigger_prompt
 
-        print(f"Model: {model}")
+        print(f"Model: {model or '<auto, resolved from provider>'}")
         queries = [
             (q, True) for q in trigger_tests.should_trigger
         ] + [(q, False) for q in trigger_tests.should_not_trigger]
