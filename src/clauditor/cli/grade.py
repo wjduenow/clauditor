@@ -83,7 +83,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``grade`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int, _transport_choice, _unit_float
+    from clauditor.cli import (
+        _positive_int,
+        _provider_choice,
+        _transport_choice,
+        _unit_float,
+    )
 
     p_grade = subparsers.add_parser(
         "grade", help="Run Layer 3 quality grading against a skill's output"
@@ -230,6 +235,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "key is present — pass --transport api to keep the key.)"
         ),
     )
+    p_grade.add_argument(
+        "--grading-provider",
+        type=_provider_choice,
+        default=None,
+        choices=("anthropic", "openai", "auto"),
+        help=(
+            "Override the grading provider: 'anthropic', 'openai', or "
+            "'auto' (infer from grading_model). Four-layer precedence: "
+            "this flag > CLAUDITOR_GRADING_PROVIDER env > "
+            "EvalSpec.grading_provider > default 'auto'."
+        ),
+    )
 
 
 def _load_and_validate_grade_args(
@@ -318,21 +335,28 @@ def cmd_grade(args: argparse.Namespace) -> int:
         print(f"Prompt:\n{prompt}")
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009: fail fast when
-    # the provider's required auth is missing. Provider is resolved
-    # from ``eval_spec.grading_provider`` (defaults to ``"anthropic"``)
-    # so OpenAI-graded skills get an OpenAI-key-required guard.
-    # Guard lands AFTER --dry-run (dry-run is a cost-free preview — no
-    # API call, no key needed) and BEFORE allocate_iteration so we do
-    # not leave an abandoned iteration-N-tmp/ staging dir behind when
-    # the guard fires. Distinct ``except`` branches per
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005:
+    # fail fast when the provider's required auth is missing. Provider
+    # is resolved via the four-layer ``_resolve_grading_provider``
+    # helper (CLI flag > CLAUDITOR_GRADING_PROVIDER env >
+    # EvalSpec.grading_provider > default "auto" with auto-inference
+    # from grading_model), so OpenAI-graded skills get an OpenAI-key-
+    # required guard. Guard lands AFTER --dry-run (dry-run is a
+    # cost-free preview — no API call, no key needed) and BEFORE
+    # allocate_iteration so we do not leave an abandoned
+    # iteration-N-tmp/ staging dir behind when the guard fires.
+    # Distinct ``except`` branches per
     # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
-    provider = (
-        spec.eval_spec.grading_provider
-        if spec.eval_spec is not None
-        and spec.eval_spec.grading_provider is not None
-        else "anthropic"
-    )
+    #
+    # TODO(#146 US-006): pass ``provider`` through to ``grade_quality``
+    # / ``extract_and_report`` so the resolved value flows beyond the
+    # auth guard. Today the orchestrators still re-read
+    # ``eval_spec.grading_provider`` internally, so a CLI flag that
+    # overrides the spec only affects this guard — the actual model
+    # call still routes via the spec's provider value.
+    from clauditor.cli import _resolve_grading_provider
+
+    provider = _resolve_grading_provider(args, spec.eval_spec)
     try:
         check_provider_auth(provider, "grade")
     except AnthropicAuthMissingError as exc:

@@ -17,7 +17,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``triggers`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _transport_choice
+    from clauditor.cli import _provider_choice, _transport_choice
 
     p_triggers = subparsers.add_parser(
         "triggers", help="Run trigger precision testing for a skill"
@@ -44,6 +44,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "CLI when available). Four-layer precedence: this flag > "
             "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
             "'auto'."
+        ),
+    )
+    p_triggers.add_argument(
+        "--grading-provider",
+        type=_provider_choice,
+        default=None,
+        choices=("anthropic", "openai", "auto"),
+        help=(
+            "Override the grading provider: 'anthropic', 'openai', or "
+            "'auto' (infer from grading_model). Four-layer precedence: "
+            "this flag > CLAUDITOR_GRADING_PROVIDER env > "
+            "EvalSpec.grading_provider > default 'auto'."
         ),
     )
 
@@ -103,20 +115,24 @@ def cmd_triggers(args: argparse.Namespace) -> int:
             print(prompt)
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009: fail fast when
-    # the provider's required auth is missing. Provider is resolved
-    # from ``eval_spec.grading_provider`` (defaults to ``"anthropic"``)
-    # so OpenAI-graded skills get an OpenAI-key-required guard.
-    # Guard lands AFTER --dry-run (dry-run is a cost-free preview — no
-    # API call, no key needed) and BEFORE test_triggers. Distinct
-    # ``except`` branches per
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005:
+    # fail fast when the provider's required auth is missing. Provider
+    # is resolved via the four-layer ``_resolve_grading_provider``
+    # helper (CLI flag > CLAUDITOR_GRADING_PROVIDER env >
+    # EvalSpec.grading_provider > default "auto" with auto-inference
+    # from grading_model), so OpenAI-graded skills get an OpenAI-key-
+    # required guard. Guard lands AFTER --dry-run (dry-run is a
+    # cost-free preview — no API call, no key needed) and BEFORE
+    # test_triggers. Distinct ``except`` branches per
     # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
-    provider = (
-        spec.eval_spec.grading_provider
-        if spec.eval_spec is not None
-        and spec.eval_spec.grading_provider is not None
-        else "anthropic"
-    )
+    #
+    # TODO(#146 US-006): pass ``provider`` through to ``test_triggers``
+    # so the resolved value flows beyond the auth guard. Today the
+    # orchestrator still re-reads ``eval_spec.grading_provider``
+    # internally.
+    from clauditor.cli import _resolve_grading_provider
+
+    provider = _resolve_grading_provider(args, spec.eval_spec)
     try:
         check_provider_auth(provider, "triggers")
     except AnthropicAuthMissingError as exc:

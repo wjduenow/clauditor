@@ -8,7 +8,8 @@ from pathlib import Path
 
 from clauditor._providers import (
     AnthropicAuthMissingError,
-    check_any_auth_available,
+    OpenAIAuthMissingError,
+    check_provider_auth,
 )
 from clauditor.paths import derive_skill_name, resolve_clauditor_dir
 from clauditor.suggest import (
@@ -25,7 +26,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``suggest`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int, _transport_choice
+    from clauditor.cli import _positive_int, _provider_choice, _transport_choice
 
     p_suggest = subparsers.add_parser(
         "suggest",
@@ -79,6 +80,20 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "'auto'."
         ),
     )
+    p_suggest.add_argument(
+        "--grading-provider",
+        type=_provider_choice,
+        default=None,
+        choices=("anthropic", "openai", "auto"),
+        help=(
+            "Override the proposer provider: 'anthropic', 'openai', or "
+            "'auto' (infer from --model). Four-layer precedence: this "
+            "flag > CLAUDITOR_GRADING_PROVIDER env > "
+            "EvalSpec.grading_provider > default 'auto'. The suggest "
+            "command has no eval spec at the CLI seam, so only the CLI "
+            "flag and env var are typically meaningful."
+        ),
+    )
 
 
 def cmd_suggest(args: argparse.Namespace) -> int:
@@ -102,9 +117,10 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
       unparseable JSON (no sidecar).
     - exit 2 when any proposal anchor fails validation (no sidecar),
       OR when no usable authentication is available — the pre-flight
-      ``check_any_auth_available("suggest")`` guard raises
-      ``AnthropicAuthMissingError`` before any API call per #83
-      DEC-002/DEC-011 and #86 DEC-008 (no sidecar).
+      ``check_provider_auth(provider, "suggest")`` guard raises
+      ``AnthropicAuthMissingError`` / ``OpenAIAuthMissingError``
+      before any API call per #83 DEC-002/DEC-011, #86 DEC-008, and
+      #146 DEC-005 (no sidecar).
     - exit 3 on Anthropic API errors (no sidecar).
     """
     skill_path = Path(args.skill)
@@ -195,15 +211,32 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
         )
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
-    # ANTHROPIC_API_KEY nor the claude CLI binary is available.
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #146 US-005: fail fast when
+    # the resolved provider's required auth is missing. Per #146
+    # DEC-005 ``suggest`` is no longer hardcoded to Anthropic; the
+    # four-layer ``_resolve_grading_provider`` helper handles
+    # ``--grading-provider``, ``CLAUDITOR_GRADING_PROVIDER``, and falls
+    # back to default "auto" with auto-inference from ``--model``.
     # ``suggest`` has no --dry-run; the guard lands AFTER the zero-
     # failing-signals early-exit (so the "all passed" path still works
-    # without auth — it never calls Anthropic) and BEFORE the
-    # propose_edits orchestrator.
+    # without auth — it never calls the provider) and BEFORE the
+    # propose_edits orchestrator. Distinct ``except`` branches per
+    # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    #
+    # TODO(#146 US-006): pass ``provider`` through to ``propose_edits``
+    # so the resolved value flows beyond the auth guard. Today
+    # ``propose_edits`` already accepts a ``provider`` kwarg defaulting
+    # to ``"anthropic"``; re-routing it from the CLI seam is part of
+    # US-006.
+    from clauditor.cli import _resolve_grading_provider
+
+    provider = _resolve_grading_provider(args, None)
     try:
-        check_any_auth_available("suggest")
+        check_provider_auth(provider, "suggest")
     except AnthropicAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    except OpenAIAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
 
