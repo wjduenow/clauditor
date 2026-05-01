@@ -216,15 +216,97 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
     return _factory
 
 
+def _dispatch_fixture_auth_guard(eval_spec, fixture_name: str) -> None:
+    """Pre-flight auth guard for the three grading fixtures.
+
+    DEC-006 of ``plans/super/146-grading-provider-precedence.md``:
+    each grading fixture (``clauditor_grader``,
+    ``clauditor_blind_compare``, ``clauditor_triggers``) resolves the
+    active provider via :func:`clauditor.cli._resolve_grading_provider`
+    (passing ``args=None`` since pytest fixtures have no argparse
+    namespace) and routes the auth guard per provider:
+
+    - ``provider="anthropic"`` → strict-vs-relaxed split via
+      ``CLAUDITOR_FIXTURE_ALLOW_CLI`` (preserved from #86 DEC-009):
+      strict-by-default uses :func:`check_api_key_only`, opt-in
+      relaxed uses :func:`check_any_auth_available`. The opt-in
+      branch is intentional — fixtures stay stricter than the CLI
+      by default so a CI run under subscription-only auth surfaces
+      a config regression instead of silently passing.
+    - ``provider="openai"`` → always strict via
+      :func:`check_openai_auth`. OpenAI has no CLI-fallback /
+      subscription concept (per #145 DEC-002), so the
+      strict-vs-relaxed split has no analogue here.
+
+    Per ``.claude/rules/multi-provider-dispatch.md`` the two providers
+    raise distinct exception classes (``AnthropicAuthMissingError`` /
+    ``OpenAIAuthMissingError``), letting fixture callers route on a
+    structural ``except`` ladder rather than substring-matching on
+    error text.
+    """
+    import os
+
+    from clauditor._providers import (
+        check_any_auth_available,
+        check_api_key_only,
+        check_openai_auth,
+        resolve_grading_provider,
+    )
+
+    # When ``eval_spec`` is ``None`` (e.g. an in-flight spec load
+    # failure we do not control here), preserve pre-#146 behavior and
+    # use the Anthropic strict-vs-relaxed guard. The wrapping fixture
+    # raises its own ``ValueError`` for the missing-spec case.
+    if eval_spec is None:
+        if _fixture_allow_cli():
+            check_any_auth_available(fixture_name)
+        else:
+            check_api_key_only(fixture_name)
+        return
+
+    # Resolve via the pure helper directly (NOT the CLI wrapper) so a
+    # bogus ``eval_spec.grading_model`` does not become ``SystemExit(2)``
+    # mid-test — the CLI wrapper escalates ``ValueError`` to a CLI
+    # exit-code routing that has no analogue in fixture-land. Any
+    # resolver failure (auto-inference of an unknown model prefix,
+    # invalid spec value, etc.) falls back to ``"anthropic"`` so the
+    # historical pre-#146 default fires; tests that exercise specific
+    # provider dispatch use a known-good ``grading_model``
+    # (``claude-sonnet-4-6`` or ``gpt-5.4``).
+    env_value = os.environ.get("CLAUDITOR_GRADING_PROVIDER")
+    if env_value is not None and env_value.strip() == "":
+        env_value = None
+    spec_value = getattr(eval_spec, "grading_provider", None)
+    model = getattr(eval_spec, "grading_model", None)
+    try:
+        provider = resolve_grading_provider(
+            None, env_value, spec_value, model
+        )
+    except ValueError:
+        provider = "anthropic"
+
+    if provider == "anthropic":
+        if _fixture_allow_cli():
+            check_any_auth_available(fixture_name)
+        else:
+            check_api_key_only(fixture_name)
+        return
+    if provider == "openai":
+        check_openai_auth(fixture_name)
+        return
+    # ``_resolve_grading_provider`` only returns ``"anthropic"`` or
+    # ``"openai"`` — defensive branch for forward-compat additions.
+    raise ValueError(
+        f"_dispatch_fixture_auth_guard: unknown provider {provider!r} — "
+        "expected 'anthropic' or 'openai'"
+    )
+
+
 @pytest.fixture
 def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
     """Fixture factory for quality grading. Returns a callable that grades a skill."""
     import asyncio
 
-    from clauditor._providers import (
-        check_any_auth_available,
-        check_api_key_only,
-    )
     from clauditor.quality_grader import grade_quality
 
     model = request.config.getoption("--clauditor-model") or "claude-sonnet-4-6"
@@ -234,24 +316,16 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
         eval_path: str | Path | None = None,
         output: str | None = None,
     ):
-        # DEC-005 / DEC-013 (#83) + DEC-009 (#86): pre-flight auth guard
-        # at factory-invocation time. Raises ``AnthropicAuthMissingError``
-        # (same class the CLI catches) when no usable auth is available,
-        # so a CI run under subscription-only auth surfaces a clear error
-        # instead of silently skipping.
-        #
-        # Fixtures stay stricter than the CLI by default (DEC-009): only
-        # ``ANTHROPIC_API_KEY`` passes. Users who deliberately want the
-        # CLI transport to participate in fixture tests opt in with
-        # ``CLAUDITOR_FIXTURE_ALLOW_CLI=1`` (any truthy value), which
-        # routes through :func:`check_any_auth_available` instead.
-        if _fixture_allow_cli():
-            check_any_auth_available("grader")
-        else:
-            check_api_key_only("grader")
+        # DEC-006 (#146 US-007): load the spec first so the auth-guard
+        # dispatch can read ``eval_spec.grading_provider`` /
+        # ``grading_model``. The guard still fires before any SDK call
+        # so a CI run under subscription-only auth (or a missing
+        # ``OPENAI_API_KEY`` for an OpenAI-graded skill) surfaces a
+        # clear error rather than a deep SDK traceback.
         spec = clauditor_spec(skill_path, eval_path)
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
+        _dispatch_fixture_auth_guard(spec.eval_spec, "grader")
         if output is None:
             result = spec.run()
             output = result.output
@@ -309,10 +383,6 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
     """
     import asyncio
 
-    from clauditor._providers import (
-        check_any_auth_available,
-        check_api_key_only,
-    )
     from clauditor.quality_grader import BlindReport, blind_compare_from_spec
 
     def _factory(
@@ -323,14 +393,11 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
         *,
         model: str | None = None,
     ) -> BlindReport:
-        # DEC-005 / DEC-013 (#83) + DEC-009 (#86): pre-flight auth guard
-        # at factory-invocation time (same as ``clauditor_grader``). See
-        # that fixture for rationale.
-        if _fixture_allow_cli():
-            check_any_auth_available("blind_compare")
-        else:
-            check_api_key_only("blind_compare")
+        # DEC-006 (#146 US-007): load spec first so the dispatch can read
+        # ``eval_spec.grading_provider`` / ``grading_model``. The guard
+        # still fires before any SDK call.
         spec = clauditor_spec(skill_path, eval_path)
+        _dispatch_fixture_auth_guard(spec.eval_spec, "blind_compare")
         effective_model = model or request.config.getoption("--clauditor-model")
         return asyncio.run(
             blind_compare_from_spec(
@@ -346,10 +413,6 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
     """Fixture factory for trigger precision testing."""
     import asyncio
 
-    from clauditor._providers import (
-        check_any_auth_available,
-        check_api_key_only,
-    )
     from clauditor.triggers import test_triggers as run_triggers
 
     model = request.config.getoption("--clauditor-model") or "claude-sonnet-4-6"
@@ -357,16 +420,13 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
     def _factory(
         skill_path: str | Path, eval_path: str | Path | None = None
     ):
-        # DEC-005 / DEC-013 (#83) + DEC-009 (#86): pre-flight auth guard
-        # at factory-invocation time (same as ``clauditor_grader``). See
-        # that fixture for rationale.
-        if _fixture_allow_cli():
-            check_any_auth_available("triggers")
-        else:
-            check_api_key_only("triggers")
+        # DEC-006 (#146 US-007): load spec first so the dispatch can
+        # read ``eval_spec.grading_provider`` / ``grading_model``. The
+        # guard still fires before any SDK call.
         spec = clauditor_spec(skill_path, eval_path)
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
+        _dispatch_fixture_auth_guard(spec.eval_spec, "triggers")
         return asyncio.run(run_triggers(spec.eval_spec, model))
 
     return _factory
