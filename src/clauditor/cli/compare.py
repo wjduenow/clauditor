@@ -21,7 +21,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``compare`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int, _transport_choice
+    from clauditor.cli import _positive_int, _provider_choice, _transport_choice
 
     p_compare = subparsers.add_parser(
         "compare",
@@ -91,6 +91,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "plain assertion diffs. Four-layer precedence: this flag > "
             "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
             "'auto'."
+        ),
+    )
+    p_compare.add_argument(
+        "--grading-provider",
+        type=_provider_choice,
+        default=None,
+        choices=("anthropic", "openai", "auto"),
+        help=(
+            "Override the grading provider: 'anthropic', 'openai', or "
+            "'auto' (infer from grading_model). Only used with --blind; "
+            "ignored for plain assertion diffs. Four-layer precedence: "
+            "this flag > CLAUDITOR_GRADING_PROVIDER env > "
+            "EvalSpec.grading_provider > default 'auto'."
         ),
     )
 
@@ -226,18 +239,28 @@ def _run_blind_compare(
     # Pre-flight auth guard (QG pass 2 of #83 — plans/super/
     # 83-subscription-auth-gap.md; relaxed per #86 DEC-008 —
     # plans/super/86-claude-cli-transport.md; provider-aware per #145
-    # QG pass 1). ``compare --blind`` routes through
-    # ``blind_compare_from_spec`` → ``call_model`` (#144 US-005,
-    # provider-routed by US-010), so the auth guard must dispatch on
-    # ``eval_spec.grading_provider`` rather than always asking for
-    # Anthropic auth. Lands after spec validation (which has its own
-    # exit-2 surface) and before file I/O / SDK call. Distinct
-    # ``except`` branches per ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
-    provider = (
-        skill_spec.eval_spec.grading_provider
-        if skill_spec.eval_spec is not None
-        and skill_spec.eval_spec.grading_provider is not None
-        else "anthropic"
+    # QG pass 1; four-layer precedence per #146 US-005). ``compare
+    # --blind`` routes through ``blind_compare_from_spec`` →
+    # ``call_model`` (#144 US-005, provider-routed by US-010), so the
+    # auth guard must dispatch on the resolved provider rather than
+    # always asking for Anthropic auth. The four-layer
+    # ``_resolve_grading_provider`` helper (CLI flag >
+    # CLAUDITOR_GRADING_PROVIDER env > EvalSpec.grading_provider >
+    # default "auto" with auto-inference from grading_model) is the
+    # single resolution seam. Lands after spec validation (which has
+    # its own exit-2 surface) and before file I/O / SDK call. Distinct
+    # ``except`` branches per
+    # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    #
+    # TODO(#146 US-006): pass ``provider`` through to
+    # ``blind_compare_from_spec`` so the resolved value flows beyond
+    # the auth guard. Today the orchestrator still re-reads
+    # ``eval_spec.grading_provider`` internally.
+    from clauditor.cli import _resolve_grading_provider
+
+    provider = _resolve_grading_provider(
+        args if args is not None else argparse.Namespace(),
+        skill_spec.eval_spec,
     )
     try:
         check_provider_auth(provider, "compare --blind")
