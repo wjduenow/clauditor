@@ -494,9 +494,10 @@ class TestTriggersGradingProviderOpenAI:
             '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
         )
         with patch("clauditor._providers.call_model", call):
-            # PR #160 review: openai+claude-default raises ``ValueError``;
-            # pass an explicit OpenAI model name.
-            await run_test_triggers(spec, model="gpt-5.4")
+            # #146 US-006: orchestrators no longer read
+            # ``eval_spec.grading_provider`` directly — pass
+            # ``provider="openai"`` explicitly.
+            await run_test_triggers(spec, model="gpt-5.4", provider="openai")
         # All 3 per-query call_model invocations must have received
         # ``provider="openai"``.
         assert call.await_count == 3

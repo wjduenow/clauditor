@@ -239,8 +239,8 @@ def _run_blind_compare(
     # Pre-flight auth guard (QG pass 2 of #83 — plans/super/
     # 83-subscription-auth-gap.md; relaxed per #86 DEC-008 —
     # plans/super/86-claude-cli-transport.md; provider-aware per #145
-    # QG pass 1; four-layer precedence per #146 US-005). ``compare
-    # --blind`` routes through ``blind_compare_from_spec`` →
+    # QG pass 1; four-layer precedence per #146 US-005/US-006).
+    # ``compare --blind`` routes through ``blind_compare_from_spec`` →
     # ``call_model`` (#144 US-005, provider-routed by US-010), so the
     # auth guard must dispatch on the resolved provider rather than
     # always asking for Anthropic auth. The four-layer
@@ -252,10 +252,8 @@ def _run_blind_compare(
     # ``except`` branches per
     # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
     #
-    # TODO(#146 US-006): pass ``provider`` through to
-    # ``blind_compare_from_spec`` so the resolved value flows beyond
-    # the auth guard. Today the orchestrator still re-reads
-    # ``eval_spec.grading_provider`` internally.
+    # The resolved provider is threaded down through
+    # ``blind_compare_from_spec`` per #146 US-006.
     from clauditor.cli import _resolve_grading_provider
 
     provider = _resolve_grading_provider(
@@ -323,6 +321,7 @@ def _run_blind_compare(
             output_a,
             output_b,
             transport=effective_transport,
+            provider=provider,
         )
     )
     _print_blind_report(report, before_path, after_path)

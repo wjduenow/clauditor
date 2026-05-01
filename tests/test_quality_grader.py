@@ -683,10 +683,13 @@ class TestGradingProviderOpenAIWiring:
         )
         call_mock = AsyncMock(return_value=fake)
         with patch("clauditor._providers.call_model", call_mock):
-            # PR #160 review: openai+claude-default-model raises
-            # ``ValueError`` per the new ``_validate_provider_model``
-            # fail-fast guard; pass an explicit OpenAI model name.
-            report = await grade_quality("output", spec, model="gpt-5.4")
+            # #146 US-006: orchestrators no longer read
+            # ``eval_spec.grading_provider`` directly — the CLI seam
+            # resolves and threads ``provider`` through. Pass it
+            # explicitly here to mirror the production call shape.
+            report = await grade_quality(
+                "output", spec, model="gpt-5.4", provider="openai"
+            )
         assert report.provider_source == "openai"
         # Verify ``provider="openai"`` flowed through to call_model.
         assert call_mock.await_args.kwargs["provider"] == "openai"
@@ -795,86 +798,13 @@ class TestGradingProviderOpenAIWiring:
         assert call_mock.await_args.kwargs["provider"] == "anthropic"
 
 
-class TestValidateProviderModel:
-    """PR #160 review (CodeRabbit): fail-fast guard rejects the
-    Anthropic-default model when ``provider="openai"`` so the spec
-    author sees a crisp actionable error rather than a downstream
-    4xx model-not-found from the OpenAI SDK. Removable once #146
-    ships per-provider default-model precedence."""
-
-    def test_openai_with_claude_model_raises(self) -> None:
-        from clauditor.quality_grader import (
-            DEFAULT_GRADING_MODEL,
-            _validate_provider_model,
-        )
-
-        with pytest.raises(ValueError, match="provider='openai'"):
-            _validate_provider_model(
-                "openai", DEFAULT_GRADING_MODEL, "test_ctx"
-            )
-
-    def test_openai_with_claude_prefixed_model_raises(self) -> None:
-        from clauditor.quality_grader import _validate_provider_model
-
-        with pytest.raises(ValueError, match="claude-haiku-4"):
-            _validate_provider_model(
-                "openai", "claude-haiku-4", "test_ctx"
-            )
-
-    def test_openai_with_openai_model_passes(self) -> None:
-        from clauditor.quality_grader import _validate_provider_model
-
-        # No exception — fully resolved to a non-Claude OpenAI model.
-        _validate_provider_model("openai", "gpt-5.4", "test_ctx")
-
-    def test_anthropic_with_claude_model_passes(self) -> None:
-        from clauditor.quality_grader import (
-            DEFAULT_GRADING_MODEL,
-            _validate_provider_model,
-        )
-
-        # The default pairing — must not fire the guard.
-        _validate_provider_model(
-            "anthropic", DEFAULT_GRADING_MODEL, "test_ctx"
-        )
-
-    def test_error_message_includes_context(self) -> None:
-        from clauditor.quality_grader import _validate_provider_model
-
-        with pytest.raises(ValueError, match="my_orchestrator"):
-            _validate_provider_model(
-                "openai", "claude-sonnet-4-6", "my_orchestrator"
-            )
-
-    @pytest.mark.asyncio
-    async def test_grade_quality_raises_on_openai_with_claude_default(
-        self,
-    ) -> None:
-        """Integration: ``grade_quality`` invokes the guard before any
-        ``call_model`` invocation so the API call never fires."""
-        spec = EvalSpec(
-            skill_name="test-skill",
-            description="A test skill for unit tests",
-            grading_criteria=["c1"],
-            grading_provider="openai",
-        )
-        # No call_model patch needed — the guard fires before the
-        # call would be made.
-        with pytest.raises(ValueError, match="provider='openai'"):
-            await grade_quality("output", spec)
-
-    @pytest.mark.asyncio
-    async def test_blind_compare_raises_on_openai_with_claude_default(
-        self,
-    ) -> None:
-        with pytest.raises(ValueError, match="provider='openai'"):
-            await blind_compare(
-                "query",
-                "out_a",
-                "out_b",
-                provider="openai",
-                # model defaults to DEFAULT_GRADING_MODEL (claude-)
-            )
+# Note: ``TestValidateProviderModel`` was retired in #146 US-006 along
+# with the ``_validate_provider_model`` runtime guard. The CLI seam now
+# resolves the per-provider default model via
+# ``clauditor._providers.resolve_grading_model`` BEFORE the orchestrator
+# runs, so the Anthropic-default never reaches the OpenAI backend.
+# Coverage of the resolver lives in
+# ``tests/test_providers.py::TestResolveGradingModel``.
 
 
 class TestParseGradingResponse:
@@ -3552,11 +3482,15 @@ class TestGradeQualityWithOpenAI:
         )
         call_mock = AsyncMock(return_value=fake)
         with patch("clauditor._providers.call_model", call_mock):
-            # PR #160 review: openai+claude-default-model raises
-            # ``ValueError`` (CodeRabbit fail-fast guard); pass an
-            # explicit OpenAI model name.
+            # #146 US-006: orchestrators no longer read
+            # ``eval_spec.grading_provider`` directly; pass
+            # ``provider="openai"`` explicitly to mirror the
+            # production CLI seam.
             report = await grade_quality(
-                "fake skill output", spec, model="gpt-5.4"
+                "fake skill output",
+                spec,
+                model="gpt-5.4",
+                provider="openai",
             )
 
         # Provider stamping (acceptance criterion 2 — primary signal).

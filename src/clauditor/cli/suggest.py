@@ -211,8 +211,8 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
         )
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008 + #146 US-005: fail fast when
-    # the resolved provider's required auth is missing. Per #146
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #146 US-005/US-006: fail fast
+    # when the resolved provider's required auth is missing. Per #146
     # DEC-005 ``suggest`` is no longer hardcoded to Anthropic; the
     # four-layer ``_resolve_grading_provider`` helper handles
     # ``--grading-provider``, ``CLAUDITOR_GRADING_PROVIDER``, and falls
@@ -223,11 +223,8 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
     # propose_edits orchestrator. Distinct ``except`` branches per
     # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
     #
-    # TODO(#146 US-006): pass ``provider`` through to ``propose_edits``
-    # so the resolved value flows beyond the auth guard. Today
-    # ``propose_edits`` already accepts a ``provider`` kwarg defaulting
-    # to ``"anthropic"``; re-routing it from the CLI seam is part of
-    # US-006.
+    # The resolved provider is threaded down to ``propose_edits`` per
+    # #146 US-006.
     from clauditor.cli import _resolve_grading_provider
 
     provider = _resolve_grading_provider(args, None)
@@ -269,6 +266,7 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
         suggest_input,
         model=args.model,
         transport=_resolve_grader_transport(args),
+        provider=provider,
     )
 
     # DEC-008 row 3: API / prompt-build failure.

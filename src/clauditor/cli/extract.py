@@ -107,7 +107,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
         print(f"Prompt:\n{prompt}")
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005:
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005/US-006:
     # fail fast when the provider's required auth is missing. Provider
     # is resolved via the four-layer ``_resolve_grading_provider``
     # helper (CLI flag > CLAUDITOR_GRADING_PROVIDER env >
@@ -118,10 +118,8 @@ def cmd_extract(args: argparse.Namespace) -> int:
     # extract_and_grade. Distinct ``except`` branches per
     # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
     #
-    # TODO(#146 US-006): pass ``provider`` through to
-    # ``extract_and_grade`` so the resolved value flows beyond the
-    # auth guard. Today the orchestrator still re-reads
-    # ``eval_spec.grading_provider`` internally.
+    # The resolved provider is threaded down through the
+    # ``extract_and_grade`` call below per #146 US-006.
     from clauditor.cli import _resolve_grading_provider
 
     provider = _resolve_grading_provider(args, spec.eval_spec)
@@ -172,7 +170,13 @@ def cmd_extract(args: argparse.Namespace) -> int:
     from clauditor.grader import extract_and_grade
 
     results = asyncio.run(
-        extract_and_grade(output, spec.eval_spec, model, transport=grader_transport)
+        extract_and_grade(
+            output,
+            spec.eval_spec,
+            model,
+            transport=grader_transport,
+            provider=provider,
+        )
     )
 
     # Record history (US-005). Extract does not compute Layer 3

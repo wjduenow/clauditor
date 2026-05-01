@@ -822,6 +822,7 @@ async def _single_propose_attempt(
     max_tokens: int,
     spec_dir: Path,
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> _AttemptResult:
     """Execute one ``call_anthropic`` + parse + validate pass.
 
@@ -856,7 +857,7 @@ async def _single_propose_attempt(
     try:
         result = await call_model(
             prompt,
-            provider="anthropic",
+            provider=provider,
             model=model,
             transport=transport,
             max_tokens=max_tokens,
@@ -868,7 +869,7 @@ async def _single_propose_attempt(
                 output_tokens=0,
                 duration_seconds=_monotonic() - attempt_start,
             ),
-            api_error=f"anthropic API error: {exc!r}",
+            api_error=f"{provider} API error: {exc!r}",
         )
 
     metrics = AttemptMetrics(
@@ -913,6 +914,7 @@ async def propose_eval(
     max_tokens: int = 4096,
     spec_dir: Path | None = None,
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> ProposeEvalReport:
     """Call Sonnet, parse the response, validate the spec, return a report.
 
@@ -1027,6 +1029,7 @@ async def propose_eval(
         max_tokens=max_tokens,
         spec_dir=effective_spec_dir,
         transport=transport,
+        provider=provider,
     )
 
     # DEC-004: repair fires on validation errors only. An API error on
@@ -1091,6 +1094,7 @@ async def propose_eval(
         max_tokens=max_tokens,
         spec_dir=effective_spec_dir,
         transport=transport,
+        provider=provider,
     )
 
     attempts = [first.metrics, second.metrics]
