@@ -6,7 +6,8 @@
 - **Branch:** `feature/146-grading-provider-precedence`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/146-grading-provider-precedence`
 - **PR:** https://github.com/wjduenow/clauditor/pull/164
-- **Phase:** published
+- **Phase:** devolved
+- **Epic:** clauditor-apy
 - **Sessions:** 1 (2026-05-01)
 - **Total decisions:** 10 (DEC-001 through DEC-010)
 - **Depends on:** #145 (CLOSED — OpenAI provider, `check_provider_auth`, minimal `grading_provider` spec field shipped)
@@ -1100,7 +1101,25 @@ canonical-implementations section update per the rule's discipline.
 
 ## Beads Manifest
 
-*(Pending — Phase 7 will fill in epic ID + task IDs.)*
+**Epic:** `clauditor-apy` — #146: EvalSpec.grading_provider four-layer precedence
+
+**Tasks (in dependency order):**
+
+| Bead | Story | Depends on |
+|---|---|---|
+| `clauditor-apy.1` | US-001 — Pure helpers (`infer_provider_from_model` + `resolve_grading_provider` + `resolve_grading_model`) | none |
+| `clauditor-apy.2` | US-002 — `EvalSpec.grading_provider` field migration | none |
+| `clauditor-apy.3` | US-003 — `EvalSpec.grading_model` nullable + retire `_validate_provider_model` | `.1`, `.2` |
+| `clauditor-apy.4` | US-004 — CLI helper `_resolve_grading_provider` + `_provider_choice` | `.1` |
+| `clauditor-apy.5` | US-005 — Wire `--grading-provider` flag on all 6 CLI commands | `.2`, `.3`, `.4` |
+| `clauditor-apy.6` | US-006 — Normalize 6 grader call sites to accept `provider` kwarg | `.5` |
+| `clauditor-apy.7` | US-007 — Pytest fixtures dispatch via `check_provider_auth` | `.2`, `.4` |
+| `clauditor-apy.8` | US-008 — End-to-end tests for precedence + auto-inference | `.6`, `.7` |
+| `clauditor-apy.9` | US-009 — Quality Gate (code review × 4 + CodeRabbit) | `.8` |
+| `clauditor-apy.10` | US-010 — Patterns & Memory (rules + docs) | `.9` |
+
+**Ready tasks at devolution time:** `clauditor-apy.1` and `clauditor-apy.2`
+(no blockers; can run in parallel).
 
 ---
 
