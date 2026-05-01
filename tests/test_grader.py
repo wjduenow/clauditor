@@ -1965,10 +1965,12 @@ class TestExtractAndReportGradingProviderOpenAI:
         )
         call_mock = AsyncMock(return_value=fake)
         with patch("clauditor._providers.call_model", call_mock):
-            # PR #160 review: openai+claude-default raises ``ValueError``
-            # per the new fail-fast guard; pass an explicit OpenAI model.
+            # #146 US-006: orchestrators no longer read
+            # ``eval_spec.grading_provider`` directly — pass
+            # ``provider="openai"`` explicitly to mirror the
+            # production CLI seam.
             report = await extract_and_report(
-                "output", spec, model="gpt-5.4-mini"
+                "output", spec, model="gpt-5.4-mini", provider="openai"
             )
         assert report.provider_source == "openai"
         # Verify ``provider="openai"`` flowed through to call_model.
@@ -1995,8 +1997,10 @@ class TestExtractAndReportGradingProviderOpenAI:
         )
         call_mock = AsyncMock(return_value=fake)
         with patch("clauditor._providers.call_model", call_mock):
-            # PR #160 review: pass explicit OpenAI model.
-            await extract_and_grade("output", spec, model="gpt-5.4-mini")
+            # #146 US-006: pass ``provider="openai"`` explicitly.
+            await extract_and_grade(
+                "output", spec, model="gpt-5.4-mini", provider="openai"
+            )
         # ``extract_and_grade`` returns an ``AssertionSet`` (no
         # provider_source field) — verify the resolved provider flowed
         # through to ``call_model``.
@@ -2559,10 +2563,15 @@ class TestExtractAndReportWithOpenAI:
         )
         call_mock = AsyncMock(return_value=fake)
         with patch("clauditor._providers.call_model", call_mock):
-            # PR #160 review: openai+claude-default raises ``ValueError``;
-            # pass an explicit OpenAI model name.
+            # #146 US-006: orchestrators no longer read
+            # ``eval_spec.grading_provider`` directly; the CLI seam
+            # resolves and threads ``provider`` through. Pass it
+            # explicitly to mirror production.
             report = await extract_and_report(
-                "fake skill output text", spec, model="gpt-5.4-mini"
+                "fake skill output text",
+                spec,
+                model="gpt-5.4-mini",
+                provider="openai",
             )
 
         # Provider stamping (acceptance criterion 2 — primary signal).

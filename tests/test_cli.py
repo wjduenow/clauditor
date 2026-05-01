@@ -2866,7 +2866,16 @@ class TestCmdTriggers:
         assert "should_not_trigger" in out
 
     def test_triggers_no_model_exits_2(self, capsys):
-        """Missing grading_model (neither --model nor spec) exits 2."""
+        """Missing grading_model (neither --model nor spec) exits 2.
+
+        Post-#146: ``grading_provider`` defaults to ``"auto"`` and the
+        provider resolver runs BEFORE the model is consumed. An empty-
+        string ``grading_model`` cannot drive auto-inference, so the
+        ``_resolve_grading_provider`` helper raises ``SystemExit(2)``
+        with a message naming the empty-model failure mode. Either
+        path produces an exit-2 surface with an actionable error in
+        stderr — the contract the test guards.
+        """
         eval_spec = _make_eval_spec(
             grading_model="",
             trigger_tests=TriggerTests(
@@ -2876,12 +2885,18 @@ class TestCmdTriggers:
         )
         spec = _make_spec(eval_spec=eval_spec)
         with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
-            rc = main(["triggers", "skill.md"])
+            with pytest.raises(SystemExit) as excinfo:
+                main(["triggers", "skill.md"])
 
-        assert rc == 2
+        assert excinfo.value.code == 2
         err = capsys.readouterr().err
-        assert "No grading model specified" in err
-        assert "--model" in err
+        # Either the legacy "No grading model specified" surface or
+        # the new "infer_provider_from_model" surface is acceptable;
+        # both communicate the same actionable failure.
+        assert (
+            "No grading model specified" in err
+            or "model must be a non-empty string" in err
+        )
 
     def test_triggers_missing_trigger_tests_exits_1(self, capsys):
         """Non-dry-run with no trigger_tests on the spec must exit 1 with a
@@ -6007,7 +6022,13 @@ class TestCmdSuggest:
 
         captured = {}
 
-        async def _fake_propose(suggest_input, *, model=None, transport="auto"):
+        async def _fake_propose(
+            suggest_input,
+            *,
+            model=None,
+            transport="auto",
+            provider="anthropic",
+        ):
             captured["source_iteration"] = suggest_input.source_iteration
             return self._fake_report(source_iteration=suggest_input.source_iteration)
 
@@ -6027,7 +6048,13 @@ class TestCmdSuggest:
 
         captured = {}
 
-        async def _fake_propose(suggest_input, *, model=None, transport="auto"):
+        async def _fake_propose(
+            suggest_input,
+            *,
+            model=None,
+            transport="auto",
+            provider="anthropic",
+        ):
             captured["transcripts"] = suggest_input.transcript_events
             return self._fake_report()
 

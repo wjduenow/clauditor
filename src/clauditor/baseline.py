@@ -98,6 +98,7 @@ def compute_baseline(
     skill_name: str,
     iteration: int,
     model: str,
+    provider: str = "anthropic",
 ) -> BaselineReports:
     """Compute all baseline grading layers from an already-run result.
 
@@ -105,6 +106,10 @@ def compute_baseline(
     spec, runs L1 assertions synchronously, and awaits L2/L3 grading via
     ``asyncio.run``. Returns a :class:`BaselineReports` dataclass — no
     file I/O, no subprocess invocation, no stderr output.
+
+    ``provider`` is resolved at the CLI seam per #146 US-006 and
+    threaded into the L2/L3 orchestrator calls. Default
+    ``"anthropic"`` preserves back-compat for direct callers.
 
     Parameters are keyword-only to match the codebase convention and keep
     call sites readable.
@@ -122,6 +127,7 @@ def compute_baseline(
                 baseline_text,
                 eval_spec,
                 skill_name=skill_name,
+                provider=provider,
             )
         )
 
@@ -132,6 +138,7 @@ def compute_baseline(
             eval_spec,
             model,
             thresholds=eval_spec.grade_thresholds,
+            provider=provider,
         )
     )
 

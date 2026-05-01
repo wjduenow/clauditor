@@ -216,6 +216,38 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
     return _factory
 
 
+def _resolve_fixture_provider(eval_spec) -> str:
+    """Pure resolver for the active provider in fixture-land.
+
+    Mirrors the inner branch of :func:`_dispatch_fixture_auth_guard`
+    so the orchestrator-call sites in the three grading fixtures
+    (``clauditor_grader``, ``clauditor_blind_compare``,
+    ``clauditor_triggers``) can pass the resolved value through to
+    the orchestrator's ``provider=`` kwarg per #146 US-006. Falls back
+    to ``"anthropic"`` when ``eval_spec`` is ``None`` or the underlying
+    pure helper raises (e.g. an unknown ``grading_model`` prefix that
+    the auto-inference layer cannot resolve) — the auth guard already
+    ran by this point in the calling fixture, so any provider mismatch
+    surfaces there rather than here.
+    """
+    import os
+
+    from clauditor._providers import resolve_grading_provider
+
+    if eval_spec is None:
+        return "anthropic"
+
+    env_value = os.environ.get("CLAUDITOR_GRADING_PROVIDER")
+    if env_value is not None and env_value.strip() == "":
+        env_value = None
+    spec_value = getattr(eval_spec, "grading_provider", None)
+    model = getattr(eval_spec, "grading_model", None)
+    try:
+        return resolve_grading_provider(None, env_value, spec_value, model)
+    except ValueError:
+        return "anthropic"
+
+
 def _dispatch_fixture_auth_guard(eval_spec, fixture_name: str) -> None:
     """Pre-flight auth guard for the three grading fixtures.
 
@@ -326,10 +358,13 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
         _dispatch_fixture_auth_guard(spec.eval_spec, "grader")
+        provider = _resolve_fixture_provider(spec.eval_spec)
         if output is None:
             result = spec.run()
             output = result.output
-        return asyncio.run(grade_quality(output, spec.eval_spec, model))
+        return asyncio.run(
+            grade_quality(output, spec.eval_spec, model, provider=provider)
+        )
 
     return _factory
 
@@ -398,10 +433,17 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
         # still fires before any SDK call.
         spec = clauditor_spec(skill_path, eval_path)
         _dispatch_fixture_auth_guard(spec.eval_spec, "blind_compare")
+        provider = _resolve_fixture_provider(
+            spec.eval_spec if spec is not None else None
+        )
         effective_model = model or request.config.getoption("--clauditor-model")
         return asyncio.run(
             blind_compare_from_spec(
-                spec, output_a, output_b, model=effective_model
+                spec,
+                output_a,
+                output_b,
+                model=effective_model,
+                provider=provider,
             )
         )
 
@@ -427,6 +469,7 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
         _dispatch_fixture_auth_guard(spec.eval_spec, "triggers")
-        return asyncio.run(run_triggers(spec.eval_spec, model))
+        provider = _resolve_fixture_provider(spec.eval_spec)
+        return asyncio.run(run_triggers(spec.eval_spec, model, provider=provider))
 
     return _factory

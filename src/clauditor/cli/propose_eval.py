@@ -391,7 +391,7 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
         print(prompt, end="" if prompt.endswith("\n") else "\n")
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005:
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005/US-006:
     # fail fast when the proposer-provider's required auth is missing.
     # ``propose-eval`` is the eval-creation step itself, so there is no
     # ``eval_spec`` at the CLI seam — the resolver is called with
@@ -405,9 +405,8 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
     # ``except`` branches per
     # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
     #
-    # TODO(#146 US-006): pass ``provider`` through to ``propose_eval``
-    # so the resolved value flows beyond the auth guard. Today the
-    # orchestrator still hardcodes ``provider="anthropic"`` internally.
+    # The resolved provider is threaded down to ``propose_eval`` per
+    # #146 US-006.
     from clauditor.cli import _resolve_grading_provider
 
     provider = _resolve_grading_provider(args, None)
@@ -427,6 +426,7 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
         model=model,
         spec_dir=skill_md_path.parent,
         transport=_resolve_grader_transport(args),
+        provider=provider,
     )
 
     # DEC-006 row: Anthropic API failure → exit 3.

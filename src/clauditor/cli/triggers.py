@@ -81,14 +81,10 @@ def cmd_triggers(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # Note: ``model`` resolution is deferred until after the provider is
+    # resolved below (#146 US-006 / DEC-004) so the per-provider default
+    # model can fire when ``grading_model`` is unset.
     model = args.model or spec.eval_spec.grading_model
-    if not model:
-        print(
-            "ERROR: No grading model specified. Set grading_model in "
-            "the eval spec or pass --model.",
-            file=sys.stderr,
-        )
-        return 2
 
     # Both the dry-run and non-dry-run paths need trigger_tests. Without
     # this guard, the non-dry-run path would print an empty 'Trigger
@@ -115,7 +111,7 @@ def cmd_triggers(args: argparse.Namespace) -> int:
             print(prompt)
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005:
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005/US-006:
     # fail fast when the provider's required auth is missing. Provider
     # is resolved via the four-layer ``_resolve_grading_provider``
     # helper (CLI flag > CLAUDITOR_GRADING_PROVIDER env >
@@ -126,10 +122,8 @@ def cmd_triggers(args: argparse.Namespace) -> int:
     # test_triggers. Distinct ``except`` branches per
     # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
     #
-    # TODO(#146 US-006): pass ``provider`` through to ``test_triggers``
-    # so the resolved value flows beyond the auth guard. Today the
-    # orchestrator still re-reads ``eval_spec.grading_provider``
-    # internally.
+    # The resolved provider is threaded down through the
+    # ``test_triggers`` call below per #146 US-006.
     from clauditor.cli import _resolve_grading_provider
 
     provider = _resolve_grading_provider(args, spec.eval_spec)
@@ -142,6 +136,24 @@ def cmd_triggers(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
+    # #146 US-006 / DEC-004: when the operator did not pass ``--model``
+    # AND the spec did not set ``grading_model``, pick the per-provider
+    # default via the pure helper. An explicit ``--model`` always wins.
+    if not model:
+        from clauditor._providers import resolve_grading_model
+
+        model = resolve_grading_model(spec.eval_spec, provider)
+    # An explicitly-empty ``grading_model: ""`` (vs ``null``) bypasses
+    # the per-provider default — preserve the pre-#146 exit-2 surface
+    # for that pathological case.
+    if not model:
+        print(
+            "ERROR: No grading model specified. Set grading_model in "
+            "the eval spec or pass --model.",
+            file=sys.stderr,
+        )
+        return 2
+
     from clauditor.cli import _resolve_grader_transport
     from clauditor.triggers import test_triggers
 
@@ -150,6 +162,7 @@ def cmd_triggers(args: argparse.Namespace) -> int:
             spec.eval_spec,
             model,
             transport=_resolve_grader_transport(args, spec.eval_spec),
+            provider=provider,
         )
     )
 

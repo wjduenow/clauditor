@@ -797,6 +797,7 @@ async def _extract_call_with_retry(
     model: str,
     transport: str,
     ctx: str,
+    provider: str,
 ) -> tuple[str, str, str, int, int]:
     """Issue the extraction model call with parse retry.
 
@@ -804,25 +805,16 @@ async def _extract_call_with_retry(
     — the final attempt's response text, the transport source, the
     provider that produced the response, and cumulative token counts
     across attempts. Routes through ``call_model`` per the
-    spec-resolved provider (``eval_spec.grading_provider``), so the
-    retry semantics apply to whichever backend handles the call.
-    One retry on ``kind == "json"`` (true decode failures +
-    empty-after-fence-strip) per clauditor-6cf / #94; no retry on
-    ``kind == "shape"`` (valid JSON, wrong top-level type) or
-    ``kind == "flat_list"`` (section tiering missing) — both indicate
-    a model-protocol bug rather than a transient hiccup.
+    caller-resolved provider (#146 US-006), so the retry semantics
+    apply to whichever backend handles the call. One retry on
+    ``kind == "json"`` (true decode failures + empty-after-fence-strip)
+    per clauditor-6cf / #94; no retry on ``kind == "shape"`` (valid
+    JSON, wrong top-level type) or ``kind == "flat_list"`` (section
+    tiering missing) — both indicate a model-protocol bug rather than
+    a transient hiccup.
     """
     from clauditor._providers import call_model
-    from clauditor.quality_grader import (
-        _emit_parse_retry_notice,
-        _validate_provider_model,
-    )
-
-    # #145 US-010: Resolve provider from the spec; default to
-    # ``"anthropic"`` for back-compat. Pulled out of the retry loop so
-    # every attempt routes to the same backend.
-    provider = eval_spec.grading_provider or "anthropic"
-    _validate_provider_model(provider, model, ctx)
+    from clauditor.quality_grader import _emit_parse_retry_notice
 
     total_input = 0
     total_output = 0
@@ -868,6 +860,8 @@ async def extract_and_grade(
     eval_spec: EvalSpec,
     model: str = "claude-haiku-4-5-20251001",
     transport: str = "auto",
+    *,
+    provider: str = "anthropic",
 ) -> AssertionSet:
     """Layer 2: Extract structured data with Haiku, then validate against schema.
 
@@ -879,6 +873,12 @@ async def extract_and_grade(
     :func:`parse_extraction_response`, :func:`grade_extraction`, and
     :func:`build_extraction_assertion_set`.
 
+    ``provider`` is resolved at the CLI / fixture seam per #146 US-006
+    and passed through verbatim — orchestrators no longer read
+    ``eval_spec.grading_provider`` directly. Default
+    ``"anthropic"`` preserves back-compat for direct callers (mainly
+    tests); production callers always pass an explicit value.
+
     Requires the 'grader' extra: pip install clauditor[grader]
     """
     prompt = build_extraction_prompt(eval_spec, output)
@@ -887,6 +887,7 @@ async def extract_and_grade(
             prompt, eval_spec,
             model=model, transport=transport,
             ctx="extract_and_grade",
+            provider=provider,
         )
     )
     # Note: AssertionSet does not carry transport_source / provider_source —
@@ -909,6 +910,7 @@ async def extract_and_report(
     *,
     skill_name: str = "",
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> ExtractionReport:
     """Layer 2 wrapper that returns a field-id-keyed :class:`ExtractionReport`.
 
@@ -920,15 +922,21 @@ async def extract_and_report(
     :func:`parse_extraction_response`, :func:`build_extraction_report`, and
     :func:`build_extraction_report_from_text`.
 
+    ``provider`` is resolved at the CLI / fixture seam per #146 US-006
+    and passed through verbatim. Default ``"anthropic"`` preserves
+    back-compat for direct callers (mainly tests); production callers
+    always pass an explicit value.
+
     Used by ``cmd_grade`` (US-003) to persist per-field extraction results to
     ``iteration-N/<skill>/extraction.json``.
     """
     prompt = build_extraction_prompt(eval_spec, output)
-    response_text, source, provider, input_tokens, output_tokens = (
+    response_text, source, last_provider, input_tokens, output_tokens = (
         await _extract_call_with_retry(
             prompt, eval_spec,
             model=model, transport=transport,
             ctx="extract_and_report",
+            provider=provider,
         )
     )
     return build_extraction_report_from_text(
@@ -939,5 +947,5 @@ async def extract_and_report(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         transport_source=source,
-        provider_source=provider,
+        provider_source=last_provider,
     )
