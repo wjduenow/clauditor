@@ -3,9 +3,9 @@
 This module hosts the pure (no-I/O, no-global-state) helpers that
 classify and detect harness-specific signals on a ``codex exec
 --json`` capture. Each helper traces back to a DEC in
-``plans/super/149-codex-harness.md`` and follows the anchor pattern
-codified in ``.claude/rules/pure-compute-vs-io-split.md`` (slated
-to land as the seventh anchor via US-007 of #149).
+``plans/super/149-codex-harness.md`` and is the canonical
+**Seventh anchor** of ``.claude/rules/pure-compute-vs-io-split.md``
+(landed via US-007 of #149).
 
 US-001 ships only the module skeleton, constants, and four pure
 helpers — :func:`_classify_codex_failure`,
