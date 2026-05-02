@@ -4834,6 +4834,7 @@ class TestCmdTrend:
                 mean_score=0.6 + i * 0.05,
                 metrics={"count": i + 1},
                 command="grade",
+                provider="anthropic",
                 path=path,
             )
 
@@ -4939,6 +4940,7 @@ class TestCmdTrend:
             0.8,
             {},
             command="grade",
+            provider="anthropic",
             path=path,
             iteration=1,
             workspace_path="ws/1",
@@ -4971,6 +4973,7 @@ class TestCmdTrendCommandFilter:
                 mean_score=0.6,
                 metrics={},
                 command="grade",
+                provider="anthropic",
                 path=path,
             )
         for i in range(2):
@@ -4980,6 +4983,7 @@ class TestCmdTrendCommandFilter:
                 mean_score=None,
                 metrics={"skill": {"input_tokens": 100 + i}},
                 command="extract",
+                provider="anthropic",
                 path=path,
             )
 
@@ -5053,6 +5057,7 @@ class TestCmdTrendCommandFilter:
             mean_score=0.7,
             metrics={},
             command="grade",
+            provider="anthropic",
             path=path,
         )
         rc = main(
@@ -5082,6 +5087,7 @@ class TestCmdTrendDottedPath:
                 mean_score=0.7,
                 metrics={"grader": {"input_tokens": tok}},
                 command="grade",
+                provider="anthropic",
                 path=path,
             )
         rc = main(["trend", "test-skill", "--metric", "grader.input_tokens"])
@@ -5117,6 +5123,7 @@ class TestCmdTrendListMetrics:
                 "duration_seconds": 2.5,
             },
             command="grade",
+            provider="anthropic",
             path=path,
         )
         history.append_record(
@@ -5128,6 +5135,7 @@ class TestCmdTrendListMetrics:
                 "duration_seconds": 1.2,
             },
             command="extract",
+            provider="anthropic",
             path=path,
         )
 
@@ -5189,6 +5197,7 @@ class TestCmdTrendListMetrics:
             mean_score=None,
             metrics={},
             command="grade",
+            provider="anthropic",
             path=path,
         )
         rc = main(["trend", "test-skill", "--list-metrics"])
@@ -5245,8 +5254,52 @@ class TestCmdGradeHistory:
         assert record["skill"] == "test-skill"
         assert record["pass_rate"] == 1.0
         assert record["mean_score"] == 0.9
-        assert record["schema_version"] == 1
+        # #147 DEC-012: schema bumped to 2 with mandatory ``provider``.
+        assert record["schema_version"] == 2
         assert record["command"] == "grade"
+        # Default eval-spec uses anthropic; provider is threaded from
+        # the four-layer ``_resolve_grading_provider`` resolution.
+        assert record["provider"] == "anthropic"
+
+    def test_grade_appends_history_with_resolved_provider(
+        self, tmp_path, monkeypatch
+    ):
+        """Resolved grading provider lands in the history record (#147 US-005)."""
+        monkeypatch.chdir(tmp_path)
+        # Force OpenAI auth presence so the pre-call guard does not fire.
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key-for-test")
+
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output")
+
+        # Build a spec that explicitly pins ``grading_provider="openai"``
+        # so the four-layer resolver picks ``"openai"``.
+        eval_spec = _make_eval_spec(grading_provider="openai")
+        spec = _make_spec(eval_spec=eval_spec)
+        report = make_grading_report(passed=True, score=0.9)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output", str(output_file),
+                    "--model", "gpt-5.4",
+                ]
+            )
+
+        assert rc == 0
+        history_path = tmp_path / ".clauditor" / "history.jsonl"
+        record = json.loads(history_path.read_text().splitlines()[0])
+        assert record["schema_version"] == 2
+        assert record["provider"] == "openai"
 
     def test_grade_history_records_metrics(self, tmp_path, monkeypatch):
         """cmd_grade records real bucketed metrics in history.jsonl."""
@@ -5503,8 +5556,10 @@ class TestCmdExtractHistory:
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["skill"] == "test-skill"
-        assert record["schema_version"] == 1
+        # #147 DEC-012: history schema bumped to 2 with mandatory provider.
+        assert record["schema_version"] == 2
         assert record["command"] == "extract"
+        assert record["provider"] == "anthropic"
         assert record["pass_rate"] is None
         assert record["mean_score"] is None
         metrics = record["metrics"]
@@ -5516,6 +5571,57 @@ class TestCmdExtractHistory:
         assert "quality" not in metrics
         assert "triggers" not in metrics
         assert metrics["total"]["total"] == 700
+
+    def test_extract_appends_history_with_resolved_provider(
+        self, tmp_path, monkeypatch
+    ):
+        """Resolved grading provider lands in extract history (#147 US-005)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key-for-test")
+
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output")
+
+        eval_spec = _make_eval_spec(
+            sections=_make_sections(),
+            grading_provider="openai",
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        results = AssertionSet(
+            results=[
+                AssertionResult(
+                    name="section:Results:count",
+                    passed=True,
+                    message="ok",
+                    kind="count",
+                )
+            ],
+            input_tokens=500,
+            output_tokens=200,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+        ):
+            rc = main(
+                [
+                    "extract",
+                    "skill.md",
+                    "--output", str(output_file),
+                    "--model", "gpt-5.4-mini",
+                ]
+            )
+
+        assert rc == 0
+        history_path = tmp_path / ".clauditor" / "history.jsonl"
+        record = json.loads(history_path.read_text().splitlines()[0])
+        assert record["schema_version"] == 2
+        assert record["provider"] == "openai"
 
     def test_extract_live_run_records_skill_and_grader_tokens(
         self, tmp_path, monkeypatch
@@ -5586,8 +5692,12 @@ class TestCmdValidateHistory:
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["skill"] == "test-skill"
-        assert record["schema_version"] == 1
+        # #147 DEC-012: history schema bumped to 2 with mandatory provider.
+        assert record["schema_version"] == 2
         assert record["command"] == "validate"
+        # Validate runs Layer 1 only; provider is the placeholder
+        # ``"anthropic"`` per #147 DEC-002 / DEC-012.
+        assert record["provider"] == "anthropic"
         # Layer 1 pass_rate is 1.0 (the "contains hello" assertion passes)
         assert record["pass_rate"] == 1.0
         assert record["mean_score"] is None

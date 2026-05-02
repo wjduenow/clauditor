@@ -114,11 +114,16 @@ class TestAppendAndRead:
     def test_round_trip(self, tmp_path):
         path = tmp_path / "history.jsonl"
         append_record(
-            "skill-a", 0.8, 0.75, {"foo": 1}, command="grade", path=path
+            "skill-a", 0.8, 0.75, {"foo": 1},
+            command="grade", provider="anthropic", path=path
         )
-        append_record("skill-b", 0.5, None, {}, command="grade", path=path)
         append_record(
-            "skill-a", 0.9, 0.85, {"foo": 2}, command="grade", path=path
+            "skill-b", 0.5, None, {},
+            command="grade", provider="anthropic", path=path
+        )
+        append_record(
+            "skill-a", 0.9, 0.85, {"foo": 2},
+            command="grade", provider="anthropic", path=path
         )
 
         all_records = read_records(path=path)
@@ -137,7 +142,10 @@ class TestAppendAndRead:
 
     def test_append_creates_parent_dir(self, tmp_path):
         path = tmp_path / "nested" / "dir" / "history.jsonl"
-        append_record("s", 1.0, 1.0, {}, command="grade", path=path)
+        append_record(
+            "s", 1.0, 1.0, {},
+            command="grade", provider="anthropic", path=path
+        )
         assert path.exists()
         assert len(read_records(path=path)) == 1
 
@@ -148,10 +156,16 @@ class TestAppendAndRead:
 
     def test_corrupt_line_skipped_with_warning(self, tmp_path, capsys):
         path = tmp_path / "history.jsonl"
-        append_record("s", 0.5, 0.5, {}, command="grade", path=path)
+        append_record(
+            "s", 0.5, 0.5, {},
+            command="grade", provider="anthropic", path=path
+        )
         with path.open("a", encoding="utf-8") as f:
             f.write("{not valid json\n")
-        append_record("s", 0.7, 0.7, {}, command="grade", path=path)
+        append_record(
+            "s", 0.7, 0.7, {},
+            command="grade", provider="anthropic", path=path
+        )
 
         records = read_records(path=path)
         assert len(records) == 2
@@ -161,11 +175,14 @@ class TestAppendAndRead:
     def test_append_record_requires_command(self, tmp_path):
         path = tmp_path / "history.jsonl"
         with pytest.raises(TypeError):
-            append_record("s", 1.0, 1.0, {}, path=path)  # type: ignore[call-arg]
+            append_record("s", 1.0, 1.0, {}, provider="anthropic", path=path)  # type: ignore[call-arg]
 
     def test_schema_version_written(self, tmp_path):
         path = tmp_path / "history.jsonl"
-        append_record("s", 1.0, 1.0, {"k": 1}, command="grade", path=path)
+        append_record(
+            "s", 1.0, 1.0, {"k": 1},
+            command="grade", provider="anthropic", path=path
+        )
         records = read_records(path=path)
         assert records[0]["schema_version"] == SCHEMA_VERSION
         assert records[0]["command"] == "grade"
@@ -176,15 +193,20 @@ class TestAppendAndRead:
         path = tmp_path / "history.jsonl"
         with pytest.raises(ValueError, match="command must be one of"):
             append_record(
-                "s", 1.0, 1.0, {}, command="bogus", path=path  # type: ignore[arg-type]
+                "s", 1.0, 1.0, {},
+                command="bogus", provider="anthropic", path=path  # type: ignore[arg-type]
             )
         with pytest.raises(ValueError):
             append_record(
-                "s", 1.0, 1.0, {}, command="GRADE", path=path  # type: ignore[arg-type]
+                "s", 1.0, 1.0, {},
+                command="GRADE", provider="anthropic", path=path  # type: ignore[arg-type]
             )
         # Valid values still work.
         for cmd in ("grade", "extract", "validate"):
-            append_record("s", None, None, {}, command=cmd, path=path)
+            append_record(
+                "s", None, None, {},
+                command=cmd, provider="anthropic", path=path
+            )
         assert len(read_records(path=path)) == 3
 
 
@@ -199,6 +221,7 @@ class TestAppendRecordShape:
             0.8,
             {"k": 1},
             command="grade",
+            provider="anthropic",
             path=path,
             iteration=3,
             workspace_path=".clauditor/iteration-3/foo",
@@ -212,14 +235,110 @@ class TestAppendRecordShape:
 
     def test_append_defaults_none(self, tmp_path):
         path = tmp_path / "history.jsonl"
-        append_record("s", 1.0, 1.0, {}, command="grade", path=path)
+        append_record(
+            "s", 1.0, 1.0, {},
+            command="grade", provider="anthropic", path=path
+        )
         rec = read_records(path=path)[0]
         assert rec["iteration"] is None
         assert rec["workspace_path"] is None
 
 
+class TestProviderField:
+    """v2 schema: ``provider`` required on append, defaulted on v1 reads (#147)."""
+
+    def test_append_record_v2_writes_provider_field(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        append_record(
+            "skill-a", 0.8, 0.7, {},
+            command="grade", provider="openai", path=path,
+        )
+        records = read_records(path=path)
+        assert len(records) == 1
+        rec = records[0]
+        assert rec["schema_version"] == 2
+        assert rec["provider"] == "openai"
+
+    def test_append_record_requires_provider_kwarg(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(TypeError):
+            # missing required keyword-only ``provider``
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", path=path,  # type: ignore[call-arg]
+            )
+
+    def test_read_records_legacy_v1_defaults_provider_to_anthropic(
+        self, tmp_path
+    ):
+        import json as _json
+
+        path = tmp_path / "history.jsonl"
+        v1_record = {
+            "schema_version": 1,
+            "command": "grade",
+            "ts": "2026-01-01T00:00:00+00:00",
+            "skill": "skill-a",
+            "pass_rate": 0.5,
+            "mean_score": 0.6,
+            "metrics": {},
+            "iteration": 1,
+            "workspace_path": "ws/1",
+        }
+        path.write_text(_json.dumps(v1_record) + "\n")
+
+        records = read_records(path=path)
+        assert len(records) == 1
+        assert records[0]["schema_version"] == 1
+        # Defaulted on read so downstream consumers can rely on the field.
+        assert records[0]["provider"] == "anthropic"
+
+    def test_read_records_v2_preserves_provider(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        append_record(
+            "skill-a", 0.9, 0.8, {},
+            command="grade", provider="openai", path=path,
+        )
+
+        records = read_records(path=path)
+        assert len(records) == 1
+        assert records[0]["schema_version"] == 2
+        assert records[0]["provider"] == "openai"
+
+    def test_read_records_mixed_v1_v2_lines(self, tmp_path):
+        import json as _json
+
+        path = tmp_path / "history.jsonl"
+        # Hand-write a v1 line, then append a v2 line via the writer.
+        v1_record = {
+            "schema_version": 1,
+            "command": "grade",
+            "ts": "2026-01-01T00:00:00+00:00",
+            "skill": "skill-a",
+            "pass_rate": 0.5,
+            "mean_score": 0.6,
+            "metrics": {},
+            "iteration": 1,
+            "workspace_path": "ws/1",
+        }
+        path.write_text(_json.dumps(v1_record) + "\n")
+        append_record(
+            "skill-a", 0.9, 0.8, {},
+            command="grade", provider="openai", path=path,
+        )
+
+        records = read_records(path=path)
+        assert len(records) == 2
+        # v1: defaulted provider
+        assert records[0]["schema_version"] == 1
+        assert records[0]["provider"] == "anthropic"
+        # v2: preserved provider
+        assert records[1]["schema_version"] == 2
+        assert records[1]["provider"] == "openai"
+
+
 class TestSchemaVersionEnforcement:
-    """read_records hard-requires schema_version=3 (DEC-003)."""
+    """read_records accepts {1, 2} (DEC-012); rejects all other versions."""
 
     def test_wrong_version_skipped_with_warning(self, tmp_path, capsys):
         import json as _json
@@ -264,7 +383,8 @@ class TestSchemaVersionEnforcement:
     def test_valid_record_passes(self, tmp_path, capsys):
         path = tmp_path / "history.jsonl"
         append_record(
-            "skill-a", 0.9, 0.85, {}, command="grade", path=path,
+            "skill-a", 0.9, 0.85, {},
+            command="grade", provider="anthropic", path=path,
             iteration=2, workspace_path="ws/2",
         )
 
@@ -291,6 +411,7 @@ class TestSchemaVersionEnforcement:
             "metrics": {},
             "iteration": None,
             "workspace_path": None,
+            "provider": "anthropic",
         }
         lines = [
             _json.dumps(bad),
@@ -318,6 +439,7 @@ def _concurrent_writer(args):
         None,
         {"i": idx},
         command="grade",
+        provider="anthropic",
         path=Path(path_str),
         iteration=idx,
         workspace_path=f"ws/{idx}",
@@ -388,6 +510,7 @@ class TestFileLockFallback:
                 mean_score=0.9,
                 metrics={},
                 command="grade",
+                provider="anthropic",
                 path=path,
                 iteration=1,
                 workspace_path=".clauditor/iteration-1/foo",

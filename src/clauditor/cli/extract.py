@@ -241,6 +241,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
             mean_score=None,
             metrics=metrics_dict,
             command="extract",
+            provider=provider,
         )
     except Exception as e:  # pragma: no cover - defensive
         print(f"WARNING: failed to append history: {e}", file=sys.stderr)
