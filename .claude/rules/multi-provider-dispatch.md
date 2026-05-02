@@ -260,10 +260,21 @@ class.
   `call_model` and need no auth guard.
 - Pytest fixtures. The three grader fixtures
   (`clauditor_grader`, `clauditor_blind_compare`,
-  `clauditor_triggers`) currently route through
-  `check_api_key_only` / `check_any_auth_available` directly
-  rather than `check_provider_auth`; per-provider fixture
-  dispatch is forward-compat work for a future ticket once
-  fixtures grow OpenAI-graded test cases.
+  `clauditor_triggers`) were extended in #146 (US-007) to dispatch
+  via `check_provider_auth` per the resolved provider. Resolution
+  lives in `clauditor.pytest_plugin._dispatch_fixture_auth_guard`,
+  which reads `eval_spec.grading_provider` (and the
+  `CLAUDITOR_GRADING_PROVIDER` env var) through the same pure
+  `clauditor._providers.resolve_grading_provider` helper the CLI
+  uses, then routes by provider: `"anthropic"` keeps the
+  strict-vs-relaxed split via `CLAUDITOR_FIXTURE_ALLOW_CLI`
+  (`check_api_key_only` strict default,
+  `check_any_auth_available` opt-in relaxed); `"openai"` is always
+  strict via `check_openai_auth` (no CLI-fallback / subscription
+  analogue per #145 DEC-002). Distinct exception classes per
+  provider preserve the structural-routing invariant — fixture
+  callers branch on `AnthropicAuthMissingError` vs
+  `OpenAIAuthMissingError` rather than substring-matching the
+  message.
 - One-off diagnostic scripts in `scripts/` that hit a provider
   SDK directly. They can rely on the SDK's own error path.
