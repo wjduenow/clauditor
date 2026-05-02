@@ -1642,10 +1642,10 @@ class TestExtractionReportTransport:
         report = self._report()
         assert report.transport_source == "api"
 
-    def test_to_json_schema_version_bumped_to_2(self):
+    def test_to_json_schema_version_bumped_to_3(self):
         report = self._report(transport_source="cli")
         data = json.loads(report.to_json())
-        assert data["schema_version"] == 2
+        assert data["schema_version"] == 3
 
     def test_schema_version_is_first_key(self):
         report = self._report(transport_source="cli")
@@ -1771,11 +1771,12 @@ class TestExtractionReportTransport:
 
 
 class TestExtractionReportProviderSource:
-    """#144 US-005: ExtractionReport carries a ``provider_source``
-    field that defaults to ``"anthropic"`` and reads through from
-    :class:`ModelResult.provider`. Per DEC-006 the field is in-memory
-    only this ticket — :meth:`to_json` does NOT include it; #147 owns
-    the on-disk schema bump."""
+    """#147 US-001: ExtractionReport persists a ``provider_source``
+    field on disk at ``schema_version: 3``. The field defaults to
+    ``"anthropic"`` and reads through from
+    :class:`ModelResult.provider`. Legacy v1/v2 sidecars (no
+    ``provider_source``) load with ``provider_source="anthropic"``
+    defaulted."""
 
     def _spec(self) -> EvalSpec:
         return EvalSpec(
@@ -1802,8 +1803,9 @@ class TestExtractionReportProviderSource:
         )
         assert report.provider_source == "anthropic"
 
-    def test_to_json_does_not_include_provider_source(self):
-        """DEC-006: sidecar JSON shape is unchanged this ticket."""
+    def test_extraction_report_to_json_v3_emits_provider_source(self):
+        """v3 to_json emits ``schema_version: 3`` first key,
+        ``provider_source`` field present."""
         report = ExtractionReport(
             skill_name="s",
             model="m",
@@ -1811,8 +1813,73 @@ class TestExtractionReportProviderSource:
             declared_field_ids=["v1"],
             provider_source="openai",
         )
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert next(iter(data)) == "schema_version"
+        assert data["schema_version"] == 3
+        assert data["provider_source"] == "openai"
+
+    def test_extraction_report_from_json_v3_round_trips(self):
+        """v3 from_json round-trips ``provider_source`` faithfully."""
+        original = ExtractionReport(
+            skill_name="s",
+            model="m",
+            results=[],
+            declared_field_ids=["v1"],
+            provider_source="openai",
+        )
+        restored = ExtractionReport.from_json(original.to_json())
+        assert restored.provider_source == "openai"
+
+    def test_extraction_report_from_json_v2_defaults_provider_source_to_anthropic(
+        self,
+    ):
+        """v2 sidecars (no ``provider_source``) default to
+        ``"anthropic"`` so pre-#147 history loads cleanly."""
+        v2_payload = json.dumps({
+            "schema_version": 2,
+            "skill_name": "legacy-v2",
+            "model": "haiku",
+            "transport_source": "cli",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {},
+        })
+        restored = ExtractionReport.from_json(v2_payload)
+        assert restored.provider_source == "anthropic"
+        assert restored.transport_source == "cli"
+
+    def test_extraction_report_from_json_v1_defaults_both_legacy_fields(
+        self,
+    ):
+        """v1 sidecars (no ``transport_source``, no
+        ``provider_source``) default both fields."""
+        v1_payload = json.dumps({
+            "schema_version": 1,
+            "skill_name": "legacy-v1",
+            "model": "haiku",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {},
+        })
+        restored = ExtractionReport.from_json(v1_payload)
+        assert restored.provider_source == "anthropic"
+        assert restored.transport_source == "api"
+
+    def test_provider_source_anthropic_emitted_explicitly_on_disk(self):
+        """v3 always emits ``provider_source`` on disk, even for the
+        default ``"anthropic"`` value, so the field is explicit and
+        round-trip is byte-stable."""
+        report = ExtractionReport(
+            skill_name="s",
+            model="m",
+            results=[],
+            declared_field_ids=["v1"],
+        )  # default provider_source="anthropic"
         data = json.loads(report.to_json())
-        assert "provider_source" not in data
+        assert data["provider_source"] == "anthropic"
 
     def test_build_extraction_report_forwards_provider_source(self):
         report = build_extraction_report(
