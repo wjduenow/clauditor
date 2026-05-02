@@ -227,9 +227,32 @@ A few `EvalSpec` fields tune specific code paths and are safe to omit:
   in a rhetorical question). When disabled, a suppressed-heuristic
   run still lands in `SkillResult` but without the `error_category=
   "interactive"` signal.
-- **`grading_model`** (string, default `"claude-sonnet-4-6"`) — the
-  Anthropic model used for Layer 3 grading. Override per-spec when you
-  want to trade cost for fidelity.
+- **`grading_model`** (string or null, default `"claude-sonnet-4-6"`)
+  — the model used for Layer 3 grading (and L2 extraction, suggest,
+  propose-eval, triggers, blind compare). Per-spec override when you
+  want to trade cost for fidelity. Now nullable per #146 DEC-004a:
+  when set to `null` (or omitted), the per-provider resolver
+  `clauditor._providers.resolve_grading_model` picks the standard
+  default for the resolved `grading_provider` —
+  `"claude-sonnet-4-6"` for `anthropic`, `"gpt-5.4"` for `openai`.
+  Explicit values pass through unchanged. Note: today the dataclass
+  default is still `"claude-sonnet-4-6"` (DEC-004a partial migration);
+  the flip to `null` is deferred until the falsy-short-circuit call
+  sites are swept (DEC-004b).
+- **`grading_provider`** (string or null, default `null`) — selects
+  which provider's SDK handles LLM-grader calls. One of
+  `"anthropic"`, `"openai"`, `"auto"`, or `null` (treated as unset
+  and falls through to default). When `"auto"` (or unset/`null`),
+  the auto-inference layer maps `claude-*` → `anthropic`,
+  `gpt-*` / `o[0-9]+*` → `openai`; an unknown model prefix raises a
+  load-time error advising the operator to set
+  `--grading-provider` explicitly. Precedence:
+  `--grading-provider` on the CLI wins, then
+  `CLAUDITOR_GRADING_PROVIDER` env var, then this field, then the
+  `auto` default. Pre-#146 specs that wrote `null` round-trip
+  unchanged. Full reference:
+  [`docs/cli-reference.md`](cli-reference.md) (per-command
+  `--grading-provider` row).
 - **`grade_thresholds`** (object, default `null`) — an object with
   `min_pass_rate` and/or `min_mean_score` (both floats in `[0.0, 1.0]`)
   that gate `clauditor grade`'s exit code. When set, a run whose

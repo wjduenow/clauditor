@@ -257,6 +257,8 @@ Full matrix and refactoring recipes: [`docs/skill-usage.md#skill-compatibility`]
 
 The six LLM-mediated commands above route their Anthropic call through a pluggable transport — either the HTTP SDK (`--transport api`) or a subprocess to the local `claude` CLI (`--transport cli`). The default `auto` setting picks CLI when available, else API. Full reference: [docs/transport-architecture.md](docs/transport-architecture.md).
 
+clauditor also supports multi-provider grading: pass `--grading-provider {anthropic,openai,auto}` (or set `CLAUDITOR_GRADING_PROVIDER` / `EvalSpec.grading_provider`) to route the LLM-grader call through the OpenAI SDK with `OPENAI_API_KEY` instead. Under the default `auto`, clauditor infers the provider from the `grading_model` prefix (`claude-*` → anthropic, `gpt-*` / `o[0-9]+*` → openai).
+
 Running `clauditor grade <skill> --transport cli` is the one-liner for subscription auth end-to-end: it implicitly strips `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the skill subprocess env, so both the grader and the skill use subscription auth. Pass `--transport api` to keep the keys.
 
 ## Reference docs
