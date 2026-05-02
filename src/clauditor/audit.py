@@ -628,15 +628,46 @@ def _fmt_disc(value: float | None) -> str:
     return f"{value * 100:+.1f}%"
 
 
+def _sorted_verdicts(verdicts: list[AuditVerdict]) -> list[AuditVerdict]:
+    """Sort verdicts by ``(provider, layer, id)`` for stable rendering.
+
+    DEC-004 (#147): all three render paths share the same sort order so
+    a reader scanning ``stdout`` / markdown / JSON in succession sees
+    rows in the same sequence. ``apply_thresholds`` already returns
+    verdicts in this order today, but renderers re-sort defensively in
+    case a caller hands in a list constructed differently.
+    """
+    return sorted(verdicts, key=lambda v: (v.provider, v.layer, v.id))
+
+
+def _providers_seen(verdicts: list[AuditVerdict]) -> list[str]:
+    """Return the sorted list of distinct providers across ``verdicts``.
+
+    DEC-010 (#147): the audit-output JSON v2 carries a top-level
+    ``providers_seen`` array so JSON consumers can detect mixed-provider
+    history without iterating ``assertions[]``.
+    """
+    return sorted({v.provider for v in verdicts})
+
+
 def render_stdout_table(verdicts: list[AuditVerdict]) -> str:
-    """Compact table: layer, id, with%, verdict."""
-    header = f"{'LAYER':<6} {'ID':<40} {'WITH%':>8} {'VERDICT':<24}"
+    """Compact table: provider, layer, id, with%, verdict.
+
+    DEC-004 (#147): leftmost ``PROVIDER`` column (~11 chars wide) so a
+    mixed-provider audit shows which provider's SDK produced each
+    grouped result. Sort order: ``(provider, layer, id)``.
+    """
+    header = (
+        f"{'PROVIDER':<11} {'LAYER':<6} {'ID':<40} "
+        f"{'WITH%':>8} {'VERDICT':<24}"
+    )
     lines = [header, "-" * len(header)]
-    for v in verdicts:
+    for v in _sorted_verdicts(verdicts):
         agg = v.aggregate
         with_pct = _fmt_pct(agg.with_pass_rate) if agg else "-"
         lines.append(
-            f"{v.layer:<6} {v.id[:40]:<40} {with_pct:>8} {v.verdict.value:<24}"
+            f"{v.provider[:11]:<11} {v.layer:<6} {v.id[:40]:<40} "
+            f"{with_pct:>8} {v.verdict.value:<24}"
         )
     return "\n".join(lines)
 
@@ -689,24 +720,32 @@ def render_markdown(
             )
     lines.append("")
 
+    sorted_verdicts = _sorted_verdicts(verdicts)
     for layer in ("L1", "L2", "L3"):
-        layer_rows = [v for v in verdicts if v.layer == layer]
+        layer_rows = [v for v in sorted_verdicts if v.layer == layer]
         lines.append(f"## {layer} detail")
         lines.append("")
         if not layer_rows:
             lines.append("_No data._")
             lines.append("")
             continue
+        # DEC-004 (#147): leftmost ``provider`` column so mixed-provider
+        # audits show which provider's SDK produced each row.
         lines.append(
-            "| id | runs | with% | baseline% | discrimination | verdict |"
+            "| provider | id | runs | with% | baseline% | "
+            "discrimination | verdict |"
         )
-        lines.append("|----|------|-------|-----------|----------------|---------|")
+        lines.append(
+            "|----------|----|------|-------|-----------|"
+            "----------------|---------|"
+        )
         for v in layer_rows:
             agg = v.aggregate
             if agg is None:
                 continue
             lines.append(
-                f"| `{_md_escape(v.id)}` | {agg.total_with_runs} | "
+                f"| `{_md_escape(v.provider)}` | "
+                f"`{_md_escape(v.id)}` | {agg.total_with_runs} | "
                 f"{_fmt_pct(agg.with_pass_rate)} | "
                 f"{_fmt_pct(agg.baseline_pass_rate)} | "
                 f"{_fmt_disc(agg.discrimination)} | "
@@ -725,12 +764,22 @@ def render_json(
     thresholds: dict[str, float | int],
     timestamp: str,
 ) -> dict:
-    """Return a JSON-serializable audit payload."""
+    """Return a JSON-serializable audit payload.
+
+    DEC-005 (#147): ``schema_version`` bumped from 1 to 2 to signal the
+    new ``provider`` field on each ``assertions[]`` entry. DEC-010
+    (#147): adds a top-level ``providers_seen`` array (sorted
+    alphabetically) so JSON consumers can detect mixed-provider history
+    without iterating ``assertions[]``. Sort order across ``assertions``
+    matches the stdout/markdown renderers: ``(provider, layer, id)``.
+    """
+    sorted_verdicts = _sorted_verdicts(verdicts)
     assertions_list: list[dict] = []
-    for v in verdicts:
+    for v in sorted_verdicts:
         agg = v.aggregate
         assertions_list.append(
             {
+                "provider": v.provider,
                 "layer": v.layer,
                 "id": v.id,
                 "with_runs": agg.total_with_runs if agg else 0,
@@ -745,10 +794,11 @@ def render_json(
             }
         )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "skill": skill,
         "timestamp": timestamp,
         "iterations": iterations_analyzed,
         "thresholds": dict(thresholds),
+        "providers_seen": _providers_seen(verdicts),
         "assertions": assertions_list,
     }
