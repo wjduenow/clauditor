@@ -32,28 +32,59 @@ from pathlib import Path
 
 from clauditor.paths import resolve_clauditor_dir
 
-# US-006 / #86: per-sidecar accepted schema versions. Grading and
-# extraction sidecars bumped to v2 to carry the ``transport_source``
-# field added by the CLI-transport feature; the loader accepts both
-# versions and defaults missing ``transport_source`` to ``"api"`` at
-# read time. Assertions sidecars stay at v1 (no transport_source field
-# for L1 assertions). See DEC-007 and DEC-018 in
-# ``plans/super/86-claude-cli-transport.md``.
-_ACCEPTED_SCHEMA_VERSIONS: dict[str, frozenset[int]] = {
-    "assertions.json": frozenset({1}),
-    "extraction.json": frozenset({1, 2}),
-    "grading.json": frozenset({1, 2}),
+# US-002 / #147 / DEC-008: per-sidecar maximum accepted schema version.
+# Grading and extraction sidecars accept v1..v3:
+#   - v1: original shape;
+#   - v2 (#86, US-006 of ``plans/super/86-claude-cli-transport.md``):
+#     adds ``transport_source``; loader defaults missing field to
+#     ``"api"`` at read time;
+#   - v3 (#147, US-001): adds ``provider_source``; loader defaults
+#     missing field to ``"anthropic"`` at read time.
+# Assertions sidecars stay at v1 (no transport_source/provider_source
+# fields for L1 assertions).
+#
+# This is the canonical map; the pure helper :func:`_is_accepted_version`
+# answers ``1 <= version <= MAX_SCHEMA_VERSION[base]`` for any
+# ``baseline_``-prefixed or plain sidecar filename. Future bumps
+# (e.g. #152's ``harness`` field) become a single-number edit per
+# filename rather than re-listing the accepted set. See DEC-008 in
+# ``plans/super/147-sidecar-provider-field.md``.
+MAX_SCHEMA_VERSION: dict[str, int] = {
+    "assertions.json": 1,
+    "extraction.json": 3,
+    "grading.json": 3,
 }
 
 
-def _accepted_versions_for(filename: str) -> frozenset[int]:
-    """Map a sidecar filename (with optional ``baseline_`` prefix) to its
-    accepted schema versions. Falls back to ``{1}`` for unknown filenames.
+def _is_accepted_version(filename: str, version: object) -> bool:
+    """Return True iff ``version`` is an accepted schema_version for ``filename``.
+
+    Pure helper. Accepts a ``baseline_``-prefixed filename and strips the
+    prefix before consulting :data:`MAX_SCHEMA_VERSION`.
+
+    The accept range is ``1 <= version <= MAX_SCHEMA_VERSION[base]`` —
+    the loader assumes monotonic forward compatibility within a sidecar
+    family. Per-version shape differences are handled by the
+    ``_records_from_*`` helpers, not here.
+
+    Raises :class:`KeyError` for any unknown filename — the caller is
+    expected to pass one of the three known sidecar names (with or
+    without the ``baseline_`` prefix). Non-int/non-bool ``version``
+    values (including ``None`` from a missing ``schema_version`` key,
+    or stringly-typed values from a malformed sidecar) return ``False``
+    rather than raising, so :func:`_check_schema_version` can produce
+    a clean stderr warning.
     """
     base = filename
     if base.startswith("baseline_"):
         base = base[len("baseline_"):]
-    return _ACCEPTED_SCHEMA_VERSIONS.get(base, frozenset({1}))
+    max_version = MAX_SCHEMA_VERSION[base]  # KeyError on unknown filename
+    # Reject non-int and bool (per ``constant-with-type-info.md``: bool
+    # is an int subclass in Python; ``True`` would otherwise compare as
+    # ``1 <= True <= max_version`` and pass).
+    if not isinstance(version, int) or isinstance(version, bool):
+        return False
+    return 1 <= version <= max_version
 
 
 def _check_schema_version(
@@ -61,20 +92,21 @@ def _check_schema_version(
 ) -> bool:
     """Verify the on-disk sidecar advertises an accepted schema_version.
 
-    Grading and extraction sidecars accept ``{1, 2}`` (US-006 of
-    ``plans/super/86-claude-cli-transport.md`` bumps them to v2 to
-    carry ``transport_source``); assertions sidecars accept ``{1}``.
-    A missing ``schema_version`` is treated as unknown and skipped
-    with a one-line stderr warning.
+    Delegates to the pure helper :func:`_is_accepted_version`. Sidecars
+    with a missing or out-of-range ``schema_version`` are skipped with
+    a one-line stderr warning naming the expected accepted range.
     """
-    accepted = _accepted_versions_for(filename)
     version = data.get("schema_version")
-    if version in accepted:
+    if _is_accepted_version(filename, version):
         return True
+    base = filename
+    if base.startswith("baseline_"):
+        base = base[len("baseline_"):]
+    max_version = MAX_SCHEMA_VERSION[base]
     print(
         f"clauditor.audit: skipping {iteration_dir}/{filename} — "
         f"schema_version={version!r} "
-        f"(expected one of {sorted(accepted)})",
+        f"(expected 1..{max_version})",
         file=sys.stderr,
     )
     return False

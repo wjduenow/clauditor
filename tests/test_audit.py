@@ -723,6 +723,89 @@ class TestSchemaVersion:
         assert payload["schema_version"] == 1
 
 
+class TestIsAcceptedVersion:
+    """US-002 (#147): pure helper :func:`_is_accepted_version` answers
+    ``1 <= version <= MAX_SCHEMA_VERSION[base]`` per DEC-008. Tests
+    pin the v1..v3 acceptance for grading/extraction sidecars and the
+    v1-only acceptance for assertions.json, plus the v4-rejection
+    branch and the unknown-filename ``KeyError`` contract.
+    """
+
+    def test_is_accepted_version_grading_json_accepts_1_2_3(self) -> None:
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("grading.json", 1) is True
+        assert _is_accepted_version("grading.json", 2) is True
+        assert _is_accepted_version("grading.json", 3) is True
+
+    def test_is_accepted_version_grading_json_rejects_4(self) -> None:
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("grading.json", 4) is False
+
+    def test_is_accepted_version_extraction_json_accepts_1_2_3(self) -> None:
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("extraction.json", 1) is True
+        assert _is_accepted_version("extraction.json", 2) is True
+        assert _is_accepted_version("extraction.json", 3) is True
+
+    def test_is_accepted_version_extraction_json_rejects_4(self) -> None:
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("extraction.json", 4) is False
+
+    def test_is_accepted_version_assertions_json_accepts_only_1(self) -> None:
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("assertions.json", 1) is True
+        assert _is_accepted_version("assertions.json", 2) is False
+        assert _is_accepted_version("assertions.json", 3) is False
+
+    def test_is_accepted_version_rejects_zero_and_negative(self) -> None:
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("grading.json", 0) is False
+        assert _is_accepted_version("grading.json", -1) is False
+
+    def test_is_accepted_version_rejects_non_int(self) -> None:
+        """Non-int values (None from a missing key, stringly-typed
+        values, bool sneaking through as int subclass) all return
+        False, so :func:`_check_schema_version` produces a clean
+        warning rather than crashing."""
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("grading.json", None) is False
+        assert _is_accepted_version("grading.json", "1") is False
+        # bool is an int subclass in Python — guard explicitly.
+        assert _is_accepted_version("grading.json", True) is False
+        assert _is_accepted_version("grading.json", False) is False
+
+    def test_is_accepted_version_baseline_prefix_strips_correctly(self) -> None:
+        """``baseline_grading.json`` shares acceptance with
+        ``grading.json`` (the loader treats baseline sidecars as the
+        same family)."""
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("baseline_grading.json", 3) is True
+        assert _is_accepted_version("baseline_extraction.json", 3) is True
+        assert _is_accepted_version("baseline_assertions.json", 1) is True
+        assert _is_accepted_version("baseline_grading.json", 4) is False
+        assert _is_accepted_version("baseline_assertions.json", 2) is False
+
+    def test_is_accepted_version_unknown_filename_raises_key_error(
+        self,
+    ) -> None:
+        """Unknown filename → ``KeyError``. Per DEC-008 / US-002
+        acceptance criterion 3, the helper does not silently fall
+        through; the loader is expected to call with one of the three
+        known sidecar names."""
+        from clauditor.audit import _is_accepted_version
+
+        with pytest.raises(KeyError):
+            _is_accepted_version("unknown.json", 1)
+
+
 class TestAuditLegacyCompat:
     """US-006 (#86): the audit loader accepts both schema_version=1 and
     schema_version=2 for grading.json and extraction.json sidecars. A
@@ -880,12 +963,12 @@ class TestAuditLegacyCompat:
         assert skipped == 0
         assert len(records) == 1
 
-    def test_grading_unknown_schema_version_still_skipped(
-        self, tmp_path: Path,
-        capsys: pytest.CaptureFixture,
+    def test_loads_v3_grading_with_transport_source_api(
+        self, tmp_path: Path
     ) -> None:
-        """A grading.json with ``schema_version=3`` (unknown) must be
-        skipped with a stderr warning."""
+        """US-002 (#147): a v3 grading.json (with ``provider_source``
+        added by US-001) loads cleanly through the
+        ``MAX_SCHEMA_VERSION``-driven loader."""
         clauditor_dir = tmp_path / ".clauditor"
         skill_dir = clauditor_dir / "iteration-1" / "s"
         self._write_grading_sidecar(
@@ -894,17 +977,15 @@ class TestAuditLegacyCompat:
         records, skipped = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
-        assert records == []
-        assert skipped == 1
-        err = capsys.readouterr().err
-        assert "schema_version=3" in err
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L3"
+        assert records[0].id == "quality"
 
-    def test_extraction_unknown_schema_version_still_skipped(
-        self, tmp_path: Path,
-        capsys: pytest.CaptureFixture,
+    def test_loads_v3_extraction_with_transport_source_api(
+        self, tmp_path: Path
     ) -> None:
-        """An extraction.json with ``schema_version=3`` (unknown) must
-        be skipped with a stderr warning."""
+        """US-002 (#147): a v3 extraction.json loads cleanly."""
         clauditor_dir = tmp_path / ".clauditor"
         skill_dir = clauditor_dir / "iteration-1" / "s"
         self._write_extraction_sidecar(
@@ -913,10 +994,48 @@ class TestAuditLegacyCompat:
         records, skipped = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L2"
+
+    def test_grading_unknown_schema_version_still_skipped(
+        self, tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """A grading.json with ``schema_version=4`` (out of accepted
+        range 1..3 per US-002 / DEC-008 of #147) must be skipped with a
+        stderr warning."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        self._write_grading_sidecar(
+            skill_dir, version=4, transport_source="api"
+        )
+        records, skipped = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
         assert records == []
         assert skipped == 1
         err = capsys.readouterr().err
-        assert "schema_version=3" in err
+        assert "schema_version=4" in err
+
+    def test_extraction_unknown_schema_version_still_skipped(
+        self, tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """An extraction.json with ``schema_version=4`` (out of accepted
+        range 1..3) must be skipped with a stderr warning."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        self._write_extraction_sidecar(
+            skill_dir, version=4, transport_source="api"
+        )
+        records, skipped = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert records == []
+        assert skipped == 1
+        err = capsys.readouterr().err
+        assert "schema_version=4" in err
 
 
 class TestCmdAuditInvalidSkillName:
