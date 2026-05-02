@@ -301,7 +301,7 @@ class TestAggregate:
             for i in range(1, 5)
         ]
         agg = aggregate(records)
-        entry = agg[("L1", "a")]
+        entry = agg[("anthropic", "L1", "a")]
         assert entry.total_with_runs == 4
         assert entry.with_fails == 1
         assert entry.with_pass_rate == 0.75
@@ -316,7 +316,7 @@ class TestAggregate:
             IterationRecord(2, "L1", "a", passed=True, with_skill=False),
         ]
         agg = aggregate(records)
-        entry = agg[("L1", "a")]
+        entry = agg[("anthropic", "L1", "a")]
         assert entry.with_pass_rate == 1.0
         assert entry.baseline_pass_rate == 0.5
         assert entry.discrimination == pytest.approx(0.5)
@@ -326,7 +326,7 @@ class TestAggregate:
             IterationRecord(1, "L1", "a", passed=True, with_skill=True),
         ]
         agg = aggregate(records)
-        assert agg[("L1", "a")].discrimination is None
+        assert agg[("anthropic", "L1", "a")].discrimination is None
 
     def test_groups_by_layer_and_id(self) -> None:
         records = [
@@ -334,10 +334,10 @@ class TestAggregate:
             IterationRecord(1, "L3", "shared", passed=False, with_skill=True),
         ]
         agg = aggregate(records)
-        assert ("L1", "shared") in agg
-        assert ("L3", "shared") in agg
-        assert agg[("L1", "shared")].with_pass_rate == 1.0
-        assert agg[("L3", "shared")].with_pass_rate == 0.0
+        assert ("anthropic", "L1", "shared") in agg
+        assert ("anthropic", "L3", "shared") in agg
+        assert agg[("anthropic", "L1", "shared")].with_pass_rate == 1.0
+        assert agg[("anthropic", "L3", "shared")].with_pass_rate == 0.0
 
 
 # --------------------------------------------------------------------------- #
@@ -429,7 +429,7 @@ def _agg(
 
 class TestApplyThresholds:
     def test_threshold_flags_100_percent_pass(self) -> None:
-        aggs = {("L1", "a"): _agg(with_runs=20, with_fails=0)}
+        aggs = {("anthropic", "L1", "a"): _agg(with_runs=20, with_fails=0)}
         verdicts = apply_thresholds(
             aggs, min_fail_rate=0.0, min_discrimination=0.05
         )
@@ -439,7 +439,7 @@ class TestApplyThresholds:
 
     def test_threshold_flags_zero_failures(self) -> None:
         # 100% pass is the priority reason, but zero-failures still in reasons.
-        aggs = {("L1", "a"): _agg(with_runs=5, with_fails=0)}
+        aggs = {("anthropic", "L1", "a"): _agg(with_runs=5, with_fails=0)}
         verdicts = apply_thresholds(
             aggs, min_fail_rate=0.0, min_discrimination=0.05
         )
@@ -450,7 +450,7 @@ class TestApplyThresholds:
     ) -> None:
         # With-rate 0.8, baseline 0.78 → discrimination 0.02 < 0.05
         aggs = {
-            ("L1", "a"): _agg(
+            ("anthropic", "L1", "a"): _agg(
                 with_runs=10,
                 with_fails=2,
                 baseline_runs=50,
@@ -465,7 +465,7 @@ class TestApplyThresholds:
     def test_threshold_passes_discriminating_assertion(self) -> None:
         # with 0.75 pass, baseline 0.25 pass → 0.5 discrimination, keeps.
         aggs = {
-            ("L1", "a"): _agg(
+            ("anthropic", "L1", "a"): _agg(
                 with_runs=4,
                 with_fails=1,
                 baseline_runs=4,
@@ -481,7 +481,7 @@ class TestApplyThresholds:
     def test_threshold_override_via_cli_args(self) -> None:
         # 95% pass, not 100%; default 0.0 min_fail_rate wouldn't flag,
         # but 0.1 min_fail_rate (threshold 0.9) flags it.
-        aggs = {("L1", "a"): _agg(with_runs=20, with_fails=1)}
+        aggs = {("anthropic", "L1", "a"): _agg(with_runs=20, with_fails=1)}
         lax = apply_thresholds(
             aggs, min_fail_rate=0.0, min_discrimination=0.05
         )
@@ -504,7 +504,10 @@ class TestRenderers:
             baseline_fails=9,
         )
         return apply_thresholds(
-            {("L1", "always_pass"): flagged, ("L2", "sometimes"): kept},
+            {
+                ("anthropic", "L1", "always_pass"): flagged,
+                ("anthropic", "L2", "sometimes"): kept,
+            },
             min_fail_rate=0.0,
             min_discrimination=0.05,
         )
@@ -1113,9 +1116,9 @@ class TestAuditL3StableId:
         assert len(l3) == 2
         assert {r.id for r in l3} == {"quality"}
         agg = aggregate(records)
-        assert ("L3", "quality") in agg
+        assert ("anthropic", "L3", "quality") in agg
         # One pass, one fail → 0.5 with_pass_rate.
-        assert agg[("L3", "quality")].with_pass_rate == pytest.approx(0.5)
+        assert agg[("anthropic", "L3", "quality")].with_pass_rate == pytest.approx(0.5)
 
     def test_loader_skips_unknown_schema_version(
         self, tmp_path: Path
@@ -1210,7 +1213,7 @@ class TestFix12Fix13:
             baseline_pass_rate=None,
         )
         verdicts = apply_thresholds(
-            {("L1", "a|b"): agg},
+            {("anthropic", "L1", "a|b"): agg},
             min_fail_rate=0.0,
             min_discrimination=0.05,
         )
@@ -1248,8 +1251,8 @@ class TestFix12Fix13:
         )
         verdicts = apply_thresholds(
             {
-                ("L1", "live"): primary_only,
-                ("L1", "stale"): baseline_only,
+                ("anthropic", "L1", "live"): primary_only,
+                ("anthropic", "L1", "stale"): baseline_only,
             },
             min_fail_rate=0.0,
             min_discrimination=0.05,
@@ -1271,3 +1274,356 @@ class TestAuditAggregateDataclass:
             baseline_pass_rate=0.0,
         )
         assert agg.discrimination == 1.0
+
+
+# --------------------------------------------------------------------------- #
+# US-003 (#147): provider dimension on IterationRecord/AuditAggregate         #
+# --------------------------------------------------------------------------- #
+
+
+def _write_grading_v3(
+    skill_dir: Path,
+    *,
+    rid: str,
+    passed: bool,
+    provider_source: str | None,
+) -> None:
+    """Write a v3 grading.json sidecar with optional ``provider_source``.
+
+    Helper for US-003 mixed-provider tests. ``provider_source=None``
+    omits the field on disk so the loader exercises the v2-style
+    default-to-anthropic branch even on a v3-marked sidecar.
+    """
+    payload: dict = {
+        "schema_version": 3,
+        "skill_name": "s",
+        "model": "claude-sonnet-4-6",
+        "results": [
+            {
+                "id": rid,
+                "criterion": rid,
+                "passed": passed,
+                "score": 1.0 if passed else 0.0,
+                "evidence": "",
+                "reasoning": "",
+            },
+        ],
+    }
+    if provider_source is not None:
+        payload["provider_source"] = provider_source
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "grading.json").write_text(
+        json.dumps(payload, indent=2)
+    )
+
+
+def _write_extraction_v3(
+    skill_dir: Path,
+    *,
+    field_id: str,
+    passed: bool,
+    provider_source: str | None,
+) -> None:
+    payload: dict = {
+        "schema_version": 3,
+        "skill_name": "s",
+        "model": "haiku",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "parse_errors": [],
+        "fields": {
+            field_id: [
+                {
+                    "field_name": field_id,
+                    "section": "s",
+                    "tier": "primary",
+                    "entry_index": 0,
+                    "required": True,
+                    "passed": passed,
+                    "presence_passed": passed,
+                    "format_passed": None,
+                    "evidence": "",
+                },
+            ],
+        },
+    }
+    if provider_source is not None:
+        payload["provider_source"] = provider_source
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "extraction.json").write_text(
+        json.dumps(payload, indent=2)
+    )
+
+
+class TestProviderDimension:
+    """US-003 (#147): ``IterationRecord``/``AuditAggregate`` carry
+    ``provider``; aggregation groups by ``(provider, layer, id)`` so
+    mixed-provider history splits cleanly. Pre-#147 history (v1/v2
+    sidecars without ``provider_source``) defaults the provider to
+    ``"anthropic"`` per DEC-001.
+    """
+
+    def test_iteration_record_defaults_provider_to_anthropic(self) -> None:
+        rec = IterationRecord(
+            iteration=1,
+            layer="L3",
+            id="x",
+            passed=True,
+            with_skill=True,
+        )
+        assert rec.provider == "anthropic"
+
+    def test_iteration_record_explicit_provider(self) -> None:
+        rec = IterationRecord(
+            iteration=1,
+            layer="L3",
+            id="x",
+            passed=True,
+            with_skill=True,
+            provider="openai",
+        )
+        assert rec.provider == "openai"
+
+    def test_records_from_grading_reads_provider_source(
+        self, tmp_path: Path
+    ) -> None:
+        """A v3 grading.json with ``provider_source: "openai"`` produces
+        records whose ``provider`` field is ``"openai"``."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_grading_v3(
+            skill_dir,
+            rid="quality",
+            passed=True,
+            provider_source="openai",
+        )
+        records, skipped = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L3"
+        assert records[0].id == "quality"
+        assert records[0].provider == "openai"
+
+    def test_records_from_grading_v2_defaults_provider_to_anthropic(
+        self, tmp_path: Path
+    ) -> None:
+        """A v3 grading.json with no ``provider_source`` field defaults
+        the record's provider to ``"anthropic"`` (matching legacy v1/v2
+        reads)."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_grading_v3(
+            skill_dir,
+            rid="quality",
+            passed=True,
+            provider_source=None,
+        )
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].provider == "anthropic"
+
+    def test_records_from_extraction_reads_provider_source(
+        self, tmp_path: Path
+    ) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_extraction_v3(
+            skill_dir,
+            field_id="f1",
+            passed=True,
+            provider_source="openai",
+        )
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].layer == "L2"
+        assert records[0].provider == "openai"
+
+    def test_records_from_assertions_uses_anthropic_placeholder(
+        self, tmp_path: Path
+    ) -> None:
+        """DEC-002 (#147): L1 records always carry
+        ``provider="anthropic"`` regardless of which provider produced
+        the underlying skill output. Assertions sidecars stay at v1."""
+        clauditor_dir = _make_iteration_fixture(
+            tmp_path,
+            "s",
+            {
+                1: {"l1": [{"id": "has_header", "passed": True}]},
+            },
+        )
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        l1 = [r for r in records if r.layer == "L1"]
+        assert len(l1) >= 1
+        for r in l1:
+            assert r.provider == "anthropic"
+
+    def test_aggregate_groups_by_provider_layer_id(self) -> None:
+        """Mixed-provider records with the same (layer, id) split into
+        two distinct aggregates keyed on (anthropic, L3, x) and
+        (openai, L3, x)."""
+        records = [
+            IterationRecord(
+                1, "L3", "x", passed=True, with_skill=True,
+                provider="anthropic",
+            ),
+            IterationRecord(
+                2, "L3", "x", passed=False, with_skill=True,
+                provider="anthropic",
+            ),
+            IterationRecord(
+                3, "L3", "x", passed=True, with_skill=True,
+                provider="openai",
+            ),
+            IterationRecord(
+                4, "L3", "x", passed=True, with_skill=True,
+                provider="openai",
+            ),
+        ]
+        agg = aggregate(records)
+        assert ("anthropic", "L3", "x") in agg
+        assert ("openai", "L3", "x") in agg
+        assert agg[("anthropic", "L3", "x")].with_pass_rate == 0.5
+        assert agg[("openai", "L3", "x")].with_pass_rate == 1.0
+        assert agg[("anthropic", "L3", "x")].provider == "anthropic"
+        assert agg[("openai", "L3", "x")].provider == "openai"
+
+    def test_aggregate_single_provider_history_unchanged_shape(
+        self,
+    ) -> None:
+        """Single-provider history continues to render the single
+        bucket (default ``"anthropic"`` provider)."""
+        records = [
+            IterationRecord(1, "L1", "a", passed=True, with_skill=True),
+            IterationRecord(2, "L1", "a", passed=False, with_skill=True),
+        ]
+        agg = aggregate(records)
+        assert list(agg.keys()) == [("anthropic", "L1", "a")]
+        assert agg[("anthropic", "L1", "a")].with_pass_rate == 0.5
+
+    def test_apply_thresholds_consumes_three_tuple_key(self) -> None:
+        """``apply_thresholds`` must unpack the new 3-tuple key without
+        raising and must propagate ``provider`` into the resulting
+        ``AuditVerdict``."""
+        aggs = {
+            ("openai", "L3", "x"): AuditAggregate(
+                layer="L3",
+                id="x",
+                total_with_runs=20,
+                with_fails=0,
+                with_pass_rate=1.0,
+                total_baseline_runs=0,
+                baseline_fails=0,
+                baseline_pass_rate=None,
+                provider="openai",
+            ),
+        }
+        verdicts = apply_thresholds(
+            aggs, min_fail_rate=0.0, min_discrimination=0.05
+        )
+        assert len(verdicts) == 1
+        assert verdicts[0].provider == "openai"
+        assert verdicts[0].verdict == Verdict.FLAG_ALWAYS_PASS
+
+    def test_apply_thresholds_sorts_provider_first(self) -> None:
+        """Sort order: provider, then layer, then id. Anthropic
+        ``("L3", "x")`` renders before openai ``("L3", "x")``."""
+        anthropic_agg = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+        )
+        openai_agg = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="openai",
+        )
+        aggs = {
+            ("openai", "L3", "x"): openai_agg,
+            ("anthropic", "L3", "x"): anthropic_agg,
+        }
+        verdicts = apply_thresholds(
+            aggs, min_fail_rate=0.0, min_discrimination=0.05
+        )
+        assert [v.provider for v in verdicts] == ["anthropic", "openai"]
+
+    def test_mixed_provider_end_to_end_two_aggregates(
+        self, tmp_path: Path
+    ) -> None:
+        """End-to-end: two iteration dirs, one with provider_source
+        anthropic and one with openai, share the same (layer, id) but
+        produce two distinct aggregates."""
+        clauditor_dir = tmp_path / ".clauditor"
+        _write_grading_v3(
+            clauditor_dir / "iteration-1" / "s",
+            rid="x",
+            passed=True,
+            provider_source="anthropic",
+        )
+        _write_grading_v3(
+            clauditor_dir / "iteration-2" / "s",
+            rid="x",
+            passed=True,
+            provider_source="openai",
+        )
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        agg = aggregate(records)
+        assert ("anthropic", "L3", "x") in agg
+        assert ("openai", "L3", "x") in agg
+        assert len(agg) == 2
+
+    def test_v2_sidecar_defaults_provider_to_anthropic(
+        self, tmp_path: Path
+    ) -> None:
+        """A v2 grading.json (no ``provider_source`` field on disk) →
+        records default ``provider="anthropic"`` so pre-#147 history
+        renders identically to today (acceptance criterion 5)."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        # v2 shape: schema_version=2 + transport_source, no provider_source.
+        payload = {
+            "schema_version": 2,
+            "skill_name": "s",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "api",
+            "results": [
+                {
+                    "id": "x",
+                    "criterion": "x",
+                    "passed": True,
+                    "score": 1.0,
+                    "evidence": "",
+                    "reasoning": "",
+                },
+            ],
+        }
+        (skill_dir / "grading.json").write_text(json.dumps(payload))
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].provider == "anthropic"
+        agg = aggregate(records)
+        assert ("anthropic", "L3", "x") in agg

@@ -138,18 +138,37 @@ _ITERATION_RE = re.compile(r"^iteration-(\d+)$")
 
 @dataclass
 class IterationRecord:
-    """A single per-iteration, per-assertion result."""
+    """A single per-iteration, per-assertion result.
+
+    US-003 (#147): the ``provider`` field records which model provider's
+    SDK produced the underlying L2/L3 grading verdict. Loaded from the
+    sidecar's v3 ``provider_source`` field; defaults to ``"anthropic"``
+    for legacy v1/v2 sidecars (per DEC-001 of #147). L1
+    (``_records_from_assertions``) always carries ``"anthropic"`` as a
+    placeholder per DEC-002 — assertions sidecars stay at v1 because L1
+    has no LLM call to attribute, but ``IterationRecord`` keeps a
+    uniform shape across layers so audit grouping does not have to
+    branch by layer.
+    """
 
     iteration: int
     layer: str  # "L1" | "L2" | "L3"
     id: str
     passed: bool
     with_skill: bool  # True for primary, False for baseline sidecar
+    provider: str = "anthropic"
 
 
 @dataclass
 class AuditAggregate:
-    """Aggregate pass-rate statistics for one ``(layer, id)`` pair."""
+    """Aggregate pass-rate statistics for one ``(provider, layer, id)`` triple.
+
+    US-003 (#147): keyed by ``(provider, layer, id)`` so mixed-provider
+    history (the same eval run under both Anthropic and OpenAI) groups
+    into separate aggregates instead of being averaged together. The
+    ``provider`` field defaults to ``"anthropic"`` to keep direct
+    constructor calls in tests working without per-test edits.
+    """
 
     layer: str
     id: str
@@ -159,6 +178,7 @@ class AuditAggregate:
     total_baseline_runs: int
     baseline_fails: int
     baseline_pass_rate: float | None
+    provider: str = "anthropic"
 
     @property
     def discrimination(self) -> float | None:
@@ -215,6 +235,12 @@ def _records_from_assertions(
     ):
         return []
     records: list[IterationRecord] = []
+    # DEC-002 (#147): L1 records carry ``provider="anthropic"`` as a
+    # placeholder. Assertions sidecars stay at schema_version=1 (no
+    # ``provider_source`` field — L1 has no LLM call to attribute), but
+    # ``IterationRecord`` keeps a uniform shape across layers so the
+    # ``aggregate()`` group key is always 3-tuple. The honest harness
+    # dimension lands in #152.
     for run in data.get("runs", []) or []:
         for result in run.get("results", []) or []:
             rid = result.get("id")
@@ -227,6 +253,7 @@ def _records_from_assertions(
                     id=str(rid),
                     passed=bool(result.get("passed", False)),
                     with_skill=with_skill,
+                    provider="anthropic",
                 )
             )
     return records
@@ -245,6 +272,13 @@ def _records_from_extraction(
     ):
         return []
     records: list[IterationRecord] = []
+    # US-003 (#147): read v3 ``provider_source`` field; default to
+    # ``"anthropic"`` for legacy v1/v2 reads per DEC-001 of #147.
+    # ``data.get("provider_source") or "anthropic"`` also coerces an
+    # explicit empty string / ``None`` to the default, matching the
+    # ``GradingReport.from_json`` / ``ExtractionReport.from_json``
+    # default-on-read shape from US-001.
+    provider = data.get("provider_source") or "anthropic"
     for field_id, entries in (data.get("fields") or {}).items():
         for entry in entries or []:
             if "passed" not in entry:
@@ -257,6 +291,7 @@ def _records_from_extraction(
                     id=str(field_id),
                     passed=passed,
                     with_skill=with_skill,
+                    provider=provider,
                 )
             )
     return records
@@ -275,6 +310,10 @@ def _records_from_grading(
     ):
         return []
     records: list[IterationRecord] = []
+    # US-003 (#147): same default-on-read shape as
+    # ``_records_from_extraction`` — v3 sidecars carry
+    # ``provider_source``; v1/v2 reads default to ``"anthropic"``.
+    provider = data.get("provider_source") or "anthropic"
     for result in data.get("results", []) or []:
         # DEC-001 / #25: L3 results are keyed by their stable spec id.
         # Drop records missing an ``id`` entirely — falling back to the
@@ -291,6 +330,7 @@ def _records_from_grading(
                 id=str(rid),
                 passed=bool(result.get("passed", False)),
                 with_skill=with_skill,
+                provider=provider,
             )
         )
     return records
@@ -387,15 +427,23 @@ def load_iterations(
 
 def aggregate(
     records: list[IterationRecord],
-) -> dict[tuple[str, str], AuditAggregate]:
-    """Group records by ``(layer, id)`` and compute pass rates.
+) -> dict[tuple[str, str, str], AuditAggregate]:
+    """Group records by ``(provider, layer, id)`` and compute pass rates.
+
+    US-003 (#147): expanded the grouping key from ``(layer, id)`` to
+    ``(provider, layer, id)`` so mixed-provider history (the same eval
+    run under both Anthropic and OpenAI) groups separately. Pre-#147
+    history (no ``provider_source`` on disk) defaults every record's
+    provider to ``"anthropic"`` and produces a single bucket per
+    ``(layer, id)`` keyed under ``("anthropic", layer, id)``, so
+    single-provider audit reports keep their pre-#147 shape.
 
     With-skill and baseline records are tallied separately so callers
     can compare them (see :attr:`AuditAggregate.discrimination`).
     """
-    buckets: dict[tuple[str, str], dict[str, int]] = {}
+    buckets: dict[tuple[str, str, str], dict[str, int]] = {}
     for r in records:
-        key = (r.layer, r.id)
+        key = (r.provider, r.layer, r.id)
         bucket = buckets.setdefault(
             key,
             {
@@ -414,8 +462,8 @@ def aggregate(
             if not r.passed:
                 bucket["baseline_fails"] += 1
 
-    result: dict[tuple[str, str], AuditAggregate] = {}
-    for (layer, rid), b in buckets.items():
+    result: dict[tuple[str, str, str], AuditAggregate] = {}
+    for (provider, layer, rid), b in buckets.items():
         with_total = b["with_total"]
         baseline_total = b["baseline_total"]
         with_pass_rate = (
@@ -430,7 +478,7 @@ def aggregate(
             )
         else:
             baseline_pass_rate = None
-        result[(layer, rid)] = AuditAggregate(
+        result[(provider, layer, rid)] = AuditAggregate(
             layer=layer,
             id=rid,
             total_with_runs=with_total,
@@ -439,6 +487,7 @@ def aggregate(
             total_baseline_runs=baseline_total,
             baseline_fails=b["baseline_fails"],
             baseline_pass_rate=baseline_pass_rate,
+            provider=provider,
         )
     return result
 
@@ -450,13 +499,21 @@ def aggregate(
 
 @dataclass
 class AuditVerdict:
-    """A threshold classification over one :class:`AuditAggregate`."""
+    """A threshold classification over one :class:`AuditAggregate`.
+
+    US-003 (#147): the ``provider`` field carries through from the
+    underlying :class:`AuditAggregate`'s 3-tuple key so renderers
+    (US-004) can surface the provider dimension in the audit output.
+    Defaults to ``"anthropic"`` so direct test fixture constructions
+    that predate #147 keep working without per-test edits.
+    """
 
     layer: str
     id: str
     verdict: Verdict
     reasons: list[str] = field(default_factory=list)
     aggregate: AuditAggregate | None = None
+    provider: str = "anthropic"
 
     @property
     def is_flagged(self) -> bool:
@@ -464,7 +521,7 @@ class AuditVerdict:
 
 
 def apply_thresholds(
-    aggregates: dict[tuple[str, str], AuditAggregate],
+    aggregates: dict[tuple[str, str, str], AuditAggregate],
     *,
     min_fail_rate: float,
     min_discrimination: float,
@@ -490,7 +547,11 @@ def apply_thresholds(
     preserved on disk; only the verdict stream filters them out.
     """
     verdicts: list[AuditVerdict] = []
-    for (layer, rid), agg in sorted(aggregates.items()):
+    # US-003 (#147): unpack the 3-tuple ``(provider, layer, id)`` key
+    # produced by :func:`aggregate`. ``sorted`` orders provider first so
+    # an audit report renders all-anthropic rows before openai rows
+    # within each layer.
+    for (provider, layer, rid), agg in sorted(aggregates.items()):
         if agg.total_with_runs == 0:
             continue
         reasons: list[str] = []
@@ -534,6 +595,7 @@ def apply_thresholds(
                 verdict=verdict,
                 reasons=reasons,
                 aggregate=agg,
+                provider=provider,
             )
         )
     return verdicts
