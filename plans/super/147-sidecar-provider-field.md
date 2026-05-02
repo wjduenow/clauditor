@@ -6,7 +6,8 @@
 - **Branch:** `feature/147-sidecar-provider-field`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/147-sidecar-provider-field`
 - **PR:** https://github.com/wjduenow/clauditor/pull/165
-- **Phase:** published
+- **Phase:** devolved
+- **Epic:** clauditor-6ne
 - **Sessions:** 1 (2026-05-02)
 - **Total decisions:** 12 (DEC-001 through DEC-012)
 - **Depends on:** #146 (CLOSED — `EvalSpec.grading_provider` four-layer precedence shipped; `provider_source` in-memory field bookmarked for #147)
@@ -705,7 +706,23 @@ learned from #147 implementation.
 
 ## Beads Manifest
 
-*(populated in Phase 7)*
+- **Epic:** `clauditor-6ne` — #147: Multi-provider — sidecar v3 with provider field
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/147-sidecar-provider-field`
+- **Branch:** `feature/147-sidecar-provider-field`
+
+| Task | Story | Depends on |
+|---|---|---|
+| `clauditor-6ne.1` | US-001 — Sidecar writers/readers v3 | (ready) |
+| `clauditor-6ne.2` | US-002 — Audit loader `MAX_SCHEMA_VERSION` + v3 | (ready) |
+| `clauditor-6ne.3` | US-003 — `IterationRecord`/`AuditAggregate` group | `.1`, `.2` |
+| `clauditor-6ne.4` | US-004 — Audit render: provider column + JSON v2 | `.3` |
+| `clauditor-6ne.5` | US-005 — `history.jsonl` v2 with `provider` | (ready) |
+| `clauditor-6ne.6` | US-006 — Trend `--provider` + refusal | `.5` |
+| `clauditor-6ne.7` | US-007 — Update json-schema-version.md | `.2`, `.5` |
+| `clauditor-6ne.8` | US-008 — Quality Gate (code review x4 + CodeRabbit) | `.1`–`.7` |
+| `clauditor-6ne.9` | US-009 — Patterns & Memory | `.8` |
+
+**Initial parallel ready:** `.1`, `.2`, `.5`.
 
 ---
 
