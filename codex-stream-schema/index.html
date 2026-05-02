@@ -1,0 +1,1621 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Automated quality checks for Agent Skills (agentskills.io)">
+      
+      
+      
+        <link rel="canonical" href="https://wjduenow.github.io/clauditor/codex-stream-schema/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Codex stream-JSON schema contract - clauditor</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#codex-stream-json-schema-contract" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="clauditor" class="md-header__button md-logo" aria-label="clauditor" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            clauditor
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Codex stream-JSON schema contract
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/wjduenow/clauditor" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    wjduenow/clauditor
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../quick-start/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Quick Start
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../layers/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Three Layers
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../cli-reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  CLI Reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../eval-spec-reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Eval Spec
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../pytest-plugin/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Pytest Plugin
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../skill-usage/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Using /clauditor
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../skills/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Skills
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../badges/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Badges
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../architecture/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Architecture
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../stream-json-schema/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Stream JSON
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Changelog
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="clauditor" class="md-nav__button md-logo" aria-label="clauditor" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    clauditor
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/wjduenow/clauditor" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    wjduenow/clauditor
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../layers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Three Layers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../eval-spec-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Eval Spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pytest-plugin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pytest Plugin
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skill-usage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using /clauditor
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../badges/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Badges
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../stream-json-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stream JSON
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#transport-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Transport contract
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#top-level-event-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Top-level event types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Top-level event types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#type-threadstarted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        type: "thread.started"
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#type-turnstarted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        type: "turn.started"
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#type-turncompleted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        type: "turn.completed"
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#type-turnfailed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        type: "turn.failed"
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#type-error" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        type: "error"
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#type-itemstartedupdatedcompleted" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        type: "item.{started,updated,completed}"
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#usage-field-set" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Usage field set
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#threaditem-itemtype-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ThreadItem item.type matrix
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="ThreadItem item.type matrix">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#agent_message" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        agent_message
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reasoning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        reasoning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#command_execution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        command_execution
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#file_change" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        file_change
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#other-itemtype-values" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Other item.type values
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#failure-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Failure surface
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#-output-last-message-semantics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --output-last-message semantics
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#auth-source-detection-clauditors-probe-order" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auth source detection (clauditor's probe order)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#harness-tag-dec-010" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        harness tag (DEC-010)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#error-category-mapping-dec-007" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Error category mapping (DEC-007)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#harness_metadata-key-contract-dec-008" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        harness_metadata key contract (DEC-008)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#advisory-warnings-dec-018" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Advisory warnings (DEC-018)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#operational-gotchas" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Operational gotchas
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#error-handling-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Error handling summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#canonical-parser" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Canonical parser
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="codex-stream-json-schema-contract">Codex stream-JSON schema contract</h1>
+<p>clauditor invokes the OpenAI Codex CLI with <code>codex exec --json
+--output-last-message &lt;tempfile&gt;</code> and parses its NDJSON output
+line-by-line. This is the authoritative reference for which Codex
+events clauditor consumes, which fields it tolerates missing, and how
+it classifies the failure surface. The parser lives in
+<code>src/clauditor/_harnesses/_codex.py::CodexHarness.invoke</code> (reached
+from <code>SkillRunner._invoke</code> via the <code>Harness</code> protocol from #148,
+sibling to <code>ClaudeCodeHarness</code>).</p>
+<blockquote>
+<p>Returning from the <a href="../stream-json-schema/">stream-json schema</a>.
+This doc is Codex's NDJSON contract; the sibling covers Anthropic
+Claude's format. See also
+<a href="../transport-architecture/">Transport Architecture</a>.</p>
+</blockquote>
+<p>Schema reflects <code>openai/codex@main</code> as of #149. On CLI version drift,
+update this document and <code>.claude/rules/harness-protocol-shape.md</code> in
+the same commit.</p>
+<h2 id="transport-contract">Transport contract</h2>
+<p>Each line of <code>codex</code>'s stdout is one JSON object (NDJSON). The parser
+reads lines until EOF, then <code>proc.wait()</code> collects the exit code
+(Codex exits 0 or 1 only — no granular OS-level failure type). Blank
+lines are silently skipped. Lines failing <code>json.loads</code> are logged to
+stderr (prefix <code>clauditor.runner: skipping malformed codex stream-json
+line:</code>) and added to <code>InvokeResult.warnings</code>; non-object JSON values
+are defensively ignored. argv is fixed per DEC-001 / DEC-005:
+<code>[codex_bin, "exec", "--json", "--output-last-message", &lt;tempfile&gt;,
+"--skip-git-repo-check", "-s", "workspace-write", "-m", &lt;model&gt;, "-"]</code>.
+The trailing <code>-</code> instructs Codex to read the prompt from stdin.
+Sandbox is hardcoded to <code>workspace-write</code> for v1; configurability is
+deferred to #151's <code>EvalSpec.harness</code> flag.</p>
+<h2 id="top-level-event-types">Top-level event types</h2>
+<p>Every event is a JSON object with a top-level <code>type</code>. clauditor
+dispatches on <code>type</code> and only reads the fields below; unknown types
+pass through to <code>stream_events</code>. Each appended event has
+<code>"harness": "codex"</code> added on append (see
+<a href="#harness-tag-dec-010"><code>harness</code> tag</a>). All event types below cite
+<code>from openai/codex codex-rs/exec/src/exec_events.rs:11-39</code>.</p>
+<h3 id="type-threadstarted"><code>type: "thread.started"</code></h3>
+<div class="highlight"><pre><span></span><code><span class="kr">type</span><span class="w"> </span><span class="nx">ThreadStarted</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;thread.started&quot;</span><span class="p">;</span><span class="w"> </span><span class="nx">thread_id</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="p">};</span>
+</code></pre></div>
+<p>First event per process. <code>thread_id</code> lands in
+<code>harness_metadata["thread_id"]</code> (first wins; non-string values
+dropped).</p>
+<h3 id="type-turnstarted"><code>type: "turn.started"</code></h3>
+<div class="highlight"><pre><span></span><code><span class="kr">type</span><span class="w"> </span><span class="nx">TurnStarted</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;turn.started&quot;</span><span class="w"> </span><span class="p">};</span>
+</code></pre></div>
+<p>Increments <code>harness_metadata["turn_count"]</code>.</p>
+<h3 id="type-turncompleted"><code>type: "turn.completed"</code></h3>
+<div class="highlight"><pre><span></span><code><span class="kr">type</span><span class="w"> </span><span class="nx">TurnCompleted</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;turn.completed&quot;</span><span class="p">;</span><span class="w"> </span><span class="nx">usage</span><span class="o">:</span><span class="w"> </span><span class="kt">Usage</span><span class="w"> </span><span class="p">};</span>
+</code></pre></div>
+<p>Aggregate token usage. Fields read defensively via <code>_safe_int</code> —
+<code>None</code>, non-numeric, or missing values fall back to <code>0</code>.</p>
+<h3 id="type-turnfailed"><code>type: "turn.failed"</code></h3>
+<div class="highlight"><pre><span></span><code><span class="kr">type</span><span class="w"> </span><span class="nx">TurnFailed</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;turn.failed&quot;</span><span class="p">;</span><span class="w"> </span><span class="nx">error</span><span class="o">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">message</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">};</span>
+</code></pre></div>
+<p>Per-turn failure. Single string in <code>error.message</code>; no HTTP status,
+error-type enum, or category discriminator. Classified via
+<code>_classify_codex_failure</code>. First classification wins.</p>
+<h3 id="type-error"><code>type: "error"</code></h3>
+<div class="highlight"><pre><span></span><code><span class="kr">type</span><span class="w"> </span><span class="nx">StreamError</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;error&quot;</span><span class="p">;</span><span class="w"> </span><span class="nx">message</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="p">};</span>
+</code></pre></div>
+<p>Stream-level fatal error (serialization failure, dropped events,
+auth failure on first request). Distinct from item-level <code>error</code>
+items; classified the same way as <code>turn.failed</code>.</p>
+<h3 id="type-itemstartedupdatedcompleted"><code>type: "item.{started,updated,completed}"</code></h3>
+<div class="highlight"><pre><span></span><code><span class="kr">type</span><span class="w"> </span><span class="nx">ItemEvent</span><span class="w"> </span><span class="o">=</span>
+<span class="w">  </span><span class="o">|</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;item.started&quot;</span><span class="p">;</span><span class="w"> </span><span class="nx">item</span><span class="o">:</span><span class="w"> </span><span class="kt">ThreadItem</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="o">|</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;item.updated&quot;</span><span class="p">;</span><span class="w"> </span><span class="nx">item</span><span class="o">:</span><span class="w"> </span><span class="kt">ThreadItem</span><span class="w"> </span><span class="p">}</span>
+<span class="w">  </span><span class="o">|</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;item.completed&quot;</span><span class="p">;</span><span class="w"> </span><span class="nx">item</span><span class="o">:</span><span class="w"> </span><span class="kt">ThreadItem</span><span class="w"> </span><span class="p">};</span>
+</code></pre></div>
+<p>clauditor branches only on <code>item.completed</code>; <code>started</code> / <code>updated</code>
+pass through to <code>stream_events</code> for forensics.</p>
+<h2 id="usage-field-set"><code>Usage</code> field set</h2>
+<div class="highlight"><pre><span></span><code><span class="kd">interface</span><span class="w"> </span><span class="nx">Usage</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">input_tokens</span><span class="o">:</span><span class="w"> </span><span class="kt">number</span><span class="p">;</span><span class="w"> </span><span class="nx">cached_input_tokens</span><span class="o">:</span><span class="w"> </span><span class="kt">number</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">output_tokens</span><span class="o">:</span><span class="w"> </span><span class="kt">number</span><span class="p">;</span><span class="w"> </span><span class="nx">reasoning_output_tokens</span><span class="o">:</span><span class="w"> </span><span class="kt">number</span><span class="p">;</span>
+<span class="p">}</span>
+<span class="c1">// from openai/codex codex-rs/exec/src/exec_events.rs:11-39</span>
+</code></pre></div>
+<p><code>input_tokens</code> / <code>output_tokens</code> map to
+<code>InvokeResult.{input,output}_tokens</code>; <code>cached_input_tokens</code> and
+<code>reasoning_output_tokens</code> map to the same-named keys in
+<code>harness_metadata</code>. Cache/reasoning fields populate unconditionally
+once <code>turn.completed</code> lands (a <code>0</code> count is meaningful — distinct
+from "no <code>turn.completed</code> seen").</p>
+<h2 id="threaditem-itemtype-matrix">ThreadItem <code>item.type</code> matrix</h2>
+<p><code>item.completed</code> events carry <code>item: ThreadItem</code> whose <code>item.type</code>
+discriminates further. All shapes below cite
+<code>from openai/codex codex-rs/exec/src/exec_events.rs:96-122</code>.</p>
+<h3 id="agent_message"><code>agent_message</code></h3>
+<div class="highlight"><pre><span></span><code><span class="kr">type</span><span class="w"> </span><span class="nx">AgentMessage</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">id</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;agent_message&quot;</span><span class="p">;</span><span class="w"> </span><span class="nx">text</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="p">};</span>
+</code></pre></div>
+<p>Final assistant text. clauditor concatenates the <code>text</code> of every
+<code>agent_message</code> (newline-joined) into <code>InvokeResult.output</code> — the
+Codex analog of Claude's <code>assistant</code>-message text-block extraction.</p>
+<h3 id="reasoning"><code>reasoning</code></h3>
+<div class="highlight"><pre><span></span><code><span class="kr">type</span><span class="w"> </span><span class="nx">Reasoning</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">id</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;reasoning&quot;</span><span class="p">;</span><span class="w"> </span><span class="nx">text</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="w"> </span><span class="p">};</span>
+</code></pre></div>
+<p>Reasoning text. Surfaced in <code>stream_events</code> (with the
+<code>harness="codex"</code> tag) but <strong>not</strong> appended to <code>InvokeResult.output</code>.
+Per-item reasoning-token counts are NOT exposed by Codex; only the
+aggregate <code>Usage.reasoning_output_tokens</code>.</p>
+<h3 id="command_execution"><code>command_execution</code></h3>
+<div class="highlight"><pre><span></span><code><span class="kr">type</span><span class="w"> </span><span class="nx">CommandExecution</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">id</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;command_execution&quot;</span><span class="p">;</span><span class="w"> </span><span class="nx">command</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">aggregated_output</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span><span class="w"> </span><span class="nx">exit_code</span><span class="o">:</span><span class="w"> </span><span class="kt">number</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">status</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;in_progress&quot;</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="s2">&quot;completed&quot;</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="s2">&quot;failed&quot;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+<p>Sandbox shell exec result. <code>aggregated_output</code> soft-capped at 64 KB
+per DEC-015 (see <code>_maybe_truncate_command_output</code> in
+<code>src/clauditor/_harnesses/_codex.py</code>). Truncated text gets a
+<code>...(truncated)</code> suffix; one warning fires per invoke (not per event).</p>
+<h3 id="file_change"><code>file_change</code></h3>
+<div class="highlight"><pre><span></span><code><span class="kr">type</span><span class="w"> </span><span class="nx">FileChange</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">id</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;file_change&quot;</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">changes</span><span class="o">:</span><span class="w"> </span><span class="kt">Array</span><span class="o">&lt;</span><span class="p">{</span><span class="w"> </span><span class="nx">path</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span><span class="w"> </span><span class="nx">kind</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;add&quot;</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="s2">&quot;delete&quot;</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="s2">&quot;update&quot;</span><span class="w"> </span><span class="p">}</span><span class="o">&gt;</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">status</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;in_progress&quot;</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="s2">&quot;completed&quot;</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="s2">&quot;failed&quot;</span><span class="p">;</span>
+<span class="p">};</span>
+</code></pre></div>
+<p>Singular <code>file_change</code> (not <code>file_changes</code>). Pass-through into
+<code>stream_events</code>.</p>
+<h3 id="other-itemtype-values">Other <code>item.type</code> values</h3>
+<p><code>mcp_tool_call</code>, <code>collab_tool_call</code>, <code>web_search</code>, <code>todo_list</code>, and
+item-level <code>error</code> (distinct from top-level <code>error</code>) pass through to
+<code>stream_events</code>. Item-level <code>error</code> entries are advisory (e.g. "model
+rerouted: gpt-5 → gpt-5-mini") and do NOT trigger
+<code>_classify_codex_failure</code>. They also carry Lagged synthetic
+dropped-event notifications (see
+<a href="#operational-gotchas">Operational gotchas</a>).</p>
+<h2 id="failure-surface">Failure surface</h2>
+<p>Two classified shapes — <code>turn.failed.error.message</code> (per-turn) and
+top-level <code>type: "error"</code> (stream-level fatal) — flow through
+<code>_classify_codex_failure</code>. Item-level <code>error</code> items pass through
+unclassified. First-classification-wins; timeout takes precedence
+(watchdog firing sets <code>error="timeout"</code>, category <code>timeout</code>).</p>
+<h2 id="-output-last-message-semantics"><code>--output-last-message</code> semantics</h2>
+<p>clauditor always passes <code>--output-last-message &lt;tempfile&gt;</code> per
+DEC-005. The tempfile lives inside a per-invocation
+<code>tempfile.TemporaryDirectory</code> (DEC-016); cleanup is automatic on
+every exit path. Codex writes the tempfile <strong>only</strong> on
+<code>TurnStatus::Completed</code> (Failed/Interrupted do not write it).
+Contents are raw text of the final agent message — no JSON wrapping.
+<code>InvokeResult.output</code> is built primarily by joining <code>agent_message</code>
+text; the tempfile is read <strong>only</strong> as a fallback when no
+<code>agent_message</code> items appear, with the <code>last-message-empty:</code> warning
+firing in that case. The tempfile <strong>path</strong> is recorded in
+<code>harness_metadata["last_message_path"]</code> for #154's context-sidecar
+consumer — the file itself is deleted by the time a caller reads
+metadata.</p>
+<h2 id="auth-source-detection-clauditors-probe-order">Auth source detection (clauditor's probe order)</h2>
+<p><code>_detect_auth_source</code> (in <code>src/clauditor/_harnesses/_codex.py</code>)
+probes auth sources in this deterministic order: (1)
+<code>CODEX_API_KEY</code>, (2) <code>OPENAI_API_KEY</code>, (3) cached auth at
+<code>$CODEX_HOME/auth.json</code> (default <code>~/.codex/auth.json</code>), (4)
+<code>"unknown"</code> sentinel.</p>
+<p>Codex's own runtime precedence is <code>cached $CODEX_HOME/auth.json →
+CODEX_API_KEY → OPENAI_API_KEY → interactive</code>. Clauditor's probe
+order inverts this because env-var probes are cheaper than the
+cached-file probe — we resolve the first matching env var if set,
+falling through to the file probe only when no env var is present.
+For the headless <code>codex exec --json</code> invocation Codex never reaches
+its interactive-login fallback, so the four-state probe-order set
+(<code>{CODEX_API_KEY, OPENAI_API_KEY, cached, unknown}</code>) covers every
+detectable case.</p>
+<p><code>_detect_auth_source</code> inspects the supplied <code>env</code> (or <code>os.environ</code>
+when <code>env=None</code>) and resolves the first match. The result lands in
+<code>harness_metadata["auth_source"]</code> and a one-shot stderr line per
+invoke (DEC-017): <code>clauditor.runner: codex auth=&lt;source&gt;[ (subject)]</code>.
+Subject sanitization (ANSI escape strip → CRLF → space → drop other
+C0/DEL controls → strip → 200-char cap) hardens the label against
+terminal-control-code injection in addition to the basic CRLF scrub.</p>
+<p><code>strip_auth_keys</code> (DEC-012) removes three vars from a spawned child
+env: <code>CODEX_API_KEY</code>, <code>OPENAI_API_KEY</code>, <code>OPENAI_BASE_URL</code> (the
+base-URL strip prevents an attacker-controlled value routing traffic
+to a malicious endpoint). Explicitly preserved: <code>CODEX_HOME</code>,
+<code>SSL_CERT_FILE</code>, <code>HTTPS_PROXY</code>, <code>HTTP_PROXY</code>, <code>NO_PROXY</code>,
+<code>CODEX_CA_CERTIFICATE</code>, <code>OPENAI_ORG_ID</code>, <code>OPENAI_API_VERSION</code>.</p>
+<h2 id="harness-tag-dec-010"><code>harness</code> tag (DEC-010)</h2>
+<p>Every Codex event appended to <code>stream_events</code> is rebuilt into a NEW
+dict (non-mutating per <code>.claude/rules/non-mutating-scrub.md</code>) with a
+top-level <code>"harness": "codex"</code> added. Claude events stay unmarked —
+asymmetry is intentional, no back-port. Consumers detect Codex
+events by the presence of this key. Example:
+<code>{"type":"thread.started","thread_id":"th_abc","harness":"codex"}</code>.</p>
+<h2 id="error-category-mapping-dec-007">Error category mapping (DEC-007)</h2>
+<p>The <code>error_category</code> Literal in <code>runner.py</code> stays closed. Codex
+failures squash via case-insensitive substring match. Rate-limit
+precedence runs first.</p>
+<table>
+<thead>
+<tr>
+<th>Match</th>
+<th>Category</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rate limit</code>, <code>rate-limit</code>, <code>quota</code>, <code>429</code></td>
+<td><code>rate_limit</code></td>
+</tr>
+<tr>
+<td><code>401</code>, <code>403</code>, <code>unauthorized</code>, <code>OPENAI_API_KEY</code>, <code>invalid api key</code></td>
+<td><code>auth</code></td>
+</tr>
+<tr>
+<td>anything else</td>
+<td><code>api</code></td>
+</tr>
+<tr>
+<td>watchdog timeout</td>
+<td><code>timeout</code> (precedence over above)</td>
+</tr>
+</tbody>
+</table>
+<p>Empty / <code>None</code> / non-string messages return <code>"API error (no detail)"</code>
+with category <code>api</code>. Messages over 4096 chars are truncated with a
+<code>...(truncated)</code> suffix; classification runs against the
+truncated text.</p>
+<h2 id="harness_metadata-key-contract-dec-008"><code>harness_metadata</code> key contract (DEC-008)</h2>
+<p>Absent keys are <strong>omitted</strong>, never <code>None</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Populated</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sandbox_mode</code></td>
+<td><code>str</code></td>
+<td>always (<code>"workspace-write"</code>)</td>
+<td>DEC-001</td>
+</tr>
+<tr>
+<td><code>auth_source</code></td>
+<td><code>str</code></td>
+<td>always</td>
+<td><code>_detect_auth_source</code></td>
+</tr>
+<tr>
+<td><code>last_message_path</code></td>
+<td><code>str</code></td>
+<td>always</td>
+<td>DEC-005</td>
+</tr>
+<tr>
+<td><code>turn_count</code></td>
+<td><code>int</code></td>
+<td>always</td>
+<td>counter</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td><code>str</code></td>
+<td>always</td>
+<td>resolved per-call / default</td>
+</tr>
+<tr>
+<td><code>thread_id</code></td>
+<td><code>str</code></td>
+<td>when seen</td>
+<td>first <code>thread.started</code></td>
+</tr>
+<tr>
+<td><code>cached_input_tokens</code></td>
+<td><code>int</code></td>
+<td>on <code>turn.completed</code></td>
+<td><code>Usage</code></td>
+</tr>
+<tr>
+<td><code>reasoning_output_tokens</code></td>
+<td><code>int</code></td>
+<td>on <code>turn.completed</code></td>
+<td><code>Usage</code></td>
+</tr>
+<tr>
+<td><code>dropped_events_count</code></td>
+<td><code>int</code></td>
+<td>non-zero only</td>
+<td><code>_detect_codex_dropped_events</code></td>
+</tr>
+<tr>
+<td><code>stream_events_truncated</code></td>
+<td><code>bool</code></td>
+<td><code>True</code> only</td>
+<td>DEC-015 envelope cap</td>
+</tr>
+</tbody>
+</table>
+<h2 id="advisory-warnings-dec-018">Advisory warnings (DEC-018)</h2>
+<p>Three warning prefix constants live in <code>runner.py</code> next to Claude's.
+All are <strong>advisory</strong>: <code>error_category</code> stays <code>None</code> and
+<code>SkillResult.succeeded_cleanly</code> is NOT down-classified (distinct from
+Claude's <code>interactive-hang:</code> and <code>background-task:</code> which DO
+down-classify).</p>
+<table>
+<thead>
+<tr>
+<th>Prefix</th>
+<th>When</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dropped-events:</code></td>
+<td>Lagged synthetic events present</td>
+<td><code>_detect_codex_dropped_events</code></td>
+</tr>
+<tr>
+<td><code>last-message-empty:</code></td>
+<td>No <code>agent_message</code> + non-empty tempfile</td>
+<td><code>_detect_codex_truncated_output</code></td>
+</tr>
+<tr>
+<td><code>codex-deprecation:</code></td>
+<td>Reserved for future deprecation stderr</td>
+<td>(reserved)</td>
+</tr>
+</tbody>
+</table>
+<p>Plus <code>stream-events-truncated:</code> for the DEC-015 envelope-cap
+overflow (lives in <code>_codex.py</code>, not <code>runner.py</code> — no cross-harness
+consumer reads it).</p>
+<h2 id="operational-gotchas">Operational gotchas</h2>
+<ul>
+<li><strong>stderr is used in <code>--json</code> mode</strong>: Codex emits tracing lines,
+  "Reading prompt from stdin..." notices, and deprecation warnings
+  even with <code>--json</code>. clauditor filters auth-leak patterns
+  (<code>api_key</code>, <code>Authorization</code>, <code>OPENAI_API_KEY=</code>, <code>CODEX_API_KEY=</code>,
+  <code>CODEX_HOME=</code> — case-insensitive), redacts offending lines with
+  <code>&lt;line redacted: matched auth-leak pattern&gt;</code>, then caps at 8 KB
+  (DEC-013).</li>
+<li><strong>Process-group cleanup (DEC-014)</strong>: Codex spawns subprocesses for
+  <code>command_execution</code>. POSIX uses <code>start_new_session=True</code> and
+  escalates <code>os.killpg(os.getpgid(pid), SIGTERM)</code> then <code>SIGKILL</code>;
+  Windows falls back to single-pid <code>proc.terminate()</code> / <code>proc.kill()</code>.
+  All syscalls wrapped in <code>try / except OSError</code>.</li>
+<li><strong>Lagged synthetic events</strong>: Codex emits a synthetic
+  <code>item.completed</code> with <code>item.type == "error"</code> and <code>item.message</code>
+  shaped <code>"&lt;N&gt; events were dropped..."</code> on channel overflow.
+  <code>_detect_codex_dropped_events</code> sums counts; non-zero fires the
+  <code>dropped-events:</code> warning.</li>
+<li><strong>Stream-events envelope cap (DEC-015)</strong>: Running byte count is
+  capped at 50 MB. On overflow, clauditor stops appending but keeps
+  reading stdout so <code>turn.completed</code> still lands;
+  <code>stream-events-truncated:</code> warning fires once and
+  <code>harness_metadata["stream_events_truncated"] = True</code>.</li>
+<li><strong>No "stream end" sentinel</strong>: EOF on stdout is the signal — Codex
+  emits no terminal "done" event analog to Claude's <code>result</code>.</li>
+<li><strong>Exit code is 0 or 1 only</strong>: Classification comes from event
+  content, not exit code.</li>
+</ul>
+<h2 id="error-handling-summary">Error handling summary</h2>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>json.JSONDecodeError</code> on a line</td>
+<td>Log + warn, skip, keep reading</td>
+</tr>
+<tr>
+<td>Line parses as non-dict JSON</td>
+<td>Silently skip</td>
+</tr>
+<tr>
+<td><code>turn.completed</code> with missing/broken <code>usage</code></td>
+<td>Token counts default to 0</td>
+</tr>
+<tr>
+<td><code>turn.failed.error.message</code> empty / non-string</td>
+<td><code>error="API error (no detail)"</code>, category <code>api</code></td>
+</tr>
+<tr>
+<td><code>turn.failed.error.message</code> over 4 KB</td>
+<td>Truncate with <code>...(truncated)</code> suffix</td>
+</tr>
+<tr>
+<td>Multiple <code>turn.failed</code> / <code>error</code> events</td>
+<td>First wins</td>
+</tr>
+<tr>
+<td>Subprocess times out</td>
+<td>Killpg-escalate (POSIX) or terminate+kill (Windows); <code>exit_code=-1</code>, <code>error="timeout"</code>, category <code>timeout</code></td>
+</tr>
+<tr>
+<td><code>codex</code> binary not found</td>
+<td><code>InvokeResult(exit_code=-1, error="Codex CLI not found: …")</code>, category <code>None</code></td>
+</tr>
+</tbody>
+</table>
+<p>Every exit path is wrapped in <code>try/finally</code> so
+<code>InvokeResult.duration_seconds</code> is populated and the
+<code>TemporaryDirectory</code> is cleaned up regardless of outcome.</p>
+<h2 id="canonical-parser">Canonical parser</h2>
+<p><code>src/clauditor/_harnesses/_codex.py::CodexHarness.invoke</code> is the
+single source of truth (called from <code>SkillRunner._invoke</code>). Pure
+helpers (<code>_classify_codex_failure</code>, <code>_detect_codex_dropped_events</code>,
+<code>_detect_codex_truncated_output</code>, <code>_filter_stderr</code>) live as
+module-level functions per
+<code>.claude/rules/pure-compute-vs-io-split.md</code>. To extend the schema,
+update that method, this document, and
+<code>.claude/rules/harness-protocol-shape.md</code> in the same commit.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.top", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,1412 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Automated quality checks for Agent Skills (agentskills.io)">
+      
+      
+      
+        <link rel="canonical" href="https://wjduenow.github.io/clauditor/skill-usage/">
+      
+      
+        <link rel="prev" href="../pytest-plugin/">
+      
+      
+        <link rel="next" href="../skills/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Using /clauditor - clauditor</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#using-clauditor-in-claude-code" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="clauditor" class="md-header__button md-logo" aria-label="clauditor" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            clauditor
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Using /clauditor
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/wjduenow/clauditor" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    wjduenow/clauditor
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../quick-start/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Quick Start
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../layers/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Three Layers
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../cli-reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  CLI Reference
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../eval-spec-reference/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Eval Spec
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../pytest-plugin/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Pytest Plugin
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Using /clauditor
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../skills/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Skills
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../badges/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Badges
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../architecture/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Architecture
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../stream-json-schema/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Stream JSON
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../changelog/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Changelog
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="clauditor" class="md-nav__button md-logo" aria-label="clauditor" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    clauditor
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/wjduenow/clauditor" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    wjduenow/clauditor
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../quick-start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../layers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Three Layers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../eval-spec-reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Eval Spec
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pytest-plugin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Pytest Plugin
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using /clauditor
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using /clauditor
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#proposing-skill-improvements" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proposing skill improvements
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#skill-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Skill compatibility
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Skill compatibility">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#-sync-tasks-force-task-mode-synchronous-at-eval-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --sync-tasks: force Task mode synchronous at eval time
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#refactoring-recipes-alternative-to-sync-tasks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Refactoring recipes (alternative to --sync-tasks)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-skills-that-ask-the-user-mid-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: skills that ask the user mid-run
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../badges/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Badges
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../stream-json-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stream JSON
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#proposing-skill-improvements" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Proposing skill improvements
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#skill-compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Skill compatibility
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Skill compatibility">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#-sync-tasks-force-task-mode-synchronous-at-eval-time" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        --sync-tasks: force Task mode synchronous at eval time
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#refactoring-recipes-alternative-to-sync-tasks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Refactoring recipes (alternative to --sync-tasks)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#recipe-skills-that-ask-the-user-mid-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recipe: skills that ask the user mid-run
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="using-clauditor-in-claude-code">Using /clauditor in Claude Code</h1>
+<p>Walkthrough of the bundled <code>/clauditor</code> slash command: what it does when invoked inside Claude Code, how it differs from the CLI entry points, and when to reach for each. Read this when you want conversational evaluation inside a Claude session; reach for the CLI reference when you're scripting CI.</p>
+<blockquote>
+<p>Returning from the <a href="../README.md">root README</a>. This doc is the full reference; the README has a summary with code examples.</p>
+</blockquote>
+<p>Once <code>clauditor setup</code> has installed the symlink, the bundled skill is
+available as a slash command in any Claude Code session rooted at this
+project. The command is manual-only — Claude won't auto-invoke it,
+because validating a skill has side effects (subprocess runs, sidecar
+writes, potential token spend on L3 grading).</p>
+<p>clauditor works with both the legacy <code>.claude/commands/&lt;name&gt;.md</code> layout and the modern <code>.claude/skills/&lt;name&gt;/SKILL.md</code> layout.</p>
+<p><strong>Invoke with the path to the skill you want to evaluate:</strong></p>
+<div class="highlight"><pre><span></span><code>/clauditor .claude/commands/my-skill.md
+</code></pre></div>
+<p>or, for a directory-layout skill:</p>
+<div class="highlight"><pre><span></span><code>/clauditor .claude/skills/my-skill/SKILL.md
+</code></pre></div>
+<p>Running <code>/clauditor</code> without an argument prompts Claude to ask which
+skill to evaluate.</p>
+<p><strong>What Claude does:</strong></p>
+<ol>
+<li>Locates the skill's eval spec — the sibling <code>.eval.json</code> auto-discovered
+   by <code>skill_path.with_suffix('.eval.json')</code> (e.g. <code>SKILL.md</code> →
+   <code>SKILL.eval.json</code>). Other locations (for example
+   <code>&lt;skill-dir&gt;/assets/&lt;skill-name&gt;.eval.json</code>) require passing <code>--eval &lt;path&gt;</code>
+   explicitly.</li>
+<li>If no spec exists, bootstraps one via <code>clauditor propose-eval</code> —
+   an LLM-assisted bootstrap that writes <code>&lt;skill_stem&gt;.eval.json</code> next to
+   the file you pass. Claude starts with <code>--dry-run</code> for a cost-free
+   preview of the proposer prompt, reviews it with you, then drops the
+   flag to write the spec. See
+   <a href="../cli-reference/#propose-eval"><code>docs/cli-reference.md#propose-eval</code></a>
+   for the full flag reference.</li>
+<li>Runs L1 validation first (<code>clauditor validate</code>) — free, sub-second,
+   reports failing assertion ids.</li>
+<li>If L1 passes, asks before running L3 grading (<code>clauditor grade</code>) —
+   costs Sonnet tokens, writes a full <code>grading.json</code> sidecar.</li>
+<li>If L3 reports failing criteria, asks before running
+   <code>clauditor suggest</code> — proposes a unified diff of SKILL.md edits
+   motivated by the failing criterion ids. Writes
+   <code>&lt;skill-name&gt;-&lt;timestamp&gt;.diff</code> and <code>&lt;skill-name&gt;-&lt;timestamp&gt;.json</code>
+   under <code>.clauditor/suggestions/</code> (<code>&lt;skill-name&gt;</code> is the skill's
+   derived identity — frontmatter <code>name:</code> or parent-directory name,
+   not the file stem). Shows you the diff plus <code>motivated_by</code> +
+   <code>confidence</code> from the sidecar; does not auto-apply — review,
+   <code>git apply</code> (or hand-edit), then re-run <code>validate</code> / <code>grade</code> to
+   measure the score delta.</li>
+<li>Summarizes: which layers ran, pass/fail counts, sidecar paths
+   (including the suggest diff path if it ran) you can open for
+   details.</li>
+</ol>
+<p><strong>When to use <code>/clauditor</code> vs. the CLI directly:</strong></p>
+<ul>
+<li>Use <code>/clauditor</code> when you're in a Claude Code conversation and want
+  conversational context (Claude can explain failures, suggest fixes,
+  iterate on the spec).</li>
+<li>Use <code>clauditor validate</code> / <code>clauditor grade</code> directly in CI,
+  Makefiles, or scripted workflows where you want deterministic exit
+  codes and no LLM narration.</li>
+</ul>
+<p>The full skill playbook lives at
+<a href="../src/clauditor/skills/clauditor/SKILL.md"><code>src/clauditor/skills/clauditor/SKILL.md</code></a>
+(what Claude reads when the slash command fires).</p>
+<h2 id="proposing-skill-improvements">Proposing skill improvements</h2>
+<p>When <code>clauditor grade</code> returns failing L3 criteria, you have a
+grading.json that names exactly which criteria missed and why.
+<code>clauditor suggest</code> closes the loop: it reads that grading.json,
+asks Sonnet to propose minimal SKILL.md edits keyed to the failing
+criterion ids, and writes a unified diff plus a JSON sidecar so you
+can review before anything lands in your SKILL.md.</p>
+<p><strong>The loop:</strong></p>
+<div class="highlight"><pre><span></span><code>clauditor<span class="w"> </span>grade<span class="w">    </span>.claude/skills/my-skill/SKILL.md<span class="w">   </span><span class="c1"># 1. produces grading.json (L3 failures)</span>
+clauditor<span class="w"> </span>suggest<span class="w">  </span>.claude/skills/my-skill/SKILL.md<span class="w">   </span><span class="c1"># 2. proposes SKILL.md edits</span>
+<span class="c1"># review the diff…</span>
+git<span class="w"> </span>apply<span class="w"> </span>.clauditor/suggestions/my-skill-&lt;timestamp&gt;.diff<span class="w">   </span><span class="c1"># 3. apply (or hand-edit)</span>
+clauditor<span class="w"> </span>grade<span class="w">    </span>.claude/skills/my-skill/SKILL.md<span class="w">   </span><span class="c1"># 4. re-grade to measure delta</span>
+</code></pre></div>
+<p>The command reads the <strong>latest</strong> iteration that contains a
+<code>&lt;skill&gt;/grading.json</code>; pass <code>--from-iteration N</code> to target an
+older run explicitly.</p>
+<p><strong>Sidecar shape (<code>.clauditor/suggestions/&lt;skill&gt;-&lt;timestamp&gt;.json</code>):</strong></p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;skill_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;my-skill&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;model&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;claude-sonnet-4-6&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;generated_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-04-24T18:03:22.451820Z&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;source_iteration&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;source_grading_path&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;.clauditor/iteration-7/my-skill/grading.json&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;input_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4812</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;output_tokens&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">311</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;duration_seconds&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">9.42</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;summary_rationale&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Three edits address the &#39;distance_ok&#39; criterion by tightening the distance constraint in the Scope section.&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;edit_proposals&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span>
+<span class="w">      </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;edit-1&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;anchor&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Return the five closest venues.&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;replacement&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Return up to five venues within the specified radius; prefer closer results and omit any venue beyond the radius.&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;rationale&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Adds an explicit radius constraint so the skill stops returning out-of-range results.&quot;</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;confidence&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.82</span><span class="p">,</span>
+<span class="w">      </span><span class="nt">&quot;motivated_by&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;distance_ok&quot;</span><span class="p">],</span>
+<span class="w">      </span><span class="nt">&quot;applies_to_file&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;SKILL.md&quot;</span>
+<span class="w">    </span><span class="p">}</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="w">  </span><span class="nt">&quot;validation_errors&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+<span class="w">  </span><span class="nt">&quot;parse_error&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;api_error&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">null</span>
+<span class="p">}</span>
+</code></pre></div>
+<p><strong>What each field buys you:</strong></p>
+<ul>
+<li><code>motivated_by</code> — list of failing criterion / assertion ids that
+  drove the edit. Traces every proposed change back to a concrete
+  grader signal; if no failing signal exists for an id, the
+  proposer is rejected at parse time.</li>
+<li><code>anchor</code> — a verbatim substring of the current SKILL.md that
+  must appear <strong>exactly once</strong>, hard-validated before the sidecar
+  is written. A too-short anchor that matches multiple places or a
+  hallucinated anchor that matches nothing fails the whole run
+  with exit 2 — no partial diff, no silent drift.</li>
+<li><code>replacement</code> — the exact text to swap in at the anchor site.</li>
+<li><code>confidence</code> — proposer's self-reported <code>[0, 1]</code> confidence.
+  Surface low-confidence edits to the user first; do not auto-apply.</li>
+<li><code>rationale</code> / <code>summary_rationale</code> — per-edit and run-wide
+  explanation. Use them in commit messages.</li>
+<li><code>schema_version</code> — <code>1</code>, first key by convention so downstream
+  tooling can pin on it without scanning the whole payload.</li>
+</ul>
+<p><strong>Safety rails:</strong></p>
+<ul>
+<li>Anchor exactly-once invariant — every <code>edit_proposal.anchor</code> is
+  validated against the on-disk SKILL.md <em>sequentially</em> (edits
+  apply in order, and a later edit's anchor must still resolve
+  uniquely after earlier edits apply). Any failure aborts the run
+  before writing either file.</li>
+<li>No auto-apply — the command writes a diff and a sidecar; it
+  never mutates your SKILL.md. You review, then <code>git apply</code> (or
+  hand-edit).</li>
+<li>Traceability — because every edit carries <code>motivated_by</code>, you
+  can tie a specific SKILL.md change back to the failing grader
+  signal that motivated it, weeks or months later.</li>
+</ul>
+<p><strong>Common failure modes:</strong></p>
+<ul>
+<li><code>no iteration under .clauditor/ contains &lt;skill&gt;/grading.json</code> —
+  run <code>clauditor grade</code> first.</li>
+<li><code>anchor not found in SKILL.md</code> / <code>anchor appears N times (must be
+  exactly once)</code> — the proposer hallucinated or picked a non-unique
+  anchor. Re-run; the command is idempotent. Persistent failures
+  can indicate SKILL.md text drifted between the grade run and the
+  suggest run.</li>
+<li>Exit 3 — Anthropic API error (auth, rate limit, 5xx). No sidecar
+  written; retry once the upstream issue clears.</li>
+</ul>
+<p>Full flag reference: <a href="../cli-reference/#suggest"><code>cli-reference.md#suggest</code></a>.</p>
+<h2 id="skill-compatibility">Skill compatibility</h2>
+<p>clauditor invokes skills through <code>claude -p</code> (non-interactive, print
+mode). This transport is a strict subset of the interactive Claude
+Code runtime — some patterns that work in the TUI do not work under
+<code>claude -p</code>. Known compatibility today:</p>
+<table>
+<thead>
+<tr>
+<th>Pattern</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Sequential <code>Task</code> calls (no <code>run_in_background</code>)</td>
+<td>✅ Works</td>
+</tr>
+<tr>
+<td>Parallel tool calls in the parent (multiple <code>tool_use</code> blocks per turn)</td>
+<td>✅ Works</td>
+</tr>
+<tr>
+<td><code>WebSearch</code> / <code>WebFetch</code> / <code>Bash</code> / <code>Read</code> / <code>Write</code> / <code>Edit</code></td>
+<td>✅ Works</td>
+</tr>
+<tr>
+<td><code>Task(run_in_background=true)</code> (background sub-agents)</td>
+<td>⚠️ Loud warning — parent exits before children complete; output truncated 5-10× (see <a href="https://github.com/wjduenow/clauditor/issues/97">GitHub #97</a>)</td>
+</tr>
+<tr>
+<td><code>AskUserQuestion</code> / interactive prompts</td>
+<td>⚠️ Loud warning — interactive-hang detector fires (no input channel in print mode)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="-sync-tasks-force-task-mode-synchronous-at-eval-time"><code>--sync-tasks</code>: force Task mode synchronous at eval time</h3>
+<p>For skills that use <code>Task(run_in_background=true)</code> purely for
+<strong>latency-reduction fanout</strong> (e.g. "launch 3 sub-agents to research
+different sources in parallel, then synthesize"), clauditor can
+force them synchronous during evaluation without modifying the
+skill. Pass <code>--sync-tasks</code> on <code>validate</code>, <code>grade</code>, <code>capture</code>, or
+<code>run</code>; clauditor sets
+<code>CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1</code> in the <code>claude -p</code>
+subprocess env, which is a <a href="https://docs.claude.com/en/docs/claude-code/sub-agents">documented Anthropic control</a>.</p>
+<div class="highlight"><pre><span></span><code>clauditor<span class="w"> </span>validate<span class="w"> </span>my-skill.md<span class="w"> </span>--sync-tasks
+clauditor<span class="w"> </span>grade<span class="w"> </span>my-skill.md<span class="w"> </span>--sync-tasks<span class="w"> </span>--baseline
+</code></pre></div>
+<p>Equivalent spec-level opt-in (per-skill, commits alongside the
+skill's eval spec):</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;skill_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;my-skill&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;sync_tasks&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;assertions&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>CLI flag wins over the spec field per the standard
+CLI &gt; spec &gt; default precedence.</p>
+<p><strong>Fidelity caveats — read before relying on <code>--sync-tasks</code>:</strong></p>
+<ul>
+<li>You are evaluating a <strong>different execution model</strong> than what
+  ships. The skill runs async in production; <code>--sync-tasks</code> tests
+  sync. Results are equivalent only when the skill's sync and
+  async output is functionally identical.</li>
+<li><strong>Async-specific logic is not exercised.</strong> Race conditions,
+  late-arriving-result handling, "while sub-agents run, emit a
+  progress message" branches, and completion-order dedup/merge
+  logic all go untested under <code>--sync-tasks</code>.</li>
+<li><strong>Timing/cost metrics skew.</strong> Three parallel sub-agents at ~30s
+  each take ~30s in production but ~90s under <code>--sync-tasks</code>.
+  Latency and turn-based-pricing cost metrics are unrealistic.</li>
+</ul>
+<p>For skills where async semantics are load-bearing
+(correctness-sensitive, not just latency-sensitive), the async
+fidelity gap cannot be closed until upstream Claude Code gains
+headless background-task polling — tracked in
+<a href="https://github.com/anthropics/claude-code/issues/52917">anthropics/claude-code#52917</a>
+and catalogued in <a href="../adr/transport-research-103/"><code>docs/adr/transport-research-103.md</code></a>.
+When in doubt, file a GitHub issue rather than rely on
+<code>--sync-tasks</code> results.</p>
+<h3 id="refactoring-recipes-alternative-to-sync-tasks">Refactoring recipes (alternative to <code>--sync-tasks</code>)</h3>
+<p>If you do not want to keep <code>run_in_background=true</code> in production
+and <code>--sync-tasks</code> at eval time, two in-skill refactors cover the
+same cases:</p>
+<ul>
+<li><strong>Recipe A — drop <code>run_in_background: true</code>.</strong> Sub-agents run
+  sequentially. Preserves context isolation; increases wall-clock
+  latency.</li>
+<li><strong>Recipe B — replace <code>Task</code> with parallel tool calls in the
+  parent.</strong> Emit multiple <code>tool_use</code> blocks per turn directly.
+  Shorter latency than Recipe A; loses the sub-agent's isolated
+  context window.</li>
+</ul>
+<h3 id="recipe-skills-that-ask-the-user-mid-run">Recipe: skills that ask the user mid-run</h3>
+<p>Skills that call <code>AskUserQuestion</code> (or end a turn with a clarifying
+question expecting an answer) work fine in the interactive Claude
+Code TUI — Claude pauses, the user types, the skill continues.
+Under <code>claude -p</code> (which clauditor uses) there's no input channel:
+the skill stops on the question and never gets an answer.
+clauditor's interactive-hang detector catches this and emits
+<code>error_category="interactive"</code> so the test fails loudly instead
+of silently truncating.</p>
+<p>Three options, in order of preference:</p>
+<p><strong>Option 1 — restructure the skill to take all parameters upfront.</strong>
+The most common case is a skill that asks for context the caller
+could have provided in the initial prompt. Move those parameters
+into <code>test_args</code> (and into the prompt format the skill expects in
+production), then have the skill validate them before doing work.</p>
+<p>The bundled example skill in
+<a href="../examples/.claude/commands/example-skill.eval.json"><code>examples/.claude/commands/example-skill.eval.json</code></a>
+demonstrates this pattern end-to-end:</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;skill_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;find-kid-activities&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;test_args&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;\&quot;Cupertino, CA\&quot; --dates today --distance 15mi --ages 4-6 --cost \&quot;Free, $\&quot; --type both --category any --count 5 --depth quick&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;assertions&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;no_ask_user_question&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;not_contains&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;needle&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;AskUserQuestion&quot;</span><span class="p">}</span>
+<span class="w">  </span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>Two things to copy from this example:</p>
+<ol>
+<li><strong>Every parameter is in <code>test_args</code>.</strong> City, date, distance, age
+   range, cost tier, category, result count, search depth — all
+   passed up front, so the skill never needs to ask.</li>
+<li><strong>An L1 assertion catches regressions.</strong> The <code>not_contains</code>
+   assertion on <code>"AskUserQuestion"</code> fails the test if the skill
+   ever falls back to asking the user. Cheap, deterministic,
+   catches the failure mode at the structural layer rather than
+   waiting for a hang.</li>
+</ol>
+<p>In SKILL.md prose terms, the rewrite looks like:</p>
+<div class="highlight"><pre><span></span><code><span class="gd">-When the user asks for kid activities, use AskUserQuestion to</span>
+<span class="gd">-clarify city, age range, and budget before searching.</span>
+<span class="gi">+The user&#39;s request will include city, age range, and budget as</span>
+<span class="gi">+command-line flags (e.g. `&quot;&lt;city&gt;&quot; --ages &lt;range&gt; --cost &lt;tiers&gt;`).</span>
+<span class="gi">+Parse these from the input. If any required parameter is missing,</span>
+<span class="gi">+return a structured error like `Error: missing parameter &quot;city&quot;.</span>
+<span class="gi">+Provide as: &quot;&lt;city&gt;&quot; --ages &lt;range&gt; --cost &lt;tiers&gt;` and stop.</span>
+<span class="gi">+Then search...</span>
+</code></pre></div>
+<p><strong>Option 2 — disable the interactive-hang heuristic for false
+positives.</strong> If your skill legitimately ends with a rhetorical or
+summary question (e.g. "Want me to search nearby cities too?")
+and the question is decorative — the skill's actual work is done
+— set <code>allow_hang_heuristic: false</code> on the eval spec. The run
+still completes; clauditor stops flagging the trailing <code>?</code> as
+interactive.</p>
+<div class="highlight"><pre><span></span><code><span class="p">{</span>
+<span class="w">  </span><span class="nt">&quot;skill_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;my-skill&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;allow_hang_heuristic&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span><span class="p">,</span>
+<span class="w">  </span><span class="nt">&quot;assertions&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">]</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>Use this only for false positives. If the skill genuinely needs
+an answer to do its work, option 1 is the right fix.</p>
+<p><strong>Option 3 — keep the interactive flow, skip eval at this layer.</strong>
+Some skills are inherently interactive (e.g. a step-by-step wizard
+that must clarify with the user). For those, clauditor's L1/L2/L3
+auto-evaluation does not apply directly; you can still use
+<code>clauditor capture</code> to record canned outputs after manual runs and
+diff them with <code>clauditor compare</code>, but the auto-grade loop is
+out of reach until upstream Claude Code gains a headless input
+channel.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.top", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
