@@ -92,10 +92,11 @@ class ExtractionReport:
     .. code-block:: json
 
         {
-          "schema_version": 2,
+          "schema_version": 3,
           "skill_name": "...",
           "model": "...",
           "transport_source": "api",
+          "provider_source": "anthropic",
           "input_tokens": 0,
           "output_tokens": 0,
           "parse_errors": [],
@@ -115,11 +116,15 @@ class ExtractionReport:
     that the field was *declared* in the spec.
 
     ``transport_source`` records which :class:`ModelResult`
-    transport produced the Haiku response — ``"api"`` or ``"cli"``.
-    Persisted at ``schema_version=2`` per DEC-007 of
-    ``plans/super/86-claude-cli-transport.md``. The audit loader
-    accepts both ``{1, 2}`` and defaults missing ``transport_source``
-    to ``"api"`` when reading v1 sidecars.
+    transport produced the Haiku response — ``"api"`` or ``"cli"``
+    (added in v2 per DEC-007 of
+    ``plans/super/86-claude-cli-transport.md``). ``provider_source``
+    records which provider backend produced the response —
+    ``"anthropic"`` or ``"openai"`` (added in v3 per DEC-001 /
+    DEC-006 of ``plans/super/147-sidecar-provider-field.md``). The
+    audit loader accepts ``{1, 2, 3}`` and defaults missing
+    ``transport_source`` to ``"api"`` and missing ``provider_source``
+    to ``"anthropic"`` when reading legacy v1/v2 sidecars.
     """
 
     skill_name: str
@@ -131,11 +136,12 @@ class ExtractionReport:
     declared_field_ids: list[str] = field(default_factory=list)
     transport_source: str = "api"
     # ``provider_source`` records which provider backend produced the
-    # response — ``"anthropic"`` (current) or ``"openai"`` (#145+). Per
-    # DEC-006 of ``plans/super/144-providers-call-model.md`` this field
-    # is in-memory only — :meth:`to_json` does NOT include it; the
-    # ``schema_version: 3`` bump that lights it up on disk is owned by
-    # #147.
+    # response — ``"anthropic"`` (current) or ``"openai"`` (#145+).
+    # Persisted into ``extraction.json`` at ``schema_version=3`` per
+    # DEC-001 / DEC-006 of ``plans/super/147-sidecar-provider-field.md``.
+    # The audit loader accepts ``{1, 2, 3}`` and defaults missing
+    # ``provider_source`` to ``"anthropic"`` when reading legacy v1/v2
+    # sidecars.
     provider_source: str = "anthropic"
 
     @property
@@ -147,11 +153,13 @@ class ExtractionReport:
     def to_json(self) -> str:
         """Serialize the report to a JSON string.
 
-        Emits ``schema_version: 2`` as the first key per
-        ``.claude/rules/json-schema-version.md``. Version 2 adds the
-        ``transport_source`` field; the audit loader accepts both
-        ``{1, 2}`` and defaults missing ``transport_source`` to
-        ``"api"`` when reading v1 sidecars.
+        Emits ``schema_version: 3`` as the first key per
+        ``.claude/rules/json-schema-version.md``. Version 3 adds the
+        ``provider_source`` field on disk (v2 added
+        ``transport_source``); the audit loader accepts ``{1, 2, 3}``
+        and defaults missing ``transport_source`` to ``"api"`` and
+        missing ``provider_source`` to ``"anthropic"`` when reading
+        legacy v1/v2 sidecars.
         """
         by_id: dict[str, list[dict]] = {}
         # Pre-populate every declared field id with an empty list so the
@@ -164,10 +172,11 @@ class ExtractionReport:
                 {k: v for k, v in r.to_dict().items() if k != "field_id"}
             )
         payload = {
-            "schema_version": 2,
+            "schema_version": 3,
             "skill_name": self.skill_name,
             "model": self.model,
             "transport_source": self.transport_source,
+            "provider_source": self.provider_source,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "parse_errors": list(self.parse_errors),
@@ -179,9 +188,10 @@ class ExtractionReport:
     def from_json(cls, text: str) -> ExtractionReport:
         """Deserialize an ExtractionReport from a JSON string.
 
-        Tolerates both schema versions (``1`` and ``2``); a missing
+        Tolerates schema versions ``1``, ``2``, and ``3``. A missing
         ``transport_source`` defaults to ``"api"`` so pre-#86 sidecars
-        load cleanly.
+        load cleanly; a missing ``provider_source`` defaults to
+        ``"anthropic"`` so pre-#147 sidecars load cleanly.
         """
         data = json.loads(text)
         results: list[FieldExtractionResult] = []
@@ -211,6 +221,9 @@ class ExtractionReport:
             parse_errors=list(data.get("parse_errors") or []),
             declared_field_ids=list((data.get("fields") or {}).keys()),
             transport_source=str(data.get("transport_source") or "api"),
+            provider_source=str(
+                data.get("provider_source") or "anthropic"
+            ),
         )
 
 
