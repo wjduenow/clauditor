@@ -359,7 +359,7 @@ class TestSchemaVersionEnforcement:
         assert len(records) == 0
         err = capsys.readouterr().err
         assert "schema_version=99" in err
-        assert f"expected {SCHEMA_VERSION}" in err
+        assert "expected one of [1, 2]" in err
 
     def test_missing_version_skipped_with_warning(self, tmp_path, capsys):
         import json as _json
@@ -378,7 +378,7 @@ class TestSchemaVersionEnforcement:
         assert len(records) == 0
         err = capsys.readouterr().err
         assert "schema_version=None" in err
-        assert f"expected {SCHEMA_VERSION}" in err
+        assert "expected one of [1, 2]" in err
 
     def test_valid_record_passes(self, tmp_path, capsys):
         path = tmp_path / "history.jsonl"

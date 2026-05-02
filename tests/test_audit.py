@@ -1755,6 +1755,50 @@ class TestRenderProviderColumn:
         assert "providers_seen" in payload
         assert payload["providers_seen"] == ["anthropic", "openai"]
 
+    def test_render_json_v2_providers_seen_sorted_not_insertion_order(
+        self,
+    ) -> None:
+        """Stronger sort guard: feed providers whose alphabetical order
+        differs from insertion order. ``["anthropic", "openai"]`` is
+        tautological (already alphabetical = insertion order on
+        CPython sets), so a regression that returned ``list(set(...))``
+        would still pass that test. This pins true alphabetical sort.
+        """
+        agg_factory = lambda layer, rid, prov: AuditAggregate(  # noqa: E731
+            layer=layer,
+            id=rid,
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider=prov,
+        )
+        verdicts = apply_thresholds(
+            {
+                ("zebra", "L3", "x"): agg_factory("L3", "x", "zebra"),
+                ("openai", "L3", "x"): agg_factory("L3", "x", "openai"),
+                ("alpha", "L3", "x"): agg_factory("L3", "x", "alpha"),
+                ("anthropic", "L3", "x"): agg_factory("L3", "x", "anthropic"),
+            },
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+        payload = render_json(
+            verdicts,
+            skill="s",
+            iterations_analyzed=10,
+            thresholds={"last": 10},
+            timestamp="t",
+        )
+        assert payload["providers_seen"] == [
+            "alpha",
+            "anthropic",
+            "openai",
+            "zebra",
+        ]
+
     def test_render_json_v2_single_provider_seen(self) -> None:
         """Acceptance criterion 4: single-provider history →
         ``providers_seen == ["anthropic"]``."""

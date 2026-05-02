@@ -190,9 +190,10 @@ def _check_schema_version(data: dict, source: Path, lineno: int) -> bool:
     """
     version = data.get("schema_version")
     if version not in _ACCEPTED_SCHEMA_VERSIONS:
+        accepted = sorted(_ACCEPTED_SCHEMA_VERSIONS)
         print(
             f"warning: {source} line {lineno} has schema_version={version!r}, "
-            f"expected {SCHEMA_VERSION} — skipping",
+            f"expected one of {accepted} — skipping",
             file=sys.stderr,
         )
         return False

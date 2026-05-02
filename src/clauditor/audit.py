@@ -549,8 +549,8 @@ def apply_thresholds(
     verdicts: list[AuditVerdict] = []
     # US-003 (#147): unpack the 3-tuple ``(provider, layer, id)`` key
     # produced by :func:`aggregate`. ``sorted`` orders provider first so
-    # an audit report renders all-anthropic rows before openai rows
-    # within each layer.
+    # an audit report renders all-anthropic rows across all layers
+    # before openai rows; layer/id break ties within a provider.
     for (provider, layer, rid), agg in sorted(aggregates.items()):
         if agg.total_with_runs == 0:
             continue
