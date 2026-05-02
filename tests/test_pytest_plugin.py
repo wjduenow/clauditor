@@ -1723,3 +1723,104 @@ class TestFixtureModelOverrideThreading:
 
         with pytest.raises(ValueError, match="cannot infer provider"):
             _resolve_fixture_provider(eval_spec)
+
+    def test_resolve_fixture_provider_returns_anthropic_for_none_eval_spec(
+        self, monkeypatch
+    ):
+        """Pre-#146 fallback: when no eval_spec is attached, the fixture
+        resolver short-circuits to ``"anthropic"``. Covers
+        ``pytest_plugin.py:248``.
+        """
+        from clauditor.pytest_plugin import _resolve_fixture_provider
+
+        assert _resolve_fixture_provider(None) == "anthropic"
+
+    def test_resolve_fixture_provider_normalizes_whitespace_env(
+        self, monkeypatch
+    ):
+        """Whitespace-only ``CLAUDITOR_GRADING_PROVIDER`` env var is
+        treated as unset. Covers ``pytest_plugin.py:252``.
+        """
+        from clauditor.pytest_plugin import _resolve_fixture_provider
+
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "   ")
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "openai"  # spec wins
+        eval_spec.grading_model = "gpt-5.4"
+        assert _resolve_fixture_provider(eval_spec) == "openai"
+
+    def test_dispatch_fixture_auth_guard_none_eval_spec_uses_anthropic_strict(
+        self, monkeypatch
+    ):
+        """When ``eval_spec is None``, dispatch falls through to the
+        Anthropic strict guard (preserving pre-#146 behavior). Covers
+        ``pytest_plugin.py:305-309``.
+        """
+        from clauditor._providers import AnthropicAuthMissingError
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_FIXTURE_ALLOW_CLI", raising=False)
+
+        with pytest.raises(AnthropicAuthMissingError):
+            _dispatch_fixture_auth_guard(None, "grader")
+
+    def test_dispatch_fixture_auth_guard_none_eval_spec_with_relaxed_env(
+        self, monkeypatch
+    ):
+        """``eval_spec=None`` + ``CLAUDITOR_FIXTURE_ALLOW_CLI=1`` →
+        relaxed Anthropic guard fires. Covers the relaxed branch of
+        ``pytest_plugin.py:305-309``.
+        """
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "1")
+
+        # Should not raise — key is set so check_any_auth_available passes.
+        _dispatch_fixture_auth_guard(None, "grader")
+
+    def test_dispatch_fixture_auth_guard_normalizes_whitespace_env(
+        self, monkeypatch
+    ):
+        """Whitespace-only ``CLAUDITOR_GRADING_PROVIDER`` env var
+        normalizes to None inside dispatch. Covers
+        ``pytest_plugin.py:321``.
+        """
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "   ")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "openai"
+        eval_spec.grading_model = "gpt-5.4"
+
+        # Should not raise — env normalizes to None, spec wins → openai.
+        _dispatch_fixture_auth_guard(eval_spec, "grader")
+
+    def test_dispatch_fixture_auth_guard_unknown_provider_raises(
+        self, monkeypatch
+    ):
+        """Defensive ValueError for forward-compat unknown provider
+        values that somehow slip past resolve_grading_provider. Covers
+        ``pytest_plugin.py:342``.
+
+        Mocks the resolver to return an unsupported provider string,
+        forcing the defensive fallthrough branch.
+        """
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "anthropic"
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        # Patch the canonical seam since the helper does a deferred
+        # per-call import (per .claude/rules/back-compat-shim-discipline.md
+        # Pattern 3).
+        with patch(
+            "clauditor._providers.resolve_grading_provider",
+            return_value="vertex",  # not in {"anthropic", "openai"}
+        ):
+            with pytest.raises(ValueError, match="unknown provider"):
+                _dispatch_fixture_auth_guard(eval_spec, "grader")
