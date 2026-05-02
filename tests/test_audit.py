@@ -545,18 +545,21 @@ class TestRenderers:
             thresholds={"last": 20, "min_fail_rate": 0.0},
             timestamp="20260101T000000Z",
         )
+        # US-004 (#147): bumped to schema_version 2 + ``providers_seen``.
         assert set(payload.keys()) == {
             "schema_version",
             "skill",
             "timestamp",
             "iterations",
             "thresholds",
+            "providers_seen",
             "assertions",
         }
-        assert payload["schema_version"] == 1
+        assert payload["schema_version"] == 2
         assert isinstance(payload["assertions"], list)
         first = payload["assertions"][0]
         for key in (
+            "provider",
             "layer",
             "id",
             "with_runs",
@@ -714,8 +717,10 @@ class TestCmdAuditExitCode:
 
 
 class TestSchemaVersion:
-    def test_audit_render_json_has_schema_version_1(self) -> None:
-        """FIX-7 (#25): audit JSON payloads carry ``schema_version``."""
+    def test_audit_render_json_has_schema_version_2(self) -> None:
+        """US-004 (#147): audit JSON output bumped from v1 to v2 to
+        signal the new ``provider`` per-assertion field + top-level
+        ``providers_seen`` array (DEC-005, DEC-010)."""
         payload = render_json(
             [],
             skill="s",
@@ -723,7 +728,7 @@ class TestSchemaVersion:
             thresholds={"last": 20},
             timestamp="t",
         )
-        assert payload["schema_version"] == 1
+        assert payload["schema_version"] == 2
 
 
 class TestIsAcceptedVersion:
@@ -1627,3 +1632,264 @@ class TestProviderDimension:
         assert records[0].provider == "anthropic"
         agg = aggregate(records)
         assert ("anthropic", "L3", "x") in agg
+
+
+class TestRenderProviderColumn:
+    """US-004 (#147): the three audit render paths surface provider.
+
+    - ``render_stdout_table`` adds a leftmost ``PROVIDER`` column.
+    - ``render_markdown`` adds a leftmost ``| provider |`` column.
+    - ``render_json`` bumps to schema_version 2; each ``assertions[]``
+      entry carries ``provider``; top-level ``providers_seen`` is sorted
+      alphabetically.
+    Sort order across all three: ``(provider, layer, id)``.
+
+    Traces to: DEC-004, DEC-005, DEC-010.
+    """
+
+    def _mixed_verdicts(self) -> list[AuditVerdict]:
+        """Two aggregates sharing ``(L3, x)`` under different providers,
+        plus an ``(L1, ant_only)`` under anthropic only."""
+        ant_l3 = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=10,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+        )
+        openai_l3 = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=10,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="openai",
+        )
+        ant_l1 = AuditAggregate(
+            layer="L1",
+            id="ant_only",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+        )
+        return apply_thresholds(
+            {
+                ("openai", "L3", "x"): openai_l3,
+                ("anthropic", "L3", "x"): ant_l3,
+                ("anthropic", "L1", "ant_only"): ant_l1,
+            },
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+
+    def _single_provider_verdicts(self) -> list[AuditVerdict]:
+        """Single-provider history: only anthropic rows."""
+        ant = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+        )
+        return apply_thresholds(
+            {("anthropic", "L3", "x"): ant},
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+
+    def test_render_json_v2_schema_version_first_key(self) -> None:
+        """Acceptance criterion 1: ``schema_version`` is the first key
+        and equals 2 (DEC-005)."""
+        payload = render_json(
+            self._single_provider_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        first_key = next(iter(payload.keys()))
+        assert first_key == "schema_version"
+        assert payload["schema_version"] == 2
+
+    def test_render_json_v2_includes_provider_per_assertion(self) -> None:
+        """Acceptance criterion 2: every ``assertions[]`` entry carries
+        ``provider``."""
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=10,
+            thresholds={"last": 10},
+            timestamp="t",
+        )
+        assert len(payload["assertions"]) == 3
+        for entry in payload["assertions"]:
+            assert "provider" in entry
+            assert entry["provider"] in {"anthropic", "openai"}
+
+    def test_render_json_v2_includes_providers_seen_sorted(self) -> None:
+        """Acceptance criteria 3 + 5: ``providers_seen`` is at the top
+        level, sorted alphabetically; mixed history yields
+        ``["anthropic", "openai"]``."""
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=10,
+            thresholds={"last": 10},
+            timestamp="t",
+        )
+        assert "providers_seen" in payload
+        assert payload["providers_seen"] == ["anthropic", "openai"]
+
+    def test_render_json_v2_single_provider_seen(self) -> None:
+        """Acceptance criterion 4: single-provider history →
+        ``providers_seen == ["anthropic"]``."""
+        payload = render_json(
+            self._single_provider_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        assert payload["providers_seen"] == ["anthropic"]
+
+    def test_render_json_v2_empty_providers_seen_when_no_verdicts(
+        self,
+    ) -> None:
+        """Edge case: zero verdicts → empty ``providers_seen``."""
+        payload = render_json(
+            [],
+            skill="s",
+            iterations_analyzed=0,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        assert payload["providers_seen"] == []
+        assert payload["assertions"] == []
+
+    def test_render_json_assertions_sorted_by_provider_layer_id(
+        self,
+    ) -> None:
+        """``assertions[]`` is sorted by ``(provider, layer, id)`` so
+        anthropic rows render before openai, then by layer, then id."""
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=10,
+            thresholds={"last": 10},
+            timestamp="t",
+        )
+        keys = [
+            (e["provider"], e["layer"], e["id"])
+            for e in payload["assertions"]
+        ]
+        assert keys == sorted(keys)
+        # Concretely: anthropic L1 < anthropic L3 < openai L3.
+        assert keys == [
+            ("anthropic", "L1", "ant_only"),
+            ("anthropic", "L3", "x"),
+            ("openai", "L3", "x"),
+        ]
+
+    def test_render_stdout_table_has_provider_column(self) -> None:
+        """Acceptance criterion 6: ``PROVIDER`` column header + one row
+        per ``(provider, layer, id)``."""
+        table = render_stdout_table(self._mixed_verdicts())
+        # Header has PROVIDER as the leftmost column.
+        first_line = table.splitlines()[0]
+        assert first_line.startswith("PROVIDER")
+        assert "PROVIDER" in table
+        assert "anthropic" in table
+        assert "openai" in table
+
+    def test_render_stdout_table_sorted_provider_layer_id(self) -> None:
+        """Anthropic rows render before openai; layer + id within."""
+        table = render_stdout_table(self._mixed_verdicts())
+        body_lines = [
+            line
+            for line in table.splitlines()
+            if line and not line.startswith(("PROVIDER", "-"))
+        ]
+        # The anthropic L1 row should come before the anthropic L3 row,
+        # which should come before the openai L3 row.
+        ant_l1_idx = next(
+            i for i, ln in enumerate(body_lines)
+            if "ant_only" in ln and "anthropic" in ln
+        )
+        openai_idx = next(
+            i for i, ln in enumerate(body_lines) if "openai" in ln
+        )
+        assert ant_l1_idx < openai_idx
+
+    def test_render_markdown_has_provider_column(self) -> None:
+        """Acceptance criterion 7: per-layer markdown table has
+        ``| provider |`` as the first column."""
+        md = render_markdown(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=10,
+            thresholds={"last": 10},
+            timestamp="t",
+        )
+        assert "| provider |" in md
+        # Header column ordering: provider must come before id.
+        header_line = next(
+            line for line in md.splitlines()
+            if line.startswith("| provider |")
+        )
+        assert header_line.index("provider") < header_line.index("id")
+
+    def test_render_markdown_renders_provider_value_in_row(self) -> None:
+        """Mixed-provider markdown surfaces both ``anthropic`` and
+        ``openai`` in row cells under L3 detail."""
+        md = render_markdown(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=10,
+            thresholds={"last": 10},
+            timestamp="t",
+        )
+        # Both providers appear inside backtick-quoted cells under
+        # the L3 detail table.
+        assert "`anthropic`" in md
+        assert "`openai`" in md
+
+    def test_render_stdout_table_truncates_long_provider(self) -> None:
+        """Provider column is ~11 chars wide; longer strings are
+        truncated to keep the column-aligned layout."""
+        long_provider_agg = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="a" * 30,
+        )
+        verdicts = apply_thresholds(
+            {("a" * 30, "L3", "x"): long_provider_agg},
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+        table = render_stdout_table(verdicts)
+        body = table.splitlines()[2]
+        # Only 11 a's appear in the leftmost column slice.
+        assert body.startswith("a" * 11)
+        # And there is whitespace after — the column is bounded.
+        assert body[11] == " "
