@@ -264,6 +264,12 @@ def _append_validate_history(
             mean_score=None,
             metrics=metrics_dict,
             command="validate",
+            # validate runs Layer 1 deterministic assertions only — no
+            # LLM grading call is made — so the provider field has no
+            # operational meaning. Stamp ``"anthropic"`` as the
+            # placeholder per #147 DEC-002 / DEC-012 so history records
+            # carry a valid value downstream consumers can group on.
+            provider="anthropic",
             iteration=iteration,
             workspace_path=workspace_path,
         )

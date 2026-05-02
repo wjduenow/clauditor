@@ -8,7 +8,9 @@ block characters.
 
 Each record is a JSON object with the following top-level keys:
 
-- ``schema_version``: int, always ``1``
+- ``schema_version``: int, ``2`` (current). v1 records are still readable
+  for back-compat — ``read_records`` defaults their missing ``provider``
+  to ``"anthropic"`` per #147 DEC-012.
 - ``command``: one of ``"grade"``, ``"extract"``, ``"validate"``
 - ``ts``: ISO-8601 UTC timestamp
 - ``skill``: skill name
@@ -17,6 +19,9 @@ Each record is a JSON object with the following top-level keys:
 - ``metrics``: dict (canonical bucketed metrics from ``clauditor.metrics``)
 - ``iteration``: int or None — Ralph iteration number, when known
 - ``workspace_path``: str or None — workspace dir for this run, when known
+- ``provider``: str — which model provider's SDK served the grading call
+  (``"anthropic"`` or ``"openai"``). Required (keyword-only) on
+  ``append_record``; defaults to ``"anthropic"`` on legacy v1 reads.
 
 ``iteration`` and ``workspace_path`` are always written, even when
 ``None``, so the on-disk record shape is predictable.
@@ -68,7 +73,11 @@ def _default_path() -> Path:
 
 
 SPARK_GLYPHS = "_.-=#"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+# v1 records are still readable; ``read_records`` defaults missing
+# ``provider`` to ``"anthropic"`` for legacy lines per #147 DEC-012.
+_ACCEPTED_SCHEMA_VERSIONS: frozenset[int] = frozenset({1, 2})
 
 _FLOCK_UNSUPPORTED_WARNED = False
 
@@ -122,6 +131,7 @@ def append_record(
     metrics: dict,
     *,
     command: Literal["grade", "extract", "validate"],
+    provider: str,
     path: Path | None = None,
     iteration: int | None = None,
     workspace_path: str | None = None,
@@ -134,6 +144,11 @@ def append_record(
 
     ``command`` is required (keyword-only) and identifies which clauditor
     subcommand produced the record.
+
+    ``provider`` is required (keyword-only) and identifies which model
+    provider's SDK served the grading call (``"anthropic"`` or
+    ``"openai"``). Per #147 DEC-012 this field is mandatory on writes;
+    legacy v1 reads default to ``"anthropic"``.
 
     Concurrent appends from multiple processes are serialized via an
     ``fcntl.flock`` exclusive lock on ``<history_parent>/.lock`` so each
@@ -156,6 +171,7 @@ def append_record(
         "metrics": metrics,
         "iteration": iteration,
         "workspace_path": workspace_path,
+        "provider": provider,
     }
     line = json.dumps(record) + "\n"
     lock_path = path.parent / ".lock"
@@ -165,13 +181,15 @@ def append_record(
 
 
 def _check_schema_version(data: dict, source: Path, lineno: int) -> bool:
-    """Return ``True`` if ``data`` has the expected schema version.
+    """Return ``True`` if ``data`` has an accepted schema version.
 
-    Records with a mismatched version are skipped with a stderr warning
-    per ``.claude/rules/json-schema-version.md``.
+    Per #147 DEC-012, both v1 and v2 records are accepted; v1 records are
+    legacy and have ``provider`` defaulted in :func:`read_records`. Records
+    with a mismatched version are skipped with a stderr warning per
+    ``.claude/rules/json-schema-version.md``.
     """
     version = data.get("schema_version")
-    if version != SCHEMA_VERSION:
+    if version not in _ACCEPTED_SCHEMA_VERSIONS:
         print(
             f"warning: {source} line {lineno} has schema_version={version!r}, "
             f"expected {SCHEMA_VERSION} — skipping",
@@ -223,6 +241,11 @@ def read_records(
                 continue
             if skill is not None and record.get("skill") != skill:
                 continue
+            # v1 records (pre-#147) lack ``provider``. Default to
+            # ``"anthropic"`` so downstream consumers (audit, trend) can
+            # treat the field as guaranteed-present per DEC-012.
+            if "provider" not in record:
+                record["provider"] = "anthropic"
             records.append(record)
     return records
 
