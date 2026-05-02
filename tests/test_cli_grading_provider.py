@@ -899,3 +899,51 @@ class TestSuggestGradingProviderFlag:
             f"Expected OpenAI model name, got {actual_model!r} — "
             "the Anthropic default leaked into the OpenAI backend."
         )
+
+    def test_suggest_explicit_anthropic_pre_stamps_claude_default(
+        self, tmp_path, monkeypatch
+    ):
+        """``suggest --grading-provider anthropic`` (no ``--model``) →
+        pre-stamps ``claude-sonnet-4-6`` so the resolver auto-infers
+        anthropic, and the orchestrator receives a coherent
+        (provider=anthropic, model=claude-...) pair. Covers
+        ``suggest.py:291-292`` (the explicit-anthropic branch of the
+        peek-at-explicit-provider model defaulting block).
+        """
+        from clauditor.suggest import SuggestReport
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        skill_md = _stage_suggest_failing_run(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        guard = MagicMock(return_value=None)
+        canned = SuggestReport(
+            skill_name="x",
+            model="claude-sonnet-4-6",
+            generated_at="",
+            source_iteration=0,
+            source_grading_path="",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+        )
+        proposer_mock = AsyncMock(return_value=canned)
+        with (
+            patch("clauditor.cli.suggest.check_provider_auth", new=guard),
+            patch("clauditor.cli.suggest.propose_edits", new=proposer_mock),
+        ):
+            main(
+                [
+                    "suggest",
+                    str(skill_md),
+                    "--grading-provider",
+                    "anthropic",
+                    "--json",
+                ]
+            )
+
+        assert guard.call_args[0][0] == "anthropic"
+        assert proposer_mock.call_count == 1
+        actual_model = proposer_mock.call_args.kwargs["model"]
+        assert actual_model.startswith("claude-")

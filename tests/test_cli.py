@@ -7437,6 +7437,10 @@ class TestExplicitAutoProviderHandling:
         assert "provide grading_provider or grading_model" in err
 
 
+class _StopE2EError(Exception):
+    """Sentinel raised by mocks to short-circuit CLI flow at a captured point."""
+
+
 class TestProviderModelCoherence:
     """Provider/model coherence guard added per CodeRabbit finding on PR #164.
 
@@ -7693,6 +7697,86 @@ class TestProviderModelCoherence:
             )
         assert rc == 2
         assert mock_blind.await_count == 0
+
+    def test_extract_resolves_default_model_when_spec_grading_model_is_null(
+        self, tmp_path, monkeypatch
+    ):
+        """When ``args.model`` is None AND ``spec.grading_model`` is None
+        (explicit ``null`` per DEC-004a), extract.py:145-146 falls back
+        to ``resolve_grading_model(spec, provider)`` to pick the per-
+        provider default. Covers the ``if model is None`` branch.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+        eval_spec = _make_eval_spec(sections=_make_sections(), grading_model=None)
+        spec = _make_spec(eval_spec=eval_spec)
+
+        captured: dict = {}
+
+        async def _fake_extract(*args, **kwargs):
+            captured["model"] = args[2] if len(args) > 2 else kwargs.get("model")
+            captured["provider"] = kwargs.get("provider")
+            # Raise after capturing to short-circuit extract.py before
+            # the unrelated downstream summary() call. The captured
+            # values still prove the model-resolution branch fired.
+            raise _StopE2EError("captured")
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch("clauditor.grader.extract_and_grade", new=_fake_extract),
+            pytest.raises(_StopE2EError),
+        ):
+            main(
+                [
+                    "extract", "skill.md",
+                    "--grading-provider", "anthropic",
+                    "--output", str(output_file),
+                ]
+            )
+
+        assert captured["model"] == "claude-sonnet-4-6"
+        assert captured["provider"] == "anthropic"
+
+    def test_triggers_resolves_default_model_when_spec_grading_model_is_null(
+        self, tmp_path, monkeypatch
+    ):
+        """Same shape for triggers.py:146-148 — falls back to
+        ``resolve_grading_model`` when both args.model and
+        spec.grading_model are None.
+        """
+        from clauditor.schemas import TriggerTests
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        eval_spec = _make_eval_spec(
+            grading_model=None,
+            trigger_tests=TriggerTests(
+                should_trigger=["x"],
+                should_not_trigger=["y"],
+            ),
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+
+        captured: dict = {}
+
+        async def _fake_triggers(*args, **kwargs):
+            captured["model"] = args[1] if len(args) > 1 else kwargs.get("model")
+            captured["provider"] = kwargs.get("provider")
+            raise _StopE2EError("captured")
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch("clauditor.triggers.test_triggers", new=_fake_triggers),
+            pytest.raises(_StopE2EError),
+        ):
+            main(
+                [
+                    "triggers", "skill.md",
+                    "--grading-provider", "anthropic",
+                ]
+            )
+
+        assert captured["model"] == "claude-sonnet-4-6"
+        assert captured["provider"] == "anthropic"
 
 
 # ---------------------------------------------------------------------------
