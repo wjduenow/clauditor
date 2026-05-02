@@ -5226,6 +5226,283 @@ class TestCmdTrendMutuallyExclusive:
             main(argv)
 
 
+class TestProviderConcreteChoice:
+    """``_provider_concrete_choice`` argparse type validator (#147 US-006).
+
+    DEC-007: rejects ``"auto"`` (distinct from ``_provider_choice`` which
+    accepts auto for the four-layer-precedence resolution). Trend has no
+    model/spec context to resolve auto against — it reads concrete
+    history records.
+    """
+
+    def test_accepts_anthropic(self):
+        from clauditor.cli import _provider_concrete_choice
+
+        assert _provider_concrete_choice("anthropic") == "anthropic"
+
+    def test_accepts_openai(self):
+        from clauditor.cli import _provider_concrete_choice
+
+        assert _provider_concrete_choice("openai") == "openai"
+
+    def test_rejects_auto(self):
+        from clauditor.cli import _provider_concrete_choice
+
+        with pytest.raises(argparse.ArgumentTypeError, match="anthropic"):
+            _provider_concrete_choice("auto")
+
+    def test_rejects_empty_string(self):
+        from clauditor.cli import _provider_concrete_choice
+
+        with pytest.raises(argparse.ArgumentTypeError):
+            _provider_concrete_choice("")
+
+    def test_rejects_typo(self):
+        from clauditor.cli import _provider_concrete_choice
+
+        with pytest.raises(argparse.ArgumentTypeError, match="openi"):
+            _provider_concrete_choice("openi")
+
+
+class TestCmdTrendProviderFilter:
+    """``clauditor trend --provider`` (#147 US-006).
+
+    Traces to DEC-003 (mixed-provider refusal exit 2), DEC-009 (filter
+    matching zero records exit 1), DEC-011 (refusal computed from full
+    filtered set, BEFORE ``--last`` slice).
+    """
+
+    def _seed_mixed(self, path, skill="test-skill"):
+        """Seed 3 anthropic + 2 openai grade records."""
+        from clauditor import history
+
+        for i in range(3):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                path=path,
+            )
+        for i in range(2):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.8 + i * 0.05,
+                mean_score=0.7,
+                metrics={},
+                command="grade",
+                provider="openai",
+                path=path,
+            )
+
+    def _seed_single(self, path, skill="test-skill", provider="anthropic", n=3):
+        from clauditor import history
+
+        for i in range(n):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider=provider,
+                path=path,
+            )
+
+    def test_mixed_provider_history_refuses_exit_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Mixed-provider history without ``--provider`` → exit 2 (DEC-003)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed providers" in err
+        assert "anthropic" in err
+        assert "openai" in err
+        assert "--provider" in err
+
+    def test_provider_filter_renders_filtered_records(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--provider openai`` on mixed history filters to openai records."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--provider",
+                "openai",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        # Only the 2 openai records should appear.
+        assert len(data_lines) == 2
+
+    def test_provider_filter_anthropic_on_mixed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--provider anthropic`` on mixed history filters to anthropic."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--provider",
+                "anthropic",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        # Only the 3 anthropic records should appear.
+        assert len(data_lines) == 3
+
+    def test_provider_filter_empty_result_exits_1(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--provider openai`` on all-anthropic history → exit 1 (DEC-009)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_single(
+            tmp_path / ".clauditor" / "history.jsonl", provider="anthropic"
+        )
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--provider",
+                "openai",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "openai" in err
+        assert "no records" in err.lower() or "no record" in err.lower()
+
+    def test_single_provider_unchanged_behavior(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Single-provider history without ``--provider`` → renders TSV."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_single(tmp_path / ".clauditor" / "history.jsonl", n=3)
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        assert len(data_lines) == 3
+
+    def test_refusal_uses_full_filtered_history_not_last_slice(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """DEC-011: refusal computed BEFORE ``--last`` slice.
+
+        Seed 5 anthropic records, then 3 openai records (last 3). With
+        ``--last 3`` the trailing window is single-provider, but the
+        full filtered set is mixed — refusal must still fire.
+        """
+        from clauditor import history
+
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".clauditor" / "history.jsonl"
+        for i in range(5):
+            history.append_record(
+                skill="test-skill",
+                pass_rate=0.5 + i * 0.05,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                path=path,
+            )
+        for i in range(3):
+            history.append_record(
+                skill="test-skill",
+                pass_rate=0.8 + i * 0.05,
+                mean_score=0.7,
+                metrics={},
+                command="grade",
+                provider="openai",
+                path=path,
+            )
+
+        rc = main(
+            ["trend", "test-skill", "--metric", "pass_rate", "--last", "3"]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed providers" in err
+
+    def test_argparse_rejects_provider_auto(self, tmp_path, monkeypatch, capsys):
+        """``--provider auto`` rejected by argparse → exit 2 (validator)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_single(tmp_path / ".clauditor" / "history.jsonl")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "trend",
+                    "test-skill",
+                    "--metric",
+                    "pass_rate",
+                    "--provider",
+                    "auto",
+                ]
+            )
+        assert exc_info.value.code == 2
+
+    def test_legacy_records_default_to_anthropic(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """v1 history records (missing ``provider``) default to anthropic
+        — refusal does not fire when only legacy records exist."""
+        import json as _json
+
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".clauditor" / "history.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write a v1 record (schema_version=1) lacking ``provider``;
+        # ``read_records`` defaults missing provider to "anthropic".
+        v1_rec = {
+            "schema_version": 1,
+            "command": "grade",
+            "ts": "2026-01-01T00:00:00+00:00",
+            "skill": "test-skill",
+            "pass_rate": 0.4,
+            "mean_score": 0.5,
+            "metrics": {},
+        }
+        with path.open("w", encoding="utf-8") as f:
+            f.write(_json.dumps(v1_rec) + "\n")
+
+        # v1 records are accepted by ``_check_schema_version`` (#147
+        # DEC-012 accept-list = {1, 2}); ``read_records`` defaults
+        # missing ``provider`` to ``"anthropic"`` so the trend
+        # refusal path does not fire.
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "\t0.4" in out
+
+
 class TestCmdGradeHistory:
     """cmd_grade appends a history record (US-006)."""
 
