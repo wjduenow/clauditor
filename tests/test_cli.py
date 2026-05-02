@@ -7595,6 +7595,105 @@ class TestProviderModelCoherence:
         assert "conflicts with grading_model" in err
         assert mock_blind.await_count == 0
 
+    def test_grade_unknown_model_with_explicit_provider_exits_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Explicit ``--grading-provider openai --model weird-prefix-x``
+        skips the resolver's auto-inference (CLI flag wins) but the
+        per-command coherence check at ``grade.py:393-395`` then fails
+        with the inner ``infer_provider_from_model`` ValueError → exit 2.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+            ) as mock_grade,
+        ):
+            rc = main(
+                [
+                    "grade", "skill.md",
+                    "--grading-provider", "openai",
+                    "--model", "weird-prefix-foo",
+                    "--output", str(output_file),
+                ]
+            )
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "ERROR:" in err
+        assert mock_grade.await_count == 0
+
+    def test_extract_unknown_model_with_explicit_provider_exits_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Same shape for ``extract`` — covers ``extract.py:158-160``."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output")
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+            ) as mock_extract,
+        ):
+            rc = main(
+                [
+                    "extract", "skill.md",
+                    "--grading-provider", "openai",
+                    "--model", "weird-prefix-foo",
+                    "--output", str(output_file),
+                ]
+            )
+
+        assert rc == 2
+        assert mock_extract.await_count == 0
+
+    def test_compare_blind_unknown_model_in_spec_exits_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``compare --blind`` reads ``eval_spec.grading_model`` for the
+        coherence check (no ``--model`` flag); a spec pinning an
+        unknown-prefix model with explicit
+        ``--grading-provider`` triggers the inner ValueError at
+        ``compare.py:332-334`` → exit 2.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        before, after = _write_pair(tmp_path)
+        eval_spec_bad = _make_eval_spec(
+            user_prompt="Write a hello world",
+            grading_model="weird-prefix-model",
+        )
+        spec_bad = _make_spec(eval_spec=eval_spec_bad)
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec_bad),
+            patch(
+                "clauditor.quality_grader.blind_compare",
+                new_callable=AsyncMock,
+            ) as mock_blind,
+        ):
+            rc = main(
+                _blind_argv(before, after)
+                + ["--grading-provider", "openai"]
+            )
+        assert rc == 2
+        assert mock_blind.await_count == 0
+
 
 # ---------------------------------------------------------------------------
 # Shared CLI helpers: argparse-type validators + four-layer precedence

@@ -2216,6 +2216,28 @@ class TestEvalSpecGradingModel:
         msg = str(exc_info.value)
         assert "grading_model" in msg
 
+    def test_empty_string_rejects(self, tmp_path):
+        """QG pass 1 of #146 + PR #164 review: empty/whitespace-only
+        ``grading_model`` is rejected at load time so it does not
+        survive through ``infer_provider_from_model`` and produce a
+        worse downstream error.
+        """
+        data = {"skill_name": "s", "grading_model": ""}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_model" in msg
+        assert "non-empty" in msg
+
+    def test_whitespace_only_string_rejects(self, tmp_path):
+        """Whitespace-only is treated as empty per the same load-time
+        guard.
+        """
+        data = {"skill_name": "s", "grading_model": "   "}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert "grading_model" in str(exc_info.value)
+
     def test_to_dict_emits_grading_model_when_set(self, tmp_path):
         """``to_dict()`` emits ``grading_model`` when explicitly set."""
         data = {"skill_name": "s", "grading_model": "claude-opus-4-6"}
