@@ -6,6 +6,7 @@ import argparse
 import sys
 
 from clauditor import history
+from clauditor.cli import _provider_concrete_choice
 
 
 def _positive_int(value: str) -> int:
@@ -47,6 +48,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Filter history records by command (default: grade)",
     )
     p_trend.add_argument(
+        "--provider",
+        type=_provider_concrete_choice,
+        default=None,
+        help=(
+            "Filter history records by grading provider "
+            "('anthropic' or 'openai'). Required when history contains "
+            "mixed providers."
+        ),
+    )
+    p_trend.add_argument(
         "--last",
         type=_positive_int,
         default=20,
@@ -79,6 +90,38 @@ def cmd_trend(args: argparse.Namespace) -> int:
                 f"ERROR: no history records for skill '{args.skill_name}' "
                 f"with command '{command_filter}'. Try --command all to "
                 "union across all recorded commands.",
+                file=sys.stderr,
+            )
+            return 1
+
+    # Provider refusal / filter (DEC-003, DEC-009, DEC-011 of #147).
+    # Computed from the full filtered set BEFORE the --last slice so a
+    # user with mixed history cannot silently slip past the refusal by
+    # narrowing the window. v1 history records (pre-#147) lack the
+    # ``provider`` key — ``read_records`` already defaults missing
+    # values to ``"anthropic"``, but we apply the same default here
+    # defensively in case any legacy raw record reaches this point.
+    providers_seen = sorted({rec.get("provider", "anthropic") for rec in records})
+    if args.provider is None:
+        if len(providers_seen) > 1:
+            providers_str = ", ".join(repr(p) for p in providers_seen)
+            print(
+                f"ERROR: Mixed providers detected in history for skill "
+                f"'{args.skill_name}' ({providers_str}). Pass "
+                f"--provider anthropic or --provider openai to filter.",
+                file=sys.stderr,
+            )
+            return 2
+    else:
+        records = [
+            rec
+            for rec in records
+            if rec.get("provider", "anthropic") == args.provider
+        ]
+        if not records:
+            print(
+                f"ERROR: no records for provider '{args.provider}' "
+                f"for skill '{args.skill_name}'.",
                 file=sys.stderr,
             )
             return 1
