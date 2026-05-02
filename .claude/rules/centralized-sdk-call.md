@@ -235,6 +235,33 @@ async def call_openai(
   This preserves the existing `pip install clauditor[grader]`
   install-hint path every grader entry point already produces
   when users run the tool without the optional extra.
+- **Base-class catch-all defends the exit-3 routing** (US-004 of
+  #162). Each provider's retry loop ends with a final
+  `except AnthropicError as exc:` (in `call_anthropic`) /
+  `except OpenAIError as exc:` (in `call_openai`) branch — the
+  bare SDK base class. This lands AFTER all typed branches
+  (`RateLimitError`, `APIStatusError`, `AuthenticationError`,
+  `PermissionDeniedError`, `APIConnectionError`, `TypeError`)
+  so subclass matching takes precedence per Python's `except`
+  first-match semantics. A future SDK version's new typed error
+  not yet in the ladder would otherwise escape uncaught and
+  bypass the exit-3 routing in CLI dispatchers; the catch-all
+  wraps it as the corresponding `*HelperError` with message
+  `f"API request failed: {type(exc).__name__}"` — class name only
+  per the post-merge security tightening of DEC-003 of #162.
+  Earlier drafts truncated `str(exc)` to 500 chars, but a
+  CodeRabbit review pass on PR #163 surfaced a stronger argument:
+  this branch handles unknown SDK error shapes by definition, so
+  we cannot assume the SDK's `__str__` is well-behaved (a future
+  SDK error type's message could pack prompt fragments,
+  response-body excerpts, or echoed headers). Truncation bounds
+  size, not exposure. The class name alone is always safe;
+  diagnostic content is preserved on `__cause__` via
+  `raise ... from exc` so debuggers can introspect the full
+  original SDK exception. The branch does NOT retry (without
+  category info, no sound retry decision is possible). File
+  anchors: `_providers/_anthropic.py::call_anthropic` retry
+  loop, `_providers/_openai.py::call_openai` retry loop.
 
 ## Canonical implementation
 

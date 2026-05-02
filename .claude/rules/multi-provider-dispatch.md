@@ -194,10 +194,8 @@ invariant holds across re-exports per
 - `OpenAIAuthMissingError` — direct subclass of `Exception`,
   NOT of `AnthropicAuthMissingError`.
 
-CLI call sites (five LLM-mediated commands using the
-provider-aware guard; `suggest` is a sixth LLM-mediated command
-but routes through `check_any_auth_available` directly because
-its prompt builder has no `eval_spec` to read):
+CLI call sites (six LLM-mediated commands, all using the
+provider-aware guard post-#162):
 
 - `src/clauditor/cli/grade.py::cmd_grade` — resolves provider
   from `spec.eval_spec.grading_provider`; calls
@@ -215,6 +213,16 @@ its prompt builder has no `eval_spec` to read):
   `check_provider_auth("anthropic", "propose-eval")`. The
   `OpenAIAuthMissingError` `except` branch is forward-compat
   for a future `--proposer-provider` flag.
+- `src/clauditor/cli/suggest.py::_cmd_suggest_impl` — post-#162
+  US-003 loads `SkillSpec.from_file(args.skill)` after the
+  zero-failing-signals early-exit, resolves
+  `provider = skill_spec.eval_spec.grading_provider or
+  "anthropic"`, calls
+  `check_provider_auth(provider, "suggest")` with distinct
+  `AnthropicAuthMissingError` and `OpenAIAuthMissingError`
+  exit-2 branches, and plumbs `provider=` into
+  `propose_edits(...)`. Mirrors the
+  `cli/triggers.py:114-127` pattern.
 
 Traces to DEC-003 and DEC-006 of
 `plans/super/145-openai-provider.md`. Companion rules:
@@ -258,23 +266,25 @@ class.
 - Non-LLM CLI commands (`validate`, `capture`, `run`, `lint`,
   `init`, `badge`, `audit`, `trend`). They do not call
   `call_model` and need no auth guard.
-- Pytest fixtures. The three grader fixtures
+- Pytest fixtures. Post-#162 the three grader fixtures
   (`clauditor_grader`, `clauditor_blind_compare`,
-  `clauditor_triggers`) were extended in #146 (US-007) to dispatch
-  via `check_provider_auth` per the resolved provider. Resolution
-  lives in `clauditor.pytest_plugin._dispatch_fixture_auth_guard`,
-  which reads `eval_spec.grading_provider` (and the
-  `CLAUDITOR_GRADING_PROVIDER` env var) through the same pure
+  `clauditor_triggers`) load the spec first, then dispatch
+  through `_dispatch_fixture_auth_guard`, which resolves the
+  provider via the same pure
   `clauditor._providers.resolve_grading_provider` helper the CLI
-  uses, then routes by provider: `"anthropic"` keeps the
-  strict-vs-relaxed split via `CLAUDITOR_FIXTURE_ALLOW_CLI`
-  (`check_api_key_only` strict default,
-  `check_any_auth_available` opt-in relaxed); `"openai"` is always
-  strict via `check_openai_auth` (no CLI-fallback / subscription
-  analogue per #145 DEC-002). Distinct exception classes per
-  provider preserve the structural-routing invariant — fixture
-  callers branch on `AnthropicAuthMissingError` vs
-  `OpenAIAuthMissingError` rather than substring-matching the
-  message.
+  uses — honoring `CLAUDITOR_GRADING_PROVIDER` env,
+  `eval_spec.grading_provider`, and auto-inference from
+  `grading_model` (per #146 US-007). The Anthropic branch retains
+  the `CLAUDITOR_FIXTURE_ALLOW_CLI` opt-in toggle (relaxed
+  `check_any_auth_available` vs strict `check_api_key_only`);
+  the OpenAI branch is always strict via `check_openai_auth`
+  (no CLI-fallback / subscription analogue per #145 DEC-002).
+  Per DEC-004 of #162, `CLAUDITOR_FIXTURE_ALLOW_CLI=1` is
+  silently no-op when the resolved provider is `"openai"`.
+  Distinct exception classes per provider preserve the
+  structural-routing invariant — fixture callers branch on
+  `AnthropicAuthMissingError` vs `OpenAIAuthMissingError`
+  rather than substring-matching the message. File anchor:
+  `src/clauditor/pytest_plugin.py` (the three fixture factories).
 - One-off diagnostic scripts in `scripts/` that hit a provider
   SDK directly. They can rely on the SDK's own error path.

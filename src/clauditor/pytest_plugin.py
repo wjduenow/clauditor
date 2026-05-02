@@ -348,13 +348,27 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
         eval_path: str | Path | None = None,
         output: str | None = None,
     ):
-        # DEC-006 (#146 US-007): load the spec first so the auth-guard
-        # dispatch can read ``eval_spec.grading_provider`` /
-        # ``grading_model``. The guard still fires before any SDK call
-        # so a CI run under subscription-only auth (or a missing
-        # ``OPENAI_API_KEY`` for an OpenAI-graded skill) surfaces a
-        # clear error rather than a deep SDK traceback.
+        # DEC-006 (#146 US-007) + #162 US-001: load the spec FIRST so
+        # the auth-guard dispatch can read ``eval_spec.grading_provider``
+        # / ``grading_model`` and pick the right provider auth. Pre-#162
+        # fixtures hardcoded Anthropic auth, so an OpenAI-graded skill
+        # saw a misleading ``"ANTHROPIC_API_KEY missing"`` error when
+        # only ``OPENAI_API_KEY`` was set. The factored-out
+        # ``_dispatch_fixture_auth_guard`` (per #146 US-007) honors the
+        # full four-layer resolution (CLAUDITOR_GRADING_PROVIDER env >
+        # eval_spec.grading_provider > auto-inference from
+        # grading_model). For the Anthropic branch,
+        # ``CLAUDITOR_FIXTURE_ALLOW_CLI=1`` opts into the relaxed guard
+        # (DEC-009 of #86). DEC-004 of #162: that env var is silently
+        # no-op when provider resolves to OpenAI (no CLI transport).
+        # Distinct ``except`` branches per
+        # ``.claude/rules/multi-provider-dispatch.md``.
         spec = clauditor_spec(skill_path, eval_path)
+        # Validate spec shape BEFORE the auth dispatch (CodeRabbit
+        # finding on PR #163): otherwise a missing/invalid auth key
+        # would mask the more useful ``"No eval spec found..."``
+        # error for users whose underlying problem is a missing
+        # eval.json, sending them to debug their auth instead.
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
         _dispatch_fixture_auth_guard(spec.eval_spec, "grader")
@@ -438,9 +452,14 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
         *,
         model: str | None = None,
     ) -> BlindReport:
-        # DEC-006 (#146 US-007): load spec first so the dispatch can read
-        # ``eval_spec.grading_provider`` / ``grading_model``. The guard
-        # still fires before any SDK call.
+        # DEC-006 (#146 US-007) + #162 US-001: load spec first so the
+        # dispatch can read ``eval_spec.grading_provider`` /
+        # ``grading_model``. See :func:`clauditor_grader` for rationale.
+        # The guard still fires before any SDK call. CodeRabbit finding
+        # (PR #163): validate spec shape BEFORE the auth dispatch so a
+        # missing/invalid auth key does not mask the more useful
+        # ``ValueError`` raised by ``blind_compare_from_spec`` when
+        # ``eval_spec`` / ``user_prompt`` are absent.
         spec = clauditor_spec(skill_path, eval_path)
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
@@ -472,10 +491,16 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
     def _factory(
         skill_path: str | Path, eval_path: str | Path | None = None
     ):
-        # DEC-006 (#146 US-007): load spec first so the dispatch can
-        # read ``eval_spec.grading_provider`` / ``grading_model``. The
-        # guard still fires before any SDK call.
+        # DEC-006 (#146 US-007) + #162 US-001: load spec first so the
+        # dispatch can read ``eval_spec.grading_provider`` /
+        # ``grading_model``. See :func:`clauditor_grader` for rationale.
+        # The guard still fires before any SDK call.
         spec = clauditor_spec(skill_path, eval_path)
+        # Validate spec shape BEFORE the auth dispatch (CodeRabbit
+        # finding on PR #163): a missing/invalid auth key would
+        # otherwise mask the more useful ``"No eval spec found..."``
+        # error for users whose underlying problem is a missing
+        # eval.json.
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
         _dispatch_fixture_auth_guard(spec.eval_spec, "triggers")
