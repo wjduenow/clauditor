@@ -5,7 +5,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/147
 - **Branch:** `feature/147-sidecar-provider-field`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/147-sidecar-provider-field`
-- **Phase:** detailing
+- **PR:** https://github.com/wjduenow/clauditor/pull/165
+- **Phase:** published
 - **Sessions:** 1 (2026-05-02)
 - **Total decisions:** 12 (DEC-001 through DEC-012)
 - **Depends on:** #146 (CLOSED — `EvalSpec.grading_provider` four-layer precedence shipped; `provider_source` in-memory field bookmarked for #147)
