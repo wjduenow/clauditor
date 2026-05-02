@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Literal
 
 from clauditor import history
 from clauditor.runner import SkillResult
@@ -55,6 +56,24 @@ def _transport_choice(value: str) -> str:
     return value
 
 
+def _provider_choice(value: str) -> str:
+    """argparse type: accept one of ``"anthropic"``, ``"openai"``, ``"auto"``.
+
+    DEC-001 of ``plans/super/146-grading-provider-precedence.md``.
+    Mirrors :func:`_transport_choice` shape — shared across the six
+    LLM-mediated commands (``grade``, ``extract``, ``triggers``,
+    ``compare``, ``propose-eval``, ``suggest``) so help text and
+    error messages stay consistent. argparse maps the
+    ``ArgumentTypeError`` to a clean exit 2 at parse time per
+    ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    """
+    if value not in ("anthropic", "openai", "auto"):
+        raise argparse.ArgumentTypeError(
+            f"must be one of 'anthropic', 'openai', 'auto', got {value!r}"
+        )
+    return value
+
+
 def _resolve_grader_transport(args: argparse.Namespace, eval_spec=None) -> str:
     """Resolve grader transport using four-layer precedence.
 
@@ -82,6 +101,75 @@ def _resolve_grader_transport(args: argparse.Namespace, eval_spec=None) -> str:
     try:
         return resolve_transport(
             getattr(args, "transport", None), env_transport, spec_transport
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+
+def _resolve_grading_provider(
+    args: argparse.Namespace, eval_spec=None
+) -> Literal["anthropic", "openai"]:
+    """Resolve grading provider using four-layer precedence.
+
+    DEC-001 / DEC-003 / DEC-007 of
+    ``plans/super/146-grading-provider-precedence.md``. CLI flag >
+    ``CLAUDITOR_GRADING_PROVIDER`` env > ``EvalSpec.grading_provider``
+    > default ``"auto"``. Whitespace-only env values normalize to
+    ``None`` so they are treated as unset, matching the parallel
+    :func:`_resolve_grader_transport` shape.
+
+    When the winning value is ``"auto"`` the underlying pure helper
+    :func:`clauditor._providers.resolve_grading_provider` delegates
+    to :func:`clauditor._providers.infer_provider_from_model` using
+    the effective model resolved here. Operator > author per
+    ``.claude/rules/spec-cli-precedence.md``:
+
+    1. ``args.model`` if the CLI command exposes a ``--model`` flag
+       and it was set (operator intent);
+    2. else ``eval_spec.grading_model`` if a spec is attached and
+       the attribute is non-``None`` (author intent);
+    3. else ``None`` — the inference layer raises a precise
+       ``ValueError`` ("provide grading_provider or grading_model")
+       that this wrapper surfaces as ``SystemExit(2)``.
+
+    ``eval_spec`` is the loaded ``EvalSpec`` (or ``None`` when the
+    calling command has no eval spec — e.g. ``suggest``,
+    ``propose-eval``).
+
+    Raises ``SystemExit(2)`` on any ``ValueError`` from the pure
+    resolver (invalid env / spec value, unknown model prefix, or
+    ``"auto"`` with no model). Printing the error to stderr before
+    exit centralizes the routing so all six LLM-mediated commands
+    share one error surface, per
+    ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    """
+    import os
+
+    from clauditor._providers import resolve_grading_provider
+
+    cli_value = getattr(args, "grading_provider", None)
+    env_value = os.environ.get("CLAUDITOR_GRADING_PROVIDER")
+    if env_value is not None and env_value.strip() == "":
+        env_value = None
+    spec_value = (
+        eval_spec.grading_provider if eval_spec is not None else None
+    )
+
+    # Effective model for auto-inference: operator intent (``--model``
+    # CLI flag) wins over author intent (``EvalSpec.grading_model``) per
+    # `.claude/rules/spec-cli-precedence.md` (operator > author > default)
+    # AND per QG pass 1 of #146 — otherwise a stale spec-side
+    # ``grading_model`` would silently misroute when the operator passed
+    # ``--model gpt-5.4 --grading-provider auto``. The pure resolver
+    # only consults this when the winning provider is ``"auto"``.
+    model: str | None = getattr(args, "model", None)
+    if model is None and eval_spec is not None:
+        model = getattr(eval_spec, "grading_model", None)
+
+    try:
+        return resolve_grading_provider(
+            cli_value, env_value, spec_value, model
         )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

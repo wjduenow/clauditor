@@ -83,7 +83,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``grade`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int, _transport_choice, _unit_float
+    from clauditor.cli import (
+        _positive_int,
+        _provider_choice,
+        _transport_choice,
+        _unit_float,
+    )
 
     p_grade = subparsers.add_parser(
         "grade", help="Run Layer 3 quality grading against a skill's output"
@@ -230,6 +235,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "key is present — pass --transport api to keep the key.)"
         ),
     )
+    p_grade.add_argument(
+        "--grading-provider",
+        type=_provider_choice,
+        default=None,
+        choices=("anthropic", "openai", "auto"),
+        help=(
+            "Override the grading provider: 'anthropic', 'openai', or "
+            "'auto' (infer from grading_model). Four-layer precedence: "
+            "this flag > CLAUDITOR_GRADING_PROVIDER env > "
+            "EvalSpec.grading_provider > default 'auto'."
+        ),
+    )
 
 
 def _load_and_validate_grade_args(
@@ -307,32 +324,42 @@ def cmd_grade(args: argparse.Namespace) -> int:
         if filter_rc != 0:
             return filter_rc
 
-    model = args.model or spec.eval_spec.grading_model
-
-    # --dry-run: print prompt and exit
+    # --dry-run: print prompt and exit. Model resolution for the
+    # preview uses the eval spec's value verbatim (no provider-aware
+    # default) — the dry-run path is cost-free and an unset
+    # ``grading_model`` simply prints ``None``.
     if args.dry_run:
         from clauditor.quality_grader import build_grading_prompt
 
+        preview_model = (
+            args.model
+            or spec.eval_spec.grading_model
+            or "<auto, resolved from provider>"
+        )
         prompt = build_grading_prompt(spec.eval_spec)
-        print(f"Model: {model}")
+        print(f"Model: {preview_model}")
         print(f"Prompt:\n{prompt}")
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009: fail fast when
-    # the provider's required auth is missing. Provider is resolved
-    # from ``eval_spec.grading_provider`` (defaults to ``"anthropic"``)
-    # so OpenAI-graded skills get an OpenAI-key-required guard.
-    # Guard lands AFTER --dry-run (dry-run is a cost-free preview — no
-    # API call, no key needed) and BEFORE allocate_iteration so we do
-    # not leave an abandoned iteration-N-tmp/ staging dir behind when
-    # the guard fires. Distinct ``except`` branches per
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005/US-006:
+    # fail fast when the provider's required auth is missing. Provider
+    # is resolved via the four-layer ``_resolve_grading_provider``
+    # helper (CLI flag > CLAUDITOR_GRADING_PROVIDER env >
+    # EvalSpec.grading_provider > default "auto" with auto-inference
+    # from grading_model), so OpenAI-graded skills get an OpenAI-key-
+    # required guard. Guard lands AFTER --dry-run (dry-run is a
+    # cost-free preview — no API call, no key needed) and BEFORE
+    # allocate_iteration so we do not leave an abandoned
+    # iteration-N-tmp/ staging dir behind when the guard fires.
+    # Distinct ``except`` branches per
     # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
-    provider = (
-        spec.eval_spec.grading_provider
-        if spec.eval_spec is not None
-        and spec.eval_spec.grading_provider is not None
-        else "anthropic"
-    )
+    #
+    # The resolved provider is threaded down through every grader
+    # entry point per #146 US-006 (orchestrators no longer re-read
+    # ``eval_spec.grading_provider``).
+    from clauditor.cli import _resolve_grading_provider
+
+    provider = _resolve_grading_provider(args, spec.eval_spec)
     try:
         check_provider_auth(provider, "grade")
     except AnthropicAuthMissingError as exc:
@@ -340,6 +367,41 @@ def cmd_grade(args: argparse.Namespace) -> int:
         return 2
     except OpenAIAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
+        return 2
+
+    # #146 US-006 / DEC-004: pick the per-provider default model when
+    # the spec's ``grading_model`` is unset. ``args.model`` (if the
+    # operator passed ``--model``) always wins; otherwise the pure
+    # helper picks ``"claude-sonnet-4-6"`` for anthropic or
+    # ``"gpt-5.4"`` for openai based on the resolved provider.
+    if args.model:
+        model = args.model
+    else:
+        from clauditor._providers import resolve_grading_model
+
+        model = resolve_grading_model(spec.eval_spec, provider)
+
+    # Provider/model coherence check (CodeRabbit finding on PR #164).
+    # ``EvalSpec.grading_model`` still defaults to ``"claude-sonnet-4-6"``
+    # at the dataclass level (DEC-004a partial migration), so a user
+    # who pinned ``--grading-provider openai`` on a spec that omitted
+    # ``grading_model`` would otherwise silently send a Claude model
+    # to the OpenAI backend. Fail fast with a clear actionable message.
+    from clauditor._providers import infer_provider_from_model
+    try:
+        model_provider = infer_provider_from_model(model)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if model_provider != provider:
+        print(
+            f"ERROR: resolved grading provider {provider!r} conflicts "
+            f"with grading_model {model!r} (inferred provider "
+            f"{model_provider!r}). Pass --model with a matching "
+            f"model, set EvalSpec.grading_model: null to use the "
+            f"per-provider default, or pin a matching --grading-provider.",
+            file=sys.stderr,
+        )
         return 2
 
     # Allocate the iteration workspace early so that a collision
@@ -367,6 +429,7 @@ def cmd_grade(args: argparse.Namespace) -> int:
             args=args,
             spec=spec,
             model=model,
+            provider=provider,
             clauditor_dir=clauditor_dir,
             workspace=workspace,
         )
@@ -635,6 +698,7 @@ def _write_workspace_sidecars(
     reports: list[GradingReport],
     model: str,
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> Benchmark | None:
     """Write grading/assertions/extraction/baseline/benchmark sidecars.
 
@@ -670,7 +734,14 @@ def _write_workspace_sidecars(
     )
 
     if spec.eval_spec.sections:
-        _write_extraction_sidecar(skill_dir, primary_text, spec, transport=transport)
+        _write_extraction_sidecar(
+            skill_dir,
+            primary_text,
+            spec,
+            model,
+            transport=transport,
+            provider=provider,
+        )
 
     if getattr(args, "baseline", False):
         # Mirror the primary arm's env/timeout wiring so --no-api-key
@@ -700,6 +771,7 @@ def _write_workspace_sidecars(
             skill_results=skill_results,
             reports=reports,
             model=model,
+            provider=provider,
             env_override=env_override,
             timeout_override=timeout_override,
         )
@@ -804,9 +876,21 @@ def _write_assertions_sidecar(
 
 
 def _write_extraction_sidecar(
-    skill_dir: Path, primary_text: str, spec: SkillSpec, transport: str = "auto"
+    skill_dir: Path,
+    primary_text: str,
+    spec: SkillSpec,
+    model: str,
+    transport: str = "auto",
+    *,
+    provider: str = "anthropic",
 ) -> None:
-    """Run Layer 2 schema extraction and persist ``extraction.json``."""
+    """Run Layer 2 schema extraction and persist ``extraction.json``.
+
+    ``model`` is the resolved grading model the caller computed for
+    the surrounding ``cmd_grade`` invocation. Passed through verbatim
+    so OpenAI-graded skills don't fall back to ``extract_and_report``'s
+    Anthropic-default model (CodeRabbit finding on PR #164).
+    """
     import asyncio
 
     from clauditor.grader import extract_and_report
@@ -815,8 +899,10 @@ def _write_extraction_sidecar(
         extract_and_report(
             primary_text,
             spec.eval_spec,
+            model=model,
             skill_name=spec.skill_name,
             transport=transport,
+            provider=provider,
         )
     )
     (skill_dir / "extraction.json").write_text(
@@ -832,6 +918,7 @@ def _write_baseline_and_benchmark(
     skill_results: list[SkillResult | None],
     reports: list[GradingReport],
     model: str,
+    provider: str = "anthropic",
     env_override: dict[str, str] | None = None,
     timeout_override: int | None = None,
 ) -> Benchmark | None:
@@ -851,6 +938,7 @@ def _write_baseline_and_benchmark(
         skill_dir=skill_dir,
         iteration=workspace.iteration,
         model=model,
+        provider=provider,
         env_override=env_override,
         timeout_override=timeout_override,
     )
@@ -907,6 +995,7 @@ def _run_baseline_phase(
     skill_dir: Path,
     iteration: int,
     model: str,
+    provider: str = "anthropic",
     env_override: dict[str, str] | None = None,
     timeout_override: int | None = None,
 ) -> tuple[GradingReport, SkillResult]:
@@ -950,6 +1039,7 @@ def _run_baseline_phase(
         skill_name=spec.skill_name,
         iteration=iteration,
         model=model,
+        provider=provider,
     )
 
     for filename, content in reports.to_json_map().items():
@@ -990,6 +1080,8 @@ def _grade_all_runs(
     spec: SkillSpec,
     model: str,
     transport: str = "auto",
+    *,
+    provider: str = "anthropic",
 ) -> list[GradingReport]:
     """Grade every run's output concurrently and return the per-run reports."""
     import asyncio
@@ -1006,6 +1098,7 @@ def _grade_all_runs(
                         model,
                         thresholds=spec.eval_spec.grade_thresholds,
                         transport=transport,
+                        provider=provider,
                     )
                     for text, _ev in run_outputs
                 ]
@@ -1020,6 +1113,7 @@ def _cmd_grade_with_workspace(
     args: argparse.Namespace,
     spec: SkillSpec,
     model: str,
+    provider: str,
     clauditor_dir: Path,
     workspace: IterationWorkspace,
 ) -> int:
@@ -1044,7 +1138,9 @@ def _cmd_grade_with_workspace(
     grader_transport = _resolve_grader_transport(args, spec.eval_spec)
 
     primary_text = run_outputs[0][0]
-    reports = _grade_all_runs(run_outputs, spec, model, transport=grader_transport)
+    reports = _grade_all_runs(
+        run_outputs, spec, model, transport=grader_transport, provider=provider
+    )
     primary_report = reports[0]
 
     variance_report: VarianceReport | None = None
@@ -1090,6 +1186,7 @@ def _cmd_grade_with_workspace(
             reports=reports,
             model=model,
             transport=grader_transport,
+            provider=provider,
         )
         _write_timing_and_finalize(
             workspace=workspace,

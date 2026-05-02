@@ -252,7 +252,11 @@ async def classify_query(
 
 
 async def test_triggers(
-    eval_spec: EvalSpec, model: str = "claude-sonnet-4-6", transport: str = "auto"
+    eval_spec: EvalSpec,
+    model: str = "claude-sonnet-4-6",
+    transport: str = "auto",
+    *,
+    provider: str = "anthropic",
 ) -> TriggerReport:
     """Run trigger precision testing for all queries in an eval spec.
 
@@ -261,6 +265,11 @@ async def test_triggers(
     precision, recall, and accuracy metrics. The Anthropic SDK is
     accessed through :func:`clauditor._anthropic.call_anthropic` inside
     :func:`classify_query`; retry / error handling lives in the helper.
+
+    ``provider`` is resolved at the CLI / fixture seam per #146 US-006
+    and threaded into every per-query :func:`classify_query` call.
+    Default ``"anthropic"`` preserves back-compat for direct callers
+    (mainly tests); production callers always pass an explicit value.
     """
     if eval_spec.trigger_tests is None:
         return TriggerReport(
@@ -275,17 +284,6 @@ async def test_triggers(
         queries.append((q, True))
     for q in eval_spec.trigger_tests.should_not_trigger:
         queries.append((q, False))
-
-    # #145 US-010: Resolve provider from the spec; default to
-    # ``"anthropic"`` for back-compat. Threaded into every per-query
-    # ``classify_query`` call.
-    provider = eval_spec.grading_provider or "anthropic"
-    # PR #160 review: fail fast when openai is paired with the
-    # Anthropic-default model so the spec author sees a crisp
-    # actionable error rather than a downstream 4xx model-not-found.
-    from clauditor.quality_grader import _validate_provider_model
-
-    _validate_provider_model(provider, model, "test_triggers")
 
     tasks = [
         classify_query(

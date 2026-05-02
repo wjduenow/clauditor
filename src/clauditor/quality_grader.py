@@ -21,46 +21,16 @@ if TYPE_CHECKING:
     from clauditor.spec import SkillSpec
 
 
-# TODO(#146): ``DEFAULT_GRADING_MODEL`` is Anthropic-specific. Callers
-# passing ``grading_provider="openai"`` (per #145 US-010) MUST also set
-# ``grading_model`` explicitly on the eval spec — handing this Anthropic
-# default to the OpenAI backend produces a 4xx model-not-found from the
-# OpenAI SDK. #146 owns the per-provider default-model precedence
-# resolver; until it lands, the spec author is responsible for naming
-# an OpenAI model when ``grading_provider="openai"``.
+# #146 US-006 / DEC-004: per-provider default-model resolution lives in
+# :func:`clauditor._providers.resolve_grading_model`. Callers that passed
+# ``provider="openai"`` without an explicit OpenAI ``grading_model`` no
+# longer need a runtime guard here: the CLI seam picks
+# ``"gpt-5.4"`` via the resolver before invoking the orchestrator, so
+# the Anthropic-default never reaches the OpenAI backend in the first
+# place. ``DEFAULT_GRADING_MODEL`` remains as the Anthropic-specific
+# default for direct callers (mainly tests) that pass ``provider``
+# implicitly through the kwarg's back-compat default.
 DEFAULT_GRADING_MODEL = "claude-sonnet-4-6"
-
-
-def _validate_provider_model(provider: str, model: str, ctx: str) -> None:
-    """Fail fast when ``provider="openai"`` is paired with a Claude model.
-
-    PR #160 review (CodeRabbit): the runtime previously allowed the
-    Anthropic-default ``DEFAULT_GRADING_MODEL`` to flow into the OpenAI
-    backend when an eval spec set ``grading_provider="openai"`` without
-    overriding ``grading_model``. The OpenAI SDK then rejected the
-    request with a 4xx model-not-found, surfacing as a generic API
-    error several layers downstream — opaque, hard to map back to the
-    spec author's missing-field bug.
-
-    This guard runs at every orchestrator entry point that accepts a
-    ``provider`` parameter and raises ``ValueError`` so the caller's
-    pre-call validation surface (CLI exit 2 per
-    ``.claude/rules/llm-cli-exit-code-taxonomy.md``) catches it before
-    spending an API call. The model-name check uses the ``"claude-"``
-    prefix because that namespace is Anthropic-exclusive on every
-    public release; an OpenAI model that happened to start with
-    ``"claude-"`` would be a future-incompatible naming collision and
-    is outside the scope of this guard.
-
-    Removable once #146 ships per-provider default-model precedence.
-    """
-    if provider == "openai" and model.startswith("claude-"):
-        raise ValueError(
-            f"{ctx}: provider='openai' requires an OpenAI model name; "
-            f"got Anthropic-default model {model!r}. Set "
-            "EvalSpec.grading_model explicitly (e.g. 'gpt-5.4') when "
-            "using grading_provider='openai'. Tracked in #146."
-        )
 
 
 # Indirection so tests can patch blind_compare timing without affecting
@@ -716,22 +686,23 @@ async def blind_compare(
     Retries fire independently: if side 1 parses on the first attempt
     but side 2 needs a retry, only side 2 is re-invoked.
 
+    ``provider`` is resolved at the CLI / fixture seam per #146 US-006
+    and threaded into BOTH parallel calls. Default ``"anthropic"``
+    preserves back-compat for direct callers (mainly tests).
+
     Requires the 'grader' extra: pip install clauditor[grader]
     """
     import asyncio as _asyncio
 
     _validate_blind_inputs(user_prompt, output_a, output_b)
-    _validate_provider_model(provider, model, "blind_compare")
     m1, m2 = _pick_blind_mappings(rng)
     args = (user_prompt, output_a, output_b, rubric_hint)
     p1 = _build_blind_prompt_for_mapping(m1, *args)
     p2 = _build_blind_prompt_for_mapping(m2, *args)
     start = _monotonic()
-    # #145 US-010: ``provider`` is resolved by the caller
-    # (``blind_compare_from_spec`` reads it from
-    # ``spec.eval_spec.grading_provider``) and threaded to BOTH
-    # parallel calls. Resolved once here so the two gather'd calls
-    # always agree — never read the spec twice.
+    # #146 US-006: ``provider`` is resolved at the CLI / fixture seam
+    # and passed through verbatim. Threaded to BOTH parallel calls
+    # so the two gather'd judges always agree on backend.
     side1, side2 = await _asyncio.gather(
         _call_blind_side_with_retry(
             p1, model=model, transport=transport, side_label="side1",
@@ -802,6 +773,7 @@ async def blind_compare_from_spec(
     model: str | None = None,
     rng: random.Random | None = None,
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> BlindReport:
     """Composition helper that resolves judge inputs from a :class:`SkillSpec`.
 
@@ -810,6 +782,12 @@ async def blind_compare_from_spec(
     pytest fixture. The helper validates the spec, builds the rubric hint from
     ``grading_criteria``, resolves the grading model, and forwards everything
     to :func:`blind_compare`.
+
+    ``provider`` is resolved at the CLI / fixture seam per #146 US-006
+    and passed through verbatim — this helper no longer reads
+    ``spec.eval_spec.grading_provider`` directly. Default
+    ``"anthropic"`` preserves back-compat for direct callers (mainly
+    tests); production callers always pass an explicit value.
 
     Raises :class:`ValueError` if ``spec.eval_spec`` is missing or if
     ``eval_spec.user_prompt`` is empty/whitespace (it is used as the user
@@ -835,12 +813,16 @@ async def blind_compare_from_spec(
             f"- {criterion_text(c)}" for c in criteria
         )
 
-    effective_model = model if model is not None else spec.eval_spec.grading_model
+    # #146 US-006 / DEC-004: per-provider default-model resolution.
+    # When the caller passes ``model=None`` (the common path), pick
+    # the right default for the resolved provider via the pure
+    # helper. An explicit ``model=`` kwarg always wins.
+    if model is not None:
+        effective_model = model
+    else:
+        from clauditor._providers import resolve_grading_model
 
-    # #145 US-010: Resolve provider from the spec; default to
-    # ``"anthropic"`` for back-compat. Single resolution shared
-    # between both parallel judges inside ``blind_compare``.
-    provider = spec.eval_spec.grading_provider or "anthropic"
+        effective_model = resolve_grading_model(spec.eval_spec, provider)
 
     return await blind_compare(
         user_prompt,
@@ -1171,6 +1153,8 @@ async def grade_quality(
     model: str = DEFAULT_GRADING_MODEL,
     thresholds: GradeThresholds | None = None,
     transport: str = "auto",
+    *,
+    provider: str = "anthropic",
 ) -> GradingReport:
     """Layer 3: Grade skill output against rubric criteria using an LLM.
 
@@ -1184,18 +1168,18 @@ async def grade_quality(
     All heavy lifting lives in the pure helpers
     :func:`build_grading_prompt` and :func:`parse_grading_response`.
 
+    ``provider`` is resolved at the CLI / fixture seam per #146 US-006
+    and passed through verbatim — this orchestrator no longer reads
+    ``eval_spec.grading_provider`` directly. Default ``"anthropic"``
+    preserves back-compat for direct callers (mainly tests);
+    production callers always pass an explicit value.
+
     Requires the 'grader' extra: pip install clauditor[grader]
     """
     thresholds = thresholds if thresholds is not None else GradeThresholds()
     from clauditor._providers import call_model
 
     prompt = build_grading_prompt(eval_spec, output)
-
-    # #145 US-010: Resolve provider from the spec; default to
-    # ``"anthropic"`` for back-compat. Pulled out of the retry loop so
-    # every attempt routes to the same backend.
-    provider = eval_spec.grading_provider or "anthropic"
-    _validate_provider_model(provider, model, "grade_quality")
 
     start = _monotonic()
     total_input_tokens = 0

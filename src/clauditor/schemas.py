@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -258,7 +259,25 @@ class EvalSpec:
     # str}`` when loaded via ``from_file`` per DEC-001 (#25). Consumers must
     # normalize via ``criterion_text()``.
     grading_criteria: list = field(default_factory=list)
-    grading_model: str = "claude-sonnet-4-6"
+    # DEC-004a of #146 (US-003 scope): nullable migration. Field type
+    # promoted from ``str`` to ``str | None`` so #145-vintage specs
+    # that emit ``"grading_model": null`` round-trip cleanly. The
+    # dataclass default is preserved (``"claude-sonnet-4-6"``) — the
+    # default-flip from a hardcoded string to ``None`` (so the
+    # provider-aware ``resolve_grading_model`` helper from US-001
+    # can pick a sensible per-provider default) is deferred to
+    # DEC-004b until a follow-up story normalizes the ~10 production
+    # call sites that read ``eval_spec.grading_model`` directly via
+    # patterns like ``args.model or spec.eval_spec.grading_model``.
+    # In the interim, the CLI seams (``cli/grade.py``,
+    # ``cli/extract.py``, ``cli/compare.py``) check
+    # ``infer_provider_from_model(effective_model) == provider`` and
+    # exit 2 with an actionable message when the resolved provider
+    # mismatches the resolved model — covering the regression window
+    # that was previously protected by ``_validate_provider_model``
+    # in ``quality_grader.py`` (removed in this PR). Bool guard at
+    # load time per ``.claude/rules/constant-with-type-info.md``.
+    grading_model: str | None = "claude-sonnet-4-6"
     output_file: str | None = None  # Single output file path
     output_files: list[str] = field(default_factory=list)  # Multiple file paths/globs
     trigger_tests: TriggerTests | None = None
@@ -298,16 +317,25 @@ class EvalSpec:
     # guarded at load time per
     # ``.claude/rules/constant-with-type-info.md``.
     sync_tasks: bool = False
-    # DEC-003 of #145: optional per-spec grading provider selector.
-    # ``None`` (default) preserves the pre-#145 behavior: grader call
-    # sites read ``eval_spec.grading_provider or "anthropic"`` and pass
-    # that to ``call_model(provider=...)``. When set, must be one of
-    # ``"anthropic"`` or ``"openai"``. Validated at load time against
-    # the literal set; non-string / bool values rejected per
-    # ``.claude/rules/constant-with-type-info.md``. The CLI flag
-    # ``--grading-provider`` and ``CLAUDITOR_GRADING_PROVIDER`` env-var
-    # land in #146 (full four-layer precedence resolver).
-    grading_provider: str | None = None
+    # DEC-001 of #146 (split into a/b — see Refinement Log): per-spec
+    # grading provider selector. US-002 lands DEC-001a — accept the
+    # new ``"auto"`` literal value alongside the existing
+    # ``"anthropic"`` and ``"openai"``, while keeping the dataclass
+    # default at ``None``. Default flip from ``None`` → ``"auto"``
+    # is deferred to a follow-up story after US-005 (CLI seam) and
+    # US-006 (orchestrator normalization) eliminate the call sites
+    # that rely on the falsy-``None`` ``or "anthropic"`` short-circuit.
+    # ``"auto"`` will be the subscription-first resolution token (the
+    # ``_resolve_grading_provider`` helper from US-001 / US-004 infers
+    # Anthropic vs OpenAI from the resolved ``grading_model`` prefix).
+    # ``"anthropic"`` and ``"openai"`` pin a specific backend.
+    # Validated at load time against the literal set; non-string /
+    # bool / unknown-string values rejected per
+    # ``.claude/rules/constant-with-type-info.md``. The full
+    # four-layer precedence resolver (CLI ``--grading-provider`` >
+    # ``CLAUDITOR_GRADING_PROVIDER`` env > this field > default
+    # ``"auto"``) lives in US-004 of #146.
+    grading_provider: Literal["anthropic", "openai", "auto"] | None = None
 
     @classmethod
     def from_file(cls, path: str | Path) -> EvalSpec:
@@ -749,12 +777,16 @@ class EvalSpec:
                 )
             sync_tasks = raw_sync_tasks
 
-        # DEC-003 of #145: optional per-spec grading provider selector.
-        # Missing or explicit ``null`` → ``None`` (default; grader call
-        # sites fall back to ``"anthropic"``). When set, must be a
-        # non-bool string in the literal set ``{"anthropic", "openai"}``.
-        # Bool guard first per ``.claude/rules/constant-with-type-info.md``.
-        grading_provider: str | None = None
+        # DEC-001a of #146 (US-002 scope): per-spec grading provider
+        # selector. Adds ``"auto"`` to the accepted literal set
+        # alongside ``"anthropic"`` and ``"openai"``; missing or
+        # explicit ``null`` continues to round-trip as ``None`` per
+        # #145's behavior. The default-flip from ``None`` to
+        # ``"auto"`` is deferred until US-005 / US-006 normalize the
+        # downstream call sites that currently rely on the falsy-
+        # ``None`` ``or "anthropic"`` short-circuit. Bool guard first
+        # per ``.claude/rules/constant-with-type-info.md``.
+        grading_provider: Literal["anthropic", "openai", "auto"] | None = None
         if "grading_provider" in data:
             raw_grading_provider = data["grading_provider"]
             if raw_grading_provider is None:
@@ -762,12 +794,13 @@ class EvalSpec:
             elif (
                 isinstance(raw_grading_provider, bool)
                 or not isinstance(raw_grading_provider, str)
-                or raw_grading_provider not in ("anthropic", "openai")
+                or raw_grading_provider
+                not in ("anthropic", "openai", "auto")
             ):
                 raise ValueError(
                     f"EvalSpec(skill_name={skill_name!r}): "
                     "'grading_provider' must be one of 'anthropic', "
-                    f"'openai' (or null), got "
+                    f"'openai', 'auto' (or null), got "
                     f"{type(raw_grading_provider).__name__} "
                     f"{raw_grading_provider!r}"
                 )
@@ -798,6 +831,38 @@ class EvalSpec:
                 min_mean_score=gt.get("min_mean_score", 0.5),
             )
 
+        # DEC-004a of #146 (US-003 scope): nullable migration for
+        # ``grading_model``. Default preserved (``"claude-sonnet-4-6"``);
+        # explicit ``null`` accepted and round-trips as ``None`` so
+        # #145-vintage specs that emit ``"grading_model": null`` keep
+        # loading cleanly. Bool guard first per
+        # ``.claude/rules/constant-with-type-info.md``.
+        grading_model: str | None = "claude-sonnet-4-6"
+        if "grading_model" in data:
+            raw_grading_model = data["grading_model"]
+            if raw_grading_model is None:
+                grading_model = None
+            elif isinstance(raw_grading_model, bool) or not isinstance(
+                raw_grading_model, str
+            ):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'grading_model' must be a string or null, got "
+                    f"{type(raw_grading_model).__name__} "
+                    f"{raw_grading_model!r}"
+                )
+            elif raw_grading_model.strip() == "":
+                # QG pass 1: reject empty/whitespace-only model names
+                # at load time. An empty string would otherwise survive
+                # through ``infer_provider_from_model`` and produce a
+                # downstream error with a worse message.
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'grading_model' must be a non-empty string or null"
+                )
+            else:
+                grading_model = raw_grading_model
+
         return cls(
             skill_name=skill_name,
             description=data.get("description", ""),
@@ -808,7 +873,7 @@ class EvalSpec:
             assertions=data.get("assertions", []),
             sections=sections,
             grading_criteria=data.get("grading_criteria", []),
-            grading_model=data.get("grading_model", "claude-sonnet-4-6"),
+            grading_model=grading_model,
             output_file=data.get("output_file"),
             output_files=data.get("output_files", []),
             trigger_tests=trigger_tests,
@@ -876,6 +941,12 @@ class EvalSpec:
                 for s in self.sections
             ],
             "grading_criteria": self.grading_criteria,
+            # DEC-004a of #146 (US-003 scope): nullable migration. Field
+            # is now ``str | None``; default ``"claude-sonnet-4-6"``
+            # preserved. Emit unconditionally (including when ``None``,
+            # serialized as JSON ``null``) so explicit-null specs round-
+            # trip cleanly through the new from_dict accept-``None``
+            # branch and the existing default keeps emitting verbatim.
             "grading_model": self.grading_model,
         }
         if not self.allow_hang_heuristic:
@@ -890,11 +961,10 @@ class EvalSpec:
             # Tier 1.5 of GitHub #103: emit only on non-default.
             # Omission at load time means default ``False``.
             result["sync_tasks"] = True
+        # DEC-001a of #146: default still ``None`` (default-flip to
+        # ``"auto"`` deferred until US-005 / US-006 normalize call
+        # sites). Emit only on non-default, matching #145 behavior.
         if self.grading_provider is not None:
-            # DEC-003 of #145: emit only on non-default. Omission at
-            # load time means ``None``, which the four grader call
-            # sites read as ``"anthropic"``. QG pass 3 (#145) caught
-            # the round-trip data-loss when this writer was missed.
             result["grading_provider"] = self.grading_provider
         if self.output_file is not None:
             result["output_file"] = self.output_file

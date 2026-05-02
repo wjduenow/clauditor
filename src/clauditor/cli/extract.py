@@ -19,7 +19,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``extract`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _transport_choice
+    from clauditor.cli import _provider_choice, _transport_choice
 
     p_extract = subparsers.add_parser(
         "extract", help="Layer 2: LLM schema extraction"
@@ -57,6 +57,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "'auto'."
         ),
     )
+    p_extract.add_argument(
+        "--grading-provider",
+        type=_provider_choice,
+        default=None,
+        choices=("anthropic", "openai", "auto"),
+        help=(
+            "Override the grading provider: 'anthropic', 'openai', or "
+            "'auto' (infer from grading_model). Four-layer precedence: "
+            "this flag > CLAUDITOR_GRADING_PROVIDER env > "
+            "EvalSpec.grading_provider > default 'auto'."
+        ),
+    )
 
 
 def cmd_extract(args: argparse.Namespace) -> int:
@@ -84,31 +96,40 @@ def cmd_extract(args: argparse.Namespace) -> int:
         print("ERROR: No sections defined in eval spec", file=sys.stderr)
         return 1
 
-    model = args.model or "claude-haiku-4-5-20251001"
+    # Provider-aware model defaulting: if the user didn't pass
+    # ``--model`` and the spec didn't set ``grading_model``, the model
+    # falls through to ``resolve_grading_model(spec.eval_spec,
+    # provider)`` once we've resolved the provider below. For the
+    # ``--dry-run`` preview we use the spec's value (or the legacy
+    # extract default) — the dry-run preview does not consult the
+    # provider yet because the auth guard hasn't fired.
+    model = args.model or spec.eval_spec.grading_model
 
     # --dry-run: print prompt and exit
     if args.dry_run:
         from clauditor.grader import build_extraction_prompt
 
         prompt = build_extraction_prompt(spec.eval_spec)
-        print(f"Model: {model}")
+        print(f"Model: {model or '<auto, resolved from provider>'}")
         print(f"Prompt:\n{prompt}")
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009: fail fast when
-    # the provider's required auth is missing. Provider is resolved
-    # from ``eval_spec.grading_provider`` (defaults to ``"anthropic"``)
-    # so OpenAI-graded skills get an OpenAI-key-required guard.
-    # Guard lands AFTER --dry-run (dry-run is a cost-free preview — no
-    # API call, no key needed) and BEFORE extract_and_grade. Distinct
-    # ``except`` branches per
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005/US-006:
+    # fail fast when the provider's required auth is missing. Provider
+    # is resolved via the four-layer ``_resolve_grading_provider``
+    # helper (CLI flag > CLAUDITOR_GRADING_PROVIDER env >
+    # EvalSpec.grading_provider > default "auto" with auto-inference
+    # from grading_model), so OpenAI-graded skills get an OpenAI-key-
+    # required guard. Guard lands AFTER --dry-run (dry-run is a
+    # cost-free preview — no API call, no key needed) and BEFORE
+    # extract_and_grade. Distinct ``except`` branches per
     # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
-    provider = (
-        spec.eval_spec.grading_provider
-        if spec.eval_spec is not None
-        and spec.eval_spec.grading_provider is not None
-        else "anthropic"
-    )
+    #
+    # The resolved provider is threaded down through the
+    # ``extract_and_grade`` call below per #146 US-006.
+    from clauditor.cli import _resolve_grading_provider
+
+    provider = _resolve_grading_provider(args, spec.eval_spec)
     try:
         check_provider_auth(provider, "extract")
     except AnthropicAuthMissingError as exc:
@@ -116,6 +137,36 @@ def cmd_extract(args: argparse.Namespace) -> int:
         return 2
     except OpenAIAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
+        return 2
+
+    # Now that provider is resolved, pick a per-provider default
+    # model when neither the user nor the spec supplied one.
+    if model is None:
+        from clauditor._providers import resolve_grading_model
+        model = resolve_grading_model(spec.eval_spec, provider)
+
+    # Provider/model coherence check (CodeRabbit finding on PR #164).
+    # ``EvalSpec.grading_model`` still defaults to ``"claude-sonnet-4-6"``
+    # at the dataclass level (DEC-004a partial migration), so a user
+    # who pinned ``--grading-provider openai`` on a spec that omitted
+    # ``grading_model`` would otherwise silently send a Claude model
+    # to the OpenAI backend and surface as an opaque 400. Fail fast
+    # with a clear actionable message instead.
+    from clauditor._providers import infer_provider_from_model
+    try:
+        model_provider = infer_provider_from_model(model)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if model_provider != provider:
+        print(
+            f"ERROR: resolved grading provider {provider!r} conflicts "
+            f"with grading_model {model!r} (inferred provider "
+            f"{model_provider!r}). Pass --model with a matching "
+            f"model, set EvalSpec.grading_model: null to use the "
+            f"per-provider default, or pin a matching --grading-provider.",
+            file=sys.stderr,
+        )
         return 2
 
     # Get output
@@ -156,7 +207,13 @@ def cmd_extract(args: argparse.Namespace) -> int:
     from clauditor.grader import extract_and_grade
 
     results = asyncio.run(
-        extract_and_grade(output, spec.eval_spec, model, transport=grader_transport)
+        extract_and_grade(
+            output,
+            spec.eval_spec,
+            model,
+            transport=grader_transport,
+            provider=provider,
+        )
     )
 
     # Record history (US-005). Extract does not compute Layer 3

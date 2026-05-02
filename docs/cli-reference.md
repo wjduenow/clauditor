@@ -173,6 +173,7 @@ Requires authentication: `ANTHROPIC_API_KEY` for API transport, or an authentica
 | `-v, --verbose` | Log capture source, redaction count, model, and token estimates to stderr. |
 | `--project-dir PATH` | Override project root (default: cwd). Used for capture discovery and relative-path reporting. |
 | `--transport {api,cli,auto}` | Route the Anthropic call through the HTTP SDK (`api`), the `claude -p` subprocess (`cli`), or the default auto-resolution (`auto` — picks CLI when available). Precedence: this flag > `CLAUDITOR_TRANSPORT` env > `EvalSpec.transport` > default `auto`. Full reference: [docs/transport-architecture.md](transport-architecture.md). Same flag on `grade`, `extract`, `propose-eval`, `suggest`, `triggers`, `compare --blind`. On `grade`, `--transport cli` (explicit flag or `CLAUDITOR_TRANSPORT=cli` env var) implies `--no-api-key` for the skill subprocess so the skill subprocess and grader both use subscription auth end-to-end. When `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` was actually present, a one-time stderr notice announces the strip; with no key in env, the strip is a silent no-op. Pass `--transport api` to keep the keys. |
+| `--grading-provider {anthropic,openai,auto}` | Select which provider's SDK handles the LLM-grader call. Precedence: this flag > `CLAUDITOR_GRADING_PROVIDER` env > `EvalSpec.grading_provider` > default `auto`. Under `auto`, the inference layer maps `claude-*` model prefix → `anthropic` and `gpt-*` / `o[0-9]+*` → `openai`; an unknown model prefix raises a load-time error advising explicit selection. Same flag on `grade`, `extract`, `triggers`, `compare --blind`, `propose-eval`, `suggest`. See [docs/eval-spec-reference.md#optional-top-level-fields](eval-spec-reference.md#optional-top-level-fields) for the spec-field semantics. |
 
 ### Examples
 
@@ -252,6 +253,7 @@ Three guarantees you can't get from a hand-written or free-form-LLM patch:
 | `--json` | Print the full `SuggestReport` JSON envelope to stdout instead of the unified diff. The sidecar file is still written regardless. |
 | `-v, --verbose` | Log bundle size, token counts, duration, and sidecar paths to stderr. |
 | `--transport {api,cli,auto}` | Route the Anthropic call through the HTTP SDK (`api`), the `claude -p` subprocess (`cli`), or the default auto-resolution (`auto` — picks CLI when available). Precedence: this flag > `CLAUDITOR_TRANSPORT` env > `EvalSpec.transport` > default `auto`. Full reference: [docs/transport-architecture.md](transport-architecture.md). |
+| `--grading-provider {anthropic,openai,auto}` | Select which provider's SDK handles the suggest LLM call. Precedence: this flag > `CLAUDITOR_GRADING_PROVIDER` env > `EvalSpec.grading_provider` > default `auto`. Under `auto`, infers from the model prefix (`claude-*` → anthropic, `gpt-*` / `o[0-9]+*` → openai). See [docs/eval-spec-reference.md#optional-top-level-fields](eval-spec-reference.md#optional-top-level-fields). |
 
 ### Examples
 
@@ -395,6 +397,7 @@ Run Layer 3 LLM-graded quality scoring. Auto-increments the iteration slot (`.cl
 | `--min-baseline-delta FLOAT` | Gate on the with-skill-vs-baseline pass-rate delta. Exit 1 when the skill underperforms its baseline by more than this margin. |
 | `--only-criterion SUBSTRING` | Run only criteria whose name contains the substring (repeatable). Skips the history append. |
 | `--transport {api,cli,auto}` | Override the Anthropic call backend. See [transport architecture](#transport-architecture). |
+| `--grading-provider {anthropic,openai,auto}` | Select which provider's SDK handles the LLM-grader call. Precedence: this flag > `CLAUDITOR_GRADING_PROVIDER` env > `EvalSpec.grading_provider` > default `auto`. Under `auto`, infers from the model prefix (`claude-*` → anthropic, `gpt-*` / `o[0-9]+*` → openai). |
 
 Also accepts the shared runner flags: `--no-api-key`, `--sync-tasks`, `--timeout`, `-v`, `--no-transcript`.
 
@@ -421,6 +424,7 @@ Run Layer 2 schema extraction. Sends the skill output to a small LLM (default Ha
 | `--dry-run` | Print the extraction prompt without making an API call. |
 | `-v / --verbose` | Print raw model JSON under failing assertions when available. |
 | `--transport {api,cli,auto}` | Override the Anthropic call backend. |
+| `--grading-provider {anthropic,openai,auto}` | Select the provider's SDK for the L2 extraction call. Precedence: this flag > `CLAUDITOR_GRADING_PROVIDER` env > `EvalSpec.grading_provider` > default `auto` (infers from model prefix). |
 
 ### `triggers`
 
@@ -433,6 +437,7 @@ Test trigger precision: send each `should_trigger` and `should_not_trigger` quer
 | `--json` | Emit results as JSON. |
 | `--dry-run` | Print sample trigger prompts. |
 | `--transport {api,cli,auto}` | Override the Anthropic call backend. |
+| `--grading-provider {anthropic,openai,auto}` | Select the provider's SDK for the trigger judge. Precedence: this flag > `CLAUDITOR_GRADING_PROVIDER` env > `EvalSpec.grading_provider` > default `auto` (infers from model prefix). |
 
 ### `compare`
 
@@ -449,6 +454,7 @@ Diff two iterations or two captured outputs. Three modes:
 | `--skill NAME`, `--from N`, `--to N` | Skill name + iteration numbers (alternative to positional iteration dirs). |
 | `--blind` | Run a blind A/B LLM judge over the two outputs and print a preference verdict. Requires `--spec` and `EvalSpec.user_prompt`. |
 | `--transport {api,cli,auto}` | Backend selector; only used with `--blind`. |
+| `--grading-provider {anthropic,openai,auto}` | Select the provider's SDK for the blind A/B judge; only used with `--blind`. Precedence: this flag > `CLAUDITOR_GRADING_PROVIDER` env > `EvalSpec.grading_provider` > default `auto` (infers from model prefix). |
 
 Exits 1 when a regression is detected (assertion that previously passed now fails, or grading score drops below threshold).
 

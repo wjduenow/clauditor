@@ -686,6 +686,9 @@ class TestClauditorGraderFactory:
         request = self._request_with_model()
         mock_eval_spec = MagicMock()
         mock_eval_spec.grading_provider = None
+        # CodeRabbit finding on PR #164: resolver no longer swallows
+        # ValueError, so grading_model needs an explicit string.
+        mock_eval_spec.grading_model = "claude-sonnet-4-6"
 
         mock_run_result = MagicMock()
         mock_run_result.output = "captured skill output"
@@ -939,7 +942,12 @@ class TestClauditorFixturesAuthGuard:
         )
         return request
 
-    def _stub_spec_factory(self, *, grading_provider=None):
+    def _stub_spec_factory(
+        self,
+        *,
+        grading_provider=None,
+        grading_model: str | None = "claude-sonnet-4-6",
+    ):
         """Build a fake ``clauditor_spec`` that returns a stub spec.
 
         Per US-001 of #162 the fixture loads the spec BEFORE running the
@@ -948,9 +956,16 @@ class TestClauditorFixturesAuthGuard:
         expect Anthropic-path behavior pass ``grading_provider=None``
         (or ``"anthropic"``) so resolution falls through to the
         Anthropic auth branch and the legacy assertions still hold.
+
+        Per CodeRabbit finding on PR #164, ``_dispatch_fixture_auth_guard``
+        no longer swallows ``ValueError`` from the resolver. The stub
+        therefore needs an explicit string ``grading_model`` so
+        auto-inference (when ``grading_provider`` is None / "auto")
+        finds a valid prefix instead of receiving a bare MagicMock.
         """
         eval_spec = MagicMock()
         eval_spec.grading_provider = grading_provider
+        eval_spec.grading_model = grading_model
 
         def factory(skill_path, eval_path=None):
             spec = MagicMock()
@@ -1077,7 +1092,12 @@ class TestPytestFixturesStrictMode:
             _anthropic.shutil, "which", lambda name: path
         )
 
-    def _stub_spec_factory(self, *, grading_provider=None):
+    def _stub_spec_factory(
+        self,
+        *,
+        grading_provider=None,
+        grading_model: str | None = "claude-sonnet-4-6",
+    ):
         """Build a fake ``clauditor_spec`` for the strict-mode tests.
 
         Per US-001 of #162 the fixture loads the spec FIRST and reads
@@ -1085,9 +1105,16 @@ class TestPytestFixturesStrictMode:
         ``grading_provider=None`` exercises the default-to-anthropic
         path; passing ``"openai"`` (or another provider string)
         exercises the dispatcher branch.
+
+        Per CodeRabbit finding on PR #164, ``_dispatch_fixture_auth_guard``
+        no longer swallows ``ValueError`` from the resolver. The stub
+        therefore needs an explicit string ``grading_model`` so
+        auto-inference (when ``grading_provider`` is None / "auto")
+        finds a valid prefix instead of receiving a bare MagicMock.
         """
         eval_spec = MagicMock()
         eval_spec.grading_provider = grading_provider
+        eval_spec.grading_model = grading_model
 
         def factory(skill_path, eval_path=None):
             spec = MagicMock()
@@ -1159,6 +1186,9 @@ class TestPytestFixturesStrictMode:
         _sentinel = RuntimeError("guard passed; spec.run reached")
         eval_spec = MagicMock()
         eval_spec.grading_provider = None
+        # CodeRabbit finding on PR #164: resolver no longer swallows
+        # ValueError, so grading_model needs an explicit string.
+        eval_spec.grading_model = "claude-sonnet-4-6"
 
         def fake_clauditor_spec(skill_path, eval_path=None):
             spec = MagicMock()
@@ -1184,6 +1214,8 @@ class TestPytestFixturesStrictMode:
         _sentinel = RuntimeError("guard passed; run_triggers reached")
         eval_spec = MagicMock()
         eval_spec.grading_provider = None
+        # CodeRabbit finding on PR #164.
+        eval_spec.grading_model = "claude-sonnet-4-6"
 
         def fake_clauditor_spec(skill_path, eval_path=None):
             spec = MagicMock()
@@ -1212,6 +1244,10 @@ class TestPytestFixturesStrictMode:
         _sentinel = RuntimeError("guard passed; blind_compare_from_spec reached")
         eval_spec = MagicMock()
         eval_spec.grading_provider = None
+        # CodeRabbit finding on PR #164: resolver no longer swallows
+        # ValueError, so grading_model needs an explicit string for
+        # the auto-inference fallback.
+        eval_spec.grading_model = "claude-sonnet-4-6"
 
         def fake_clauditor_spec(skill_path, eval_path=None):
             spec = MagicMock()
@@ -1311,10 +1347,22 @@ class TestClauditorFixturesAuthGuardOpenAI:
         )
         return request
 
-    def _stub_spec_factory(self, *, grading_provider="openai"):
-        """Build a fake ``clauditor_spec`` returning an OpenAI-graded spec."""
+    def _stub_spec_factory(
+        self,
+        *,
+        grading_provider="openai",
+        grading_model: str | None = "gpt-5.4",
+    ):
+        """Build a fake ``clauditor_spec`` returning an OpenAI-graded spec.
+
+        Per CodeRabbit finding on PR #164, the resolver no longer
+        swallows ``ValueError``; the stub therefore sets a string
+        ``grading_model`` (default ``"gpt-5.4"`` to match the
+        OpenAI provider).
+        """
         eval_spec = MagicMock()
         eval_spec.grading_provider = grading_provider
+        eval_spec.grading_model = grading_model
 
         def factory(skill_path, eval_path=None):
             spec = MagicMock()
@@ -1400,6 +1448,8 @@ class TestClauditorFixturesAuthGuardOpenAI:
         _sentinel = RuntimeError("guard passed; spec.run reached")
         eval_spec = MagicMock()
         eval_spec.grading_provider = "openai"
+        # CodeRabbit finding on PR #164.
+        eval_spec.grading_model = "gpt-5.4"
 
         def fake_clauditor_spec(skill_path, eval_path=None):
             spec = MagicMock()
@@ -1499,14 +1549,25 @@ class TestClauditorFixturesAuthGuardOpenAI:
     def test_grader_provider_none_falls_back_to_anthropic(
         self, tmp_path, monkeypatch
     ):
-        """Unset ``grading_provider`` defaults to ``"anthropic"``."""
+        """Unset ``grading_provider`` + claude model → ``"anthropic"``.
+
+        Per CodeRabbit finding on PR #164, the fixture now threads the
+        ``--clauditor-model`` operator override into auto-inference.
+        Pin a claude-* model here so the auto-inference path resolves
+        to anthropic — without it the class-level default ``gpt-5.4``
+        would resolve to openai instead.
+        """
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        request = self._request()
+        request = self._request(model="claude-sonnet-4-6")
 
         _sentinel = RuntimeError("anthropic happy path reached")
         eval_spec = MagicMock()
         eval_spec.grading_provider = None
+        # CodeRabbit finding on PR #164: resolver no longer swallows
+        # ValueError, so grading_model needs an explicit string for
+        # the auto-inference path.
+        eval_spec.grading_model = "claude-sonnet-4-6"
 
         def fake_clauditor_spec(skill_path, eval_path=None):
             spec = MagicMock()
@@ -1568,6 +1629,8 @@ class TestClauditorFixturesAuthGuardOpenAI:
         _sentinel = RuntimeError("relaxed guard accepted CLI")
         eval_spec = MagicMock()
         eval_spec.grading_provider = "anthropic"
+        # CodeRabbit finding on PR #164.
+        eval_spec.grading_model = "claude-sonnet-4-6"
 
         def fake_clauditor_spec(skill_path, eval_path=None):
             spec = MagicMock()
@@ -1579,3 +1642,185 @@ class TestClauditorFixturesAuthGuardOpenAI:
         with pytest.raises(RuntimeError) as excinfo:
             factory(tmp_path / "skill.md")
         assert excinfo.value is _sentinel
+
+
+class TestFixtureModelOverrideThreading:
+    """``--clauditor-model`` threads into provider auto-inference.
+
+    Per CodeRabbit finding on PR #164: the operator override
+    (``--clauditor-model gpt-5.4``) wins over the spec's
+    ``grading_model`` for auto-inference. Without threading, an
+    OpenAI-model CLI override against an Anthropic-default spec
+    silently routed through Anthropic auth and then sent the
+    OpenAI model to the Anthropic backend.
+    """
+
+    def _request_with_model(self, model: str | None):
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {"--clauditor-model": model}.get(opt)
+        )
+        return request
+
+    def test_grader_clauditor_model_override_routes_openai_auth(
+        self, tmp_path, monkeypatch
+    ):
+        """``--clauditor-model gpt-5.4`` on a default spec → openai
+        auth (raises ``OpenAIAuthMissingError`` when only the
+        Anthropic key is set, proving the model override threaded
+        through to provider resolution).
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        request = self._request_with_model("gpt-5.4")
+
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = None
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(OpenAIAuthMissingError) as excinfo:
+            factory(tmp_path / "skill.md")
+        assert "OPENAI_API_KEY" in str(excinfo.value)
+
+    def test_dispatch_fixture_auth_guard_does_not_swallow_value_error(
+        self, monkeypatch
+    ):
+        """Bogus ``grading_model`` prefix surfaces as ``ValueError``
+        (no longer silently coerced to ``"anthropic"``).
+        """
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "auto"  # forces auto-inference
+        eval_spec.grading_model = "totally-bogus-prefix"
+
+        with pytest.raises(ValueError, match="cannot infer provider"):
+            _dispatch_fixture_auth_guard(eval_spec, "grader")
+
+    def test_resolve_fixture_provider_does_not_swallow_value_error(
+        self, monkeypatch
+    ):
+        """Bogus ``grading_model`` prefix surfaces as ``ValueError``."""
+        from clauditor.pytest_plugin import _resolve_fixture_provider
+
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "auto"
+        eval_spec.grading_model = "totally-bogus-prefix"
+
+        with pytest.raises(ValueError, match="cannot infer provider"):
+            _resolve_fixture_provider(eval_spec)
+
+    def test_resolve_fixture_provider_returns_anthropic_for_none_eval_spec(
+        self, monkeypatch
+    ):
+        """Pre-#146 fallback: when no eval_spec is attached, the fixture
+        resolver short-circuits to ``"anthropic"``. Covers
+        ``pytest_plugin.py:248``.
+        """
+        from clauditor.pytest_plugin import _resolve_fixture_provider
+
+        assert _resolve_fixture_provider(None) == "anthropic"
+
+    def test_resolve_fixture_provider_normalizes_whitespace_env(
+        self, monkeypatch
+    ):
+        """Whitespace-only ``CLAUDITOR_GRADING_PROVIDER`` env var is
+        treated as unset. Covers ``pytest_plugin.py:252``.
+        """
+        from clauditor.pytest_plugin import _resolve_fixture_provider
+
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "   ")
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "openai"  # spec wins
+        eval_spec.grading_model = "gpt-5.4"
+        assert _resolve_fixture_provider(eval_spec) == "openai"
+
+    def test_dispatch_fixture_auth_guard_none_eval_spec_uses_anthropic_strict(
+        self, monkeypatch
+    ):
+        """When ``eval_spec is None``, dispatch falls through to the
+        Anthropic strict guard (preserving pre-#146 behavior). Covers
+        ``pytest_plugin.py:305-309``.
+        """
+        from clauditor._providers import AnthropicAuthMissingError
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_FIXTURE_ALLOW_CLI", raising=False)
+
+        with pytest.raises(AnthropicAuthMissingError):
+            _dispatch_fixture_auth_guard(None, "grader")
+
+    def test_dispatch_fixture_auth_guard_none_eval_spec_with_relaxed_env(
+        self, monkeypatch
+    ):
+        """``eval_spec=None`` + ``CLAUDITOR_FIXTURE_ALLOW_CLI=1`` →
+        relaxed Anthropic guard fires. Covers the relaxed branch of
+        ``pytest_plugin.py:305-309``.
+        """
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CLAUDITOR_FIXTURE_ALLOW_CLI", "1")
+
+        # Should not raise — key is set so check_any_auth_available passes.
+        _dispatch_fixture_auth_guard(None, "grader")
+
+    def test_dispatch_fixture_auth_guard_normalizes_whitespace_env(
+        self, monkeypatch
+    ):
+        """Whitespace-only ``CLAUDITOR_GRADING_PROVIDER`` env var
+        normalizes to None inside dispatch. Covers
+        ``pytest_plugin.py:321``.
+        """
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "   ")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "openai"
+        eval_spec.grading_model = "gpt-5.4"
+
+        # Should not raise — env normalizes to None, spec wins → openai.
+        _dispatch_fixture_auth_guard(eval_spec, "grader")
+
+    def test_dispatch_fixture_auth_guard_unknown_provider_raises(
+        self, monkeypatch
+    ):
+        """Defensive ValueError for forward-compat unknown provider
+        values that somehow slip past resolve_grading_provider. Covers
+        ``pytest_plugin.py:342``.
+
+        Mocks the resolver to return an unsupported provider string,
+        forcing the defensive fallthrough branch.
+        """
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "anthropic"
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        # Patch the canonical seam since the helper does a deferred
+        # per-call import (per .claude/rules/back-compat-shim-discipline.md
+        # Pattern 3).
+        with patch(
+            "clauditor._providers.resolve_grading_provider",
+            return_value="vertex",  # not in {"anthropic", "openai"}
+        ):
+            with pytest.raises(ValueError, match="unknown provider"):
+                _dispatch_fixture_auth_guard(eval_spec, "grader")

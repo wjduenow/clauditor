@@ -2146,14 +2146,161 @@ class TestEvalSpecTransport:
         assert "transport" not in round_tripped
 
 
-class TestGradingProviderValidation:
-    """US-007 / DEC-003 of #145: ``EvalSpec.grading_provider`` parsing.
+class TestEvalSpecGradingModel:
+    """US-003 / DEC-004a of #146: ``EvalSpec.grading_model`` nullable
+    migration.
 
-    Optional field with default ``None``. When set, must be a non-bool
-    string in the literal set ``{"anthropic", "openai"}``; ``null`` is
-    permitted (equivalent to omission). Unknown strings, non-strings,
-    bools, lists, etc. are rejected at load time with a ``ValueError``
-    that names the field and the allowed values per
+    Field type promoted from ``str`` to ``str | None`` so #145-vintage
+    specs that emit ``"grading_model": null`` round-trip cleanly. The
+    dataclass default is preserved (``"claude-sonnet-4-6"``); the
+    default-flip from a hardcoded string to ``None`` is deferred until
+    a follow-up story normalizes the production call sites that read
+    ``eval_spec.grading_model`` directly. ``_validate_provider_model``
+    in ``quality_grader.py`` continues to guard live runtime invariants.
+    Bool / non-string-non-null values rejected at load time per
+    ``.claude/rules/constant-with-type-info.md``.
+    """
+
+    def test_grading_model_default_is_claude_sonnet(self, tmp_path):
+        """No ``grading_model`` key → default ``"claude-sonnet-4-6"``.
+
+        DEC-004a preserves the existing default so production call
+        sites that read the field directly keep working unchanged.
+        """
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_model == "claude-sonnet-4-6"
+
+    def test_grading_model_explicit_null_loads_as_none(self, tmp_path):
+        """``{"grading_model": null}`` round-trips as ``None``.
+
+        New capability under DEC-004a: explicit ``null`` is no longer
+        coerced to the default, enabling the future provider-aware
+        ``_resolve_grading_model`` helper to pick a per-provider
+        default when the spec opts out of pinning a model.
+        """
+        data = {"skill_name": "s", "grading_model": None}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_model is None
+
+    def test_grading_model_explicit_string_loads(self, tmp_path):
+        """Explicit string value is loaded verbatim."""
+        data = {"skill_name": "s", "grading_model": "gpt-5.4"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_model == "gpt-5.4"
+
+    def test_bool_rejects(self, tmp_path):
+        """Bool guard per ``.claude/rules/constant-with-type-info.md``:
+        ``isinstance(True, str)`` is False but we still reject
+        explicitly with a type error.
+        """
+        data = {"skill_name": "s", "grading_model": True}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_model" in msg
+
+    def test_int_rejects(self, tmp_path):
+        """Non-string int rejected with a type error."""
+        data = {"skill_name": "s", "grading_model": 1}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_model" in msg
+
+    def test_list_rejects(self, tmp_path):
+        """Non-string list rejected."""
+        data = {"skill_name": "s", "grading_model": []}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_model" in msg
+
+    def test_empty_string_rejects(self, tmp_path):
+        """QG pass 1 of #146 + PR #164 review: empty/whitespace-only
+        ``grading_model`` is rejected at load time so it does not
+        survive through ``infer_provider_from_model`` and produce a
+        worse downstream error.
+        """
+        data = {"skill_name": "s", "grading_model": ""}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_model" in msg
+        assert "non-empty" in msg
+
+    def test_whitespace_only_string_rejects(self, tmp_path):
+        """Whitespace-only is treated as empty per the same load-time
+        guard.
+        """
+        data = {"skill_name": "s", "grading_model": "   "}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert "grading_model" in str(exc_info.value)
+
+    def test_to_dict_emits_grading_model_when_set(self, tmp_path):
+        """``to_dict()`` emits ``grading_model`` when explicitly set."""
+        data = {"skill_name": "s", "grading_model": "claude-opus-4-6"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        result = spec.to_dict()
+        assert result["grading_model"] == "claude-opus-4-6"
+
+    def test_to_dict_emits_null_when_none(self, tmp_path):
+        """``to_dict()`` emits ``grading_model`` as JSON ``null`` when
+        the spec was loaded with explicit ``null``.
+
+        Choice: emit (not omit) when ``None`` so the explicit-null
+        intent round-trips faithfully — re-loading the dict yields
+        ``None`` again via the new ``from_dict`` accept-``None``
+        branch, rather than silently coercing back to the default
+        string.
+        """
+        data = {"skill_name": "s", "grading_model": None}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        result = spec.to_dict()
+        assert "grading_model" in result
+        assert result["grading_model"] is None
+
+    def test_to_dict_emits_default_when_unset(self, tmp_path):
+        """When the key is omitted at load time, ``to_dict()`` still
+        emits the default ``"claude-sonnet-4-6"`` so #145-vintage
+        round-trips stay byte-identical (no minimal-diff regression).
+        """
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        result = spec.to_dict()
+        assert result["grading_model"] == "claude-sonnet-4-6"
+
+    def test_to_dict_round_trip_preserves_none(self, tmp_path):
+        """End-to-end: explicit-null → from_dict → to_dict → from_dict
+        yields ``None`` again (no silent coercion to default).
+        """
+        data = {"skill_name": "s", "grading_model": None}
+        spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        spec2 = EvalSpec.from_dict(spec1.to_dict(), spec_dir=tmp_path)
+        assert spec2.grading_model is None
+
+    def test_to_dict_round_trip_preserves_string(self, tmp_path):
+        """End-to-end round-trip for explicit string value."""
+        data = {"skill_name": "s", "grading_model": "gpt-5.4"}
+        spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        spec2 = EvalSpec.from_dict(spec1.to_dict(), spec_dir=tmp_path)
+        assert spec2.grading_model == "gpt-5.4"
+
+
+class TestGradingProviderValidation:
+    """US-002 / DEC-001 / DEC-008 of #146: ``EvalSpec.grading_provider``
+    parsing.
+
+    Field promoted from #145's ``str | None = None`` sentinel to
+    ``Literal["anthropic", "openai", "auto"] = "auto"``. ``"auto"``
+    is the subscription-first resolution token; ``"anthropic"`` and
+    ``"openai"`` pin a specific backend. Legacy ``"grading_provider":
+    null`` (from #145-vintage eval.json files) is silently coerced
+    to ``"auto"`` per DEC-008 — runtime semantics are byte-identical.
+    Unknown strings, non-strings, bools, lists, etc. are rejected at
+    load time with a ``ValueError`` that names the field and the
+    allowed values per
     ``.claude/rules/constant-with-type-info.md``.
     """
 
@@ -2161,7 +2308,8 @@ class TestGradingProviderValidation:
 
     def test_unknown_string_claude_rejects(self, tmp_path):
         """``"claude"`` is not in the literal set — rejected with an
-        error naming ``grading_provider``, ``anthropic``, ``openai``.
+        error naming ``grading_provider``, ``anthropic``, ``openai``,
+        ``auto``.
         """
         data = {"skill_name": "s", "grading_provider": "claude"}
         with pytest.raises(ValueError) as exc_info:
@@ -2170,6 +2318,7 @@ class TestGradingProviderValidation:
         assert "grading_provider" in msg
         assert "anthropic" in msg
         assert "openai" in msg
+        assert "auto" in msg
 
     def test_unknown_string_gpt_rejects(self, tmp_path):
         """``"gpt"`` is not in the literal set."""
@@ -2180,6 +2329,7 @@ class TestGradingProviderValidation:
         assert "grading_provider" in msg
         assert "anthropic" in msg
         assert "openai" in msg
+        assert "auto" in msg
 
     def test_int_rejects(self, tmp_path):
         """Non-string int rejected."""
@@ -2190,6 +2340,7 @@ class TestGradingProviderValidation:
         assert "grading_provider" in msg
         assert "anthropic" in msg
         assert "openai" in msg
+        assert "auto" in msg
 
     def test_bool_rejects(self, tmp_path):
         """Bool guard: ``isinstance(True, str)`` is False, but we still
@@ -2203,6 +2354,7 @@ class TestGradingProviderValidation:
         assert "grading_provider" in msg
         assert "anthropic" in msg
         assert "openai" in msg
+        assert "auto" in msg
 
     def test_list_rejects(self, tmp_path):
         """Non-string list rejected."""
@@ -2213,20 +2365,39 @@ class TestGradingProviderValidation:
         assert "grading_provider" in msg
         assert "anthropic" in msg
         assert "openai" in msg
+        assert "auto" in msg
 
     # --- Accept cases ---
 
-    def test_missing_defaults_to_none(self, tmp_path):
-        """No ``grading_provider`` key → ``.grading_provider is None``."""
+    def test_grading_provider_default_is_none(self, tmp_path):
+        """No ``grading_provider`` key → ``.grading_provider is None``.
+
+        DEC-001a of #146 (US-002 scope): default stays ``None``;
+        the flip to ``"auto"`` is deferred to a follow-up after the
+        downstream ``or "anthropic"`` call sites are normalized in
+        US-005 / US-006.
+        """
         data = {"skill_name": "s"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         assert spec.grading_provider is None
 
-    def test_explicit_null_is_none(self, tmp_path):
-        """``{"grading_provider": null}`` → ``.grading_provider is None``."""
+    def test_grading_provider_explicit_null_loads_as_none(
+        self, tmp_path
+    ):
+        """``{"grading_provider": null}`` round-trips as ``None``.
+
+        DEC-001a: legacy #145-vintage specs continue to load as
+        ``None`` until the default-flip ships (deferred).
+        """
         data = {"skill_name": "s", "grading_provider": None}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         assert spec.grading_provider is None
+
+    def test_grading_provider_accepts_auto(self, tmp_path):
+        """``"auto"`` is a valid value (the new default token)."""
+        data = {"skill_name": "s", "grading_provider": "auto"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_provider == "auto"
 
     def test_anthropic_loads(self, tmp_path):
         """``"anthropic"`` is a valid value."""
@@ -2240,39 +2411,43 @@ class TestGradingProviderValidation:
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         assert spec.grading_provider == "openai"
 
-    # --- Round-trip via to_dict (QG pass 3 fix) ---
+    # --- Round-trip via to_dict ---
 
     def test_to_dict_includes_grading_provider_when_set(self, tmp_path):
-        """``to_dict()`` emits ``grading_provider`` when non-default.
+        """``to_dict()`` emits ``grading_provider`` when explicitly
+        set to a non-default value.
 
-        QG pass 3 caught the writer-side gap: US-007 added the field
-        to ``__init__`` / ``from_dict`` but missed ``to_dict``. A spec
-        loaded with ``grading_provider="openai"`` and round-tripped
-        via ``to_dict`` would silently lose the field, downgrading
-        downstream grader calls to Anthropic.
+        QG pass 3 of #145 caught the original writer-side gap.
         """
         data = {"skill_name": "s", "grading_provider": "openai"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         result = spec.to_dict()
         assert result["grading_provider"] == "openai"
 
-    def test_to_dict_omits_grading_provider_when_none(self, tmp_path):
-        """Default ``None`` is omitted from ``to_dict`` output to
-        keep diffs minimal — matches the convention for other optional
-        fields (``transport``, ``sync_tasks``, ``allow_hang_heuristic``).
-        Reload of the omitted form yields ``None``.
+    def test_grading_provider_to_dict_omits_when_none(
+        self, tmp_path
+    ):
+        """Default ``None`` is omitted from ``to_dict`` per DEC-001a
+        of #146 (default-flip deferred). Round-trip stays minimal-
+        diff for #145-vintage specs that don't set the field.
         """
         data = {"skill_name": "s"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         result = spec.to_dict()
         assert "grading_provider" not in result
 
+    def test_grading_provider_accepts_auto_round_trip(self, tmp_path):
+        """When explicitly set to ``"auto"``, round-trip preserves it."""
+        data = {"skill_name": "s", "grading_provider": "auto"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        result = spec.to_dict()
+        assert result["grading_provider"] == "auto"
+
     def test_to_dict_round_trip_preserves_grading_provider(
         self, tmp_path
     ):
         """End-to-end: from_dict → to_dict → from_dict yields a spec
-        whose ``grading_provider`` matches the original. Pins the
-        QG pass 3 round-trip data-loss regression.
+        whose ``grading_provider`` matches the original.
         """
         data = {"skill_name": "s", "grading_provider": "openai"}
         spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
@@ -2286,6 +2461,31 @@ class TestGradingProviderValidation:
         spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
         spec2 = EvalSpec.from_dict(spec1.to_dict(), spec_dir=tmp_path)
         assert spec2.grading_provider == "anthropic"
+
+    def test_to_dict_round_trip_auto(self, tmp_path):
+        """Round-trip stability for the new default ``"auto"`` —
+        from_dict → to_dict → from_dict yields ``"auto"``.
+        """
+        data = {"skill_name": "s", "grading_provider": "auto"}
+        spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        spec2 = EvalSpec.from_dict(spec1.to_dict(), spec_dir=tmp_path)
+        assert spec2.grading_provider == "auto"
+
+    def test_to_dict_round_trip_legacy_null_stays_unset(
+        self, tmp_path
+    ):
+        """Legacy ``null`` round-trips: from_dict yields ``None``,
+        to_dict omits the field, re-load yields ``None`` (default).
+
+        DEC-001a defers the default-flip; the runtime semantics for
+        legacy ``null`` specs stay byte-identical to #145 behavior.
+        """
+        data = {"skill_name": "s", "grading_provider": None}
+        spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        round_tripped = spec1.to_dict()
+        assert "grading_provider" not in round_tripped
+        spec2 = EvalSpec.from_dict(round_tripped, spec_dir=tmp_path)
+        assert spec2.grading_provider is None
 
 
 class TestAssertionKeySpec:

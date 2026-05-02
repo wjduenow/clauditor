@@ -18,7 +18,35 @@ class object regardless of which module raised it.
 
 from __future__ import annotations
 
-from typing import Literal
+import re
+from typing import Any, Literal, cast
+
+# Anthropic-default grading model used when ``grading_model`` is unset
+# AND the resolved provider is ``"anthropic"``. Mirrors
+# :data:`clauditor.quality_grader.DEFAULT_GRADING_MODEL` — the two
+# constants are kept in lockstep by convention; #146 ships them as
+# duplicates to avoid a circular import (``quality_grader`` already
+# imports from this package). When :func:`resolve_grading_model`
+# moves to a single-source-of-truth constant in a follow-up, the
+# duplicate here is the one to delete.
+_ANTHROPIC_DEFAULT_GRADING_MODEL: Literal["claude-sonnet-4-6"] = "claude-sonnet-4-6"
+
+# Valid grading_provider values across all four precedence layers
+# (CLI override, env override, spec field, default). ``"auto"`` is
+# the default; the resolver delegates to
+# :func:`infer_provider_from_model` when the winning value is
+# ``"auto"`` (DEC-001 / DEC-003 of
+# ``plans/super/146-grading-provider-precedence.md``).
+_VALID_GRADING_PROVIDER_VALUES: frozenset[str] = frozenset(
+    ("anthropic", "openai", "auto")
+)
+
+# Regex for OpenAI o-series reasoning models (``o1``, ``o4-mini``,
+# ``o3-pro``, ...). The pattern matches a leading ``o`` followed by
+# at least one digit, optionally followed by any suffix; this is the
+# strict shape per DEC-003. ``openai`` model names that begin with
+# ``gpt-`` go through the ``startswith("gpt-")`` branch instead.
+_OPENAI_O_SERIES_RE: re.Pattern[str] = re.compile(r"^o[0-9]+")
 
 
 class AnthropicAuthMissingError(Exception):
@@ -228,6 +256,221 @@ async def call_model(
     )
 
 
+def infer_provider_from_model(
+    model: str | None,
+) -> Literal["anthropic", "openai"]:
+    """Infer the grading provider from a model name via strict prefix match.
+
+    Pure helper per ``.claude/rules/pure-compute-vs-io-split.md``:
+    no env reads, no I/O. The CLI seam (US-004) owns env reading and
+    error rendering; this helper just decides.
+
+    DEC-003 of ``plans/super/146-grading-provider-precedence.md``:
+    auto-inference uses **strict** prefix matching so a typo (e.g.
+    ``"gtp-5.4"``) raises ``ValueError`` at resolve time rather than
+    silently routing the wrong-shaped model name to Anthropic and
+    surfacing as an opaque 400 from the SDK. Known prefixes:
+
+    - ``claude-*`` → ``"anthropic"``.
+    - ``gpt-*`` or ``o[0-9]+*`` → ``"openai"``. The ``o``-series
+      branch forward-compats OpenAI reasoning models (``o1``,
+      ``o4-mini``, ``o3-pro``, ...) deferred per #145 DEC-005 — the
+      auth and dispatch already work; only the ``reasoning=`` kwarg
+      surface is deferred.
+
+    Args:
+        model: Model name string (e.g. ``"claude-sonnet-4-6"``,
+            ``"gpt-5.4"``, ``"o1"``). May be ``None`` when the caller
+            has no model hint.
+
+    Returns:
+        Either ``"anthropic"`` or ``"openai"``.
+
+    Raises:
+        ValueError: ``model`` is a non-empty string with an unknown
+            prefix, OR ``model`` is ``None`` (callers reaching this
+            branch through :func:`resolve_grading_provider` have no
+            other layer to fall back on; the resolver translates the
+            ``None`` case into a more actionable
+            ``"provide grading_provider or grading_model"`` message).
+    """
+    if model is None:
+        # Reached only when caller has no model AND provider="auto"
+        # at every precedence layer. Surface a precise actionable
+        # message — the CLI seam routes this to exit 2.
+        raise ValueError("provide grading_provider or grading_model")
+    if not isinstance(model, str):
+        raise ValueError(
+            f"infer_provider_from_model: model must be str or None, "
+            f"got {type(model).__name__} {model!r}"
+        )
+    stripped = model.strip()
+    if stripped == "":
+        raise ValueError(
+            "infer_provider_from_model: model must be a non-empty "
+            "string (or None)"
+        )
+    if stripped.startswith("claude-"):
+        return "anthropic"
+    if stripped.startswith("gpt-"):
+        return "openai"
+    if _OPENAI_O_SERIES_RE.match(stripped):
+        return "openai"
+    raise ValueError(
+        f"infer_provider_from_model: cannot infer provider from "
+        f"unknown model prefix {model!r} — set --grading-provider "
+        "explicitly (or fix a typo, e.g. 'gtp-5.4' should be 'gpt-5.4')"
+    )
+
+
+def resolve_grading_provider(
+    cli_override: str | None,
+    env_override: str | None,
+    spec_value: str | None,
+    model: str | None,
+) -> Literal["anthropic", "openai"]:
+    """Pick the winning grading provider via four-layer precedence.
+
+    DEC-001 / DEC-003 / DEC-007 of
+    ``plans/super/146-grading-provider-precedence.md``. Pure helper
+    per ``.claude/rules/pure-compute-vs-io-split.md``: reads no env /
+    filesystem / SDK state — all four inputs are passed in. The CLI
+    seam :func:`clauditor.cli._resolve_grading_provider` (US-004) is
+    responsible for reading
+    ``os.environ["CLAUDITOR_GRADING_PROVIDER"]`` (with whitespace
+    normalization) and passing the result as ``env_override``.
+
+    Precedence (highest → lowest): CLI override > env override > spec
+    value > default ``"auto"``. A layer is "set" when its value is
+    non-``None``; any set value short-circuits the chain (the *first*
+    non-``None`` wins). If the winning value (or the default) is
+    ``"auto"``, this helper delegates to
+    :func:`infer_provider_from_model` to resolve a concrete provider
+    string from ``model``.
+
+    Every non-``None`` input is validated against
+    ``{"anthropic", "openai", "auto"}``; an invalid value raises
+    ``ValueError`` with a message that names the layer (``CLI
+    --grading-provider``, ``CLAUDITOR_GRADING_PROVIDER``, or
+    ``EvalSpec.grading_provider``) so the CLI can route the failure
+    to exit 2 per ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+
+    Args:
+        cli_override: Value from the ``--grading-provider`` argparse
+            flag; ``None`` when the flag was not passed.
+        env_override: Value of
+            ``os.environ["CLAUDITOR_GRADING_PROVIDER"]`` as a string
+            (or ``None`` when unset / whitespace-only — the CLI seam
+            normalizes whitespace-only env values to ``None``).
+        spec_value: Value of ``EvalSpec.grading_provider`` (or
+            ``None`` when no eval spec is attached).
+        model: Effective model string (e.g. from ``EvalSpec.grading_model``
+            or a CLI ``--model`` flag) used for auto-inference when
+            the winning provider value is ``"auto"``. May be ``None``
+            when no model is available at the call site.
+
+    Returns:
+        Either ``"anthropic"`` or ``"openai"``.
+
+    Raises:
+        ValueError: when a non-``None`` layer holds an invalid value,
+            OR when the resolved value is ``"auto"`` and
+            :func:`infer_provider_from_model` raises (unknown model
+            prefix, ``model is None``).
+    """
+    if cli_override is not None:
+        if cli_override not in _VALID_GRADING_PROVIDER_VALUES:
+            raise ValueError(
+                "CLI --grading-provider must be one of "
+                "'anthropic', 'openai', 'auto', got "
+                f"{cli_override!r}"
+            )
+        winner = cli_override
+    elif env_override is not None:
+        if env_override not in _VALID_GRADING_PROVIDER_VALUES:
+            raise ValueError(
+                "CLAUDITOR_GRADING_PROVIDER must be one of "
+                "'anthropic', 'openai', 'auto', got "
+                f"{env_override!r}"
+            )
+        winner = env_override
+    elif spec_value is not None:
+        if spec_value not in _VALID_GRADING_PROVIDER_VALUES:
+            raise ValueError(
+                "EvalSpec.grading_provider must be one of "
+                "'anthropic', 'openai', 'auto', got "
+                f"{spec_value!r}"
+            )
+        winner = spec_value
+    else:
+        winner = "auto"
+
+    if winner == "auto":
+        return infer_provider_from_model(model)
+    # ``winner`` is one of ``{"anthropic", "openai", "auto"}`` after
+    # validation against ``_VALID_GRADING_PROVIDER_VALUES``; the
+    # ``"auto"`` branch returned above, so the remaining values are
+    # exactly the ``Literal["anthropic", "openai"]`` set.
+    return cast('Literal["anthropic", "openai"]', winner)
+
+
+def resolve_grading_model(eval_spec: Any, provider: str) -> str:
+    """Pick the effective grading model for the resolved provider.
+
+    DEC-004 of ``plans/super/146-grading-provider-precedence.md``.
+    Pure helper per ``.claude/rules/pure-compute-vs-io-split.md``:
+    reads only the ``grading_model`` attribute of ``eval_spec``; no
+    env / filesystem / SDK state.
+
+    When ``eval_spec.grading_model`` is non-``None``, the explicitly-
+    set value wins. Otherwise the helper picks the provider-aware
+    default:
+
+    - ``provider="anthropic"`` → ``"claude-sonnet-4-6"`` (mirrors
+      :data:`clauditor.quality_grader.DEFAULT_GRADING_MODEL`).
+    - ``provider="openai"`` → :data:`clauditor._providers._openai.DEFAULT_MODEL_L3`
+      (currently ``"gpt-5.4"``).
+
+    Args:
+        eval_spec: An :class:`~clauditor.schemas.EvalSpec` instance,
+            ``None``, or any duck-typed object exposing a
+            ``grading_model`` attribute. ``None`` is treated as
+            "no spec, no model" — the provider-aware default fires.
+        provider: Either ``"anthropic"`` or ``"openai"``.
+
+    Returns:
+        A non-empty model name string.
+
+    Raises:
+        ValueError: ``provider`` is not ``"anthropic"`` or
+            ``"openai"``.
+    """
+    explicit: str | None = None
+    if eval_spec is not None:
+        # Duck-type read so callers passing custom objects (or a
+        # SimpleNamespace in tests) work without importing EvalSpec.
+        explicit = getattr(eval_spec, "grading_model", None)
+    if explicit is not None:
+        return explicit
+    if provider == "anthropic":
+        return _ANTHROPIC_DEFAULT_GRADING_MODEL
+    if provider == "openai":
+        # Deferred per-call import: the openai backend module is
+        # already imported at package load (see the re-export of
+        # ``OpenAIHelperError`` above), but reading the constant
+        # through the module attribute keeps test patches that
+        # target ``clauditor._providers._openai.DEFAULT_MODEL_L3``
+        # taking effect (per
+        # ``.claude/rules/back-compat-shim-discipline.md`` Pattern 3).
+        from clauditor._providers import _openai as _openai_mod
+
+        return _openai_mod.DEFAULT_MODEL_L3
+    raise ValueError(
+        f"resolve_grading_model: unknown provider {provider!r} — "
+        "expected 'anthropic' or 'openai'"
+    )
+
+
 __all__ = [
     "AnthropicAuthMissingError",
     "AnthropicHelperError",
@@ -244,6 +487,9 @@ __all__ = [
     "check_api_key_only",
     "check_openai_auth",
     "check_provider_auth",
+    "infer_provider_from_model",
+    "resolve_grading_model",
+    "resolve_grading_provider",
     "resolve_transport",
     # Private surface re-exported for back-compat with the
     # ``clauditor._anthropic`` shim and for tests that introspect

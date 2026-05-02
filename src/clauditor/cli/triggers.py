@@ -17,7 +17,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``triggers`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _transport_choice
+    from clauditor.cli import _provider_choice, _transport_choice
 
     p_triggers = subparsers.add_parser(
         "triggers", help="Run trigger precision testing for a skill"
@@ -46,6 +46,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "'auto'."
         ),
     )
+    p_triggers.add_argument(
+        "--grading-provider",
+        type=_provider_choice,
+        default=None,
+        choices=("anthropic", "openai", "auto"),
+        help=(
+            "Override the grading provider: 'anthropic', 'openai', or "
+            "'auto' (infer from grading_model). Four-layer precedence: "
+            "this flag > CLAUDITOR_GRADING_PROVIDER env > "
+            "EvalSpec.grading_provider > default 'auto'."
+        ),
+    )
 
 
 def cmd_triggers(args: argparse.Namespace) -> int:
@@ -69,14 +81,10 @@ def cmd_triggers(args: argparse.Namespace) -> int:
         )
         return 1
 
+    # Note: ``model`` resolution is deferred until after the provider is
+    # resolved below (#146 US-006 / DEC-004) so the per-provider default
+    # model can fire when ``grading_model`` is unset.
     model = args.model or spec.eval_spec.grading_model
-    if not model:
-        print(
-            "ERROR: No grading model specified. Set grading_model in "
-            "the eval spec or pass --model.",
-            file=sys.stderr,
-        )
-        return 2
 
     # Both the dry-run and non-dry-run paths need trigger_tests. Without
     # this guard, the non-dry-run path would print an empty 'Trigger
@@ -90,7 +98,7 @@ def cmd_triggers(args: argparse.Namespace) -> int:
     if args.dry_run:
         from clauditor.triggers import build_trigger_prompt
 
-        print(f"Model: {model}")
+        print(f"Model: {model or '<auto, resolved from provider>'}")
         queries = [
             (q, True) for q in trigger_tests.should_trigger
         ] + [(q, False) for q in trigger_tests.should_not_trigger]
@@ -103,20 +111,22 @@ def cmd_triggers(args: argparse.Namespace) -> int:
             print(prompt)
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009: fail fast when
-    # the provider's required auth is missing. Provider is resolved
-    # from ``eval_spec.grading_provider`` (defaults to ``"anthropic"``)
-    # so OpenAI-graded skills get an OpenAI-key-required guard.
-    # Guard lands AFTER --dry-run (dry-run is a cost-free preview — no
-    # API call, no key needed) and BEFORE test_triggers. Distinct
-    # ``except`` branches per
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005/US-006:
+    # fail fast when the provider's required auth is missing. Provider
+    # is resolved via the four-layer ``_resolve_grading_provider``
+    # helper (CLI flag > CLAUDITOR_GRADING_PROVIDER env >
+    # EvalSpec.grading_provider > default "auto" with auto-inference
+    # from grading_model), so OpenAI-graded skills get an OpenAI-key-
+    # required guard. Guard lands AFTER --dry-run (dry-run is a
+    # cost-free preview — no API call, no key needed) and BEFORE
+    # test_triggers. Distinct ``except`` branches per
     # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
-    provider = (
-        spec.eval_spec.grading_provider
-        if spec.eval_spec is not None
-        and spec.eval_spec.grading_provider is not None
-        else "anthropic"
-    )
+    #
+    # The resolved provider is threaded down through the
+    # ``test_triggers`` call below per #146 US-006.
+    from clauditor.cli import _resolve_grading_provider
+
+    provider = _resolve_grading_provider(args, spec.eval_spec)
     try:
         check_provider_auth(provider, "triggers")
     except AnthropicAuthMissingError as exc:
@@ -126,6 +136,17 @@ def cmd_triggers(args: argparse.Namespace) -> int:
         print(str(exc), file=sys.stderr)
         return 2
 
+    # #146 US-006 / DEC-004: when the operator did not pass ``--model``
+    # AND the spec did not set ``grading_model``, pick the per-provider
+    # default via the pure helper. An explicit ``--model`` always wins.
+    # Schema validation rejects empty/whitespace strings at load time
+    # per QG pass 1 of #146, so ``model`` is guaranteed non-empty after
+    # this resolution.
+    if not model:
+        from clauditor._providers import resolve_grading_model
+
+        model = resolve_grading_model(spec.eval_spec, provider)
+
     from clauditor.cli import _resolve_grader_transport
     from clauditor.triggers import test_triggers
 
@@ -134,6 +155,7 @@ def cmd_triggers(args: argparse.Namespace) -> int:
             spec.eval_spec,
             model,
             transport=_resolve_grader_transport(args, spec.eval_spec),
+            provider=provider,
         )
     )
 
