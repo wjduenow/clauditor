@@ -216,19 +216,29 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
     return _factory
 
 
-def _resolve_fixture_provider(eval_spec) -> str:
+def _resolve_fixture_provider(
+    eval_spec, model_override: str | None = None
+) -> str:
     """Pure resolver for the active provider in fixture-land.
 
     Mirrors the inner branch of :func:`_dispatch_fixture_auth_guard`
     so the orchestrator-call sites in the three grading fixtures
     (``clauditor_grader``, ``clauditor_blind_compare``,
     ``clauditor_triggers``) can pass the resolved value through to
-    the orchestrator's ``provider=`` kwarg per #146 US-006. Falls back
-    to ``"anthropic"`` when ``eval_spec`` is ``None`` or the underlying
-    pure helper raises (e.g. an unknown ``grading_model`` prefix that
-    the auto-inference layer cannot resolve) — the auth guard already
-    ran by this point in the calling fixture, so any provider mismatch
-    surfaces there rather than here.
+    the orchestrator's ``provider=`` kwarg per #146 US-006.
+
+    ``model_override`` threads the ``--clauditor-model`` pytest option
+    (operator intent) into auto-inference per
+    ``.claude/rules/spec-cli-precedence.md`` operator > author. Without
+    it, ``pytest --clauditor-model gpt-5.4`` on a default spec would
+    silently route as Anthropic and then send an OpenAI model through
+    the Anthropic backend (CodeRabbit finding on PR #164).
+
+    Returns the resolved provider; does NOT swallow ``ValueError``.
+    Fail-fast on resolver failure (e.g. ``grading_provider="auto"``
+    with an unknown model prefix) per DEC-003 so a misconfigured spec
+    or CLI override surfaces as a pytest test-setup error instead of
+    silently routing through the wrong provider.
     """
     import os
 
@@ -241,14 +251,16 @@ def _resolve_fixture_provider(eval_spec) -> str:
     if env_value is not None and env_value.strip() == "":
         env_value = None
     spec_value = getattr(eval_spec, "grading_provider", None)
-    model = getattr(eval_spec, "grading_model", None)
-    try:
-        return resolve_grading_provider(None, env_value, spec_value, model)
-    except ValueError:
-        return "anthropic"
+    # Operator intent (--clauditor-model) wins over author intent
+    # (eval_spec.grading_model) for auto-inference per
+    # .claude/rules/spec-cli-precedence.md.
+    model = model_override or getattr(eval_spec, "grading_model", None)
+    return resolve_grading_provider(None, env_value, spec_value, model)
 
 
-def _dispatch_fixture_auth_guard(eval_spec, fixture_name: str) -> None:
+def _dispatch_fixture_auth_guard(
+    eval_spec, fixture_name: str, model_override: str | None = None
+) -> None:
     """Pre-flight auth guard for the three grading fixtures.
 
     DEC-006 of ``plans/super/146-grading-provider-precedence.md``:
@@ -299,23 +311,22 @@ def _dispatch_fixture_auth_guard(eval_spec, fixture_name: str) -> None:
     # Resolve via the pure helper directly (NOT the CLI wrapper) so a
     # bogus ``eval_spec.grading_model`` does not become ``SystemExit(2)``
     # mid-test — the CLI wrapper escalates ``ValueError`` to a CLI
-    # exit-code routing that has no analogue in fixture-land. Any
-    # resolver failure (auto-inference of an unknown model prefix,
-    # invalid spec value, etc.) falls back to ``"anthropic"`` so the
-    # historical pre-#146 default fires; tests that exercise specific
-    # provider dispatch use a known-good ``grading_model``
-    # (``claude-sonnet-4-6`` or ``gpt-5.4``).
+    # exit-code routing that has no analogue in fixture-land. Per
+    # CodeRabbit finding on PR #164, this helper does NOT swallow
+    # ``ValueError`` — fail-fast on misconfigured spec / CLI override
+    # so the test setup phase surfaces the problem instead of
+    # silently routing through the wrong provider.
     env_value = os.environ.get("CLAUDITOR_GRADING_PROVIDER")
     if env_value is not None and env_value.strip() == "":
         env_value = None
     spec_value = getattr(eval_spec, "grading_provider", None)
-    model = getattr(eval_spec, "grading_model", None)
-    try:
-        provider = resolve_grading_provider(
-            None, env_value, spec_value, model
-        )
-    except ValueError:
-        provider = "anthropic"
+    # Operator intent (--clauditor-model) wins over author intent
+    # (eval_spec.grading_model) for auto-inference per
+    # .claude/rules/spec-cli-precedence.md.
+    model = model_override or getattr(eval_spec, "grading_model", None)
+    provider = resolve_grading_provider(
+        None, env_value, spec_value, model
+    )
 
     if provider == "anthropic":
         if _fixture_allow_cli():
@@ -371,8 +382,12 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
         # eval.json, sending them to debug their auth instead.
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
-        _dispatch_fixture_auth_guard(spec.eval_spec, "grader")
-        provider = _resolve_fixture_provider(spec.eval_spec)
+        _dispatch_fixture_auth_guard(
+            spec.eval_spec, "grader", model_override
+        )
+        provider = _resolve_fixture_provider(
+            spec.eval_spec, model_override
+        )
         # Provider-aware model defaulting (QG pass 1): explicit CLI
         # override > spec.grading_model > per-provider default. Avoids
         # passing an Anthropic-default model into an OpenAI-graded
@@ -463,9 +478,17 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
         spec = clauditor_spec(skill_path, eval_path)
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
-        _dispatch_fixture_auth_guard(spec.eval_spec, "blind_compare")
-        provider = _resolve_fixture_provider(spec.eval_spec)
         effective_model = model or request.config.getoption("--clauditor-model")
+        # Per CodeRabbit finding on PR #164: thread the operator-intent
+        # model (``model=`` kwarg or ``--clauditor-model``) into auth
+        # dispatch + provider resolution so an OpenAI model on a
+        # default spec routes to OpenAI auth, not Anthropic.
+        _dispatch_fixture_auth_guard(
+            spec.eval_spec, "blind_compare", effective_model
+        )
+        provider = _resolve_fixture_provider(
+            spec.eval_spec, effective_model
+        )
         return asyncio.run(
             blind_compare_from_spec(
                 spec,
@@ -503,8 +526,12 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
         # eval.json.
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
-        _dispatch_fixture_auth_guard(spec.eval_spec, "triggers")
-        provider = _resolve_fixture_provider(spec.eval_spec)
+        _dispatch_fixture_auth_guard(
+            spec.eval_spec, "triggers", model_override
+        )
+        provider = _resolve_fixture_provider(
+            spec.eval_spec, model_override
+        )
         # Provider-aware model defaulting (QG pass 1).
         from clauditor._providers import resolve_grading_model
         model = (

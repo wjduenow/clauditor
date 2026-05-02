@@ -32,14 +32,14 @@ the field is already unvalidated `str`, so this may be a no-op — but
 verify and document).
 
 **Why:** Epic A, ticket 3 of 4 in the multi-provider initiative (#143).
-#145 shipped the OpenAI backend + minimal spec field
+Issue `#145` shipped the OpenAI backend + minimal spec field
 (`grading_provider: str | None = None`). Operators currently get one
 provider per spec via the spec field only — no CLI override, no env-var
-override, no auto-inference. #146 promotes the knob to full operator-
-intent surface so a CI run can force `--grading-provider openai`
-regardless of what the spec author wrote, and an `eval.json` that just
-sets `"grading_model": "gpt-5.4"` Just Works without an explicit
-`grading_provider` declaration.
+override, no auto-inference. Ticket `#146` promotes the knob to full
+operator-intent surface so a CI run can force
+`--grading-provider openai` regardless of what the spec author wrote,
+and an `eval.json` that just sets `"grading_model": "gpt-5.4"` Just
+Works without an explicit `grading_provider` declaration.
 
 **Done when:**
 1. `EvalSpec.grading_provider` accepts `"anthropic" | "openai" | "auto"`
@@ -263,9 +263,10 @@ already enforces the contract).
 
 ## Phase 1 scoping (questions for user)
 
-**Q1 — Reconciling `None` (#145) vs `"auto"` (ticket).** The ticket says
+**Q1 — Reconciling `None` (`#145`) vs `"auto"` (ticket).** The ticket says
 `grading_provider: Literal["anthropic","openai","auto"] = "auto"` but
-#145 already shipped `grading_provider: str | None = None`. Three options:
+issue `#145` already shipped `grading_provider: str | None = None`.
+Three options:
 
 - **A.** Add `"auto"` as a third literal value; keep `None` default. The
   field becomes `Literal["anthropic","openai","auto"] | None = None`.
@@ -423,7 +424,7 @@ provider resolver fire before transport (current order) or after?
 |---|---|---|
 | Security | pass | Auth guards already provider-aware via #145; `OPENAI_API_KEY` already in `_API_KEY_ENV_VARS` per #145 DEC-008 |
 | API design | concern | Auto-inference silently falls back to anthropic on unknown prefixes — typo failure mode (`gtp-5.4` infers anthropic, surfaces opaquely as Anthropic 400) |
-| Data model | **blocker** | Q4=A forces `grading_model: str = "claude-sonnet-4-6"` → `str | None = None` migration. ~10 callers do `eval_spec.grading_model` directly without None-check; `to_dict` emit rule changes; `cli/init.py:99` scaffold may emit empty model |
+| Data model | **blocker** | Q4=A forces `grading_model: str = "claude-sonnet-4-6"` → `str \| None = None` migration. ~10 callers do `eval_spec.grading_model` directly without None-check; `to_dict` emit rule changes; `cli/init.py:99` scaffold may emit empty model |
 | Q1 back-compat | concern | Q1=B replaces the `None` sentinel with `"auto"` default. Existing eval.json files with explicit `"grading_provider": null` would fail load-time validation |
 | Test strategy | pass | ~30-40 new tests; the 16-combo CLI/env/spec/default precedence matrix can be parametrized |
 | Observability | concern | Should `auto → <provider>` resolution emit a one-time stderr announcement (mirroring `_announced_cli_transport`)? Consistency vs noise tradeoff |
@@ -459,9 +460,10 @@ mechanic is changing the field signature to `str | None = None` and adding a
 Also `quality_grader.py:24-63` has a runtime guard `_validate_provider_model` that
 raises when `provider="openai"` paired with a `claude-*` model. This guard is the
 load-bearing PRIOR ART for the Q4 issue — it currently catches the bug at runtime;
-#146 promotes the catch to load-time / resolve-time. The TODO comment at line 24
-explicitly names #146 as the owner ("Removable once #146 ships per-provider
-default-model precedence" — line 55). The guard's removal is part of #146's scope.
+Ticket `#146` promotes the catch to load-time / resolve-time. The TODO comment
+at line 24 explicitly names ticket `#146` as the owner ("Removable once #146
+ships per-provider default-model precedence" — line 55). The guard's removal
+is part of `#146`'s scope.
 
 **API-1 (CONCERN) — Auto-inference silently falls back on typos.**
 Q3=A says `claude-*` / `gpt-*` / `o[0-9]*` → known providers; anything else falls

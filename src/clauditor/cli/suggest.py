@@ -269,18 +269,35 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
     # the operator passed --grading-provider openai without --model,
     # we pre-stamp the OpenAI default so the resolver routes correctly
     # and the orchestrator gets a coherent (provider, model) pair.
+    #
+    # Explicit ``"auto"`` (CodeRabbit finding on PR #164) is treated as
+    # "no explicit provider" so the resolver's auto-inference path runs
+    # against the (still-unset) model — surfacing a precise
+    # "provide grading_provider or grading_model" error instead of
+    # silently routing to Anthropic. Only ``"anthropic"`` / ``"openai"``
+    # pre-stamp a default model.
     if args.model is None:
         import os as _os
-        explicit_provider = (
-            getattr(args, "grading_provider", None)
-            or _os.environ.get("CLAUDITOR_GRADING_PROVIDER", "").strip()
-            or None
+        explicit_provider: str | None = getattr(
+            args, "grading_provider", None
         )
+        if explicit_provider is None:
+            env_value = _os.environ.get("CLAUDITOR_GRADING_PROVIDER")
+            if env_value is not None and env_value.strip() != "":
+                explicit_provider = env_value.strip()
         if explicit_provider == "openai":
             from clauditor._providers._openai import DEFAULT_MODEL_L3
             args.model = DEFAULT_MODEL_L3
-        else:
+        elif explicit_provider == "anthropic":
             args.model = "claude-sonnet-4-6"
+        elif explicit_provider is None:
+            # No explicit provider signal anywhere — preserve the
+            # pre-#146 no-args default so the auto-inference path
+            # picks anthropic from the model prefix.
+            args.model = "claude-sonnet-4-6"
+        # else: explicit_provider == "auto" — leave args.model as None
+        # so _resolve_grading_provider raises "provide grading_provider
+        # or grading_model" (CLI maps to exit 2).
 
     provider = _resolve_grading_provider(args, skill_spec.eval_spec)
     try:

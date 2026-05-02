@@ -230,27 +230,37 @@ A few `EvalSpec` fields tune specific code paths and are safe to omit:
 - **`grading_model`** (string or null, default `"claude-sonnet-4-6"`)
   — the model used for Layer 3 grading (and L2 extraction, suggest,
   propose-eval, triggers, blind compare). Per-spec override when you
-  want to trade cost for fidelity. Now nullable per #146 DEC-004a:
-  when set to `null` (or omitted), the per-provider resolver
-  `clauditor._providers.resolve_grading_model` picks the standard
-  default for the resolved `grading_provider` —
-  `"claude-sonnet-4-6"` for `anthropic`, `"gpt-5.4"` for `openai`.
-  Explicit values pass through unchanged. Note: today the dataclass
-  default is still `"claude-sonnet-4-6"` (DEC-004a partial migration);
-  the flip to `null` is deferred until the falsy-short-circuit call
-  sites are swept (DEC-004b).
+  want to trade cost for fidelity. Nullable per #146 DEC-004a: a
+  spec that *explicitly* sets `grading_model: null` triggers the
+  per-provider resolver `clauditor._providers.resolve_grading_model`
+  to pick the standard default for the resolved `grading_provider`
+  — `"claude-sonnet-4-6"` for `anthropic`, `"gpt-5.4"` for
+  `openai`. **Note the partial-migration caveat:** today the
+  dataclass default is still `"claude-sonnet-4-6"`, so *omitting*
+  `grading_model` from a spec still loads as the literal Claude
+  string (NOT as `null`). To opt into per-provider defaulting,
+  write the key explicitly: `"grading_model": null`. The
+  default-flip to `null` is deferred to DEC-004b until the
+  falsy-short-circuit call sites are swept. In the interim, the
+  CLI seams (`grade`, `extract`, `compare --blind`) detect
+  provider/model mismatches via `infer_provider_from_model` and
+  exit 2 with an actionable message rather than sending a
+  Claude-default model to the OpenAI backend.
 - **`grading_provider`** (string or null, default `null`) — selects
   which provider's SDK handles LLM-grader calls. One of
-  `"anthropic"`, `"openai"`, `"auto"`, or `null` (treated as unset
-  and falls through to default). When `"auto"` (or unset/`null`),
-  the auto-inference layer maps `claude-*` → `anthropic`,
-  `gpt-*` / `o[0-9]+*` → `openai`; an unknown model prefix raises a
-  load-time error advising the operator to set
-  `--grading-provider` explicitly. Precedence:
+  `"anthropic"`, `"openai"`, `"auto"`, or `null`. **Note the
+  partial-migration caveat:** the dataclass default is `None`
+  (intentional per DEC-001a) and `to_dict()` omits the field when
+  unset, so a `null` value round-trips through load + serialize as
+  an absent key (not as a literal `null`). When the field resolves
+  to `"auto"` (or unset/`null`), the auto-inference layer maps
+  `claude-*` → `anthropic`, `gpt-*` / `o[0-9]+*` → `openai`; an
+  unknown model prefix raises a load-time error advising the
+  operator to set `--grading-provider` explicitly. Precedence:
   `--grading-provider` on the CLI wins, then
   `CLAUDITOR_GRADING_PROVIDER` env var, then this field, then the
-  `auto` default. Pre-#146 specs that wrote `null` round-trip
-  unchanged. Full reference:
+  `auto` default. Pre-#146 specs that omitted the field continue
+  to round-trip unchanged. Full reference:
   [`docs/cli-reference.md`](cli-reference.md) (per-command
   `--grading-provider` row).
 - **`grade_thresholds`** (object, default `null`) — an object with

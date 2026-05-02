@@ -122,12 +122,13 @@ def _resolve_grading_provider(
     When the winning value is ``"auto"`` the underlying pure helper
     :func:`clauditor._providers.resolve_grading_provider` delegates
     to :func:`clauditor._providers.infer_provider_from_model` using
-    the effective model resolved here:
+    the effective model resolved here. Operator > author per
+    ``.claude/rules/spec-cli-precedence.md``:
 
-    1. ``eval_spec.grading_model`` if a spec is attached and the
-       attribute is non-``None``;
-    2. else ``args.model`` if the CLI command exposes a ``--model``
-       flag and it was set;
+    1. ``args.model`` if the CLI command exposes a ``--model`` flag
+       and it was set (operator intent);
+    2. else ``eval_spec.grading_model`` if a spec is attached and
+       the attribute is non-``None`` (author intent);
     3. else ``None`` — the inference layer raises a precise
        ``ValueError`` ("provide grading_provider or grading_model")
        that this wrapper surfaces as ``SystemExit(2)``.

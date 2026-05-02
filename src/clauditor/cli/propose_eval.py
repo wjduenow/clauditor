@@ -364,23 +364,37 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
     # If the user didn't pass ``--model``, choose a sensible default
     # by peeking at the CLI/env provider signals: explicit
     # ``--grading-provider openai`` (or matching env) → OpenAI
-    # default; everything else → Anthropic default (preserves the
-    # pre-#146 behavior for the no-args case). The provider auto-
-    # inference layer in ``_resolve_grading_provider`` then sees the
-    # stamped model and picks the matching provider, so every path
-    # ends up self-consistent.
+    # default; ``"anthropic"`` or no signal → Anthropic default
+    # (preserves the pre-#146 behavior for the no-args case). The
+    # provider auto-inference layer in ``_resolve_grading_provider``
+    # then sees the stamped model and picks the matching provider,
+    # so every path ends up self-consistent.
+    #
+    # Explicit ``"auto"`` (CodeRabbit finding on PR #164) is treated
+    # as "no explicit provider" so the resolver's auto-inference path
+    # runs against the (still-unset) model — surfacing a precise
+    # "provide grading_provider or grading_model" error instead of
+    # silently routing to Anthropic.
     if args.model is None:
         import os as _os
-        explicit_provider = (
-            getattr(args, "grading_provider", None)
-            or _os.environ.get("CLAUDITOR_GRADING_PROVIDER", "").strip()
-            or None
+        explicit_provider: str | None = getattr(
+            args, "grading_provider", None
         )
+        if explicit_provider is None:
+            env_value = _os.environ.get("CLAUDITOR_GRADING_PROVIDER")
+            if env_value is not None and env_value.strip() != "":
+                explicit_provider = env_value.strip()
         if explicit_provider == "openai":
             from clauditor._providers._openai import DEFAULT_MODEL_L3
             args.model = DEFAULT_MODEL_L3
-        else:
+        elif explicit_provider in ("anthropic", None):
+            # No explicit provider signal, or explicit "anthropic" —
+            # stamp the Anthropic default so the resolver routes
+            # there. (None preserves the pre-#146 no-args default.)
             args.model = DEFAULT_PROPOSE_EVAL_MODEL
+        # else: explicit_provider == "auto" — leave args.model as None
+        # so _resolve_grading_provider raises "provide grading_provider
+        # or grading_model" (CLI maps to exit 2).
     model = args.model
     if args.verbose:
         print(f"[propose-eval] model: {model}", file=sys.stderr)

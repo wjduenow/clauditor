@@ -264,14 +264,19 @@ class EvalSpec:
     # that emit ``"grading_model": null`` round-trip cleanly. The
     # dataclass default is preserved (``"claude-sonnet-4-6"``) — the
     # default-flip from a hardcoded string to ``None`` (so the
-    # provider-aware ``_resolve_grading_model`` helper from US-001
-    # can pick a sensible per-provider default) is deferred until a
-    # follow-up story normalizes the ~10 production call sites that
-    # read ``eval_spec.grading_model`` directly via patterns like
-    # ``args.model or spec.eval_spec.grading_model``. ``_validate_provider_model``
-    # in ``quality_grader.py`` continues to guard the live runtime
-    # invariants. Bool guard at load time per
-    # ``.claude/rules/constant-with-type-info.md``.
+    # provider-aware ``resolve_grading_model`` helper from US-001
+    # can pick a sensible per-provider default) is deferred to
+    # DEC-004b until a follow-up story normalizes the ~10 production
+    # call sites that read ``eval_spec.grading_model`` directly via
+    # patterns like ``args.model or spec.eval_spec.grading_model``.
+    # In the interim, the CLI seams (``cli/grade.py``,
+    # ``cli/extract.py``, ``cli/compare.py``) check
+    # ``infer_provider_from_model(effective_model) == provider`` and
+    # exit 2 with an actionable message when the resolved provider
+    # mismatches the resolved model — covering the regression window
+    # that was previously protected by ``_validate_provider_model``
+    # in ``quality_grader.py`` (removed in this PR). Bool guard at
+    # load time per ``.claude/rules/constant-with-type-info.md``.
     grading_model: str | None = "claude-sonnet-4-6"
     output_file: str | None = None  # Single output file path
     output_files: list[str] = field(default_factory=list)  # Multiple file paths/globs

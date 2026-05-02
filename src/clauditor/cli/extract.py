@@ -145,6 +145,30 @@ def cmd_extract(args: argparse.Namespace) -> int:
         from clauditor._providers import resolve_grading_model
         model = resolve_grading_model(spec.eval_spec, provider)
 
+    # Provider/model coherence check (CodeRabbit finding on PR #164).
+    # ``EvalSpec.grading_model`` still defaults to ``"claude-sonnet-4-6"``
+    # at the dataclass level (DEC-004a partial migration), so a user
+    # who pinned ``--grading-provider openai`` on a spec that omitted
+    # ``grading_model`` would otherwise silently send a Claude model
+    # to the OpenAI backend and surface as an opaque 400. Fail fast
+    # with a clear actionable message instead.
+    from clauditor._providers import infer_provider_from_model
+    try:
+        model_provider = infer_provider_from_model(model)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if model_provider != provider:
+        print(
+            f"ERROR: resolved grading provider {provider!r} conflicts "
+            f"with grading_model {model!r} (inferred provider "
+            f"{model_provider!r}). Pass --model with a matching "
+            f"model, set EvalSpec.grading_model: null to use the "
+            f"per-provider default, or pin a matching --grading-provider.",
+            file=sys.stderr,
+        )
+        return 2
+
     # Get output
     skill_result = None
     if args.output:

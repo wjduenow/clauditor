@@ -2712,6 +2712,12 @@ class TestCmdCompareBlindProviderAuth:
         """Spec with ``grading_provider="openai"`` and ``OPENAI_API_KEY`` set
         → proceeds through the auth guard. Mocks the blind judge so the
         test does not actually call OpenAI.
+
+        The spec also pins ``grading_model="gpt-5.4"`` so the provider/
+        model coherence check (CodeRabbit finding on PR #164) does not
+        trip — without it, ``EvalSpec.grading_model`` defaults to
+        ``"claude-sonnet-4-6"`` which would conflict with the openai
+        provider until DEC-004b lands.
         """
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -2719,6 +2725,7 @@ class TestCmdCompareBlindProviderAuth:
         eval_spec = _make_eval_spec(
             user_prompt="Write a hello world",
             grading_provider="openai",
+            grading_model="gpt-5.4",
         )
         spec = _make_spec(eval_spec=eval_spec)
         report = _make_blind_report()
@@ -2748,6 +2755,7 @@ class TestCmdCompareBlindProviderAuth:
         eval_spec = _make_eval_spec(
             user_prompt="Write a hello world",
             grading_provider="openai",
+            grading_model="gpt-5.4",
         )
         spec = _make_spec(eval_spec=eval_spec)
         report = _make_blind_report()
@@ -2890,13 +2898,13 @@ class TestCmdTriggers:
 
         assert excinfo.value.code == 2
         err = capsys.readouterr().err
-        # Either the legacy "No grading model specified" surface or
-        # the new "infer_provider_from_model" surface is acceptable;
-        # both communicate the same actionable failure.
-        assert (
-            "No grading model specified" in err
-            or "model must be a non-empty string" in err
-        )
+        # Tightened per CodeRabbit finding on PR #164: assert the new
+        # provider-resolution failure surface, not the legacy
+        # ``"No grading model specified"`` message. Accepting either
+        # would let the test pass even if ``_resolve_grading_provider``
+        # were bypassed and the legacy branch returned — defeating the
+        # regression-guard purpose.
+        assert "model must be a non-empty string" in err
 
     def test_triggers_missing_trigger_tests_exits_1(self, capsys):
         """Non-dry-run with no trigger_tests on the spec must exit 1 with a
@@ -6027,9 +6035,14 @@ class TestCmdSuggest:
             *,
             model=None,
             transport="auto",
-            provider="anthropic",
+            provider,
         ):
+            # ``provider`` is required (no default) per CodeRabbit
+            # finding on PR #164: a default of ``"anthropic"`` would
+            # let the test pass even if ``main()`` stopped threading
+            # the new kwarg, weakening the regression guard.
             captured["source_iteration"] = suggest_input.source_iteration
+            captured["provider"] = provider
             return self._fake_report(source_iteration=suggest_input.source_iteration)
 
         with patch("clauditor.cli.suggest.propose_edits", new=_fake_propose):
@@ -6037,6 +6050,8 @@ class TestCmdSuggest:
 
         assert rc == 0
         assert captured["source_iteration"] == 1
+        # Default no-args path stamps anthropic per QG pass 2 of #146.
+        assert captured["provider"] == "anthropic"
 
     def test_with_transcripts_forwarded(self, tmp_path, monkeypatch):
         skill_dir = self._setup_failing_run(tmp_path, monkeypatch)
@@ -6053,9 +6068,11 @@ class TestCmdSuggest:
             *,
             model=None,
             transport="auto",
-            provider="anthropic",
+            provider,
         ):
+            # ``provider`` required per CodeRabbit finding on PR #164.
             captured["transcripts"] = suggest_input.transcript_events
+            captured["provider"] = provider
             return self._fake_report()
 
         with patch("clauditor.cli.suggest.propose_edits", new=_fake_propose):
@@ -6067,6 +6084,7 @@ class TestCmdSuggest:
         assert captured["transcripts"] is not None
         assert len(captured["transcripts"]) == 1
         assert len(captured["transcripts"][0]) == 1
+        assert captured["provider"] == "anthropic"
 
     @pytest.mark.parametrize(
         "report_overrides, expected_rc, expected_err_substrs",
@@ -6996,7 +7014,13 @@ class TestCmdGradeProviderAuth:
         output_file = tmp_path / "output.txt"
         output_file.write_text("hello world")
 
-        eval_spec = _make_eval_spec(grading_provider="openai")
+        # Pin a gpt-* model so the provider/model coherence check
+        # (CodeRabbit finding on PR #164) does not trip — without it,
+        # ``EvalSpec.grading_model`` defaults to ``"claude-sonnet-4-6"``
+        # which conflicts with provider="openai" until DEC-004b lands.
+        eval_spec = _make_eval_spec(
+            grading_provider="openai", grading_model="gpt-5.4"
+        )
         spec = _make_spec(eval_spec=eval_spec)
         report = make_grading_report(passed=True)
 
@@ -7023,7 +7047,9 @@ class TestCmdGradeProviderAuth:
         output_file = tmp_path / "output.txt"
         output_file.write_text("hello world")
 
-        eval_spec = _make_eval_spec(grading_provider="openai")
+        eval_spec = _make_eval_spec(
+            grading_provider="openai", grading_model="gpt-5.4"
+        )
         spec = _make_spec(eval_spec=eval_spec)
         report = make_grading_report(passed=True)
 
@@ -7103,7 +7129,9 @@ class TestCmdExtractProviderAuth:
         output_file.write_text("some skill output with results")
 
         eval_spec = _make_eval_spec(
-            sections=_make_sections(), grading_provider="openai"
+            sections=_make_sections(),
+            grading_provider="openai",
+            grading_model="gpt-5.4",
         )
         spec = _make_spec(eval_spec=eval_spec)
         results = self._make_extraction_set()
@@ -7131,7 +7159,9 @@ class TestCmdExtractProviderAuth:
         output_file.write_text("some skill output with results")
 
         eval_spec = _make_eval_spec(
-            sections=_make_sections(), grading_provider="openai"
+            sections=_make_sections(),
+            grading_provider="openai",
+            grading_model="gpt-5.4",
         )
         spec = _make_spec(eval_spec=eval_spec)
         results = self._make_extraction_set()
@@ -7295,3 +7325,501 @@ class TestCmdTriggersProviderAuth:
             rc = main(["triggers", "skill.md"])
 
         assert rc == 0
+
+
+class TestExplicitAutoProviderHandling:
+    """Explicit ``--grading-provider auto`` should NOT collapse to
+    the Anthropic default in suggest / propose-eval (CodeRabbit
+    finding on PR #164).
+
+    These commands pre-stamp a default model based on the explicit
+    provider signal *before* running ``_resolve_grading_provider``.
+    Pre-fix, ``"auto"`` was treated like "unset" and silently
+    pre-stamped Anthropic; post-fix, ``"auto"`` is treated as "no
+    explicit provider" so the resolver's auto-inference path runs
+    and surfaces the precise "provide grading_provider or
+    grading_model" error.
+    """
+
+    def test_suggest_explicit_auto_no_model_exits_2_with_precise_message(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``clauditor suggest --grading-provider auto`` with no
+        ``--model`` and no ``grading_model`` on the spec → exit 2 with
+        the auto-inference's "provide grading_provider or grading_model"
+        message (NOT silently routed to Anthropic).
+        """
+        # Stage a minimal failing-iteration so suggest reaches the
+        # auto-inference path. Uses the same fixtures TestCmdSuggest's
+        # _setup_failing_run does (replicate the minimum here).
+        (tmp_path / ".git").mkdir()
+        skill_md = tmp_path / "my-skill.md"
+        skill_md.write_text(
+            "---\nname: my-skill\ndescription: A test skill\n---\n"
+            "Skill body.\n"
+        )
+        eval_path = tmp_path / "my-skill.eval.json"
+        # Explicit grading_model=null so spec.grading_model resolves
+        # to None — forcing auto-inference into the "no model" branch.
+        eval_path.write_text(json.dumps({
+            "skill_name": "my-skill",
+            "test_args": "x",
+            "grading_model": None,
+            "assertions": [
+                {"id": "a1", "type": "contains", "needle": "x"}
+            ],
+            "grading_criteria": [
+                {"id": "c1", "criterion": "be helpful"}
+            ],
+        }))
+        # Stage a failing iteration sidecar so suggest has work to do.
+        skill_dir = tmp_path / ".clauditor" / "iteration-1" / "my-skill"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "grading.json").write_text(json.dumps({
+            "schema_version": 1,
+            "skill_name": "my-skill",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "api",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "duration_seconds": 0.0,
+            "passed": False,
+            "pass_rate": 0.0,
+            "mean_score": 0.0,
+            "results": [
+                {
+                    "id": "c1",
+                    "criterion": "be helpful",
+                    "passed": False,
+                    "score": 0.0,
+                    "feedback": "no",
+                }
+            ],
+        }))
+        (skill_dir / "assertions.json").write_text(json.dumps({
+            "schema_version": 1,
+            "skill": "my-skill",
+            "iteration": 1,
+            "runs": [
+                {
+                    "run": 0,
+                    "summary": {"total": 1, "passed": 0, "failed": 1},
+                    "results": [
+                        {
+                            "id": "a1",
+                            "name": "contains",
+                            "kind": "contains",
+                            "passed": False,
+                            "message": "missing 'x'",
+                        }
+                    ],
+                }
+            ],
+        }))
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        # Set both keys so the auth guard does not short-circuit before
+        # the resolver runs (we want the resolver itself to fail).
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+        # _resolve_grading_provider escalates ValueError to SystemExit(2)
+        # per .claude/rules/llm-cli-exit-code-taxonomy.md.
+        with pytest.raises(SystemExit) as excinfo:
+            main([
+                "suggest", "my-skill.md", "--grading-provider", "auto"
+            ])
+
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        # The resolver surfaces its missing-model message rather than
+        # silently routing to Anthropic.
+        assert "provide grading_provider or grading_model" in err
+
+
+class TestProviderModelCoherence:
+    """Provider/model coherence guard added per CodeRabbit finding on PR #164.
+
+    ``EvalSpec.grading_model`` still defaults to ``"claude-sonnet-4-6"``
+    at the dataclass level (DEC-004a partial migration). The CLI seams
+    (``grade``, ``extract``, ``compare --blind``) detect when the
+    resolved provider does not match the inferred provider of the
+    resolved model and exit 2 with an actionable message rather than
+    sending a Claude-default model to the OpenAI backend.
+    """
+
+    def test_grade_provider_openai_with_default_claude_model_exits_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--grading-provider openai`` on a spec that omitted
+        ``grading_model`` (defaulting to ``"claude-sonnet-4-6"``) →
+        exit 2 with the coherence-mismatch message. The grader mock
+        is never reached.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        eval_spec = _make_eval_spec()  # default grading_model="claude-sonnet-4-6"
+        spec = _make_spec(eval_spec=eval_spec)
+        report = make_grading_report(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ) as mock_grade,
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--grading-provider",
+                    "openai",
+                    "--output",
+                    str(output_file),
+                ]
+            )
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "conflicts with grading_model" in err
+        assert "claude-sonnet-4-6" in err
+        assert "'openai'" in err
+        assert mock_grade.await_count == 0
+
+    def test_grade_provider_openai_with_explicit_gpt_model_succeeds(
+        self, tmp_path, monkeypatch
+    ):
+        """``--grading-provider openai --model gpt-5.4`` passes the
+        coherence check and reaches the grader mock.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        eval_spec = _make_eval_spec()  # default grading_model="claude-sonnet-4-6"
+        spec = _make_spec(eval_spec=eval_spec)
+        report = make_grading_report(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--grading-provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--output",
+                    str(output_file),
+                ]
+            )
+
+        assert rc == 0
+
+    def test_extract_provider_openai_with_default_claude_model_exits_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``extract --grading-provider openai`` on a spec with default
+        Claude grading_model → exit 2; extract_and_grade is never called.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+            ) as mock_extract,
+        ):
+            rc = main(
+                [
+                    "extract",
+                    "skill.md",
+                    "--grading-provider",
+                    "openai",
+                    "--output",
+                    str(output_file),
+                ]
+            )
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "conflicts with grading_model" in err
+        assert mock_extract.await_count == 0
+
+    def test_compare_blind_provider_openai_with_default_claude_model_exits_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``compare --blind --grading-provider openai`` with the spec's
+        default Claude grading_model → exit 2; blind_compare is never
+        called.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        before, after = _write_pair(tmp_path)
+        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
+        spec = _make_spec(eval_spec=eval_spec)
+        report = _make_blind_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.blind_compare",
+                new_callable=AsyncMock,
+                return_value=report,
+            ) as mock_blind,
+        ):
+            rc = main(_blind_argv(before, after) + [
+                "--grading-provider", "openai"
+            ])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "conflicts with grading_model" in err
+        assert mock_blind.await_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Shared CLI helpers: argparse-type validators + four-layer precedence
+# resolvers from src/clauditor/cli/__init__.py. Moved here from
+# tests/test_cli_init.py per CodeRabbit finding on PR #164 — the repo
+# convention is one test file per source module, and cli/__init__.py is
+# already covered by tests/test_cli.py.
+# ---------------------------------------------------------------------------
+
+
+class TestProviderChoice:
+    """Argparse type validator for the ``--grading-provider`` flag.
+
+    Mirrors ``TestTransportChoiceValidator`` elsewhere in this file.
+    """
+
+    @pytest.mark.parametrize("value", ["anthropic", "openai", "auto"])
+    def test_accepts_each_literal(self, value):
+        """Every accepted literal round-trips unchanged."""
+        from clauditor.cli import _provider_choice
+
+        assert _provider_choice(value) == value
+
+    @pytest.mark.parametrize(
+        "value", ["claude", "", "ANTHROPIC", "OpenAI", " auto", "gpt"]
+    )
+    def test_rejects_invalid(self, value):
+        """Anything outside the literal set raises ``ArgumentTypeError``.
+
+        argparse maps the ``ArgumentTypeError`` to exit 2 at parse
+        time per ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+        """
+        from clauditor.cli import _provider_choice
+
+        with pytest.raises(
+            argparse.ArgumentTypeError, match="must be one of"
+        ):
+            _provider_choice(value)
+
+    def test_signature_returns_str(self):
+        """The validator returns ``str``, matching argparse ``type=`` shape."""
+        from clauditor.cli import _provider_choice
+
+        result = _provider_choice("anthropic")
+        assert isinstance(result, str)
+        assert result == "anthropic"
+
+
+class _FakeEvalSpecForProviderResolver:
+    """Duck-typed eval-spec stand-in for ``_resolve_grading_provider`` tests.
+
+    The CLI helper reads ``grading_provider`` and ``grading_model``
+    via attribute access, so a tiny stub keeps tests independent of
+    the full :class:`EvalSpec` validator surface.
+    """
+
+    def __init__(
+        self,
+        *,
+        grading_provider: str | None = None,
+        grading_model: str | None = "claude-sonnet-4-6",
+    ) -> None:
+        self.grading_provider = grading_provider
+        self.grading_model = grading_model
+
+
+class TestResolveGradingProvider:
+    """Four-layer precedence for ``_resolve_grading_provider``.
+
+    DEC-001 / DEC-003 / DEC-007 of
+    ``plans/super/146-grading-provider-precedence.md``: CLI > env >
+    spec > default ``"auto"`` (which auto-infers from the effective
+    model). Whitespace-only env values normalize to ``None``.
+    """
+
+    def test_cli_wins_over_env_spec_default(self, monkeypatch):
+        """CLI flag wins even when env and spec also name a value."""
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "anthropic")
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider="openai")
+        eval_spec = _FakeEvalSpecForProviderResolver(grading_provider="anthropic")
+        result = _resolve_grading_provider(args, eval_spec)
+        assert result == "openai"
+
+    def test_env_wins_over_spec_and_default(self, monkeypatch):
+        """Env wins when CLI flag is unset."""
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "openai")
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None)
+        eval_spec = _FakeEvalSpecForProviderResolver(grading_provider="anthropic")
+        result = _resolve_grading_provider(args, eval_spec)
+        assert result == "openai"
+
+    def test_spec_wins_over_default(self, monkeypatch):
+        """Spec wins when CLI and env are both unset."""
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None)
+        eval_spec = _FakeEvalSpecForProviderResolver(grading_provider="openai")
+        result = _resolve_grading_provider(args, eval_spec)
+        assert result == "openai"
+
+    def test_default_auto_infers_anthropic_from_claude_model(
+        self, monkeypatch
+    ):
+        """Default ``"auto"`` + claude model → ``"anthropic"``."""
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None)
+        eval_spec = _FakeEvalSpecForProviderResolver(
+            grading_provider=None, grading_model="claude-sonnet-4-6"
+        )
+        result = _resolve_grading_provider(args, eval_spec)
+        assert result == "anthropic"
+
+    def test_auto_infers_openai_from_gpt_model(self, monkeypatch):
+        """``--grading-provider auto`` + gpt model → ``"openai"``."""
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider="auto")
+        eval_spec = _FakeEvalSpecForProviderResolver(
+            grading_provider=None, grading_model="gpt-5.4"
+        )
+        result = _resolve_grading_provider(args, eval_spec)
+        assert result == "openai"
+
+    def test_invalid_env_exits_2_with_stderr_message(
+        self, monkeypatch, capsys
+    ):
+        """Invalid ``CLAUDITOR_GRADING_PROVIDER`` value → SystemExit(2)."""
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "bogus")
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None)
+        with pytest.raises(SystemExit) as exc_info:
+            _resolve_grading_provider(args, None)
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "ERROR:" in captured.err
+        assert "bogus" in captured.err
+        assert "CLAUDITOR_GRADING_PROVIDER" in captured.err
+
+    def test_whitespace_env_treated_as_unset_falls_through_to_spec(
+        self, monkeypatch
+    ):
+        """Whitespace-only env value normalizes to ``None`` → spec wins."""
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "   ")
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None)
+        eval_spec = _FakeEvalSpecForProviderResolver(grading_provider="openai")
+        result = _resolve_grading_provider(args, eval_spec)
+        # whitespace-only env → treated as None → spec wins
+        assert result == "openai"
+
+    def test_no_eval_spec_with_args_model_drives_auto_inference(
+        self, monkeypatch
+    ):
+        """No eval_spec but ``args.model`` set → used for auto-inference."""
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None, model="gpt-5.4")
+        result = _resolve_grading_provider(args, None)
+        assert result == "openai"
+
+    def test_no_eval_spec_no_model_auto_raises_systemexit_2(
+        self, monkeypatch, capsys
+    ):
+        """Default ``"auto"`` + no spec + no ``args.model`` → exit 2.
+
+        The pure resolver delegates to ``infer_provider_from_model``
+        with ``model=None``, which raises a ``ValueError`` carrying
+        a precise actionable message ("provide grading_provider or
+        grading_model"). The CLI wrapper routes that to exit 2.
+        """
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None)
+        with pytest.raises(SystemExit) as exc_info:
+            _resolve_grading_provider(args, None)
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "ERROR:" in captured.err
+
+    def test_auto_with_args_model_takes_precedence_over_spec_grading_model(
+        self, monkeypatch
+    ):
+        """When both ``eval_spec.grading_model`` and ``args.model`` are
+        set, the operator's ``--model`` wins over the spec's
+        ``grading_model`` for auto-inference (QG pass 1 of #146 per
+        ``.claude/rules/spec-cli-precedence.md`` operator > author).
+        """
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(
+            grading_provider="auto", model="gpt-5.4"
+        )
+        eval_spec = _FakeEvalSpecForProviderResolver(
+            grading_provider=None, grading_model="claude-sonnet-4-6"
+        )
+        result = _resolve_grading_provider(args, eval_spec)
+        # args.model="gpt-..." → "openai" wins over
+        # spec.grading_model="claude-..." → "anthropic".
+        assert result == "openai"
+
+    def test_missing_grading_provider_attr_on_args(self, monkeypatch):
+        """``args`` without a ``grading_provider`` attr falls through.
+
+        Pre-US-005, most CLI commands don't yet expose the
+        ``--grading-provider`` flag. The helper uses
+        ``getattr(args, "grading_provider", None)`` defensively so it
+        works on any ``Namespace`` shape.
+        """
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace()  # no grading_provider attr
+        eval_spec = _FakeEvalSpecForProviderResolver(grading_provider="openai")
+        result = _resolve_grading_provider(args, eval_spec)
+        assert result == "openai"

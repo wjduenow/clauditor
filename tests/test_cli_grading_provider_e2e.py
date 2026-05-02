@@ -132,12 +132,17 @@ class TestGradingProviderPrecedenceE2E:
     @pytest.mark.parametrize(
         "test_id, eval_extra, env, cli_extra, expected_provider",
         [
-            # CLI flag wins over spec-declared anthropic.
+            # CLI flag wins over spec-declared anthropic. ``--model``
+            # included so the post-#164 provider/model coherence
+            # check is satisfied (CodeRabbit finding on PR #164:
+            # default ``EvalSpec.grading_model="claude-sonnet-4-6"``
+            # would otherwise conflict with the resolved openai
+            # provider).
             (
                 "cli_overrides_spec",
                 {"grading_provider": "anthropic"},
                 {},
-                ["--grading-provider", "openai"],
+                ["--grading-provider", "openai", "--model", "gpt-5.4"],
                 "openai",
             ),
             # CLI flag wins over env var (which itself disagrees with spec).
@@ -145,13 +150,15 @@ class TestGradingProviderPrecedenceE2E:
                 "cli_overrides_env",
                 {"grading_provider": "anthropic"},
                 {"CLAUDITOR_GRADING_PROVIDER": "anthropic"},
-                ["--grading-provider", "openai"],
+                ["--grading-provider", "openai", "--model", "gpt-5.4"],
                 "openai",
             ),
-            # Env var wins over spec when no CLI flag.
+            # Env var wins over spec when no CLI flag. The spec must
+            # opt into a gpt-* model so the env-driven openai
+            # provider doesn't trip the coherence check.
             (
                 "env_overrides_spec",
-                {"grading_provider": "anthropic"},
+                {"grading_provider": "anthropic", "grading_model": "gpt-5.4"},
                 {"CLAUDITOR_GRADING_PROVIDER": "openai"},
                 [],
                 "openai",

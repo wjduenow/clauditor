@@ -314,8 +314,35 @@ def _run_blind_compare(
     # so the stderr progress line agrees with what blind_compare_from_spec
     # passes to call_model. Avoids "Running blind A/B judge (None)" when
     # grading_model is unset (post-#146 nullable migration).
-    from clauditor._providers import resolve_grading_model
+    from clauditor._providers import (
+        infer_provider_from_model,
+        resolve_grading_model,
+    )
     effective_model = resolve_grading_model(skill_spec.eval_spec, provider)
+
+    # Provider/model coherence check (CodeRabbit finding on PR #164):
+    # ``EvalSpec.grading_model`` still defaults to ``"claude-sonnet-4-6"``
+    # at the dataclass level (DEC-004a partial migration), so a user
+    # who pinned ``--grading-provider openai`` on a spec that omitted
+    # ``grading_model`` would otherwise authenticate against OpenAI but
+    # still send the Claude-default model — turning the new flag into
+    # a misroute rather than a real override. Fail fast.
+    try:
+        model_provider = infer_provider_from_model(effective_model)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if model_provider != provider:
+        print(
+            f"ERROR: resolved grading provider {provider!r} conflicts "
+            f"with grading_model {effective_model!r} (inferred provider "
+            f"{model_provider!r}). Pass --model with a matching "
+            f"model, set EvalSpec.grading_model: null to use the "
+            f"per-provider default, or pin a matching --grading-provider.",
+            file=sys.stderr,
+        )
+        return 2
+
     print(
         f"Running blind A/B judge ({effective_model}) "
         "— 2 API calls...",
@@ -326,6 +353,7 @@ def _run_blind_compare(
             skill_spec,
             output_a,
             output_b,
+            model=effective_model,
             transport=effective_transport,
             provider=provider,
         )

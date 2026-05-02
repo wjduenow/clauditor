@@ -381,6 +381,29 @@ def cmd_grade(args: argparse.Namespace) -> int:
 
         model = resolve_grading_model(spec.eval_spec, provider)
 
+    # Provider/model coherence check (CodeRabbit finding on PR #164).
+    # ``EvalSpec.grading_model`` still defaults to ``"claude-sonnet-4-6"``
+    # at the dataclass level (DEC-004a partial migration), so a user
+    # who pinned ``--grading-provider openai`` on a spec that omitted
+    # ``grading_model`` would otherwise silently send a Claude model
+    # to the OpenAI backend. Fail fast with a clear actionable message.
+    from clauditor._providers import infer_provider_from_model
+    try:
+        model_provider = infer_provider_from_model(model)
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+    if model_provider != provider:
+        print(
+            f"ERROR: resolved grading provider {provider!r} conflicts "
+            f"with grading_model {model!r} (inferred provider "
+            f"{model_provider!r}). Pass --model with a matching "
+            f"model, set EvalSpec.grading_model: null to use the "
+            f"per-provider default, or pin a matching --grading-provider.",
+            file=sys.stderr,
+        )
+        return 2
+
     # Allocate the iteration workspace early so that a collision
     # (--iteration N already exists) fails before we make any LLM calls.
     clauditor_dir = resolve_clauditor_dir()
@@ -712,7 +735,12 @@ def _write_workspace_sidecars(
 
     if spec.eval_spec.sections:
         _write_extraction_sidecar(
-            skill_dir, primary_text, spec, transport=transport, provider=provider
+            skill_dir,
+            primary_text,
+            spec,
+            model,
+            transport=transport,
+            provider=provider,
         )
 
     if getattr(args, "baseline", False):
@@ -851,11 +879,18 @@ def _write_extraction_sidecar(
     skill_dir: Path,
     primary_text: str,
     spec: SkillSpec,
+    model: str,
     transport: str = "auto",
     *,
     provider: str = "anthropic",
 ) -> None:
-    """Run Layer 2 schema extraction and persist ``extraction.json``."""
+    """Run Layer 2 schema extraction and persist ``extraction.json``.
+
+    ``model`` is the resolved grading model the caller computed for
+    the surrounding ``cmd_grade`` invocation. Passed through verbatim
+    so OpenAI-graded skills don't fall back to ``extract_and_report``'s
+    Anthropic-default model (CodeRabbit finding on PR #164).
+    """
     import asyncio
 
     from clauditor.grader import extract_and_report
@@ -864,6 +899,7 @@ def _write_extraction_sidecar(
         extract_and_report(
             primary_text,
             spec.eval_spec,
+            model=model,
             skill_name=spec.skill_name,
             transport=transport,
             provider=provider,
