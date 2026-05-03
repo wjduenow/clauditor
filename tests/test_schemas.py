@@ -2146,6 +2146,115 @@ class TestEvalSpecTransport:
         assert "transport" not in round_tripped
 
 
+class TestEvalSpecHarness:
+    """US-001 / DEC-001 / DEC-008 of #151: ``EvalSpec.harness`` parsing
+    in ``from_dict``.
+
+    Default ``"auto"`` preserves back-compat. The literal set
+    ``{"claude-code", "codex", "auto"}`` is enforced at load time;
+    non-string, bool, null, and unknown-literal values are rejected
+    with a ``ValueError`` per
+    ``.claude/rules/constant-with-type-info.md``. ``to_dict`` omits
+    the key when value equals the default ``"auto"`` (matches the
+    ``transport`` skip-if-default pattern).
+    """
+
+    def test_missing_defaults_to_auto(self, tmp_path):
+        """No ``harness`` key → ``.harness == "auto"`` (back-compat)."""
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.harness == "auto"
+
+    def test_valid_claude_code_loads(self, tmp_path):
+        """``{"harness": "claude-code"}`` loads with ``.harness == "claude-code"``."""
+        data = {"skill_name": "s", "harness": "claude-code"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.harness == "claude-code"
+
+    def test_valid_codex_loads(self, tmp_path):
+        """``{"harness": "codex"}`` loads with ``.harness == "codex"``."""
+        data = {"skill_name": "s", "harness": "codex"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.harness == "codex"
+
+    def test_valid_auto_loads(self, tmp_path):
+        """``{"harness": "auto"}`` loads with ``.harness == "auto"``."""
+        data = {"skill_name": "s", "harness": "auto"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.harness == "auto"
+
+    def test_invalid_string_rejects(self, tmp_path):
+        """Unknown literal string (e.g. ``"raw-api"``) rejected with a
+        ``must be one of`` error that names the allowed values.
+        """
+        data = {"skill_name": "s", "harness": "raw-api"}
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"'harness' must be one of 'claude-code', 'codex', "
+                r"'auto', got 'raw-api'"
+            ),
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_non_string_rejects(self, tmp_path):
+        """Non-string (e.g. int 42) rejected with a type error."""
+        data = {"skill_name": "s", "harness": 42}
+        with pytest.raises(
+            ValueError,
+            match=r"'harness' must be a string, got int 42",
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_bool_rejects(self, tmp_path):
+        """Bool guard per ``.claude/rules/constant-with-type-info.md``:
+        ``isinstance(True, str)`` is False but we still want a distinct
+        error path that names the type.
+        """
+        data = {"skill_name": "s", "harness": True}
+        with pytest.raises(
+            ValueError,
+            match=r"'harness' must be a string, got bool True",
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_null_rejects(self, tmp_path):
+        """Explicit null is rejected — authors should omit the key
+        to get the default ``"auto"``, not write ``null`` explicitly.
+        """
+        data = {"skill_name": "s", "harness": None}
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"'harness' must be one of 'claude-code', 'codex', "
+                r"'auto', got null"
+            ),
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_round_trip_non_default(self, tmp_path):
+        """Non-default harness round-trips through to_dict / from_dict."""
+        data = {"skill_name": "s", "harness": "codex"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        round_tripped = spec.to_dict()
+        assert round_tripped.get("harness") == "codex"
+        # End-to-end: re-load preserves value.
+        spec2 = EvalSpec.from_dict(round_tripped, spec_dir=tmp_path)
+        assert spec2.harness == "codex"
+
+    def test_round_trip_default_omits_key(self, tmp_path):
+        """Default ``"auto"`` is omitted from ``to_dict`` output to
+        keep diffs minimal (matches ``transport`` pattern).
+        """
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        round_tripped = spec.to_dict()
+        assert "harness" not in round_tripped
+        # End-to-end: re-load yields the default again.
+        spec2 = EvalSpec.from_dict(round_tripped, spec_dir=tmp_path)
+        assert spec2.harness == "auto"
+
+
 class TestEvalSpecGradingModel:
     """US-003 / DEC-004a of #146: ``EvalSpec.grading_model`` nullable
     migration.
