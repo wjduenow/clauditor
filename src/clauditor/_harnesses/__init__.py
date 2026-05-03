@@ -26,7 +26,7 @@ from typing import ClassVar, Protocol, runtime_checkable
 
 from clauditor.runner import InvokeResult
 
-__all__ = ["Harness", "InvokeResult"]
+__all__ = ["Harness", "InvokeResult", "construct_harness"]
 
 
 @runtime_checkable
@@ -102,3 +102,70 @@ class Harness(Protocol):
         analogous to how all harnesses accept ``model`` on ``invoke``.
         """
         ...
+
+
+def construct_harness(name: str) -> Harness:
+    """Construct a :class:`Harness` instance from its literal name.
+
+    DEC-009 / DEC-012 of ``plans/super/151-harness-precedence.md``.
+    Thin dispatcher mirroring the shape of
+    :func:`clauditor._providers.call_model` (the provider-axis
+    dispatcher in ``_providers/__init__.py``). The pure resolver
+    :func:`clauditor._providers.resolve_harness` returns a literal
+    name; this helper turns the name into the concrete harness
+    instance.
+
+    Uses **deferred per-call imports** for ``_claude_code`` and
+    ``_codex`` per ``.claude/rules/back-compat-shim-discipline.md``
+    Pattern 3. Both submodules import ``Harness`` and
+    ``InvokeResult`` from this ``__init__.py`` at protocol-class
+    load time, so an eager top-level ``from clauditor._harnesses
+    import _claude_code`` here would circular-import. Deferring
+    inside the function body breaks the cycle without sacrificing
+    test-patchability — patches that target
+    ``clauditor._harnesses._claude_code.ClaudeCodeHarness`` (or the
+    codex sibling) still take effect because the lookup happens at
+    call time against the module object.
+
+    The dispatcher rejects ``"auto"`` explicitly: callers must
+    resolve auto via :func:`~clauditor._providers.resolve_harness`
+    before constructing. Letting ``"auto"`` through here would
+    couple the harness package to PATH lookup, which belongs in
+    the resolver layer (one seam per concern).
+
+    Args:
+        name: One of ``"claude-code"`` or ``"codex"``. ``"auto"``
+            and unknown values raise.
+
+    Returns:
+        A concrete :class:`Harness` instance with default
+        construction kwargs (``claude_bin="claude"`` /
+        ``codex_bin="codex"``, ``model=None``,
+        ``allow_hang_heuristic=True`` for Claude Code).
+
+    Raises:
+        ValueError: ``name`` is ``"auto"`` (not yet resolved) or
+            any unknown literal.
+    """
+    if name == "claude-code":
+        # Deferred import: ``_claude_code`` imports ``Harness`` and
+        # ``InvokeResult`` from this module at load time, so an
+        # eager top-level import here would circular-import.
+        from clauditor._harnesses import _claude_code as _claude_code_mod
+
+        return _claude_code_mod.ClaudeCodeHarness()
+    if name == "codex":
+        # Same deferred-import shape.
+        from clauditor._harnesses import _codex as _codex_mod
+
+        return _codex_mod.CodexHarness()
+    if name == "auto":
+        raise ValueError(
+            "construct_harness: 'auto' must be resolved before "
+            "construction — call clauditor._providers.resolve_harness "
+            "first to pick a concrete harness name."
+        )
+    raise ValueError(
+        f"construct_harness: unknown harness {name!r} — "
+        "expected 'claude-code' or 'codex'"
+    )
