@@ -460,15 +460,17 @@ Exits 1 when a regression is detected (assertion that previously passed now fail
 
 ### `audit`
 
-Aggregate per-assertion pass rates across the most recent N iteration workspaces. Surfaces assertions that are flaky, never fire, or fail to discriminate between the with-skill and baseline arms.
+Aggregate per-assertion pass rates across the most recent N iteration workspaces. Surfaces assertions that are flaky, never fire, or fail to discriminate between the with-skill and baseline arms. Aggregates are grouped by `(provider, layer, id)` so mixed-provider history (Anthropic and OpenAI grading runs under the same skill) renders as separate rows rather than averaging across providers.
 
 | Flag | Purpose |
 | ---- | ------- |
 | `--last N` | Consider the last `N` iteration directories (default 20). |
 | `--min-fail-rate FLOAT` | Flag assertions whose fail rate is at least this value (0.0–1.0). |
 | `--min-discrimination FLOAT` | Flag assertions whose with-vs-baseline pass-rate delta is below this value. |
-| `--json` | Emit a machine-readable JSON report instead of the table. |
+| `--json` | Emit a machine-readable JSON report instead of the table. The JSON output is `schema_version: 2` (per #147), with each `assertions[]` entry carrying a `provider` field and a top-level `providers_seen: [...]` array sorted alphabetically — JSON consumers can detect mixed history without iterating the entries. |
 | `--output-dir PATH` | Directory to write audit reports. |
+
+The default text and Markdown renderers add a leftmost `PROVIDER` column (~11 chars wide) and sort by `(provider, layer, id)`. L1 assertions carry a placeholder `"anthropic"` provider — L1 has no LLM call to attribute, and the honest harness-axis bump for `assertions.json` lives in #152.
 
 ### `trend`
 
@@ -479,6 +481,7 @@ Print a tab-separated history of a metric across iterations, with an ASCII spark
 | `--metric PATH` | Metric to trend: `pass_rate`, `mean_score`, or a dotted path into `metrics` (e.g. `total.total`, `grader.input_tokens`). Required unless `--list-metrics` is used. |
 | `--list-metrics` | List every available metric path in history for the skill. |
 | `--command {grade,extract,validate,all}` | Filter records by subcommand (default `grade`). |
+| `--provider {anthropic,openai}` | Render history for a single grading provider only. When the (post-`--command`-filter) history contains records from more than one provider, `clauditor trend` refuses to render and exits `2` with a stderr message naming the providers seen — pass `--provider anthropic` or `--provider openai` to disambiguate. Computed from the full filtered set BEFORE the `--last` window slice, so a user with mixed history cannot silently slip past the refusal by narrowing `--last`. Filtering to a provider with zero records exits `1` with a "no records for provider X" message. Pre-#147 history (no `provider` field) is treated as `anthropic`. Validator rejects `auto` (and any other value) at argparse time, distinct from the four-layer-precedence `--grading-provider` flag on the LLM-mediated commands. |
 | `--last N` | Show the last `N` records (default 20, must be ≥ 1). |
 
 ### `setup`
