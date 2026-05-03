@@ -6,7 +6,22 @@ import argparse
 import sys
 
 from clauditor import history
-from clauditor.cli import _provider_concrete_choice
+
+
+def _normalized_provider(rec: dict) -> str:
+    """Coerce a history record's ``provider`` to a safe string.
+
+    Returns ``"anthropic"`` for missing keys, non-string values, and
+    blank/whitespace-only strings. ``read_records`` already backfills
+    missing keys for legacy v1 lines, but this helper additionally
+    handles the "raw record contains ``null`` or a non-string" case so
+    ``sorted({_normalized_provider(rec) for rec in records})`` cannot
+    raise ``TypeError`` on a malformed mixed-history file.
+    """
+    provider = rec.get("provider")
+    if isinstance(provider, str) and provider.strip():
+        return provider
+    return "anthropic"
 
 
 def _positive_int(value: str) -> int:
@@ -22,6 +37,13 @@ def _positive_int(value: str) -> int:
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``trend`` subparser."""
+    # Lazy import to mirror the rest of cli/*.py and side-step a circular
+    # import hazard: ``clauditor.cli.__init__`` imports ``cmd_trend`` from
+    # this module during CLI registration, so a top-level
+    # ``from clauditor.cli import _provider_concrete_choice`` resolves
+    # ``clauditor.cli`` mid-initialization.
+    from clauditor.cli import _provider_concrete_choice
+
     p_trend = subparsers.add_parser(
         "trend",
         help="Print a trend line (TSV) from grade history",
@@ -97,11 +119,11 @@ def cmd_trend(args: argparse.Namespace) -> int:
     # Provider refusal / filter (DEC-003, DEC-009, DEC-011 of #147).
     # Computed from the full filtered set BEFORE the --last slice so a
     # user with mixed history cannot silently slip past the refusal by
-    # narrowing the window. v1 history records (pre-#147) lack the
-    # ``provider`` key — ``read_records`` already defaults missing
-    # values to ``"anthropic"``, but we apply the same default here
-    # defensively in case any legacy raw record reaches this point.
-    providers_seen = sorted({rec.get("provider", "anthropic") for rec in records})
+    # narrowing the window. ``_normalized_provider`` coerces
+    # missing/non-string/blank values to ``"anthropic"`` so a
+    # malformed v2 record (``provider: null`` or a stray int) cannot
+    # raise ``TypeError`` mid-sort.
+    providers_seen = sorted({_normalized_provider(rec) for rec in records})
     if args.provider is None:
         if len(providers_seen) > 1:
             providers_str = ", ".join(repr(p) for p in providers_seen)
@@ -116,7 +138,7 @@ def cmd_trend(args: argparse.Namespace) -> int:
         records = [
             rec
             for rec in records
-            if rec.get("provider", "anthropic") == args.provider
+            if _normalized_provider(rec) == args.provider
         ]
         if not records:
             print(

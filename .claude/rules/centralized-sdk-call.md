@@ -402,10 +402,10 @@ introduced in #86. Sidecars `grading.json` and `extraction.json`
 bumped from `schema_version: 2` to `3`; legacy v1/v2 reads default
 `provider_source` to `"anthropic"`. See
 `.claude/rules/json-schema-version.md` "Schema version bumps for
-#147" for the loader-side default-on-read semantics. The honest
+`#147`" for the loader-side default-on-read semantics. The honest
 harness-axis sibling (`harness: str` on the same sidecars + on
-`assertions.json`) lives in #152 and is strictly separable from
-#147 per DEC-006 of `plans/super/147-sidecar-provider-field.md`.
+`assertions.json`) lives in `#152` and is strictly separable from
+`#147` per DEC-006 of `plans/super/147-sidecar-provider-field.md`.
 
 ### Implicit-coupling announcements — an emerging family
 

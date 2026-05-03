@@ -197,7 +197,7 @@ No blockers.
 The on-disk field name in v3 sidecars is `provider_source`, byte-identical
 to the in-memory `provider_source` dataclass field. Mirrors the
 `transport_source` precedent (in-memory↔disk byte-identity introduced in
-#86) where the same field name lives on both sides of the I/O boundary.
+`#86`) where the same field name lives on both sides of the I/O boundary.
 Diverges from the ticket text's literal `provider`, but the consistency
 win with `transport_source` outweighs the ticket-fidelity loss. (Q1=B)
 
@@ -237,7 +237,7 @@ known external consumers today. (Q5=A)
 
 ### DEC-006 — Strictly separable from #152
 
-#147 bumps `grading.json`/`extraction.json` to v3 with `provider_source`
+`#147` bumps `grading.json`/`extraction.json` to v3 with `provider_source`
 ONLY. When #152 lands (after #151 — harness identity), it bumps to v4
 with a `harness` field. Two migrations, clean traceability, no
 coordination dependency on #151. (Q6=A)
@@ -615,7 +615,7 @@ is unit-tested in isolation.
 ### US-007 — Update `.claude/rules/json-schema-version.md` "Schema version bumps"
 
 **Description.** Append a new paragraph to the "Schema version bumps for
-#86" section documenting the v2→v3 bump introduced by #147 (provider_source
+`#86`" section documenting the v2→v3 bump introduced by `#147` (provider_source
 on grading.json and extraction.json) and the parallel v1→v2 bump on
 history.jsonl. Note that assertions.json was NOT bumped (L1 has no
 provider). Document the `MAX_SCHEMA_VERSION` refactor (DEC-008) so future

@@ -1634,6 +1634,84 @@ class TestProviderDimension:
         assert ("anthropic", "L3", "x") in agg
 
 
+class TestProviderOrDefault:
+    """Defense-in-depth helper guards malformed v3 sidecars.
+
+    A v3 ``grading.json`` / ``extraction.json`` is supposed to carry a
+    string ``provider_source``, but the loader cannot trust hand-edited
+    or future-bumped sidecars. ``_provider_or_default`` is the single
+    coercion seam — these tests pin its branches so a regression that
+    re-admits non-strings into ``IterationRecord``/``AuditAggregate``
+    keys cannot land silently.
+    """
+
+    def test_valid_string_passes_through(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default("openai") == "openai"
+        assert _provider_or_default("anthropic") == "anthropic"
+
+    def test_none_falls_back_to_anthropic(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default(None) == "anthropic"
+
+    def test_empty_string_falls_back(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default("") == "anthropic"
+
+    def test_whitespace_only_falls_back(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default("   ") == "anthropic"
+
+    def test_int_falls_back(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default(1) == "anthropic"
+        assert _provider_or_default(0) == "anthropic"
+
+    def test_bool_falls_back(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default(True) == "anthropic"
+        assert _provider_or_default(False) == "anthropic"
+
+    def test_list_falls_back(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default([]) == "anthropic"
+        assert _provider_or_default(["openai"]) == "anthropic"
+
+    def test_malformed_provider_source_in_grading_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        """End-to-end: a v3 grading.json with ``provider_source: 1``
+        loads cleanly with ``provider="anthropic"`` rather than raising
+        ``TypeError`` during aggregation."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        payload = {
+            "schema_version": 3,
+            "skill_name": "s",
+            "model": "claude-sonnet-4-6",
+            "provider_source": 1,
+            "results": [
+                {
+                    "id": "x",
+                    "criterion": "x",
+                    "passed": True,
+                    "score": 1.0,
+                    "evidence": "",
+                    "reasoning": "",
+                },
+            ],
+        }
+        (skill_dir / "grading.json").write_text(json.dumps(payload))
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].provider == "anthropic"
+        agg = aggregate(records)
+        assert ("anthropic", "L3", "x") in agg
+
+
 class TestRenderProviderColumn:
     """US-004 (#147): the three audit render paths surface provider.
 

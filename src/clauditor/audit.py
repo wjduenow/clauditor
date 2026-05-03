@@ -87,6 +87,23 @@ def _is_accepted_version(filename: str, version: object) -> bool:
     return 1 <= version <= max_version
 
 
+def _provider_or_default(value: object) -> str:
+    """Return ``value`` when it is a non-blank ``str``, else ``"anthropic"``.
+
+    Defends ``_records_from_extraction`` / ``_records_from_grading``
+    against malformed v3 sidecars that store ``provider_source`` as
+    ``1``, ``True``, ``None``, or an empty/whitespace string. Without
+    this guard, a non-string ``provider`` would propagate into
+    ``IterationRecord``/``AuditAggregate`` keys and blow up downstream
+    sorting (``sorted({tuple-with-int-and-str})`` raises ``TypeError``)
+    or markdown/stdout column rendering. Defaulting in one place keeps
+    the audit pipeline structurally string-typed.
+    """
+    if isinstance(value, str) and value.strip():
+        return value
+    return "anthropic"
+
+
 def _check_schema_version(
     data: dict, *, iteration_dir: Path | str, filename: str
 ) -> bool:
@@ -274,11 +291,10 @@ def _records_from_extraction(
     records: list[IterationRecord] = []
     # US-003 (#147): read v3 ``provider_source`` field; default to
     # ``"anthropic"`` for legacy v1/v2 reads per DEC-001 of #147.
-    # ``data.get("provider_source") or "anthropic"`` also coerces an
-    # explicit empty string / ``None`` to the default, matching the
-    # ``GradingReport.from_json`` / ``ExtractionReport.from_json``
-    # default-on-read shape from US-001.
-    provider = data.get("provider_source") or "anthropic"
+    # ``_provider_or_default`` rejects non-string truthy values like
+    # ``1`` or ``True`` (which a malformed v3 sidecar could carry) so
+    # downstream sorting/rendering never sees a non-string provider.
+    provider = _provider_or_default(data.get("provider_source"))
     for field_id, entries in (data.get("fields") or {}).items():
         for entry in entries or []:
             if "passed" not in entry:
@@ -313,7 +329,8 @@ def _records_from_grading(
     # US-003 (#147): same default-on-read shape as
     # ``_records_from_extraction`` — v3 sidecars carry
     # ``provider_source``; v1/v2 reads default to ``"anthropic"``.
-    provider = data.get("provider_source") or "anthropic"
+    # ``_provider_or_default`` rejects non-string truthy values.
+    provider = _provider_or_default(data.get("provider_source"))
     for result in data.get("results", []) or []:
         # DEC-001 / #25: L3 results are keyed by their stable spec id.
         # Drop records missing an ``id`` entirely — falling back to the

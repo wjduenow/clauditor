@@ -158,6 +158,23 @@ def append_record(
         raise ValueError(
             f"command must be one of 'grade', 'extract', 'validate'; got {command!r}"
         )
+    # Defense in depth: ``provider`` should already be a resolved provider
+    # name (one of ``"anthropic"`` / ``"openai"``) by the time it reaches
+    # this seam — the CLI plumbs it through
+    # ``_resolve_grading_provider`` per
+    # ``.claude/rules/multi-provider-dispatch.md``. Reject the
+    # unresolved sentinel ``"auto"`` and any blank/non-string here so a
+    # future caller that bypasses the resolver cannot silently corrupt
+    # ``trend``/``audit`` grouping semantics with an unresolvable bucket.
+    if not isinstance(provider, str) or not provider.strip():
+        raise ValueError(
+            f"provider must be a non-blank string; got {provider!r}"
+        )
+    if provider == "auto":
+        raise ValueError(
+            "provider must be a resolved provider name "
+            "(use 'anthropic' or 'openai', not 'auto')"
+        )
     if path is None:
         path = _default_path()
     path.parent.mkdir(parents=True, exist_ok=True)

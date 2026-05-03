@@ -86,7 +86,7 @@ call and have no transport to record.
 
 ### Schema version bumps for #147 (`provider_source` field)
 
-#147 added `provider_source` to `GradingReport` and `ExtractionReport` to
+`#147` added `provider_source` to `GradingReport` and `ExtractionReport` to
 record which model provider's SDK (`"anthropic"` or `"openai"`) served each
 grader call — the provider-axis sibling of `transport_source`. The field
 name is deliberately parallel to `transport_source` per DEC-001 of

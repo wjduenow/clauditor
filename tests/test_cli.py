@@ -5264,6 +5264,67 @@ class TestProviderConcreteChoice:
             _provider_concrete_choice("openi")
 
 
+class TestNormalizedProvider:
+    """Defense-in-depth helper guards malformed history records.
+
+    ``read_records`` already backfills missing keys for legacy v1
+    lines. ``_normalized_provider`` additionally handles a record that
+    carries ``provider: null`` / a stray int / a blank string — without
+    it, ``sorted({_normalized_provider(rec) for rec in records})``
+    could raise ``TypeError`` mid-sort and crash ``clauditor trend``
+    instead of yielding a clean exit code.
+    """
+
+    def test_valid_string_passes_through(self):
+        from clauditor.cli.trend import _normalized_provider
+
+        assert _normalized_provider({"provider": "openai"}) == "openai"
+        assert _normalized_provider({"provider": "anthropic"}) == "anthropic"
+
+    def test_missing_key_defaults_anthropic(self):
+        from clauditor.cli.trend import _normalized_provider
+
+        assert _normalized_provider({}) == "anthropic"
+
+    def test_none_defaults_anthropic(self):
+        from clauditor.cli.trend import _normalized_provider
+
+        assert _normalized_provider({"provider": None}) == "anthropic"
+
+    def test_blank_string_defaults_anthropic(self):
+        from clauditor.cli.trend import _normalized_provider
+
+        assert _normalized_provider({"provider": ""}) == "anthropic"
+        assert _normalized_provider({"provider": "   "}) == "anthropic"
+
+    def test_int_defaults_anthropic(self):
+        from clauditor.cli.trend import _normalized_provider
+
+        assert _normalized_provider({"provider": 1}) == "anthropic"
+
+    def test_bool_defaults_anthropic(self):
+        from clauditor.cli.trend import _normalized_provider
+
+        assert _normalized_provider({"provider": True}) == "anthropic"
+
+    def test_mixed_records_sort_without_typeerror(self):
+        """Regression: a malformed v2 record with ``provider: null``
+        next to normal string records does not raise ``TypeError`` when
+        ``sorted()`` walks the set."""
+        from clauditor.cli.trend import _normalized_provider
+
+        records = [
+            {"provider": "openai"},
+            {"provider": None},
+            {"provider": "anthropic"},
+            {"provider": 1},
+        ]
+        providers_seen = sorted(
+            {_normalized_provider(rec) for rec in records}
+        )
+        assert providers_seen == ["anthropic", "openai"]
+
+
 class TestCmdTrendProviderFilter:
     """``clauditor trend --provider`` (#147 US-006).
 

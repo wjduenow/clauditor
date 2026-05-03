@@ -268,6 +268,47 @@ class TestProviderField:
                 command="grade", path=path,  # type: ignore[call-arg]
             )
 
+    def test_append_record_rejects_blank_provider(self, tmp_path):
+        """Defense-in-depth: ``provider=""`` is unresolvable. CLI seam
+        is supposed to plumb a resolved provider; rejecting blanks here
+        prevents future callers from corrupting trend/audit grouping
+        with an unresolvable empty bucket."""
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(ValueError, match="provider"):
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", provider="", path=path,
+            )
+
+    def test_append_record_rejects_whitespace_provider(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(ValueError, match="provider"):
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", provider="   ", path=path,
+            )
+
+    def test_append_record_rejects_auto(self, tmp_path):
+        """``"auto"`` is the unresolved sentinel — the CLI's
+        ``_resolve_grading_provider`` is responsible for collapsing it
+        to a concrete provider. Reject it here so a future caller that
+        bypasses the resolver cannot persist the sentinel."""
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(ValueError, match="auto"):
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", provider="auto", path=path,
+            )
+
+    def test_append_record_rejects_non_string_provider(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(ValueError, match="provider"):
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", provider=1,  # type: ignore[arg-type]
+                path=path,
+            )
+
     def test_read_records_legacy_v1_defaults_provider_to_anthropic(
         self, tmp_path
     ):
