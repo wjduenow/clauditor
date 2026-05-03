@@ -305,6 +305,18 @@ class EvalSpec:
     # string / bool values rejected per
     # ``.claude/rules/constant-with-type-info.md``.
     transport: str = "auto"
+    # DEC-001 / DEC-008 of #151: per-spec harness selector for the
+    # skill subprocess. One of ``"claude-code"``, ``"codex"``, or
+    # ``"auto"``. The default ``"auto"`` resolves to the harness
+    # whose CLI is on PATH (subscription-first); explicit
+    # ``"claude-code"`` / ``"codex"`` pin a specific harness.
+    # Four-layer precedence per ``.claude/rules/spec-cli-precedence.md``:
+    # CLI ``--harness`` > ``CLAUDITOR_HARNESS`` env > this field >
+    # default ``"auto"``. Validated at load time against the literal
+    # set; non-string / bool / unknown-string values rejected per
+    # ``.claude/rules/constant-with-type-info.md``. The pure resolver
+    # + ``construct_harness`` dispatcher live in US-002 of #151.
+    harness: str = "auto"
     # Tier 1.5 of GitHub #103: when ``True``, clauditor sets
     # ``CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`` in the skill
     # subprocess env, forcing ``Task(run_in_background=true)`` calls
@@ -759,6 +771,37 @@ class EvalSpec:
                 )
             transport = raw_transport
 
+        # DEC-001 / DEC-008 of #151: optional per-spec harness selector.
+        # Missing → default ``"auto"`` (back-compat). Must be a non-bool
+        # string in the literal set ``{"claude-code", "codex", "auto"}``.
+        # Explicit ``null`` is rejected (use omission for default).
+        # Bool guard first per ``.claude/rules/constant-with-type-info.md``.
+        harness: str = "auto"
+        if "harness" in data:
+            raw_harness = data["harness"]
+            if raw_harness is None:
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'harness' must be one of "
+                    "'claude-code', 'codex', 'auto', got null "
+                    "(omit the key to use the default 'auto')"
+                )
+            if isinstance(raw_harness, bool) or not isinstance(
+                raw_harness, str
+            ):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"'harness' must be a string, got "
+                    f"{type(raw_harness).__name__} {raw_harness!r}"
+                )
+            if raw_harness not in ("claude-code", "codex", "auto"):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'harness' must be one of 'claude-code', 'codex', "
+                    f"'auto', got {raw_harness!r}"
+                )
+            harness = raw_harness
+
         # Tier 1.5 of GitHub #103: optional per-spec sync-tasks
         # opt-in. Missing → default ``False``. Must be a real bool
         # per ``.claude/rules/constant-with-type-info.md`` — a
@@ -882,6 +925,7 @@ class EvalSpec:
             allow_hang_heuristic=allow_hang_heuristic,
             timeout=timeout,
             transport=transport,
+            harness=harness,
             sync_tasks=sync_tasks,
             grading_provider=grading_provider,
         )
@@ -957,6 +1001,11 @@ class EvalSpec:
             # DEC-012 of #86: emit only on non-default. Omission at
             # load time means default "auto" per from_dict.
             result["transport"] = self.transport
+        if self.harness != "auto":
+            # DEC-001 / DEC-008 of #151: emit only on non-default.
+            # Omission at load time means default ``"auto"`` per
+            # from_dict.
+            result["harness"] = self.harness
         if self.sync_tasks:
             # Tier 1.5 of GitHub #103: emit only on non-default.
             # Omission at load time means default ``False``.
