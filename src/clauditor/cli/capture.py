@@ -135,7 +135,11 @@ def cmd_capture(args: argparse.Namespace) -> int:
         try:
             check_codex_auth("capture")
         except CodexAuthMissingError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
+            # Template already starts with "ERROR: " — print verbatim
+            # to avoid a doubled "ERROR: ERROR: " prefix (matches the
+            # AnthropicAuthMissingError / OpenAIAuthMissingError
+            # handlers in cli/grade.py).
+            print(str(exc), file=sys.stderr)
             return 2
 
     # When the resolved harness is the default ``claude-code``, preserve

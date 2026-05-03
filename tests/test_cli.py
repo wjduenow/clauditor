@@ -8099,6 +8099,12 @@ class TestCmdValidateHarness:
         assert rc == 2
         err = capsys.readouterr().err
         assert "CODEX_API_KEY" in err
+        # Regression guard: stderr must NOT contain a doubled
+        # ``"ERROR: ERROR: "`` prefix. The Codex template already
+        # starts with ``"ERROR: "`` so the CLI handler must use
+        # ``print(str(exc), ...)`` (matches Anthropic / OpenAI
+        # auth-missing handlers), not ``f"ERROR: {exc}"``.
+        assert "ERROR: ERROR:" not in err
         assert spec.run.call_count == 0
 
 
@@ -8244,6 +8250,8 @@ class TestCmdGradeHarness:
         assert rc == 2
         err = capsys.readouterr().err
         assert "CODEX_API_KEY" in err
+        # Regression guard: no doubled ``"ERROR: ERROR: "`` prefix.
+        assert "ERROR: ERROR:" not in err
         assert spec.run.call_count == 0
         assert mock_grade.await_count == 0
 
@@ -8273,6 +8281,8 @@ class TestCmdCaptureHarness:
         assert rc == 2
         err = capsys.readouterr().err
         assert "CODEX_API_KEY" in err
+        # Regression guard: no doubled ``"ERROR: ERROR: "`` prefix.
+        assert "ERROR: ERROR:" not in err
         assert mock_runner_cls.call_count == 0
 
 
@@ -8298,6 +8308,8 @@ class TestCmdRunHarness:
         assert rc == 2
         err = capsys.readouterr().err
         assert "CODEX_API_KEY" in err
+        # Regression guard: no doubled ``"ERROR: ERROR: "`` prefix.
+        assert "ERROR: ERROR:" not in err
         assert mock_runner_cls.call_count == 0
 
     def test_run_with_harness_codex_constructs_codex_harness(
