@@ -4,7 +4,7 @@
 
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/151
 - **Branch:** `feature/151-harness-precedence`
-- **Worktree:** `/home/wesd/Projects/worktrees/clauditor/151-harness-precedence`
+- **Worktree:** `worktrees/clauditor/151-harness-precedence` (relative)
 - **PR:** https://github.com/wjduenow/clauditor/pull/166
 - **Phase:** devolved
 - **Epic:** clauditor-66i
@@ -1014,7 +1014,7 @@ discoverable.
 ## Beads Manifest
 
 - **Epic:** `clauditor-66i` — #151: Multi-harness EvalSpec.harness four-layer precedence
-- **Worktree:** `/home/wesd/Projects/worktrees/clauditor/151-harness-precedence`
+- **Worktree:** `worktrees/clauditor/151-harness-precedence` (relative)
 - **PR:** https://github.com/wjduenow/clauditor/pull/166
 
 | Bead | Story | Depends on |
