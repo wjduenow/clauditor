@@ -115,8 +115,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags through
     # to the runner. Defaults are both None (today's behavior; runner
     # falls back to its own ``self.timeout`` default of 300s).
+    #
+    # ``harness_name`` is threaded into ``env_without_api_key`` so the
+    # codex branch preserves ``OPENAI_API_KEY`` (Copilot review feedback
+    # on PR #166): otherwise ``--no-api-key`` would launch the Codex
+    # subprocess without usable auth even though :func:`check_codex_auth`
+    # accepted it.
     env_override: dict[str, str] | None = (
-        env_without_api_key()
+        env_without_api_key(harness_name=harness_name)
         if getattr(args, "no_api_key", False)
         else None
     )

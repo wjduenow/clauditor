@@ -212,8 +212,14 @@ def cmd_validate(args: argparse.Namespace) -> int:
             # vars via ``env_without_api_key``; ``--timeout`` wins over
             # spec/default per DEC-002. Both default to None (today's
             # behavior).
+            #
+            # ``harness_name`` is threaded into ``env_without_api_key``
+            # so the codex branch preserves ``OPENAI_API_KEY`` (Copilot
+            # review feedback on PR #166): otherwise ``--no-api-key``
+            # would launch the Codex subprocess without usable auth
+            # even though :func:`check_codex_auth` accepted it.
             env_override = (
-                env_without_api_key()
+                env_without_api_key(harness_name=harness_name)
                 if getattr(args, "no_api_key", False)
                 else None
             )

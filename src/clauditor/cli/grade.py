@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 
 def _resolve_grade_env_override(
     args: argparse.Namespace,
+    harness_name: str | None = None,
 ) -> tuple[dict[str, str] | None, bool]:
     """Decide the skill-subprocess env override and notice-firing bit.
 
@@ -61,6 +62,13 @@ def _resolve_grade_env_override(
 
     Whitespace-only env values are treated as absent (matching
     :func:`clauditor._anthropic._api_key_is_set`).
+
+    ``harness_name`` (Copilot review feedback on PR #166): threaded
+    into :func:`env_without_api_key` so the codex branch preserves
+    ``OPENAI_API_KEY`` (otherwise ``--no-api-key`` or the
+    ``--transport cli`` implicit-strip coupling would launch the Codex
+    subprocess without usable auth even though :func:`check_codex_auth`
+    accepted it from ``os.environ``).
     """
     from clauditor.cli import should_strip_api_key_for_skill_subprocess
 
@@ -73,7 +81,7 @@ def _resolve_grade_env_override(
     auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
     key_was_present = bool(api_key.strip() or auth_token.strip())
     env_override = (
-        env_without_api_key()
+        env_without_api_key(harness_name=harness_name)
         if (explicit_strip or implicit_strip)
         else None
     )
@@ -594,7 +602,9 @@ def _run_skill_variants(
     # Copilot feedback on duplication). Traces to DEC-001, DEC-003,
     # DEC-006, DEC-007, DEC-008, DEC-009 of
     # plans/super/95-subscription-auth-flag.md.
-    env_override, should_announce = _resolve_grade_env_override(args)
+    env_override, should_announce = _resolve_grade_env_override(
+        args, harness_name=harness_name
+    )
     if should_announce:
         announce_implicit_no_api_key()
     timeout_override = getattr(args, "timeout", None)
@@ -807,7 +817,9 @@ def _write_workspace_sidecars(
         # lockstep by construction. The ``should_announce`` return is
         # deliberately ignored here — the primary arm already fired the
         # notice (and the helper is idempotent per US-002 regardless).
-        env_override, _ = _resolve_grade_env_override(args)
+        env_override, _ = _resolve_grade_env_override(
+            args, harness_name=harness_name
+        )
         # Tier 1.5 of GitHub #103: when --sync-tasks fires, the
         # baseline arm must also run synchronously so the delta
         # compares like-for-like. spec.runner.run_raw (used by the

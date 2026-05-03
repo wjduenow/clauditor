@@ -8692,14 +8692,14 @@ class TestCmdGradeHarness:
                 ["grade", "skill.md", "--harness", "codex", "--baseline"]
             )
 
-        # Whatever the final exit code (delta gate may or may not
-        # pass), the baseline arm must have called
-        # ``construct_harness("codex")`` — that's the DEC-013
-        # invariant. ``construct_harness`` is also called inside
-        # ``SkillSpec.run`` (from US-006), but here ``spec.run`` is a
-        # mock so that path is bypassed; the only call therefore comes
-        # from the baseline arm.
-        assert rc in (0, 1), f"unexpected rc {rc}"
+        # Tightened from ``rc in (0, 1)`` per CodeRabbit review feedback
+        # on PR #166: assert deterministic success (``rc == 0``) so a
+        # future regression in the baseline flow surfaces here rather
+        # than being masked by a permissive ladder. ``construct_harness``
+        # is also called inside ``SkillSpec.run`` (from US-006), but
+        # here ``spec.run`` is a mock so that path is bypassed; the
+        # codex call therefore only comes from the baseline arm.
+        assert rc == 0, f"baseline propagation regression: rc={rc}"
         codex_calls = [
             c for c in mock_construct.call_args_list
             if c.args and c.args[0] == "codex"
@@ -8745,6 +8745,92 @@ class TestCmdGradeHarness:
         assert mock_grade.await_count == 0
 
 
+class TestCmdCaptureClaudeBinPrecedence:
+    """CodeRabbit review feedback on PR #166: ``--claude-bin`` is an
+    explicit operator-intent signal that the operator wants the Claude
+    branch. Treat it as equivalent to pinning ``--harness=claude-code``
+    UNLESS the operator explicitly pinned ``--harness=codex``. Without
+    this guard, ``capture --claude-bin /custom/claude`` would auto-
+    resolve to ``codex`` (or hard-fail) when ``claude`` is not on PATH,
+    silently breaking back-compat for existing ``capture`` users.
+    """
+
+    def test_capture_claude_bin_forces_claude_code_branch(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--claude-bin /custom/claude`` without ``--harness`` should
+        resolve to the Claude branch even when the auto-resolver would
+        otherwise pick codex (e.g. ``claude`` not on PATH but ``codex``
+        is). The custom binary path threads through to the constructed
+        ``SkillRunner``.
+        """
+        monkeypatch.chdir(tmp_path)
+        # Override the autouse fixture: unset CLAUDITOR_HARNESS so the
+        # CLI flag layer is what drives precedence, NOT the env var.
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="captured output",
+            skill_name="my-skill",
+            duration_seconds=0.5,
+        )
+
+        with patch(
+            "clauditor.cli.capture.SkillRunner", return_value=mock_runner
+        ) as mock_runner_cls:
+            rc = main(
+                [
+                    "capture",
+                    "my-skill",
+                    "--claude-bin",
+                    "/custom/claude",
+                    "--out",
+                    str(tmp_path / "out.txt"),
+                ]
+            )
+
+        assert rc == 0
+        # SkillRunner constructed exactly once with the custom claude_bin.
+        assert mock_runner_cls.call_count == 1
+        kwargs = mock_runner_cls.call_args.kwargs
+        assert kwargs.get("claude_bin") == "/custom/claude"
+
+    def test_capture_explicit_harness_codex_still_wins_over_claude_bin(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """When the operator explicitly pins ``--harness=codex``, that
+        more-specific signal wins over ``--claude-bin``. The Codex auth
+        guard fires (with no Codex key set, exits 2). Defends the
+        precedence direction: explicit ``--harness`` > implicit
+        ``--claude-bin``.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with patch("clauditor.cli.capture.SkillRunner") as mock_runner_cls:
+            rc = main(
+                [
+                    "capture",
+                    "my-skill",
+                    "--harness",
+                    "codex",
+                    "--claude-bin",
+                    "/custom/claude",
+                    "--out",
+                    str(tmp_path / "out.txt"),
+                ]
+            )
+
+        # Codex auth missing → exit 2; SkillRunner never constructed.
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "CODEX_API_KEY" in err
+        assert mock_runner_cls.call_count == 0
+
+
 class TestCmdCaptureHarness:
     """#151 US-005: ``cmd_capture`` resolves harness via three-layer
     precedence (no spec layer) and dispatches Codex auth.
@@ -8773,6 +8859,49 @@ class TestCmdCaptureHarness:
         # Regression guard: no doubled ``"ERROR: ERROR: "`` prefix.
         assert "ERROR: ERROR:" not in err
         assert mock_runner_cls.call_count == 0
+
+    def test_capture_with_harness_codex_constructs_codex_harness(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` + ``CODEX_API_KEY`` set →
+        ``SkillRunner`` is constructed via ``construct_harness("codex")``
+        (the non-default branch in ``cmd_capture``). Sibling to the
+        ``cmd_run`` codex-success test; covers the
+        ``runner = SkillRunner(harness=construct_harness(...))`` line
+        that the keys-missing test cannot reach.
+        """
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("CODEX_API_KEY", "ck-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="codex captured", skill_name="my-skill",
+            duration_seconds=0.7,
+        )
+
+        with patch(
+            "clauditor.cli.capture.SkillRunner", return_value=mock_runner
+        ) as mock_runner_cls:
+            rc = main(
+                [
+                    "capture",
+                    "my-skill",
+                    "--harness",
+                    "codex",
+                    "--out",
+                    str(tmp_path / "out.txt"),
+                ]
+            )
+
+        assert rc == 0
+        # SkillRunner constructed exactly once with a CodexHarness via
+        # the non-default branch.
+        assert mock_runner_cls.call_count == 1
+        kwargs = mock_runner_cls.call_args.kwargs
+        assert isinstance(kwargs["harness"], CodexHarness)
 
 
 class TestCmdRunHarness:
@@ -8829,3 +8958,39 @@ class TestCmdRunHarness:
         assert mock_runner_cls.call_count == 1
         kwargs = mock_runner_cls.call_args.kwargs
         assert isinstance(kwargs["harness"], CodexHarness)
+
+    def test_run_codex_no_api_key_preserves_openai_api_key(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Copilot review feedback on PR #166: ``run --harness codex
+        --no-api-key`` must NOT strip ``OPENAI_API_KEY`` from the
+        subprocess env. Stripping it would launch the Codex subprocess
+        without usable auth even though ``check_codex_auth`` accepted
+        it from ``os.environ``. ``--no-api-key`` is intended to strip
+        Anthropic auth (subscription auth path); Codex auth env vars
+        must be preserved.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="codex output", skill_name="my-skill",
+            duration_seconds=1.0,
+        )
+
+        with patch(
+            "clauditor.cli.run.SkillRunner", return_value=mock_runner
+        ):
+            rc = main(["run", "my-skill", "--harness", "codex", "--no-api-key"])
+
+        assert rc == 0
+        # The env_override threaded through to runner.run must preserve
+        # OPENAI_API_KEY so the codex subprocess still has auth.
+        env_override = mock_runner.run.call_args.kwargs.get("env")
+        assert env_override is not None
+        assert env_override.get("OPENAI_API_KEY") == "sk-openai"
+        # Anthropic auth IS still stripped (Codex doesn't need it).
+        assert "ANTHROPIC_API_KEY" not in env_override
