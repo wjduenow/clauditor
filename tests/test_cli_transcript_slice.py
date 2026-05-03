@@ -358,6 +358,15 @@ class TestValidateVerboseInvocation:
         # fails the literal-set validator. Pin to ``None`` so the
         # resolver falls through to the env-var layer.
         args.harness = None
+        # CodeRabbit review feedback on PR #166: pin the other
+        # ``cmd_validate``-read attributes to defaults so the test
+        # exercises the default branch. ``MagicMock`` returns truthy
+        # MagicMock instances for un-pinned attrs which would silently
+        # toggle ``--no-api-key`` / ``--sync-tasks`` and produce a
+        # non-default ``--timeout``.
+        args.no_api_key = False
+        args.sync_tasks = False
+        args.timeout = None
         args.verbose = True
         args.no_transcript = False
 
@@ -449,6 +458,13 @@ class TestValidateVerboseInvocation:
         # fails the literal-set validator. Pin to ``None`` so the
         # resolver falls through to the env-var layer.
         args.harness = None
+        # CodeRabbit review feedback on PR #166: pin the other
+        # ``cmd_validate``-read attributes to defaults so the test
+        # exercises the default branch (see comment on the analogous
+        # block above).
+        args.no_api_key = False
+        args.sync_tasks = False
+        args.timeout = None
         args.verbose = False
         args.no_transcript = False
 

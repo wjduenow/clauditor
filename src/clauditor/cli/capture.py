@@ -130,6 +130,28 @@ def cmd_capture(args: argparse.Namespace) -> int:
     # "auto"; no eval spec for capture). Fail fast if the resolved
     # harness is "codex" and Codex auth is missing. ``capture`` has no
     # provider-grader axis, so harness auth is the only pre-call check.
+    #
+    # ``--claude-bin`` precedence (CodeRabbit review feedback on PR
+    # #166): when the operator explicitly passed ``--claude-bin``, they
+    # have signalled intent to run Claude Code. Treat that as
+    # equivalent to pinning ``--harness=claude-code`` UNLESS they
+    # explicitly pinned ``--harness=codex`` (in which case the
+    # explicit ``--harness`` wins — operator-intent layers are siblings,
+    # but ``--harness`` is the more specific knob). Without this guard,
+    # ``capture --claude-bin /custom/claude`` would silently auto-resolve
+    # to ``codex`` (or hard-fail with "neither claude nor codex on PATH")
+    # whenever ``claude`` was not on PATH, even though the operator
+    # supplied a custom Claude binary.
+    if (
+        getattr(args, "claude_bin", None) is not None
+        and getattr(args, "harness", None) != "codex"
+    ):
+        # Force the claude-code branch by pinning ``args.harness`` BEFORE
+        # the resolver fires. Argparse normalizes the attribute, so
+        # rewriting it here is structural — ``_resolve_harness`` reads
+        # ``args.harness`` first and that value will now be
+        # ``"claude-code"``.
+        args.harness = "claude-code"
     harness_name = _resolve_harness(args, None)
     if harness_name == "codex":
         try:
@@ -154,8 +176,14 @@ def cmd_capture(args: argparse.Namespace) -> int:
         runner = SkillRunner(harness=construct_harness(harness_name))
     # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags through
     # to the runner. Defaults are both None (today's behavior).
+    #
+    # ``harness_name`` is threaded into ``env_without_api_key`` so the
+    # codex branch preserves ``OPENAI_API_KEY`` (Copilot review feedback
+    # on PR #166): otherwise ``--no-api-key`` would launch the Codex
+    # subprocess without usable auth even though :func:`check_codex_auth`
+    # accepted it.
     env_override: dict[str, str] | None = (
-        env_without_api_key()
+        env_without_api_key(harness_name=harness_name)
         if getattr(args, "no_api_key", False)
         else None
     )
