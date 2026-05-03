@@ -130,6 +130,7 @@ class SkillSpec:
         timeout_override: int | None = None,
         env_override: dict[str, str] | None = None,
         sync_tasks_override: bool | None = None,
+        harness_name_override: str | None = None,
     ) -> SkillResult:
         """Run the skill and return captured output.
 
@@ -138,6 +139,14 @@ class SkillSpec:
         If ``run_dir`` is provided and the eval spec declares non-empty
         ``input_files``, those files are staged into ``run_dir / "inputs"``
         and the subprocess runs with that directory as its CWD.
+
+        ``harness_name_override`` (US-006 / DEC-004 of #151): when non-
+        ``None``, materialize a fresh :class:`SkillRunner` with the
+        named harness via :func:`clauditor._harnesses.construct_harness`
+        and use it for this call. ``"auto"`` is rejected by
+        ``construct_harness``; callers must resolve auto via
+        :func:`clauditor._providers.resolve_harness` before passing.
+        When ``None`` (default), ``self.runner`` is used as-is.
         """
         run_args = (
             args
@@ -218,7 +227,26 @@ class SkillSpec:
                     f"{exc}"
                 ) from exc
 
-        result = self.runner.run(
+        # US-006 / DEC-004 of #151: when the caller (typically the CLI
+        # seam) has resolved a concrete harness name, materialize a fresh
+        # ``SkillRunner`` with that harness. Constructing a new runner
+        # (rather than mutating ``self.runner.harness``) avoids mutating
+        # shared state across calls; construction cost is negligible.
+        # ``construct_harness`` rejects ``"auto"`` — callers must resolve
+        # it through :func:`clauditor._providers.resolve_harness` first.
+        if harness_name_override is not None:
+            from clauditor._harnesses import construct_harness
+
+            override_harness = construct_harness(harness_name_override)
+            active_runner = SkillRunner(
+                project_dir=self.runner.project_dir,
+                timeout=self.runner.timeout,
+                harness=override_harness,
+            )
+        else:
+            active_runner = self.runner
+
+        result = active_runner.run(
             self.skill_name,
             run_args,
             cwd=effective_cwd,
