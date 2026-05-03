@@ -183,12 +183,28 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
         # override as ``None`` so ``SkillSpec.run`` falls through to
         # ``self.runner`` (the resolver's auto path is the CLI seam's
         # responsibility, not the fixture's).
+        #
+        # Same-harness skip (CodeRabbit review feedback on PR #166):
+        # when the spec's harness already matches the runner's current
+        # harness (e.g. spec sets ``harness="claude-code"`` and the
+        # fixture's base ``runner`` is ``ClaudeCodeHarness`` with a
+        # custom ``--clauditor-claude-bin``), do NOT request an override
+        # — ``SkillSpec.run`` would otherwise reconstruct a fresh runner
+        # via ``construct_harness("claude-code")`` and lose the fixture's
+        # configured Claude binary. ``SkillSpec.run`` itself also has
+        # a same-harness skip layer; this fixture-side check is
+        # defense-in-depth and avoids the unnecessary override-path
+        # entry in the closure below.
         spec_harness_override: str | None = None
         if (
             spec.eval_spec is not None
             and spec.eval_spec.harness != "auto"
         ):
-            spec_harness_override = spec.eval_spec.harness
+            current_harness_name = getattr(
+                getattr(runner, "harness", None), "name", None
+            )
+            if spec.eval_spec.harness != current_harness_name:
+                spec_harness_override = spec.eval_spec.harness
         if (
             has_input_files
             or fixture_env_override is not None

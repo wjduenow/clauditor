@@ -234,15 +234,30 @@ class SkillSpec:
         # shared state across calls; construction cost is negligible.
         # ``construct_harness`` rejects ``"auto"`` — callers must resolve
         # it through :func:`clauditor._providers.resolve_harness` first.
+        #
+        # Same-harness skip (Copilot / CodeRabbit review feedback on PR
+        # #166): when ``harness_name_override`` matches the harness the
+        # existing ``self.runner`` already uses, reuse the runner. This
+        # preserves any harness-specific configuration carried by that
+        # runner (notably the pytest plugin's ``--clauditor-claude-bin``
+        # which lives on ``self.runner.harness.claude_bin``). Constructing
+        # a fresh ``SkillRunner`` with the default ``construct_harness``
+        # call would silently swap that custom binary back to ``"claude"``.
         if harness_name_override is not None:
-            from clauditor._harnesses import construct_harness
-
-            override_harness = construct_harness(harness_name_override)
-            active_runner = SkillRunner(
-                project_dir=self.runner.project_dir,
-                timeout=self.runner.timeout,
-                harness=override_harness,
+            current_harness_name = getattr(
+                getattr(self.runner, "harness", None), "name", None
             )
+            if current_harness_name == harness_name_override:
+                active_runner = self.runner
+            else:
+                from clauditor._harnesses import construct_harness
+
+                override_harness = construct_harness(harness_name_override)
+                active_runner = SkillRunner(
+                    project_dir=self.runner.project_dir,
+                    timeout=self.runner.timeout,
+                    harness=override_harness,
+                )
         else:
             active_runner = self.runner
 

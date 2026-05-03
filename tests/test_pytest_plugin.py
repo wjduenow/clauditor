@@ -1950,3 +1950,38 @@ class TestFixtureHonorsHarness:
             original_run.call_args.kwargs.get("harness_name_override")
             == "claude-code"
         )
+
+    def test_same_harness_spec_does_not_force_override(self, tmp_path):
+        """CodeRabbit review feedback on PR #166: when
+        ``eval_spec.harness`` matches the runner's current harness
+        (default ``"claude-code"`` for the fixture-built runner), the
+        plugin must NOT thread ``harness_name_override="claude-code"``
+        through to ``SkillSpec.run``. Otherwise ``SkillSpec.run`` would
+        reconstruct a fresh ``SkillRunner`` via
+        ``construct_harness("claude-code")``, dropping any custom
+        ``--clauditor-claude-bin`` carried by the fixture's runner.
+        """
+        from clauditor.spec import SkillSpec
+
+        request = self._request()
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        # Spec declares the same harness the fixture-built runner already
+        # uses (the default ``ClaudeCodeHarness``).
+        mock_eval_spec.harness = "claude-code"
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = mock_spec.run
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+
+        # No wrapping — the spec's harness matches the runner's
+        # current harness AND there are no other reasons for wrapping
+        # (no input_files, no --clauditor-no-api-key).
+        assert result.run is original_run

@@ -1366,3 +1366,52 @@ class TestSkillSpecRunHarnessOverride:
         msg = str(exc_info.value)
         assert "auto" in msg
         assert "resolve_harness" in msg
+
+    def test_same_harness_override_reuses_existing_runner(
+        self, tmp_skill_file
+    ):
+        """CodeRabbit / Copilot review feedback on PR #166: when the
+        override matches the harness already wired into ``self.runner``,
+        ``SkillSpec.run`` MUST reuse that runner rather than construct a
+        fresh one. Constructing a fresh runner via ``construct_harness``
+        would silently swap out custom harness configuration (notably
+        the pytest plugin's ``--clauditor-claude-bin`` value carried on
+        the existing ``ClaudeCodeHarness.claude_bin``).
+        """
+        from clauditor._harnesses._claude_code import ClaudeCodeHarness
+        from clauditor.runner import SkillRunner
+
+        skill_path = tmp_skill_file("override-skill")
+        # Build a runner with a custom-binary ClaudeCodeHarness — this
+        # simulates the pytest plugin's ``--clauditor-claude-bin``.
+        custom_harness = ClaudeCodeHarness(claude_bin="/custom/claude")
+        runner = SkillRunner(
+            project_dir=skill_path.parent, harness=custom_harness
+        )
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+
+        # Patch SkillRunner construction in spec.py to FAIL the test
+        # if the same-harness branch ever falls through to construction.
+        with patch("clauditor.spec.SkillRunner") as mock_runner_cls:
+            mock_runner_cls.side_effect = AssertionError(
+                "spec.run constructed a fresh SkillRunner when it should "
+                "have reused the existing same-harness runner"
+            )
+            # Patch the runner's invoke flow so the test doesn't shell
+            # out — return a canned SkillResult by patching the harness
+            # invoke method on the existing runner.
+            with patch.object(runner, "run") as mock_run:
+                mock_run.return_value = SkillResult(
+                    output="from-existing-runner",
+                    exit_code=0,
+                    skill_name="override-skill",
+                    args="",
+                )
+                spec.run(harness_name_override="claude-code")
+
+        # No new SkillRunner was constructed (would have raised).
+        assert mock_runner_cls.call_count == 0
+        # The original harness (with its custom claude_bin) is still
+        # the one wired into spec.runner.
+        assert spec.runner.harness is custom_harness
+        assert spec.runner.harness.claude_bin == "/custom/claude"
