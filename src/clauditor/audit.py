@@ -32,28 +32,76 @@ from pathlib import Path
 
 from clauditor.paths import resolve_clauditor_dir
 
-# US-006 / #86: per-sidecar accepted schema versions. Grading and
-# extraction sidecars bumped to v2 to carry the ``transport_source``
-# field added by the CLI-transport feature; the loader accepts both
-# versions and defaults missing ``transport_source`` to ``"api"`` at
-# read time. Assertions sidecars stay at v1 (no transport_source field
-# for L1 assertions). See DEC-007 and DEC-018 in
-# ``plans/super/86-claude-cli-transport.md``.
-_ACCEPTED_SCHEMA_VERSIONS: dict[str, frozenset[int]] = {
-    "assertions.json": frozenset({1}),
-    "extraction.json": frozenset({1, 2}),
-    "grading.json": frozenset({1, 2}),
+# US-002 / #147 / DEC-008: per-sidecar maximum accepted schema version.
+# Grading and extraction sidecars accept v1..v3:
+#   - v1: original shape;
+#   - v2 (#86, US-006 of ``plans/super/86-claude-cli-transport.md``):
+#     adds ``transport_source``; loader defaults missing field to
+#     ``"api"`` at read time;
+#   - v3 (#147, US-001): adds ``provider_source``; loader defaults
+#     missing field to ``"anthropic"`` at read time.
+# Assertions sidecars stay at v1 (no transport_source/provider_source
+# fields for L1 assertions).
+#
+# This is the canonical map; the pure helper :func:`_is_accepted_version`
+# answers ``1 <= version <= MAX_SCHEMA_VERSION[base]`` for any
+# ``baseline_``-prefixed or plain sidecar filename. Future bumps
+# (e.g. #152's ``harness`` field) become a single-number edit per
+# filename rather than re-listing the accepted set. See DEC-008 in
+# ``plans/super/147-sidecar-provider-field.md``.
+MAX_SCHEMA_VERSION: dict[str, int] = {
+    "assertions.json": 1,
+    "extraction.json": 3,
+    "grading.json": 3,
 }
 
 
-def _accepted_versions_for(filename: str) -> frozenset[int]:
-    """Map a sidecar filename (with optional ``baseline_`` prefix) to its
-    accepted schema versions. Falls back to ``{1}`` for unknown filenames.
+def _is_accepted_version(filename: str, version: object) -> bool:
+    """Return True iff ``version`` is an accepted schema_version for ``filename``.
+
+    Pure helper. Accepts a ``baseline_``-prefixed filename and strips the
+    prefix before consulting :data:`MAX_SCHEMA_VERSION`.
+
+    The accept range is ``1 <= version <= MAX_SCHEMA_VERSION[base]`` —
+    the loader assumes monotonic forward compatibility within a sidecar
+    family. Per-version shape differences are handled by the
+    ``_records_from_*`` helpers, not here.
+
+    Raises :class:`KeyError` for any unknown filename — the caller is
+    expected to pass one of the three known sidecar names (with or
+    without the ``baseline_`` prefix). Non-int/non-bool ``version``
+    values (including ``None`` from a missing ``schema_version`` key,
+    or stringly-typed values from a malformed sidecar) return ``False``
+    rather than raising, so :func:`_check_schema_version` can produce
+    a clean stderr warning.
     """
     base = filename
     if base.startswith("baseline_"):
         base = base[len("baseline_"):]
-    return _ACCEPTED_SCHEMA_VERSIONS.get(base, frozenset({1}))
+    max_version = MAX_SCHEMA_VERSION[base]  # KeyError on unknown filename
+    # Reject non-int and bool (per ``constant-with-type-info.md``: bool
+    # is an int subclass in Python; ``True`` would otherwise compare as
+    # ``1 <= True <= max_version`` and pass).
+    if not isinstance(version, int) or isinstance(version, bool):
+        return False
+    return 1 <= version <= max_version
+
+
+def _provider_or_default(value: object) -> str:
+    """Return ``value`` when it is a non-blank ``str``, else ``"anthropic"``.
+
+    Defends ``_records_from_extraction`` / ``_records_from_grading``
+    against malformed v3 sidecars that store ``provider_source`` as
+    ``1``, ``True``, ``None``, or an empty/whitespace string. Without
+    this guard, a non-string ``provider`` would propagate into
+    ``IterationRecord``/``AuditAggregate`` keys and blow up downstream
+    sorting (``sorted({tuple-with-int-and-str})`` raises ``TypeError``)
+    or markdown/stdout column rendering. Defaulting in one place keeps
+    the audit pipeline structurally string-typed.
+    """
+    if isinstance(value, str) and value.strip():
+        return value
+    return "anthropic"
 
 
 def _check_schema_version(
@@ -61,20 +109,21 @@ def _check_schema_version(
 ) -> bool:
     """Verify the on-disk sidecar advertises an accepted schema_version.
 
-    Grading and extraction sidecars accept ``{1, 2}`` (US-006 of
-    ``plans/super/86-claude-cli-transport.md`` bumps them to v2 to
-    carry ``transport_source``); assertions sidecars accept ``{1}``.
-    A missing ``schema_version`` is treated as unknown and skipped
-    with a one-line stderr warning.
+    Delegates to the pure helper :func:`_is_accepted_version`. Sidecars
+    with a missing or out-of-range ``schema_version`` are skipped with
+    a one-line stderr warning naming the expected accepted range.
     """
-    accepted = _accepted_versions_for(filename)
     version = data.get("schema_version")
-    if version in accepted:
+    if _is_accepted_version(filename, version):
         return True
+    base = filename
+    if base.startswith("baseline_"):
+        base = base[len("baseline_"):]
+    max_version = MAX_SCHEMA_VERSION[base]
     print(
         f"clauditor.audit: skipping {iteration_dir}/{filename} — "
         f"schema_version={version!r} "
-        f"(expected one of {sorted(accepted)})",
+        f"(expected 1..{max_version})",
         file=sys.stderr,
     )
     return False
@@ -106,18 +155,37 @@ _ITERATION_RE = re.compile(r"^iteration-(\d+)$")
 
 @dataclass
 class IterationRecord:
-    """A single per-iteration, per-assertion result."""
+    """A single per-iteration, per-assertion result.
+
+    US-003 (#147): the ``provider`` field records which model provider's
+    SDK produced the underlying L2/L3 grading verdict. Loaded from the
+    sidecar's v3 ``provider_source`` field; defaults to ``"anthropic"``
+    for legacy v1/v2 sidecars (per DEC-001 of #147). L1
+    (``_records_from_assertions``) always carries ``"anthropic"`` as a
+    placeholder per DEC-002 — assertions sidecars stay at v1 because L1
+    has no LLM call to attribute, but ``IterationRecord`` keeps a
+    uniform shape across layers so audit grouping does not have to
+    branch by layer.
+    """
 
     iteration: int
     layer: str  # "L1" | "L2" | "L3"
     id: str
     passed: bool
     with_skill: bool  # True for primary, False for baseline sidecar
+    provider: str = "anthropic"
 
 
 @dataclass
 class AuditAggregate:
-    """Aggregate pass-rate statistics for one ``(layer, id)`` pair."""
+    """Aggregate pass-rate statistics for one ``(provider, layer, id)`` triple.
+
+    US-003 (#147): keyed by ``(provider, layer, id)`` so mixed-provider
+    history (the same eval run under both Anthropic and OpenAI) groups
+    into separate aggregates instead of being averaged together. The
+    ``provider`` field defaults to ``"anthropic"`` to keep direct
+    constructor calls in tests working without per-test edits.
+    """
 
     layer: str
     id: str
@@ -127,6 +195,7 @@ class AuditAggregate:
     total_baseline_runs: int
     baseline_fails: int
     baseline_pass_rate: float | None
+    provider: str = "anthropic"
 
     @property
     def discrimination(self) -> float | None:
@@ -183,6 +252,12 @@ def _records_from_assertions(
     ):
         return []
     records: list[IterationRecord] = []
+    # DEC-002 (#147): L1 records carry ``provider="anthropic"`` as a
+    # placeholder. Assertions sidecars stay at schema_version=1 (no
+    # ``provider_source`` field — L1 has no LLM call to attribute), but
+    # ``IterationRecord`` keeps a uniform shape across layers so the
+    # ``aggregate()`` group key is always 3-tuple. The honest harness
+    # dimension lands in #152.
     for run in data.get("runs", []) or []:
         for result in run.get("results", []) or []:
             rid = result.get("id")
@@ -195,6 +270,7 @@ def _records_from_assertions(
                     id=str(rid),
                     passed=bool(result.get("passed", False)),
                     with_skill=with_skill,
+                    provider="anthropic",
                 )
             )
     return records
@@ -213,6 +289,12 @@ def _records_from_extraction(
     ):
         return []
     records: list[IterationRecord] = []
+    # US-003 (#147): read v3 ``provider_source`` field; default to
+    # ``"anthropic"`` for legacy v1/v2 reads per DEC-001 of #147.
+    # ``_provider_or_default`` rejects non-string truthy values like
+    # ``1`` or ``True`` (which a malformed v3 sidecar could carry) so
+    # downstream sorting/rendering never sees a non-string provider.
+    provider = _provider_or_default(data.get("provider_source"))
     for field_id, entries in (data.get("fields") or {}).items():
         for entry in entries or []:
             if "passed" not in entry:
@@ -225,6 +307,7 @@ def _records_from_extraction(
                     id=str(field_id),
                     passed=passed,
                     with_skill=with_skill,
+                    provider=provider,
                 )
             )
     return records
@@ -243,6 +326,11 @@ def _records_from_grading(
     ):
         return []
     records: list[IterationRecord] = []
+    # US-003 (#147): same default-on-read shape as
+    # ``_records_from_extraction`` — v3 sidecars carry
+    # ``provider_source``; v1/v2 reads default to ``"anthropic"``.
+    # ``_provider_or_default`` rejects non-string truthy values.
+    provider = _provider_or_default(data.get("provider_source"))
     for result in data.get("results", []) or []:
         # DEC-001 / #25: L3 results are keyed by their stable spec id.
         # Drop records missing an ``id`` entirely — falling back to the
@@ -259,6 +347,7 @@ def _records_from_grading(
                 id=str(rid),
                 passed=bool(result.get("passed", False)),
                 with_skill=with_skill,
+                provider=provider,
             )
         )
     return records
@@ -355,15 +444,23 @@ def load_iterations(
 
 def aggregate(
     records: list[IterationRecord],
-) -> dict[tuple[str, str], AuditAggregate]:
-    """Group records by ``(layer, id)`` and compute pass rates.
+) -> dict[tuple[str, str, str], AuditAggregate]:
+    """Group records by ``(provider, layer, id)`` and compute pass rates.
+
+    US-003 (#147): expanded the grouping key from ``(layer, id)`` to
+    ``(provider, layer, id)`` so mixed-provider history (the same eval
+    run under both Anthropic and OpenAI) groups separately. Pre-#147
+    history (no ``provider_source`` on disk) defaults every record's
+    provider to ``"anthropic"`` and produces a single bucket per
+    ``(layer, id)`` keyed under ``("anthropic", layer, id)``, so
+    single-provider audit reports keep their pre-#147 shape.
 
     With-skill and baseline records are tallied separately so callers
     can compare them (see :attr:`AuditAggregate.discrimination`).
     """
-    buckets: dict[tuple[str, str], dict[str, int]] = {}
+    buckets: dict[tuple[str, str, str], dict[str, int]] = {}
     for r in records:
-        key = (r.layer, r.id)
+        key = (r.provider, r.layer, r.id)
         bucket = buckets.setdefault(
             key,
             {
@@ -382,8 +479,8 @@ def aggregate(
             if not r.passed:
                 bucket["baseline_fails"] += 1
 
-    result: dict[tuple[str, str], AuditAggregate] = {}
-    for (layer, rid), b in buckets.items():
+    result: dict[tuple[str, str, str], AuditAggregate] = {}
+    for (provider, layer, rid), b in buckets.items():
         with_total = b["with_total"]
         baseline_total = b["baseline_total"]
         with_pass_rate = (
@@ -398,7 +495,7 @@ def aggregate(
             )
         else:
             baseline_pass_rate = None
-        result[(layer, rid)] = AuditAggregate(
+        result[(provider, layer, rid)] = AuditAggregate(
             layer=layer,
             id=rid,
             total_with_runs=with_total,
@@ -407,6 +504,7 @@ def aggregate(
             total_baseline_runs=baseline_total,
             baseline_fails=b["baseline_fails"],
             baseline_pass_rate=baseline_pass_rate,
+            provider=provider,
         )
     return result
 
@@ -418,13 +516,21 @@ def aggregate(
 
 @dataclass
 class AuditVerdict:
-    """A threshold classification over one :class:`AuditAggregate`."""
+    """A threshold classification over one :class:`AuditAggregate`.
+
+    US-003 (#147): the ``provider`` field carries through from the
+    underlying :class:`AuditAggregate`'s 3-tuple key so renderers
+    (US-004) can surface the provider dimension in the audit output.
+    Defaults to ``"anthropic"`` so direct test fixture constructions
+    that predate #147 keep working without per-test edits.
+    """
 
     layer: str
     id: str
     verdict: Verdict
     reasons: list[str] = field(default_factory=list)
     aggregate: AuditAggregate | None = None
+    provider: str = "anthropic"
 
     @property
     def is_flagged(self) -> bool:
@@ -432,7 +538,7 @@ class AuditVerdict:
 
 
 def apply_thresholds(
-    aggregates: dict[tuple[str, str], AuditAggregate],
+    aggregates: dict[tuple[str, str, str], AuditAggregate],
     *,
     min_fail_rate: float,
     min_discrimination: float,
@@ -458,7 +564,11 @@ def apply_thresholds(
     preserved on disk; only the verdict stream filters them out.
     """
     verdicts: list[AuditVerdict] = []
-    for (layer, rid), agg in sorted(aggregates.items()):
+    # US-003 (#147): unpack the 3-tuple ``(provider, layer, id)`` key
+    # produced by :func:`aggregate`. ``sorted`` orders provider first so
+    # an audit report renders all-anthropic rows across all layers
+    # before openai rows; layer/id break ties within a provider.
+    for (provider, layer, rid), agg in sorted(aggregates.items()):
         if agg.total_with_runs == 0:
             continue
         reasons: list[str] = []
@@ -502,6 +612,7 @@ def apply_thresholds(
                 verdict=verdict,
                 reasons=reasons,
                 aggregate=agg,
+                provider=provider,
             )
         )
     return verdicts
@@ -534,15 +645,46 @@ def _fmt_disc(value: float | None) -> str:
     return f"{value * 100:+.1f}%"
 
 
+def _sorted_verdicts(verdicts: list[AuditVerdict]) -> list[AuditVerdict]:
+    """Sort verdicts by ``(provider, layer, id)`` for stable rendering.
+
+    DEC-004 (#147): all three render paths share the same sort order so
+    a reader scanning ``stdout`` / markdown / JSON in succession sees
+    rows in the same sequence. ``apply_thresholds`` already returns
+    verdicts in this order today, but renderers re-sort defensively in
+    case a caller hands in a list constructed differently.
+    """
+    return sorted(verdicts, key=lambda v: (v.provider, v.layer, v.id))
+
+
+def _providers_seen(verdicts: list[AuditVerdict]) -> list[str]:
+    """Return the sorted list of distinct providers across ``verdicts``.
+
+    DEC-010 (#147): the audit-output JSON v2 carries a top-level
+    ``providers_seen`` array so JSON consumers can detect mixed-provider
+    history without iterating ``assertions[]``.
+    """
+    return sorted({v.provider for v in verdicts})
+
+
 def render_stdout_table(verdicts: list[AuditVerdict]) -> str:
-    """Compact table: layer, id, with%, verdict."""
-    header = f"{'LAYER':<6} {'ID':<40} {'WITH%':>8} {'VERDICT':<24}"
+    """Compact table: provider, layer, id, with%, verdict.
+
+    DEC-004 (#147): leftmost ``PROVIDER`` column (~11 chars wide) so a
+    mixed-provider audit shows which provider's SDK produced each
+    grouped result. Sort order: ``(provider, layer, id)``.
+    """
+    header = (
+        f"{'PROVIDER':<11} {'LAYER':<6} {'ID':<40} "
+        f"{'WITH%':>8} {'VERDICT':<24}"
+    )
     lines = [header, "-" * len(header)]
-    for v in verdicts:
+    for v in _sorted_verdicts(verdicts):
         agg = v.aggregate
         with_pct = _fmt_pct(agg.with_pass_rate) if agg else "-"
         lines.append(
-            f"{v.layer:<6} {v.id[:40]:<40} {with_pct:>8} {v.verdict.value:<24}"
+            f"{v.provider[:11]:<11} {v.layer:<6} {v.id[:40]:<40} "
+            f"{with_pct:>8} {v.verdict.value:<24}"
         )
     return "\n".join(lines)
 
@@ -595,24 +737,32 @@ def render_markdown(
             )
     lines.append("")
 
+    sorted_verdicts = _sorted_verdicts(verdicts)
     for layer in ("L1", "L2", "L3"):
-        layer_rows = [v for v in verdicts if v.layer == layer]
+        layer_rows = [v for v in sorted_verdicts if v.layer == layer]
         lines.append(f"## {layer} detail")
         lines.append("")
         if not layer_rows:
             lines.append("_No data._")
             lines.append("")
             continue
+        # DEC-004 (#147): leftmost ``provider`` column so mixed-provider
+        # audits show which provider's SDK produced each row.
         lines.append(
-            "| id | runs | with% | baseline% | discrimination | verdict |"
+            "| provider | id | runs | with% | baseline% | "
+            "discrimination | verdict |"
         )
-        lines.append("|----|------|-------|-----------|----------------|---------|")
+        lines.append(
+            "|----------|----|------|-------|-----------|"
+            "----------------|---------|"
+        )
         for v in layer_rows:
             agg = v.aggregate
             if agg is None:
                 continue
             lines.append(
-                f"| `{_md_escape(v.id)}` | {agg.total_with_runs} | "
+                f"| `{_md_escape(v.provider)}` | "
+                f"`{_md_escape(v.id)}` | {agg.total_with_runs} | "
                 f"{_fmt_pct(agg.with_pass_rate)} | "
                 f"{_fmt_pct(agg.baseline_pass_rate)} | "
                 f"{_fmt_disc(agg.discrimination)} | "
@@ -631,12 +781,22 @@ def render_json(
     thresholds: dict[str, float | int],
     timestamp: str,
 ) -> dict:
-    """Return a JSON-serializable audit payload."""
+    """Return a JSON-serializable audit payload.
+
+    DEC-005 (#147): ``schema_version`` bumped from 1 to 2 to signal the
+    new ``provider`` field on each ``assertions[]`` entry. DEC-010
+    (#147): adds a top-level ``providers_seen`` array (sorted
+    alphabetically) so JSON consumers can detect mixed-provider history
+    without iterating ``assertions[]``. Sort order across ``assertions``
+    matches the stdout/markdown renderers: ``(provider, layer, id)``.
+    """
+    sorted_verdicts = _sorted_verdicts(verdicts)
     assertions_list: list[dict] = []
-    for v in verdicts:
+    for v in sorted_verdicts:
         agg = v.aggregate
         assertions_list.append(
             {
+                "provider": v.provider,
                 "layer": v.layer,
                 "id": v.id,
                 "with_runs": agg.total_with_runs if agg else 0,
@@ -651,10 +811,11 @@ def render_json(
             }
         )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "skill": skill,
         "timestamp": timestamp,
         "iterations": iterations_analyzed,
         "thresholds": dict(thresholds),
+        "providers_seen": _providers_seen(verdicts),
         "assertions": assertions_list,
     }
