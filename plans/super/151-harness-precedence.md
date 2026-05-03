@@ -6,8 +6,8 @@
 - **Branch:** `feature/151-harness-precedence`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/151-harness-precedence`
 - **PR:** https://github.com/wjduenow/clauditor/pull/166
-- **Phase:** published
-- **Epic:** _(pending devolve)_
+- **Phase:** devolved
+- **Epic:** clauditor-66i
 - **Sessions:** 1 (2026-05-03)
 - **Total decisions:** 13 (DEC-001 through DEC-013)
 - **Stories:** 8 implementation + Quality Gate + Patterns & Memory = 10
@@ -1013,4 +1013,22 @@ discoverable.
 
 ## Beads Manifest
 
-_(populated after devolve)_
+- **Epic:** `clauditor-66i` — #151: Multi-harness EvalSpec.harness four-layer precedence
+- **Worktree:** `/home/wesd/Projects/worktrees/clauditor/151-harness-precedence`
+- **PR:** https://github.com/wjduenow/clauditor/pull/166
+
+| Bead | Story | Depends on |
+|---|---|---|
+| `clauditor-66i.1` | US-001: EvalSpec.harness field + validator | — |
+| `clauditor-66i.2` | US-002: resolve_harness + construct_harness | US-001 |
+| `clauditor-66i.3` | US-003: check_codex_auth + announcement | — |
+| `clauditor-66i.4` | US-004: _harness_choice + _resolve_harness wrapper | US-002, US-003 |
+| `clauditor-66i.5` | US-005: Wire --harness into 4 CLI commands | US-001..4, US-006 |
+| `clauditor-66i.6` | US-006: SkillSpec.run harness_name_override kwarg | US-002 |
+| `clauditor-66i.7` | US-007: Pytest fixture honors eval_spec.harness | US-006 |
+| `clauditor-66i.8` | US-008: Update spec-cli-precedence.md | US-005, US-007 |
+| `clauditor-66i.9` | US-009: Quality Gate (code-reviewer x4 + CodeRabbit) | US-008 |
+| `clauditor-66i.10` | US-010: Patterns & Memory | US-009 |
+
+**Ready to start (no blockers):** `clauditor-66i.1` (US-001),
+`clauditor-66i.3` (US-003) — parallel-safe.
