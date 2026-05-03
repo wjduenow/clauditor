@@ -95,11 +95,12 @@ class GradingReport:
     output_tokens: int = 0
     transport_source: str = "api"
     # ``provider_source`` records which provider backend produced the
-    # response — ``"anthropic"`` (current) or ``"openai"`` (#145+). Per
-    # DEC-006 of ``plans/super/144-providers-call-model.md`` this field
-    # is in-memory only — :meth:`to_json` does NOT include it; the
-    # ``schema_version: 3`` bump that lights it up on disk is owned by
-    # #147.
+    # response — ``"anthropic"`` (current) or ``"openai"`` (#145+).
+    # Persisted into ``grading.json`` at ``schema_version=3`` per
+    # DEC-001 / DEC-006 of ``plans/super/147-sidecar-provider-field.md``.
+    # The audit loader accepts ``{1, 2, 3}`` and defaults missing
+    # ``provider_source`` to ``"anthropic"`` when reading legacy v1/v2
+    # sidecars.
     provider_source: str = "anthropic"
 
     @property
@@ -128,17 +129,20 @@ class GradingReport:
     def to_json(self) -> str:
         """Serialize the report to a JSON string.
 
-        Emits ``schema_version: 2`` as the first key per
-        ``.claude/rules/json-schema-version.md``. Version 2 adds the
-        ``transport_source`` field; the audit loader accepts both
-        ``{1, 2}`` and defaults missing ``transport_source`` to
-        ``"api"`` when reading v1 sidecars.
+        Emits ``schema_version: 3`` as the first key per
+        ``.claude/rules/json-schema-version.md``. Version 3 adds the
+        ``provider_source`` field on disk (v2 added
+        ``transport_source``); the audit loader accepts ``{1, 2, 3}``
+        and defaults missing ``transport_source`` to ``"api"`` and
+        missing ``provider_source`` to ``"anthropic"`` when reading
+        legacy v1/v2 sidecars.
         """
         data = {
-            "schema_version": 2,
+            "schema_version": 3,
             "skill_name": self.skill_name,
             "model": self.model,
             "transport_source": self.transport_source,
+            "provider_source": self.provider_source,
             "duration_seconds": self.duration_seconds,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
@@ -167,9 +171,10 @@ class GradingReport:
     def from_json(cls, data: str) -> GradingReport:
         """Deserialize a GradingReport from a JSON string.
 
-        Tolerates both schema versions (``1`` and ``2``); a missing
+        Tolerates schema versions ``1``, ``2``, and ``3``. A missing
         ``transport_source`` defaults to ``"api"`` so pre-#86 sidecars
-        load cleanly.
+        load cleanly; a missing ``provider_source`` defaults to
+        ``"anthropic"`` so pre-#147 sidecars load cleanly.
         """
         parsed = json.loads(data)
         results = [
@@ -198,6 +203,9 @@ class GradingReport:
             input_tokens=int(parsed.get("input_tokens", 0)),
             output_tokens=int(parsed.get("output_tokens", 0)),
             transport_source=str(parsed.get("transport_source") or "api"),
+            provider_source=str(
+                parsed.get("provider_source") or "anthropic"
+            ),
         )
 
     def summary(self) -> str:

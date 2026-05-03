@@ -8,6 +8,22 @@ import sys
 from clauditor import history
 
 
+def _normalized_provider(rec: dict) -> str:
+    """Coerce a history record's ``provider`` to a safe string.
+
+    Returns ``"anthropic"`` for missing keys, non-string values, and
+    blank/whitespace-only strings. ``read_records`` already backfills
+    missing keys for legacy v1 lines, but this helper additionally
+    handles the "raw record contains ``null`` or a non-string" case so
+    ``sorted({_normalized_provider(rec) for rec in records})`` cannot
+    raise ``TypeError`` on a malformed mixed-history file.
+    """
+    provider = rec.get("provider")
+    if isinstance(provider, str) and provider.strip():
+        return provider
+    return "anthropic"
+
+
 def _positive_int(value: str) -> int:
     """argparse type: accept integers >= 1."""
     try:
@@ -21,6 +37,13 @@ def _positive_int(value: str) -> int:
 
 def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``trend`` subparser."""
+    # Lazy import to mirror the rest of cli/*.py and side-step a circular
+    # import hazard: ``clauditor.cli.__init__`` imports ``cmd_trend`` from
+    # this module during CLI registration, so a top-level
+    # ``from clauditor.cli import _provider_concrete_choice`` resolves
+    # ``clauditor.cli`` mid-initialization.
+    from clauditor.cli import _provider_concrete_choice
+
     p_trend = subparsers.add_parser(
         "trend",
         help="Print a trend line (TSV) from grade history",
@@ -45,6 +68,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         choices=["grade", "extract", "validate", "all"],
         default="grade",
         help="Filter history records by command (default: grade)",
+    )
+    p_trend.add_argument(
+        "--provider",
+        type=_provider_concrete_choice,
+        default=None,
+        help=(
+            "Filter history records by grading provider "
+            "('anthropic' or 'openai'). Required when history contains "
+            "mixed providers."
+        ),
     )
     p_trend.add_argument(
         "--last",
@@ -79,6 +112,38 @@ def cmd_trend(args: argparse.Namespace) -> int:
                 f"ERROR: no history records for skill '{args.skill_name}' "
                 f"with command '{command_filter}'. Try --command all to "
                 "union across all recorded commands.",
+                file=sys.stderr,
+            )
+            return 1
+
+    # Provider refusal / filter (DEC-003, DEC-009, DEC-011 of #147).
+    # Computed from the full filtered set BEFORE the --last slice so a
+    # user with mixed history cannot silently slip past the refusal by
+    # narrowing the window. ``_normalized_provider`` coerces
+    # missing/non-string/blank values to ``"anthropic"`` so a
+    # malformed v2 record (``provider: null`` or a stray int) cannot
+    # raise ``TypeError`` mid-sort.
+    providers_seen = sorted({_normalized_provider(rec) for rec in records})
+    if args.provider is None:
+        if len(providers_seen) > 1:
+            providers_str = ", ".join(repr(p) for p in providers_seen)
+            print(
+                f"ERROR: Mixed providers detected in history for skill "
+                f"'{args.skill_name}' ({providers_str}). Pass "
+                f"--provider anthropic or --provider openai to filter.",
+                file=sys.stderr,
+            )
+            return 2
+    else:
+        records = [
+            rec
+            for rec in records
+            if _normalized_provider(rec) == args.provider
+        ]
+        if not records:
+            print(
+                f"ERROR: no records for provider '{args.provider}' "
+                f"for skill '{args.skill_name}'.",
                 file=sys.stderr,
             )
             return 1

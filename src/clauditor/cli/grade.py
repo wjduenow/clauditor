@@ -1205,6 +1205,7 @@ def _cmd_grade_with_workspace(
         variance_report=variance_report,
         benchmark=benchmark,
         metrics_dict=metrics_dict,
+        provider=provider,
     )
 
     # Determine exit code
@@ -1230,6 +1231,7 @@ def _report_grade_to_user(
     variance_report: VarianceReport | None,
     benchmark: Benchmark | None,
     metrics_dict: dict,
+    provider: str,
 ) -> None:
     """Emit the grade report, diff/baseline delta blocks, and history row.
 
@@ -1271,6 +1273,7 @@ def _report_grade_to_user(
             final_skill_dir=final_skill_dir,
             primary_report=primary_report,
             metrics_dict=metrics_dict,
+            provider=provider,
         )
 
 
@@ -1409,8 +1412,14 @@ def _append_grade_history_record(
     final_skill_dir: Path | None,
     primary_report: GradingReport,
     metrics_dict: dict,
+    provider: str,
 ) -> None:
-    """Append a ``command="grade"`` row to ``history.jsonl`` (US-006)."""
+    """Append a ``command="grade"`` row to ``history.jsonl`` (US-006).
+
+    ``provider`` is the resolved grading provider (``"anthropic"`` or
+    ``"openai"``) per #147 DEC-012; threaded down from ``cmd_grade``'s
+    four-layer ``_resolve_grading_provider`` resolution.
+    """
     from clauditor.cli import _relative_to_repo
 
     workspace_rel = _relative_to_repo(clauditor_dir, final_skill_dir)
@@ -1421,6 +1430,7 @@ def _append_grade_history_record(
             mean_score=primary_report.mean_score,
             metrics=metrics_dict,
             command="grade",
+            provider=provider,
             iteration=workspace.iteration,
             workspace_path=workspace_rel,
         )

@@ -74,6 +74,24 @@ def _provider_choice(value: str) -> str:
     return value
 
 
+def _provider_concrete_choice(value: str) -> str:
+    """argparse type: accept ``"anthropic"`` or ``"openai"`` only.
+
+    DEC-007 of ``plans/super/147-sidecar-provider-field.md``. Sibling
+    to :func:`_provider_choice` but rejects ``"auto"`` because the
+    consuming command (``clauditor trend``) has no model/spec
+    context to resolve ``"auto"`` against — trend reads history
+    records that already carry a concrete provider value. argparse
+    maps the ``ArgumentTypeError`` to a clean exit 2 at parse time
+    per ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    """
+    if value not in ("anthropic", "openai"):
+        raise argparse.ArgumentTypeError(
+            f"must be one of 'anthropic', 'openai', got {value!r}"
+        )
+    return value
+
+
 def _resolve_grader_transport(args: argparse.Namespace, eval_spec=None) -> str:
     """Resolve grader transport using four-layer precedence.
 
@@ -264,6 +282,12 @@ def _append_validate_history(
             mean_score=None,
             metrics=metrics_dict,
             command="validate",
+            # validate runs Layer 1 deterministic assertions only — no
+            # LLM grading call is made — so the provider field has no
+            # operational meaning. Stamp ``"anthropic"`` as the
+            # placeholder per #147 DEC-002 / DEC-012 so history records
+            # carry a valid value downstream consumers can group on.
+            provider="anthropic",
             iteration=iteration,
             workspace_path=workspace_path,
         )

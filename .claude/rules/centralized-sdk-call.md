@@ -386,6 +386,27 @@ transport to record. `BlindReport.transport_source` propagates this
 through blind-compare; when the two parallel calls disagree
 (unlikely in practice), the report stamps `"mixed"` (DEC-018).
 
+### Provider-axis stamping (`provider_source`, #147)
+
+Parallel to `transport_source`, each grader call stamps a
+`provider_source: str` field on `GradingReport` and `ExtractionReport`
+recording which model provider's SDK (`"anthropic"` or `"openai"`)
+served the call. The provider value comes from the
+`call_model(provider=...)` argument, resolved at the CLI seam by
+`_resolve_grading_provider(args, eval_spec)` per the four-layer
+precedence rule
+(`.claude/rules/spec-cli-precedence.md` "Four-layer precedence —
+grading provider (#146)"). The on-disk field name is byte-identical
+to the in-memory dataclass field — same shape as `transport_source`
+introduced in #86. Sidecars `grading.json` and `extraction.json`
+bumped from `schema_version: 2` to `3`; legacy v1/v2 reads default
+`provider_source` to `"anthropic"`. See
+`.claude/rules/json-schema-version.md` "Schema version bumps for
+`#147`" for the loader-side default-on-read semantics. The honest
+harness-axis sibling (`harness: str` on the same sidecars + on
+`assertions.json`) lives in `#152` and is strictly separable from
+`#147` per DEC-006 of `plans/super/147-sidecar-provider-field.md`.
+
 ### Implicit-coupling announcements — an emerging family
 
 One-time-per-process stderr notices are an emerging family co-located
