@@ -8,6 +8,10 @@ import sys
 from pathlib import Path
 
 from clauditor._harnesses._claude_code import env_without_api_key
+from clauditor._providers import (
+    CodexAuthMissingError,
+    check_codex_auth,
+)
 from clauditor.assertions import run_assertions
 from clauditor.paths import resolve_clauditor_dir
 from clauditor.runner import SkillResult
@@ -22,7 +26,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``validate`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int
+    from clauditor.cli import _harness_choice, _positive_int
 
     p_validate = subparsers.add_parser(
         "validate", help="Run Layer 1 assertions against a skill's output"
@@ -76,6 +80,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     p_validate.add_argument(
+        "--harness",
+        type=_harness_choice,
+        default=None,
+        choices=("claude-code", "codex", "auto"),
+        help=(
+            "Override the harness selection: 'claude-code' (Anthropic "
+            "Claude CLI), 'codex' (OpenAI Codex CLI), or 'auto' (prefer "
+            "claude-code when available). Four-layer precedence: this "
+            "flag > CLAUDITOR_HARNESS env > EvalSpec.harness > default "
+            "'auto'."
+        ),
+    )
+    p_validate.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -104,6 +121,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         _print_failing_transcript_slice,
         _relative_to_repo,
         _render_skill_error,
+        _resolve_harness,
         _write_run_dir,
     )
 
@@ -124,6 +142,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
     workspace: IterationWorkspace | None = None
     workspace_rel: str | None = None
     iteration_index: int | None = None
+    # ``harness_name`` is resolved only on the live-run path. The
+    # ``--output`` branch reads a captured file and never invokes a
+    # subprocess, so the four-layer resolver (which raises if neither
+    # ``claude`` nor ``codex`` is on PATH under the default ``"auto"``)
+    # would be a hostile UX regression for the captured-output workflow.
+    harness_name: str | None = None
 
     if args.output:
         # Validate against a pre-captured output file. This path is
@@ -150,6 +174,23 @@ def cmd_validate(args: argparse.Namespace) -> int:
         # Live-run path: allocate an iteration workspace, run the skill
         # into ``workspace.tmp_path / run-0``, persist sidecars, and
         # finalize atomically. On any exception, abort the staging dir.
+        #
+        # #151 US-005 / DEC-006 / DEC-012: resolve harness via the
+        # four-layer precedence helper (CLI flag > CLAUDITOR_HARNESS env
+        # > EvalSpec.harness > default "auto"), then fail fast if the
+        # resolved harness is "codex" and Codex auth is missing. Guard
+        # lands BEFORE allocate_iteration so we do not leave an
+        # abandoned iteration-N-tmp/ staging dir behind when the guard
+        # fires. ``validate`` has no provider-grader axis, so harness
+        # auth is the only pre-call check.
+        harness_name = _resolve_harness(args, spec.eval_spec)
+        if harness_name == "codex":
+            try:
+                check_codex_auth("validate")
+            except CodexAuthMissingError as exc:
+                print(f"ERROR: {exc}", file=sys.stderr)
+                return 2
+
         clauditor_dir = resolve_clauditor_dir()
         try:
             workspace = allocate_iteration(clauditor_dir, spec.skill_name)
@@ -179,6 +220,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 sync_tasks_override=(
                     True if getattr(args, "sync_tasks", False) else None
                 ),
+                harness_name_override=harness_name,
             )
             if not skill_result.succeeded_cleanly:
                 print(

@@ -353,6 +353,11 @@ class TestValidateVerboseInvocation:
         args.eval = str(eval_path)
         args.output = None
         args.json = False
+        # #151 US-005: ``_resolve_harness`` reads ``args.harness``.
+        # MagicMock returns a fresh MagicMock for any attribute, which
+        # fails the literal-set validator. Pin to ``None`` so the
+        # resolver falls through to the env-var layer.
+        args.harness = None
         args.verbose = True
         args.no_transcript = False
 
@@ -361,6 +366,12 @@ class TestValidateVerboseInvocation:
             spec.skill_name = "demo"
             spec.eval_spec = MagicMock()
             spec.eval_spec.test_args = ""
+            # #151 US-005: ``_resolve_harness`` reads ``eval_spec.harness``.
+            # MagicMock returns a fresh MagicMock for any attribute access,
+            # which fails the literal-set validator. Pin to ``None`` so the
+            # resolver falls through to the env-var layer (autouse fixture
+            # pins ``CLAUDITOR_HARNESS=claude-code``).
+            spec.eval_spec.harness = None
             spec.eval_spec.assertions = [
                 MagicMock(
                     name="a1",
@@ -433,6 +444,11 @@ class TestValidateVerboseInvocation:
         args.eval = None
         args.output = None
         args.json = False
+        # #151 US-005: ``_resolve_harness`` reads ``args.harness``.
+        # MagicMock returns a fresh MagicMock for any attribute, which
+        # fails the literal-set validator. Pin to ``None`` so the
+        # resolver falls through to the env-var layer.
+        args.harness = None
         args.verbose = False
         args.no_transcript = False
 
@@ -441,6 +457,12 @@ class TestValidateVerboseInvocation:
             spec.skill_name = "demo"
             spec.eval_spec = MagicMock()
             spec.eval_spec.test_args = ""
+            # #151 US-005: ``_resolve_harness`` reads ``eval_spec.harness``.
+            # MagicMock returns a fresh MagicMock for any attribute access,
+            # which fails the literal-set validator. Pin to ``None`` so the
+            # resolver falls through to the env-var layer (autouse fixture
+            # pins ``CLAUDITOR_HARNESS=claude-code``).
+            spec.eval_spec.harness = None
             spec.eval_spec.assertions = []
             spec.run.return_value = fake_skill_result
             from_file.return_value = spec
