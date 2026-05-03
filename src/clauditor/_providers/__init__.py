@@ -100,6 +100,40 @@ class OpenAIAuthMissingError(Exception):
     """
 
 
+class CodexAuthMissingError(Exception):
+    """Raised when no usable Codex authentication path is available.
+
+    Thrown by :func:`check_codex_auth` when neither ``CODEX_API_KEY``
+    nor ``OPENAI_API_KEY`` is set (both checked via whitespace-trimmed
+    non-empty). Codex accepts either env var — ``CODEX_API_KEY`` is
+    the harness-native name; ``OPENAI_API_KEY`` is honored as a
+    fallback because Codex's underlying transport ultimately routes
+    to OpenAI.
+
+    DEC-003 / DEC-010 of ``plans/super/151-harness-precedence.md``:
+    Codex is a HARNESS axis, not a PROVIDER axis. The
+    :func:`check_provider_auth` dispatcher does NOT grow a Codex
+    branch — the CLI seam directly calls :func:`check_codex_auth`
+    when the resolved harness is ``"codex"``. The exception class
+    lives here next to its siblings to preserve the class-identity
+    invariant per ``.claude/rules/back-compat-shim-discipline.md``
+    Pattern 2: every ``except CodexAuthMissingError`` ladder catches
+    the same class object regardless of which module raised it.
+
+    Distinct from :class:`AnthropicAuthMissingError` AND
+    :class:`OpenAIAuthMissingError` by design: the CLI layer routes
+    ``CodexAuthMissingError`` to exit 2 (pre-call input-validation
+    error per ``.claude/rules/llm-cli-exit-code-taxonomy.md``) — the
+    same exit code the other auth-missing classes route to, but via
+    a structurally distinct ``except`` branch.
+
+    Subclass of :class:`Exception` directly, NOT of
+    :class:`AnthropicAuthMissingError`, :class:`OpenAIAuthMissingError`,
+    or any helper-error class — a common ancestor would defeat the
+    structural-routing invariant every CLI dispatcher depends on.
+    """
+
+
 # Re-export the auth-helper surface from ``_auth.py``. Imported AFTER
 # ``AnthropicAuthMissingError`` is defined so ``_auth.py``'s deferred
 # / direct ``from clauditor._providers import AnthropicAuthMissingError``
@@ -126,16 +160,21 @@ class OpenAIAuthMissingError(Exception):
 from clauditor._providers._auth import (  # noqa: E402, I001
     _AUTH_MISSING_TEMPLATE,
     _AUTH_MISSING_TEMPLATE_KEY_ONLY,
+    _AUTO_CODEX_ANNOUNCEMENT,
     _CALL_ANTHROPIC_DEPRECATION_NOTICE,
+    _CODEX_AUTH_MISSING_TEMPLATE,
     _IMPLICIT_NO_API_KEY_ANNOUNCEMENT,
     _OPENAI_AUTH_MISSING_TEMPLATE,
     _api_key_is_set,
     _claude_cli_is_available,
+    _codex_api_key_is_set,
     _openai_api_key_is_set,
+    announce_auto_codex_harness,
     announce_call_anthropic_deprecation,
     announce_implicit_no_api_key,
     check_any_auth_available,
     check_api_key_only,
+    check_codex_auth,
     check_openai_auth,
     check_provider_auth,
 )
@@ -476,15 +515,18 @@ __all__ = [
     "AnthropicHelperError",
     "AnthropicResult",
     "ClaudeCLIError",
+    "CodexAuthMissingError",
     "ModelResult",
     "OpenAIAuthMissingError",
     "OpenAIHelperError",
+    "announce_auto_codex_harness",
     "announce_call_anthropic_deprecation",
     "announce_implicit_no_api_key",
     "call_anthropic",
     "call_model",
     "check_any_auth_available",
     "check_api_key_only",
+    "check_codex_auth",
     "check_openai_auth",
     "check_provider_auth",
     "infer_provider_from_model",
@@ -497,10 +539,13 @@ __all__ = [
     # flag is deliberately absent — see the import comment above.
     "_AUTH_MISSING_TEMPLATE",
     "_AUTH_MISSING_TEMPLATE_KEY_ONLY",
+    "_AUTO_CODEX_ANNOUNCEMENT",
     "_CALL_ANTHROPIC_DEPRECATION_NOTICE",
+    "_CODEX_AUTH_MISSING_TEMPLATE",
     "_IMPLICIT_NO_API_KEY_ANNOUNCEMENT",
     "_OPENAI_AUTH_MISSING_TEMPLATE",
     "_api_key_is_set",
     "_claude_cli_is_available",
+    "_codex_api_key_is_set",
     "_openai_api_key_is_set",
 ]
