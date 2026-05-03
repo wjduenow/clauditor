@@ -79,9 +79,12 @@ def _harness_choice(value: str) -> str:
 
     DEC-002 / DEC-011 of ``plans/super/151-harness-precedence.md``.
     Mirrors :func:`_transport_choice` and :func:`_provider_choice` shape —
-    shared across the LLM-mediated commands so help text and error
-    messages stay consistent. argparse maps the
-    ``ArgumentTypeError`` to a clean exit 2 at parse time per
+    shared across the skill-execution commands (``validate``, ``grade``,
+    ``capture``, ``run``) where ``--harness`` is wired, so help text and
+    error messages stay consistent. (The LLM-mediated grader commands
+    use ``--transport`` / ``--grading-provider`` instead; ``--harness``
+    governs the skill subprocess, not the grading SDK call.) argparse
+    maps the ``ArgumentTypeError`` to a clean exit 2 at parse time per
     ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
     """
     if value not in ("claude-code", "codex", "auto"):
