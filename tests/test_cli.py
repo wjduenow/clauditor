@@ -8006,3 +8006,325 @@ class TestResolveGradingProvider:
         eval_spec = _FakeEvalSpecForProviderResolver(grading_provider="openai")
         result = _resolve_grading_provider(args, eval_spec)
         assert result == "openai"
+
+
+class TestCLIHarnessFlag:
+    """#151 US-005: ``--harness {claude-code,codex,auto}`` argparse flag.
+
+    Each of the four skill-execution commands (``validate``, ``grade``,
+    ``capture``, ``run``) accepts ``--harness`` with the shared
+    ``_harness_choice`` validator. Invalid values exit 2 at argparse
+    time per ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    """
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            ["validate", "skill.md", "--harness", "bogus"],
+            ["grade", "skill.md", "--harness", "bogus"],
+            ["capture", "my-skill", "--harness", "bogus"],
+            ["run", "my-skill", "--harness", "bogus"],
+        ],
+    )
+    def test_invalid_harness_exits_2(self, cmd, capsys):
+        """Invalid ``--harness bogus`` rejected by argparse with exit 2."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(cmd)
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "must be one of" in err or "invalid" in err.lower()
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            ["validate", "--help"],
+            ["grade", "--help"],
+            ["capture", "--help"],
+            ["run", "--help"],
+        ],
+    )
+    def test_four_commands_advertise_harness_in_help(self, cmd, capsys):
+        """Each of the four commands advertises ``--harness`` in help text."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(cmd)
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "--harness" in out
+
+
+class TestCmdValidateHarness:
+    """#151 US-005: ``cmd_validate`` resolves harness and dispatches Codex auth."""
+
+    def test_validate_with_harness_codex_passes_when_key_set(
+        self, tmp_path, monkeypatch
+    ):
+        """``--harness codex`` + ``CODEX_API_KEY`` set → live-run path
+        threads ``harness_name_override="codex"`` into ``spec.run``.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setenv("CODEX_API_KEY", "ck-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=1.5,
+        )
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--harness", "codex"])
+
+        assert rc == 0
+        spec.run.assert_called_once()
+        # DEC-013 / US-006: the resolved harness is threaded through.
+        kwargs = spec.run.call_args.kwargs
+        assert kwargs.get("harness_name_override") == "codex"
+
+    def test_validate_with_harness_codex_exits_2_when_keys_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` with both Codex env vars unset → exit 2
+        with stderr mentioning ``CODEX_API_KEY``. ``spec.run`` is never
+        invoked because the auth guard fires before subprocess launch.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(output="ignored")
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--harness", "codex"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "CODEX_API_KEY" in err
+        assert spec.run.call_count == 0
+
+
+class TestCmdGradeHarness:
+    """#151 US-005 / DEC-013: ``cmd_grade`` resolves harness, threads it
+    through to BOTH primary and baseline ``spec.run`` calls.
+    """
+
+    def test_grade_with_harness_codex_passes_when_key_set(
+        self, tmp_path, monkeypatch
+    ):
+        """``--harness codex`` + ``CODEX_API_KEY`` set → primary
+        ``spec.run`` is invoked with ``harness_name_override="codex"``.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CODEX_API_KEY", "ck-test")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=1.5,
+        )
+        report = make_grading_report(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--harness", "codex"])
+
+        assert rc == 0
+        assert spec.run.call_count >= 1
+        # Every primary/variance ``spec.run`` call gets the override.
+        for call in spec.run.call_args_list:
+            assert call.kwargs.get("harness_name_override") == "codex"
+
+    def test_grade_baseline_propagates_codex_harness_to_baseline_runner(
+        self, tmp_path, monkeypatch
+    ):
+        """DEC-013: ``--baseline --harness codex`` must use the same
+        Codex harness for both the primary and baseline arms (the A/B
+        comparison must isolate the variable).
+
+        The baseline arm calls ``baseline_runner.run_raw(...)`` rather
+        than ``spec.run(...)``. Verify ``construct_harness("codex")``
+        was invoked for the baseline phase — confirming the resolved
+        harness propagated to the without-skill arm.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CODEX_API_KEY", "ck-test")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=1.5,
+        )
+        # spec.runner mirrors the primary harness so the baseline path
+        # has a project_dir / timeout to copy into the override runner.
+        spec.runner = MagicMock()
+        spec.runner.project_dir = tmp_path
+        spec.runner.timeout = 300
+
+        report = make_grading_report(passed=True)
+        baseline_reports = MagicMock()
+        baseline_reports.grading_report = report
+        baseline_reports.skill_result = make_skill_result(
+            output="baseline output", duration_seconds=1.0,
+        )
+        baseline_reports.to_json_map = lambda: {}
+
+        # ``construct_harness`` is imported lazily inside
+        # ``_run_baseline_phase`` (deferred per
+        # ``.claude/rules/back-compat-shim-discipline.md`` Pattern 3),
+        # so the canonical patch seam is the source module.
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch(
+                "clauditor._harnesses.construct_harness"
+            ) as mock_construct,
+            patch(
+                "clauditor.baseline.compute_baseline",
+                return_value=baseline_reports,
+            ),
+        ):
+            mock_construct.return_value = MagicMock()
+            rc = main(
+                ["grade", "skill.md", "--harness", "codex", "--baseline"]
+            )
+
+        # Whatever the final exit code (delta gate may or may not
+        # pass), the baseline arm must have called
+        # ``construct_harness("codex")`` — that's the DEC-013
+        # invariant. ``construct_harness`` is also called inside
+        # ``SkillSpec.run`` (from US-006), but here ``spec.run`` is a
+        # mock so that path is bypassed; the only call therefore comes
+        # from the baseline arm.
+        assert rc in (0, 1), f"unexpected rc {rc}"
+        codex_calls = [
+            c for c in mock_construct.call_args_list
+            if c.args and c.args[0] == "codex"
+        ]
+        assert len(codex_calls) >= 1, (
+            "Baseline arm did not call construct_harness('codex'); "
+            "DEC-013 requires the resolved harness to propagate to "
+            "both arms."
+        )
+
+    def test_grade_with_harness_codex_exits_2_when_keys_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` with both Codex env vars unset → exit 2
+        with stderr mentioning ``CODEX_API_KEY``. ``allocate_iteration``
+        is never reached because the auth guard fires upstream.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(output="ignored")
+        report = make_grading_report(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ) as mock_grade,
+        ):
+            rc = main(["grade", "skill.md", "--harness", "codex"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "CODEX_API_KEY" in err
+        assert spec.run.call_count == 0
+        assert mock_grade.await_count == 0
+
+
+class TestCmdCaptureHarness:
+    """#151 US-005: ``cmd_capture`` resolves harness via three-layer
+    precedence (no spec layer) and dispatches Codex auth.
+    """
+
+    def test_capture_with_harness_codex_exits_2_when_keys_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` with both Codex env vars unset → exit 2
+        with stderr mentioning ``CODEX_API_KEY``. ``SkillRunner`` is
+        never constructed because the guard fires upstream.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with patch("clauditor.cli.capture.SkillRunner") as mock_runner_cls:
+            rc = main(
+                ["capture", "my-skill", "--harness", "codex", "--out",
+                 str(tmp_path / "out.txt")]
+            )
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "CODEX_API_KEY" in err
+        assert mock_runner_cls.call_count == 0
+
+
+class TestCmdRunHarness:
+    """#151 US-005: ``cmd_run`` resolves harness via three-layer
+    precedence (no spec layer) and dispatches Codex auth.
+    """
+
+    def test_run_with_harness_codex_exits_2_when_keys_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` with both Codex env vars unset → exit 2
+        with stderr mentioning ``CODEX_API_KEY``. ``SkillRunner`` is
+        never constructed.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with patch("clauditor.cli.run.SkillRunner") as mock_runner_cls:
+            rc = main(["run", "my-skill", "--harness", "codex"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "CODEX_API_KEY" in err
+        assert mock_runner_cls.call_count == 0
+
+    def test_run_with_harness_codex_constructs_codex_harness(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` + ``CODEX_API_KEY`` set →
+        ``SkillRunner`` is constructed with a ``CodexHarness`` instance.
+        """
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("CODEX_API_KEY", "ck-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="codex output", skill_name="my-skill",
+            duration_seconds=1.0,
+        )
+
+        with patch(
+            "clauditor.cli.run.SkillRunner", return_value=mock_runner
+        ) as mock_runner_cls:
+            rc = main(["run", "my-skill", "--harness", "codex"])
+
+        assert rc == 0
+        # SkillRunner constructed exactly once with a CodexHarness.
+        assert mock_runner_cls.call_count == 1
+        kwargs = mock_runner_cls.call_args.kwargs
+        assert isinstance(kwargs["harness"], CodexHarness)

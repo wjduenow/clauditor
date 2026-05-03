@@ -733,12 +733,25 @@ def _force_api_transport_in_tests(monkeypatch):
     ``TestStderrAnnouncement`` in ``tests/test_providers_anthropic.py``)
     re-patch ``shutil.which`` inside the test body to override this
     default.
+
+    #151 US-005: pin ``CLAUDITOR_HARNESS=claude-code`` so the harness
+    resolver short-circuits before hitting the auto-PATH-lookup branch.
+    ``shutil.which`` is a module-level attribute on the singleton
+    ``shutil`` module, so patching ``_anthropic.shutil.which`` globally
+    affects every reader (including
+    :func:`clauditor._providers.resolve_harness`'s PATH lookup) — the
+    harness auto-resolver would otherwise raise on every test under
+    the ``"auto"`` default. Tests that exercise codex resolution, the
+    no-binary-on-PATH error path, or the ``CLAUDITOR_HARNESS`` env-var
+    layer specifically use ``monkeypatch.setenv`` /
+    ``monkeypatch.delenv`` inside the test body to override.
     """
     import clauditor._anthropic as _anthropic
 
     monkeypatch.setattr(
         _anthropic.shutil, "which", lambda name: None
     )
+    monkeypatch.setenv("CLAUDITOR_HARNESS", "claude-code")
 
 
 @pytest.fixture
