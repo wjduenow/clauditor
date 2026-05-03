@@ -5101,6 +5101,47 @@ class TestCmdTrendDottedPath:
         # stdout ends with the last data row — no trailing artifact (#106).
         assert "\t" in out.splitlines()[-1]
 
+    def test_non_numeric_metric_value_is_skipped(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Records whose dotted-path metric resolves to a non-numeric
+        value (e.g. a string) are silently skipped via the
+        ``except (TypeError, ValueError): continue`` branch in
+        ``cmd_trend``. Without this guard, a stray metric like
+        ``{"grader": {"input_tokens": "n/a"}}`` would crash trend on
+        ``float(v)``."""
+        from clauditor import history
+
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".clauditor" / "history.jsonl"
+        # Two records: one numeric, one stringly-typed
+        history.append_record(
+            skill="test-skill",
+            pass_rate=0.8,
+            mean_score=0.7,
+            metrics={"grader": {"input_tokens": 500}},
+            command="grade",
+            provider="anthropic",
+            path=path,
+        )
+        history.append_record(
+            skill="test-skill",
+            pass_rate=0.8,
+            mean_score=0.7,
+            metrics={"grader": {"input_tokens": "n/a"}},
+            command="grade",
+            provider="anthropic",
+            path=path,
+        )
+        rc = main(["trend", "test-skill", "--metric", "grader.input_tokens"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        # Only the numeric record renders; the "n/a" row is skipped.
+        assert len(data_lines) == 1
+        assert "500" in out
+        assert "n/a" not in out
+
 
 class TestCmdTrendListMetrics:
     """cmd_trend --list-metrics (US-006)."""

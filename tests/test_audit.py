@@ -1045,6 +1045,37 @@ class TestAuditLegacyCompat:
         err = capsys.readouterr().err
         assert "schema_version=4" in err
 
+    def test_baseline_sidecar_v4_skipped_with_baseline_prefix_stripped(
+        self, tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """A ``baseline_grading.json`` with v4 must be skipped with the
+        same warning as canonical ``grading.json``. Exercises the
+        ``base.startswith("baseline_")`` branch in
+        ``_check_schema_version`` so the rejection-path's
+        ``MAX_SCHEMA_VERSION[base]`` lookup uses the family's max
+        rather than crashing on an unknown ``baseline_*`` key."""
+        import json
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        payload = {
+            "schema_version": 4,
+            "skill_name": "s",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "api",
+            "results": [],
+        }
+        (skill_dir / "baseline_grading.json").write_text(
+            json.dumps(payload)
+        )
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert records == []
+        err = capsys.readouterr().err
+        assert "schema_version=4" in err
+
 
 class TestCmdAuditInvalidSkillName:
     def test_rejects_traversal_skill_name(
