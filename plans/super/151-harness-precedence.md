@@ -5,8 +5,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/151
 - **Branch:** `feature/151-harness-precedence`
 - **Worktree:** `/home/wesd/Projects/worktrees/clauditor/151-harness-precedence`
-- **PR:** _(pending)_
-- **Phase:** detailing
+- **PR:** https://github.com/wjduenow/clauditor/pull/166
+- **Phase:** published
 - **Epic:** _(pending devolve)_
 - **Sessions:** 1 (2026-05-03)
 - **Total decisions:** 13 (DEC-001 through DEC-013)
