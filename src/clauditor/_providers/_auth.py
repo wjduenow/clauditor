@@ -409,8 +409,9 @@ _announced_auto_codex_harness: bool = False
 _AUTO_CODEX_ANNOUNCEMENT: Final[str] = (
     "clauditor: auto-resolved harness to 'codex' (claude CLI not on "
     "PATH; codex CLI present). Codex needs CODEX_API_KEY or "
-    "OPENAI_API_KEY exported. Pin --harness=claude-code or "
-    "CLAUDITOR_HARNESS=claude-code to override."
+    "OPENAI_API_KEY exported. If you want Claude Code instead, "
+    "install the claude CLI and then pin --harness=claude-code (or "
+    "CLAUDITOR_HARNESS=claude-code)."
 )
 
 
@@ -461,8 +462,7 @@ _CODEX_AUTH_MISSING_TEMPLATE = (
     "key. Get a key at https://platform.openai.com/api-keys, then\n"
     "export CODEX_API_KEY=... (preferred) or OPENAI_API_KEY=... and\n"
     "re-run.\n"
-    "Commands that don't need a key: validate, capture, run, lint, init,\n"
-    "badge, audit, trend."
+    "Commands that don't need a key: lint, init, badge, audit, trend."
 )
 
 
