@@ -1215,3 +1215,154 @@ class TestSystemPromptResolution:
         assert spec.skill_name in msg
         assert str(skill_path) in msg
         assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+class TestSkillSpecRunHarnessOverride:
+    """US-006 / DEC-004 of #151: ``SkillSpec.run`` accepts a
+    keyword-only ``harness_name_override: str | None``. When non-
+    ``None``, materialize a fresh :class:`SkillRunner` with the named
+    harness (constructed via
+    :func:`clauditor._harnesses.construct_harness`) and use it for
+    this call. When ``None``, ``self.runner`` is used as-is.
+
+    Tests construct a real :class:`SkillRunner` carrying a
+    :class:`MockHarness` so we can observe which harness ended up
+    handling ``invoke``. The override path must NOT mutate
+    ``self.runner`` — the spec's own runner stays bound to its
+    original harness.
+    """
+
+    @staticmethod
+    def _build_runner_with_mock_harness(project_dir):
+        from clauditor._harnesses._mock import MockHarness
+        from clauditor.runner import SkillRunner
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir=project_dir, harness=mock)
+        return runner, mock
+
+    def test_no_override_uses_existing_runner(
+        self, tmp_skill_file, mock_runner
+    ):
+        """Override omitted → ``self.runner`` is the one called."""
+        skill_path = tmp_skill_file("override-skill")
+        runner = mock_runner(output="from-existing-runner")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        result = spec.run(args="--arg")
+
+        # The spec's own runner is the only one called.
+        runner.run.assert_called_once()
+        # Identity check: ``self.runner`` is unchanged.
+        assert spec.runner is runner
+        assert result.output == "from-existing-runner"
+
+    def test_override_constructs_codex_harness(
+        self, tmp_skill_file
+    ):
+        """``harness_name_override="codex"`` → fresh ``SkillRunner``
+        wired with a :class:`CodexHarness`. The spec's own runner is
+        NOT mutated (still has the original harness)."""
+        from clauditor._harnesses import _codex as _codex_mod
+
+        skill_path = tmp_skill_file("override-skill")
+        runner, original_mock = self._build_runner_with_mock_harness(
+            skill_path.parent
+        )
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+
+        # Patch ``SkillRunner`` *within* the spec module so we can
+        # observe the construction call AND avoid actually invoking
+        # the codex subprocess.
+        with patch("clauditor.spec.SkillRunner") as mock_runner_cls:
+            constructed = mock_runner_cls.return_value
+            constructed.run.return_value = SkillResult(
+                output="from-override",
+                exit_code=0,
+                skill_name="override-skill",
+                args="",
+            )
+            spec.run(harness_name_override="codex")
+
+        # The spec module constructed exactly one fresh runner with
+        # the override harness.
+        assert mock_runner_cls.call_count == 1
+        kwargs = mock_runner_cls.call_args.kwargs
+        assert isinstance(kwargs["harness"], _codex_mod.CodexHarness)
+        # Project dir + timeout mirrored from the original runner.
+        assert kwargs["project_dir"] == runner.project_dir
+        assert kwargs["timeout"] == runner.timeout
+
+        # The fresh runner is what handled the call — not the
+        # original.
+        constructed.run.assert_called_once()
+        # Original runner's harness is untouched (no mutation).
+        assert spec.runner is runner
+        assert spec.runner.harness is original_mock
+
+    def test_override_constructs_claude_code_harness(
+        self, tmp_skill_file
+    ):
+        """``harness_name_override="claude-code"`` → fresh ``SkillRunner``
+        wired with a :class:`ClaudeCodeHarness`."""
+        from clauditor._harnesses import _claude_code as _claude_code_mod
+
+        skill_path = tmp_skill_file("override-skill")
+        runner, _original_mock = self._build_runner_with_mock_harness(
+            skill_path.parent
+        )
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+
+        with patch("clauditor.spec.SkillRunner") as mock_runner_cls:
+            constructed = mock_runner_cls.return_value
+            constructed.run.return_value = SkillResult(
+                output="from-override",
+                exit_code=0,
+                skill_name="override-skill",
+                args="",
+            )
+            spec.run(harness_name_override="claude-code")
+
+        assert mock_runner_cls.call_count == 1
+        kwargs = mock_runner_cls.call_args.kwargs
+        assert isinstance(
+            kwargs["harness"], _claude_code_mod.ClaudeCodeHarness
+        )
+
+    def test_override_invalid_name_propagates_value_error(
+        self, tmp_skill_file
+    ):
+        """Unknown harness name → ``construct_harness`` raises
+        ``ValueError``; ``SkillSpec.run`` does NOT swallow or reshape
+        it. The CLI wrapper (US-004) handles its own validation
+        upstream."""
+        skill_path = tmp_skill_file("override-skill")
+        runner, _original_mock = self._build_runner_with_mock_harness(
+            skill_path.parent
+        )
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+
+        with pytest.raises(ValueError) as exc_info:
+            spec.run(harness_name_override="bogus")
+
+        msg = str(exc_info.value)
+        assert "bogus" in msg
+
+    def test_override_auto_propagates_value_error(
+        self, tmp_skill_file
+    ):
+        """``"auto"`` is rejected by ``construct_harness`` — callers
+        must resolve auto via ``resolve_harness`` BEFORE calling
+        ``spec.run``. The error propagates unchanged."""
+        skill_path = tmp_skill_file("override-skill")
+        runner, _original_mock = self._build_runner_with_mock_harness(
+            skill_path.parent
+        )
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+
+        with pytest.raises(ValueError) as exc_info:
+            spec.run(harness_name_override="auto")
+
+        msg = str(exc_info.value)
+        assert "auto" in msg
+        assert "resolve_harness" in msg
