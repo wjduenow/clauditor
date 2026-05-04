@@ -786,6 +786,16 @@ def _write_workspace_sidecars(
         primary_report.to_json(), encoding="utf-8"
     )
 
+    # #152 US-002: stamp the harness on assertions.json. Single harness
+    # per command invocation (DEC-S2=A), so we read it from the first
+    # SkillResult — which has been populated from ``Harness.name`` since
+    # US-001. In ``--output`` mode there is no SkillResult; fall back to
+    # the resolved ``harness_name`` (or its default of ``"claude-code"``)
+    # so the field is always present.
+    if skill_results and skill_results[0] is not None:
+        assertions_harness = skill_results[0].harness
+    else:
+        assertions_harness = harness_name or "claude-code"
     _write_assertions_sidecar(
         args=args,
         spec=spec,
@@ -794,6 +804,7 @@ def _write_workspace_sidecars(
         run_outputs=run_outputs,
         verbose=verbose,
         no_transcript=no_transcript,
+        harness=assertions_harness,
     )
 
     if spec.eval_spec.sections:
@@ -882,6 +893,7 @@ def _write_assertions_sidecar(
     run_outputs: list[tuple[str, list[dict]]],
     verbose: bool,
     no_transcript: bool,
+    harness: str = "claude-code",
 ) -> None:
     """Run L1 assertions per run, write ``assertions.json``, emit slices.
 
@@ -889,6 +901,14 @@ def _write_assertions_sidecar(
     auditor can jump from a failing row to the stream-json that
     produced it (US-004). Under ``verbose`` mode, failing-run transcript
     slices are printed to stderr (US-007).
+
+    ``harness`` (#152 US-002 / DEC-003): name of the harness that
+    produced the runs (one harness per command invocation per
+    DEC-S2=A). Stamped at the top level of ``assertions.json`` under
+    the ``harness`` key (schema_version 2). Defaults to ``"claude-code"``
+    so direct callers without the field stay green (the production
+    call site in ``_write_workspace_sidecars`` always passes the
+    resolved value).
     """
     from clauditor.cli import _print_failing_transcript_slice, _relative_to_repo
 
@@ -926,8 +946,12 @@ def _write_assertions_sidecar(
                     idx, run_outputs[idx][1], sys.stderr
                 )
 
+    # #152 US-002: schema_version bumped 1 → 2 with a top-level
+    # ``harness`` field. Canonical key order: schema_version, harness,
+    # skill, iteration, runs (per DEC-003 / DEC-013).
     assertions_payload = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "harness": harness,
         "skill": spec.skill_name,
         "iteration": workspace.iteration,
         "runs": [

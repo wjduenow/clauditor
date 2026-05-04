@@ -763,11 +763,14 @@ class TestIsAcceptedVersion:
 
         assert _is_accepted_version("extraction.json", 4) is False
 
-    def test_is_accepted_version_assertions_json_accepts_only_1(self) -> None:
+    def test_is_accepted_version_assertions_json_accepts_1_and_2(self) -> None:
+        """#152 US-002: assertions.json bumped 1 → 2 with top-level
+        ``harness`` field. v3+ still rejected.
+        """
         from clauditor.audit import _is_accepted_version
 
         assert _is_accepted_version("assertions.json", 1) is True
-        assert _is_accepted_version("assertions.json", 2) is False
+        assert _is_accepted_version("assertions.json", 2) is True
         assert _is_accepted_version("assertions.json", 3) is False
 
     def test_is_accepted_version_rejects_zero_and_negative(self) -> None:
@@ -798,8 +801,10 @@ class TestIsAcceptedVersion:
         assert _is_accepted_version("baseline_grading.json", 3) is True
         assert _is_accepted_version("baseline_extraction.json", 3) is True
         assert _is_accepted_version("baseline_assertions.json", 1) is True
+        # #152 US-002: assertions.json now accepts v2 (harness field).
+        assert _is_accepted_version("baseline_assertions.json", 2) is True
         assert _is_accepted_version("baseline_grading.json", 4) is False
-        assert _is_accepted_version("baseline_assertions.json", 2) is False
+        assert _is_accepted_version("baseline_assertions.json", 3) is False
 
     def test_is_accepted_version_unknown_filename_raises_key_error(
         self,
@@ -1159,14 +1164,18 @@ class TestAuditL3StableId:
     def test_loader_skips_unknown_schema_version(
         self, tmp_path: Path
     ) -> None:
-        """FIX-11: loaders must skip sidecars with unknown schema_version."""
+        """FIX-11: loaders must skip sidecars with unknown schema_version.
+
+        #152 US-002: assertions.json now accepts v2 (top-level
+        ``harness`` field), so the unknown-version probe uses v3.
+        """
         clauditor_dir = tmp_path / ".clauditor"
         skill_dir = clauditor_dir / "iteration-1" / "s"
         skill_dir.mkdir(parents=True)
         (skill_dir / "assertions.json").write_text(
             json.dumps(
                 {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "runs": [
                         {
                             "results": [
