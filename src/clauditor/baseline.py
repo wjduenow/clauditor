@@ -31,6 +31,7 @@ __all__ = [
 ]
 
 _SCHEMA_VERSION = 1
+_ASSERTIONS_SCHEMA_VERSION = 2  # #152 US-002: assertions.json carries `harness`
 
 
 @dataclass
@@ -71,8 +72,15 @@ class BaselineReports:
         files["baseline.json"] = json.dumps(meta, indent=2) + "\n"
 
         # baseline_assertions.json — Layer 1
+        # #152 US-002 / B2: bump v1 -> v2 with top-level harness so the
+        # baseline arm of `clauditor grade --baseline --harness codex`
+        # records the codex baseline output honestly. Without this the
+        # audit reader's `_harness_or_default` would silently default
+        # the missing field to "claude-code" and group codex baseline
+        # data under the wrong harness key.
         assertions_payload = {
-            "schema_version": _SCHEMA_VERSION,
+            "schema_version": _ASSERTIONS_SCHEMA_VERSION,
+            "harness": self.skill_result.harness,
             "skill": self.skill_name,
             "iteration": self.iteration,
             **self.assertion_set.to_json(),

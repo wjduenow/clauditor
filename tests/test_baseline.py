@@ -13,7 +13,12 @@ import json
 from unittest.mock import AsyncMock, patch
 
 from clauditor.assertions import AssertionResult, AssertionSet
-from clauditor.baseline import _SCHEMA_VERSION, BaselineReports, compute_baseline
+from clauditor.baseline import (
+    _ASSERTIONS_SCHEMA_VERSION,
+    _SCHEMA_VERSION,
+    BaselineReports,
+    compute_baseline,
+)
 from clauditor.grader import ExtractionReport
 from clauditor.quality_grader import GradingReport, GradingResult
 from clauditor.runner import SkillResult
@@ -146,7 +151,10 @@ class TestBaselineReportsToJsonMap:
         files = reports.to_json_map()
         assertions = json.loads(files["baseline_assertions.json"])
         assert list(assertions.keys())[0] == "schema_version"
-        assert assertions["schema_version"] == _SCHEMA_VERSION
+        assert assertions["schema_version"] == _ASSERTIONS_SCHEMA_VERSION
+        # #152 US-002: harness is the second top-level key.
+        assert list(assertions.keys())[1] == "harness"
+        assert assertions["harness"] == "claude-code"
 
     def test_meta_contains_run_fields(self) -> None:
         sr = _make_skill_result(

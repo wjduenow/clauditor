@@ -287,8 +287,18 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
                 shutil.rmtree(skill_dir / "run-0", ignore_errors=True)
 
+            # #152 US-002 / B1: assertions.json carries the resolved
+            # harness identity. Live runs read from ``skill_result.harness``
+            # (US-001's runtime field); the ``--output`` mode falls back
+            # to the resolved CLI harness name (or default ``"claude-code"``).
+            harness_for_sidecar = (
+                skill_result.harness
+                if skill_result is not None
+                else (harness_name or "claude-code")
+            )
             assertions_payload = {
-                "schema_version": 1,
+                "schema_version": 2,
+                "harness": harness_for_sidecar,
                 "skill": spec.skill_name,
                 "iteration": workspace.iteration,
                 "runs": [{"run": 0, **results.to_json()}],

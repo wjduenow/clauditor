@@ -6175,7 +6175,9 @@ class TestCmdValidateWorkspace:
         assert not (skill_dir / "timing.json").exists()
 
         payload = json.loads(assertions_path.read_text())
-        assert payload["schema_version"] == 1
+        # #152 US-002 / B1: assertions.json bumped to v2 with top-level harness.
+        assert payload["schema_version"] == 2
+        assert payload["harness"] == "claude-code"
         assert payload["skill"] == "test-skill"
         assert payload["iteration"] == 1
         assert len(payload["runs"]) == 1
