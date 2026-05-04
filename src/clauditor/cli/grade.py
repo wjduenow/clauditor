@@ -1366,6 +1366,7 @@ def _cmd_grade_with_workspace(
         benchmark=benchmark,
         metrics_dict=metrics_dict,
         provider=provider,
+        harness_name=harness_name,
     )
 
     # Determine exit code
@@ -1392,6 +1393,7 @@ def _report_grade_to_user(
     benchmark: Benchmark | None,
     metrics_dict: dict,
     provider: str,
+    harness_name: str | None,
 ) -> None:
     """Emit the grade report, diff/baseline delta blocks, and history row.
 
@@ -1434,6 +1436,7 @@ def _report_grade_to_user(
             primary_report=primary_report,
             metrics_dict=metrics_dict,
             provider=provider,
+            harness_name=harness_name,
         )
 
 
@@ -1573,12 +1576,19 @@ def _append_grade_history_record(
     primary_report: GradingReport,
     metrics_dict: dict,
     provider: str,
+    harness_name: str | None,
 ) -> None:
     """Append a ``command="grade"`` row to ``history.jsonl`` (US-006).
 
     ``provider`` is the resolved grading provider (``"anthropic"`` or
     ``"openai"``) per #147 DEC-012; threaded down from ``cmd_grade``'s
     four-layer ``_resolve_grading_provider`` resolution.
+
+    ``harness_name`` is the resolved skill harness (``"claude-code"`` or
+    ``"codex"``) per #152 DEC-005; threaded down from ``cmd_grade``'s
+    ``_resolve_harness`` call. ``None`` collapses to ``"claude-code"``
+    (the default harness) so non-live-run paths still produce a record
+    with a concrete harness value.
     """
     from clauditor.cli import _relative_to_repo
 
@@ -1591,6 +1601,7 @@ def _append_grade_history_record(
             metrics=metrics_dict,
             command="grade",
             provider=provider,
+            harness=harness_name or "claude-code",
             iteration=workspace.iteration,
             workspace_path=workspace_rel,
         )

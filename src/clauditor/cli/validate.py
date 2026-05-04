@@ -248,6 +248,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
                     skill_result=skill_result,
                     iteration=None,
                     workspace_path=None,
+                    harness_name=harness_name,
                 )
                 return 1
             output = skill_result.output
@@ -314,6 +315,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         skill_result=skill_result,
         iteration=iteration_index,
         workspace_path=workspace_rel,
+        harness_name=harness_name,
     )
 
     if args.json:
