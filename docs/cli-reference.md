@@ -460,17 +460,17 @@ Exits 1 when a regression is detected (assertion that previously passed now fail
 
 ### `audit`
 
-Aggregate per-assertion pass rates across the most recent N iteration workspaces. Surfaces assertions that are flaky, never fire, or fail to discriminate between the with-skill and baseline arms. Aggregates are grouped by `(provider, layer, id)` so mixed-provider history (Anthropic and OpenAI grading runs under the same skill) renders as separate rows rather than averaging across providers.
+Aggregate per-assertion pass rates across the most recent N iteration workspaces. Surfaces assertions that are flaky, never fire, or fail to discriminate between the with-skill and baseline arms. Aggregates are grouped by `(harness, provider, layer, id)` so mixed-harness or mixed-provider history (e.g. Claude Code and Codex runs, or Anthropic and OpenAI grading runs, under the same skill) renders as separate rows rather than averaging across harnesses or providers.
 
 | Flag | Purpose |
 | ---- | ------- |
 | `--last N` | Consider the last `N` iteration directories (default 20). |
 | `--min-fail-rate FLOAT` | Flag assertions whose fail rate is at least this value (0.0–1.0). |
 | `--min-discrimination FLOAT` | Flag assertions whose with-vs-baseline pass-rate delta is below this value. |
-| `--json` | Emit a machine-readable JSON report instead of the table. The JSON output is `schema_version: 2` (per #147), with each `assertions[]` entry carrying a `provider` field and a top-level `providers_seen: [...]` array sorted alphabetically — JSON consumers can detect mixed history without iterating the entries. |
+| `--json` | Emit a machine-readable JSON report instead of the table. The JSON output is `schema_version: 3` (per #152), with each `assertions[]` entry carrying `harness` and `provider` fields and top-level `harnesses_seen: [...]` and `providers_seen: [...]` arrays sorted alphabetically — JSON consumers can detect mixed history without iterating the entries. |
 | `--output-dir PATH` | Directory to write audit reports. |
 
-The default text and Markdown renderers add a leftmost `PROVIDER` column (~11 chars wide) and sort by `(provider, layer, id)`. L1 assertions carry a placeholder `"anthropic"` provider — L1 has no LLM call to attribute, and the honest harness-axis bump for `assertions.json` lives in #152.
+The default text and Markdown renderers add leftmost `HARNESS` and `PROVIDER` columns and sort by `(harness, provider, layer, id)`. L1 audit rows now show a real HARNESS value (sourced from `assertions.json` v2) alongside the existing PROVIDER column, which renders as `—` (em-dash) for L1 rows since L1 makes no LLM call. Audit JSON output bumped to `schema_version: 3` with a new top-level `harnesses_seen[]` array and per-entry `harness` field; for JSON-output honesty the L1 `provider` field still emits `"anthropic"` (the #147 placeholder) so downstream consumers see a fixed-shape value rather than an em-dash glyph.
 
 ### `trend`
 

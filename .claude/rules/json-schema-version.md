@@ -149,6 +149,134 @@ Writers and readers (post-#147):
 - `src/clauditor/history.py::append_record` (keyword-only `provider=`) /
   `read_records` (defaults missing `provider` to `"anthropic"`).
 
+### Schema version bumps for #152 (`harness` field)
+
+`#152` added `harness` — the harness-axis sibling to `provider_source` —
+recording which harness CLI (`"claude-code"` or `"codex"` today) ran the
+skill subprocess. The harness identity is materialized once by #151's
+resolver, stamped onto `SkillResult.harness` at `SkillRunner._invoke`
+construction time (US-001), and threaded into every downstream sidecar
+emitter from there. The field name deliberately omits the `_source`
+suffix that `provider_source` carries: `provider_source` records a
+per-call API/CLI transport choice, while `harness` records what
+materially ran the skill — they are conceptually distinct, and the name
+keeps them visually distinguishable on disk per DEC-001 of
+`plans/super/152-sidecar-harness-field.md`.
+
+Five schema bumps shipped together in #152:
+
+- **`assertions.json` v1 → v2** — adds top-level `harness` field
+  (sibling-of-`schema_version` placement per DEC-003). Unlike
+  `extraction.json` / `grading.json`, the L1 sidecar previously had no
+  provider/harness axis at all (L1 makes no LLM call) — #152 is the
+  first bump on this file.
+- **`extraction.json` v3 → v4** — adds `harness` sibling to the
+  existing `provider_source` field (DEC-004).
+- **`grading.json` v3 → v4** — same shape as `extraction.json`
+  (DEC-004).
+- **`history.jsonl` v2 → v3** — adds top-level `harness` field per
+  record. `harness=` becomes a mandatory keyword-only parameter on
+  `append_record` (mirroring the post-#147 `provider=` mandatory-
+  keyword shape). `read_records` defaults missing `harness` to
+  `"claude-code"` for legacy v1/v2 lines so pre-#152 history stays
+  readable. Per DEC-005, the history bump lands in lockstep with the
+  sidecar bumps so #153 can refuse mixed-harness history at `trend`
+  time without a follow-up version skew.
+- **audit `render_json` output v2 → v3** — adds top-level
+  `harnesses_seen: list[str]` array (sorted, deduped) sibling to the
+  existing `providers_seen[]`, and each `assertions[]` entry gains a
+  `"harness": str` field (DEC-010). Mirrors the #147 audit JSON
+  v1 → v2 bump exactly.
+
+`MAX_SCHEMA_VERSION` map post-#152:
+`{"assertions.json": 2, "extraction.json": 4, "grading.json": 4}`.
+`history.py` post-#152: `SCHEMA_VERSION = 3`,
+`_ACCEPTED_SCHEMA_VERSIONS = frozenset({1, 2, 3})`.
+
+`BlindReport` deliberately stays at `schema_version: 1` per DEC-014 —
+`compare --blind` takes two pre-captured outputs as inputs, so there is
+no skill execution at judge time and no harness axis to record. The
+harness that produced each captured output is recorded in *that
+capture's* sidecars, not on the blind-judge result.
+
+**L1 placeholder inversion (DEC-008).** L1 audit rows now carry a real
+`harness` value (sourced from `assertions.json` v2) but keep the
+`provider: "anthropic"` placeholder from #147 — L1 makes no LLM call,
+so provider is genuinely "no value." The two surfaces handle the
+placeholder differently:
+
+- **Stdout / Markdown renderers** show the L1 `provider` cell as `"—"`
+  (em-dash) so the column structure stays uniform across L1/L2/L3 rows
+  while signaling honestly that no provider attribution exists.
+- **Audit JSON output (`render_json` v3)** retains the literal
+  `"anthropic"` placeholder string so downstream JSON consumers see a
+  fixed-shape value rather than a glyph that would force string-
+  comparison branching.
+
+The new pure helper
+`src/clauditor/audit.py::_harness_or_default` — sibling of
+`_provider_or_default` — handles defensive read of malformed v2/v4
+sidecars (non-string truthy values, empty strings) and supplies the
+`"claude-code"` default for v1/v2/v3 legacy reads with no `harness`
+field. Both helpers are pure (no I/O, no logging) per
+`.claude/rules/pure-compute-vs-io-split.md`.
+
+`IterationRecord` and `AuditAggregate` both gained
+`harness: str = "claude-code"` (DEC-006), mirroring the
+`provider: str = "anthropic"` default introduced in #147. The `aggregate()`
+grouping key widens from the 3-tuple `(provider, layer, id)` to the
+4-tuple `(harness, provider, layer, id)` per DEC-007 — same `(provider,
+layer, id)` under different harnesses now produces two distinct buckets
+rather than averaging across harnesses. `apply_thresholds` and the
+three renderers were updated in lockstep to consume the 4-tuple key.
+
+The pytest fixtures `clauditor_grader` and `clauditor_triggers` auto-
+populate `harness` from `EvalSpec.harness` resolution (the same
+resolver path the CLI uses), threading it into `spec.run(
+harness_name_override=...)` and onto the resulting `GradingReport`.
+`clauditor_blind_compare` is unaffected (no harness axis at blind-judge
+time per DEC-014).
+
+Writers and readers (post-#152):
+
+- `src/clauditor/runner.py::SkillResult.harness` — the foundational
+  field; populated from `SkillRunner._invoke` reading
+  `self.harness.name` (the `Harness.name` ClassVar per
+  `.claude/rules/harness-protocol-shape.md`). Default `"claude-code"`
+  keeps direct-construct test fixtures green.
+- `src/clauditor/cli/grade.py::_write_assertions_sidecar` — accepts a
+  `harness: str = "claude-code"` parameter; stamps
+  `{"schema_version": 2, "harness": <name>, ...}` (canonical key
+  order). The production call site in `_write_workspace_sidecars`
+  threads the resolved harness name through.
+- `src/clauditor/grader.py::ExtractionReport.to_json` /
+  `ExtractionReport.from_json` — emits `schema_version: 4` with
+  `"harness"` placed after `"provider_source"` to mirror the
+  provider-sibling shape; reader defaults missing `harness` to
+  `"claude-code"` for v1/v2/v3 reads.
+- `src/clauditor/quality_grader.py::GradingReport.to_json` /
+  `GradingReport.from_json` — same shape as `ExtractionReport`.
+- `src/clauditor/audit.py::IterationRecord` /
+  `src/clauditor/audit.py::AuditAggregate` — both carry the
+  `harness: str = "claude-code"` field.
+- `src/clauditor/audit.py::aggregate` — 4-tuple grouping key
+  `(harness, provider, layer, id)`.
+- `src/clauditor/audit.py::_records_from_assertions` /
+  `_records_from_extraction` / `_records_from_grading` — all read
+  through `_harness_or_default(data.get("harness"))` so legacy v1/v2/v3
+  reads default cleanly.
+- `src/clauditor/audit.py::_harness_or_default` — pure defensive-read
+  helper, sibling of `_provider_or_default`.
+- `src/clauditor/audit.py::render_stdout_table` /
+  `render_markdown` / `render_json` — all surface the harness
+  dimension (HARNESS column leftmost in stdout/markdown;
+  `harnesses_seen[]` + per-entry `harness` in JSON v3).
+- `src/clauditor/history.py::SCHEMA_VERSION` (= 3) /
+  `_ACCEPTED_SCHEMA_VERSIONS` (= `frozenset({1, 2, 3})`) /
+  `append_record` (mandatory keyword-only `harness=`; rejects blank
+  and `"auto"`) / `read_records` (defaults missing `harness` to
+  `"claude-code"` for v1/v2 reads).
+
 ## When this rule applies
 
 Any new persisted JSON file whose shape may evolve. Internal-only debug
