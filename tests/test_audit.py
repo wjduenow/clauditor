@@ -301,7 +301,7 @@ class TestAggregate:
             for i in range(1, 5)
         ]
         agg = aggregate(records)
-        entry = agg[("anthropic", "L1", "a")]
+        entry = agg[("claude-code", "anthropic", "L1", "a")]
         assert entry.total_with_runs == 4
         assert entry.with_fails == 1
         assert entry.with_pass_rate == 0.75
@@ -316,7 +316,7 @@ class TestAggregate:
             IterationRecord(2, "L1", "a", passed=True, with_skill=False),
         ]
         agg = aggregate(records)
-        entry = agg[("anthropic", "L1", "a")]
+        entry = agg[("claude-code", "anthropic", "L1", "a")]
         assert entry.with_pass_rate == 1.0
         assert entry.baseline_pass_rate == 0.5
         assert entry.discrimination == pytest.approx(0.5)
@@ -326,7 +326,7 @@ class TestAggregate:
             IterationRecord(1, "L1", "a", passed=True, with_skill=True),
         ]
         agg = aggregate(records)
-        assert agg[("anthropic", "L1", "a")].discrimination is None
+        assert agg[("claude-code", "anthropic", "L1", "a")].discrimination is None
 
     def test_groups_by_layer_and_id(self) -> None:
         records = [
@@ -334,10 +334,10 @@ class TestAggregate:
             IterationRecord(1, "L3", "shared", passed=False, with_skill=True),
         ]
         agg = aggregate(records)
-        assert ("anthropic", "L1", "shared") in agg
-        assert ("anthropic", "L3", "shared") in agg
-        assert agg[("anthropic", "L1", "shared")].with_pass_rate == 1.0
-        assert agg[("anthropic", "L3", "shared")].with_pass_rate == 0.0
+        assert ("claude-code", "anthropic", "L1", "shared") in agg
+        assert ("claude-code", "anthropic", "L3", "shared") in agg
+        assert agg[("claude-code", "anthropic", "L1", "shared")].with_pass_rate == 1.0
+        assert agg[("claude-code", "anthropic", "L3", "shared")].with_pass_rate == 0.0
 
 
 # --------------------------------------------------------------------------- #
@@ -429,7 +429,11 @@ def _agg(
 
 class TestApplyThresholds:
     def test_threshold_flags_100_percent_pass(self) -> None:
-        aggs = {("anthropic", "L1", "a"): _agg(with_runs=20, with_fails=0)}
+        aggs = {
+            ("claude-code", "anthropic", "L1", "a"): _agg(
+                with_runs=20, with_fails=0
+            )
+        }
         verdicts = apply_thresholds(
             aggs, min_fail_rate=0.0, min_discrimination=0.05
         )
@@ -439,7 +443,11 @@ class TestApplyThresholds:
 
     def test_threshold_flags_zero_failures(self) -> None:
         # 100% pass is the priority reason, but zero-failures still in reasons.
-        aggs = {("anthropic", "L1", "a"): _agg(with_runs=5, with_fails=0)}
+        aggs = {
+            ("claude-code", "anthropic", "L1", "a"): _agg(
+                with_runs=5, with_fails=0
+            )
+        }
         verdicts = apply_thresholds(
             aggs, min_fail_rate=0.0, min_discrimination=0.05
         )
@@ -450,7 +458,7 @@ class TestApplyThresholds:
     ) -> None:
         # With-rate 0.8, baseline 0.78 → discrimination 0.02 < 0.05
         aggs = {
-            ("anthropic", "L1", "a"): _agg(
+            ("claude-code", "anthropic", "L1", "a"): _agg(
                 with_runs=10,
                 with_fails=2,
                 baseline_runs=50,
@@ -465,7 +473,7 @@ class TestApplyThresholds:
     def test_threshold_passes_discriminating_assertion(self) -> None:
         # with 0.75 pass, baseline 0.25 pass → 0.5 discrimination, keeps.
         aggs = {
-            ("anthropic", "L1", "a"): _agg(
+            ("claude-code", "anthropic", "L1", "a"): _agg(
                 with_runs=4,
                 with_fails=1,
                 baseline_runs=4,
@@ -481,7 +489,11 @@ class TestApplyThresholds:
     def test_threshold_override_via_cli_args(self) -> None:
         # 95% pass, not 100%; default 0.0 min_fail_rate wouldn't flag,
         # but 0.1 min_fail_rate (threshold 0.9) flags it.
-        aggs = {("anthropic", "L1", "a"): _agg(with_runs=20, with_fails=1)}
+        aggs = {
+            ("claude-code", "anthropic", "L1", "a"): _agg(
+                with_runs=20, with_fails=1
+            )
+        }
         lax = apply_thresholds(
             aggs, min_fail_rate=0.0, min_discrimination=0.05
         )
@@ -505,8 +517,8 @@ class TestRenderers:
         )
         return apply_thresholds(
             {
-                ("anthropic", "L1", "always_pass"): flagged,
-                ("anthropic", "L2", "sometimes"): kept,
+                ("claude-code", "anthropic", "L1", "always_pass"): flagged,
+                ("claude-code", "anthropic", "L2", "sometimes"): kept,
             },
             min_fail_rate=0.0,
             min_discrimination=0.05,
@@ -1164,9 +1176,11 @@ class TestAuditL3StableId:
         assert len(l3) == 2
         assert {r.id for r in l3} == {"quality"}
         agg = aggregate(records)
-        assert ("anthropic", "L3", "quality") in agg
+        assert ("claude-code", "anthropic", "L3", "quality") in agg
         # One pass, one fail → 0.5 with_pass_rate.
-        assert agg[("anthropic", "L3", "quality")].with_pass_rate == pytest.approx(0.5)
+        assert agg[
+            ("claude-code", "anthropic", "L3", "quality")
+        ].with_pass_rate == pytest.approx(0.5)
 
     def test_loader_skips_unknown_schema_version(
         self, tmp_path: Path
@@ -1265,7 +1279,7 @@ class TestFix12Fix13:
             baseline_pass_rate=None,
         )
         verdicts = apply_thresholds(
-            {("anthropic", "L1", "a|b"): agg},
+            {("claude-code", "anthropic", "L1", "a|b"): agg},
             min_fail_rate=0.0,
             min_discrimination=0.05,
         )
@@ -1303,8 +1317,8 @@ class TestFix12Fix13:
         )
         verdicts = apply_thresholds(
             {
-                ("anthropic", "L1", "live"): primary_only,
-                ("anthropic", "L1", "stale"): baseline_only,
+                ("claude-code", "anthropic", "L1", "live"): primary_only,
+                ("claude-code", "anthropic", "L1", "stale"): baseline_only,
             },
             min_fail_rate=0.0,
             min_discrimination=0.05,
@@ -1540,12 +1554,12 @@ class TestProviderDimension:
             ),
         ]
         agg = aggregate(records)
-        assert ("anthropic", "L3", "x") in agg
-        assert ("openai", "L3", "x") in agg
-        assert agg[("anthropic", "L3", "x")].with_pass_rate == 0.5
-        assert agg[("openai", "L3", "x")].with_pass_rate == 1.0
-        assert agg[("anthropic", "L3", "x")].provider == "anthropic"
-        assert agg[("openai", "L3", "x")].provider == "openai"
+        assert ("claude-code", "anthropic", "L3", "x") in agg
+        assert ("claude-code", "openai", "L3", "x") in agg
+        assert agg[("claude-code", "anthropic", "L3", "x")].with_pass_rate == 0.5
+        assert agg[("claude-code", "openai", "L3", "x")].with_pass_rate == 1.0
+        assert agg[("claude-code", "anthropic", "L3", "x")].provider == "anthropic"
+        assert agg[("claude-code", "openai", "L3", "x")].provider == "openai"
 
     def test_aggregate_single_provider_history_unchanged_shape(
         self,
@@ -1557,15 +1571,15 @@ class TestProviderDimension:
             IterationRecord(2, "L1", "a", passed=False, with_skill=True),
         ]
         agg = aggregate(records)
-        assert list(agg.keys()) == [("anthropic", "L1", "a")]
-        assert agg[("anthropic", "L1", "a")].with_pass_rate == 0.5
+        assert list(agg.keys()) == [("claude-code", "anthropic", "L1", "a")]
+        assert agg[("claude-code", "anthropic", "L1", "a")].with_pass_rate == 0.5
 
     def test_apply_thresholds_consumes_three_tuple_key(self) -> None:
         """``apply_thresholds`` must unpack the new 3-tuple key without
         raising and must propagate ``provider`` into the resulting
         ``AuditVerdict``."""
         aggs = {
-            ("openai", "L3", "x"): AuditAggregate(
+            ("claude-code", "openai", "L3", "x"): AuditAggregate(
                 layer="L3",
                 id="x",
                 total_with_runs=20,
@@ -1610,8 +1624,8 @@ class TestProviderDimension:
             provider="openai",
         )
         aggs = {
-            ("openai", "L3", "x"): openai_agg,
-            ("anthropic", "L3", "x"): anthropic_agg,
+            ("claude-code", "openai", "L3", "x"): openai_agg,
+            ("claude-code", "anthropic", "L3", "x"): anthropic_agg,
         }
         verdicts = apply_thresholds(
             aggs, min_fail_rate=0.0, min_discrimination=0.05
@@ -1641,8 +1655,8 @@ class TestProviderDimension:
             "s", last=5, clauditor_dir=clauditor_dir
         )
         agg = aggregate(records)
-        assert ("anthropic", "L3", "x") in agg
-        assert ("openai", "L3", "x") in agg
+        assert ("claude-code", "anthropic", "L3", "x") in agg
+        assert ("claude-code", "openai", "L3", "x") in agg
         assert len(agg) == 2
 
     def test_v2_sidecar_defaults_provider_to_anthropic(
@@ -1678,7 +1692,7 @@ class TestProviderDimension:
         assert len(records) == 1
         assert records[0].provider == "anthropic"
         agg = aggregate(records)
-        assert ("anthropic", "L3", "x") in agg
+        assert ("claude-code", "anthropic", "L3", "x") in agg
 
 
 class TestProviderOrDefault:
@@ -1756,7 +1770,7 @@ class TestProviderOrDefault:
         assert len(records) == 1
         assert records[0].provider == "anthropic"
         agg = aggregate(records)
-        assert ("anthropic", "L3", "x") in agg
+        assert ("claude-code", "anthropic", "L3", "x") in agg
 
 
 class TestRenderProviderColumn:
@@ -1810,9 +1824,9 @@ class TestRenderProviderColumn:
         )
         return apply_thresholds(
             {
-                ("openai", "L3", "x"): openai_l3,
-                ("anthropic", "L3", "x"): ant_l3,
-                ("anthropic", "L1", "ant_only"): ant_l1,
+                ("claude-code", "openai", "L3", "x"): openai_l3,
+                ("claude-code", "anthropic", "L3", "x"): ant_l3,
+                ("claude-code", "anthropic", "L1", "ant_only"): ant_l1,
             },
             min_fail_rate=0.0,
             min_discrimination=0.05,
@@ -1832,7 +1846,7 @@ class TestRenderProviderColumn:
             provider="anthropic",
         )
         return apply_thresholds(
-            {("anthropic", "L3", "x"): ant},
+            {("claude-code", "anthropic", "L3", "x"): ant},
             min_fail_rate=0.0,
             min_discrimination=0.05,
         )
@@ -1902,10 +1916,14 @@ class TestRenderProviderColumn:
         )
         verdicts = apply_thresholds(
             {
-                ("zebra", "L3", "x"): agg_factory("L3", "x", "zebra"),
-                ("openai", "L3", "x"): agg_factory("L3", "x", "openai"),
-                ("alpha", "L3", "x"): agg_factory("L3", "x", "alpha"),
-                ("anthropic", "L3", "x"): agg_factory("L3", "x", "anthropic"),
+                ("claude-code", "zebra", "L3", "x"):
+                    agg_factory("L3", "x", "zebra"),
+                ("claude-code", "openai", "L3", "x"):
+                    agg_factory("L3", "x", "openai"),
+                ("claude-code", "alpha", "L3", "x"):
+                    agg_factory("L3", "x", "alpha"),
+                ("claude-code", "anthropic", "L3", "x"):
+                    agg_factory("L3", "x", "anthropic"),
             },
             min_fail_rate=0.0,
             min_discrimination=0.05,
@@ -2052,7 +2070,7 @@ class TestRenderProviderColumn:
             provider="a" * 30,
         )
         verdicts = apply_thresholds(
-            {("a" * 30, "L3", "x"): long_provider_agg},
+            {("claude-code", "a" * 30, "L3", "x"): long_provider_agg},
             min_fail_rate=0.0,
             min_discrimination=0.05,
         )
@@ -2062,3 +2080,458 @@ class TestRenderProviderColumn:
         assert body.startswith("a" * 11)
         # And there is whitespace after — the column is bounded.
         assert body[11] == " "
+
+
+# --------------------------------------------------------------------------- #
+# US-005 (#152) — harness dimension                                            #
+# --------------------------------------------------------------------------- #
+
+
+def _write_assertions_v2(
+    skill_dir: Path,
+    *,
+    rid: str,
+    passed: bool,
+    harness: str | None,
+) -> None:
+    """Write an assertions.json with optional v2 ``harness`` field.
+
+    When ``harness`` is None, emit a v1 sidecar (no ``harness`` key) so
+    the loader's default-on-read branch fires.
+    """
+    payload: dict = {
+        "schema_version": 2 if harness is not None else 1,
+        "skill": "s",
+        "iteration": 1,
+        "runs": [
+            {
+                "run": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "results": [
+                    {
+                        "id": rid,
+                        "name": rid,
+                        "passed": passed,
+                        "message": "",
+                        "kind": "custom",
+                        "evidence": None,
+                        "raw_data": None,
+                    },
+                ],
+            },
+        ],
+    }
+    if harness is not None:
+        payload["harness"] = harness
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "assertions.json").write_text(
+        json.dumps(payload, indent=2)
+    )
+
+
+def _write_grading_v4(
+    skill_dir: Path,
+    *,
+    rid: str,
+    passed: bool,
+    harness: str | None,
+    provider_source: str = "anthropic",
+) -> None:
+    """Write a v4 grading.json with optional ``harness`` field."""
+    payload: dict = {
+        "schema_version": 4 if harness is not None else 3,
+        "skill_name": "s",
+        "model": "claude-sonnet-4-6",
+        "provider_source": provider_source,
+        "results": [
+            {
+                "id": rid,
+                "criterion": rid,
+                "passed": passed,
+                "score": 1.0 if passed else 0.0,
+                "evidence": "",
+                "reasoning": "",
+            },
+        ],
+    }
+    if harness is not None:
+        payload["harness"] = harness
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "grading.json").write_text(
+        json.dumps(payload, indent=2)
+    )
+
+
+def _write_extraction_v4(
+    skill_dir: Path,
+    *,
+    field_id: str,
+    passed: bool,
+    harness: str | None,
+    provider_source: str = "anthropic",
+) -> None:
+    """Write a v4 extraction.json with optional ``harness`` field."""
+    payload: dict = {
+        "schema_version": 4 if harness is not None else 3,
+        "skill_name": "s",
+        "model": "haiku",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "parse_errors": [],
+        "provider_source": provider_source,
+        "fields": {
+            field_id: [
+                {
+                    "field_name": field_id,
+                    "section": "s",
+                    "tier": "primary",
+                    "entry_index": 0,
+                    "required": True,
+                    "passed": passed,
+                    "presence_passed": passed,
+                    "format_passed": None,
+                    "evidence": "",
+                },
+            ],
+        },
+    }
+    if harness is not None:
+        payload["harness"] = harness
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "extraction.json").write_text(
+        json.dumps(payload, indent=2)
+    )
+
+
+class TestHarnessOrDefault:
+    """US-005 (#152): defense-in-depth helper guards malformed sidecars
+    that store ``harness`` as a non-string. Mirrors the
+    ``_provider_or_default`` shape — same defensive contract, same
+    ``"claude-code"`` default per DEC-006.
+    """
+
+    def test_valid_string_passes_through(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default("claude-code") == "claude-code"
+        assert _harness_or_default("codex") == "codex"
+
+    def test_none_falls_back_to_claude_code(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default(None) == "claude-code"
+
+    def test_empty_string_falls_back(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default("") == "claude-code"
+
+    def test_whitespace_only_falls_back(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default("   ") == "claude-code"
+
+    def test_int_falls_back(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default(1) == "claude-code"
+        assert _harness_or_default(0) == "claude-code"
+
+    def test_bool_falls_back(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default(True) == "claude-code"
+        assert _harness_or_default(False) == "claude-code"
+
+    def test_list_falls_back(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default([]) == "claude-code"
+        assert _harness_or_default(["codex"]) == "claude-code"
+
+
+class TestHarnessDimension:
+    """US-005 (#152): ``IterationRecord`` / ``AuditAggregate`` carry
+    ``harness``; aggregation groups by 4-tuple
+    ``(harness, provider, layer, id)`` so mixed-harness history splits
+    cleanly. Pre-#152 history (v1 assertions, v3 grading/extraction
+    without ``harness``) defaults to ``"claude-code"`` per DEC-006.
+    """
+
+    def test_iteration_record_defaults_harness_to_claude_code(self) -> None:
+        rec = IterationRecord(
+            iteration=1,
+            layer="L3",
+            id="x",
+            passed=True,
+            with_skill=True,
+        )
+        assert rec.harness == "claude-code"
+
+    def test_iteration_record_explicit_harness(self) -> None:
+        rec = IterationRecord(
+            iteration=1,
+            layer="L3",
+            id="x",
+            passed=True,
+            with_skill=True,
+            harness="codex",
+        )
+        assert rec.harness == "codex"
+
+    def test_audit_aggregate_defaults_harness_to_claude_code(self) -> None:
+        agg = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=1,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+        )
+        assert agg.harness == "claude-code"
+
+    def test_grouping_splits_on_harness(self) -> None:
+        """Load-bearing: same ``(provider, layer, id)`` under different
+        harnesses produces TWO distinct ``AuditAggregate`` buckets keyed
+        on ``(claude-code, anthropic, L3, x)`` and
+        ``(codex, anthropic, L3, x)``.
+        """
+        records = [
+            IterationRecord(
+                1, "L3", "x", passed=True, with_skill=True,
+                provider="anthropic", harness="claude-code",
+            ),
+            IterationRecord(
+                2, "L3", "x", passed=False, with_skill=True,
+                provider="anthropic", harness="claude-code",
+            ),
+            IterationRecord(
+                3, "L3", "x", passed=True, with_skill=True,
+                provider="anthropic", harness="codex",
+            ),
+            IterationRecord(
+                4, "L3", "x", passed=True, with_skill=True,
+                provider="anthropic", harness="codex",
+            ),
+        ]
+        agg = aggregate(records)
+        assert ("claude-code", "anthropic", "L3", "x") in agg
+        assert ("codex", "anthropic", "L3", "x") in agg
+        assert (
+            agg[("claude-code", "anthropic", "L3", "x")].with_pass_rate
+            == 0.5
+        )
+        assert (
+            agg[("codex", "anthropic", "L3", "x")].with_pass_rate == 1.0
+        )
+        assert (
+            agg[("claude-code", "anthropic", "L3", "x")].harness
+            == "claude-code"
+        )
+        assert agg[("codex", "anthropic", "L3", "x")].harness == "codex"
+
+    def test_aggregate_single_harness_history_unchanged_shape(self) -> None:
+        """Single-harness history continues to render the single
+        bucket (default ``"claude-code"`` harness)."""
+        records = [
+            IterationRecord(1, "L1", "a", passed=True, with_skill=True),
+            IterationRecord(2, "L1", "a", passed=False, with_skill=True),
+        ]
+        agg = aggregate(records)
+        assert list(agg.keys()) == [
+            ("claude-code", "anthropic", "L1", "a"),
+        ]
+        assert agg[
+            ("claude-code", "anthropic", "L1", "a")
+        ].with_pass_rate == 0.5
+
+
+class TestRecordsFromAssertionsHarness:
+    """US-005 (#152): assertions.json bumped to v2 with ``harness`` field.
+    Records read from v2 sidecars carry the harness; v1 reads default
+    to ``"claude-code"`` per DEC-006.
+    """
+
+    def test_reads_harness_from_v2_sidecar(self, tmp_path: Path) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_assertions_v2(
+            skill_dir, rid="has_header", passed=True, harness="codex"
+        )
+        records, skipped = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L1"
+        assert records[0].harness == "codex"
+
+    def test_defaults_harness_for_v1_legacy(self, tmp_path: Path) -> None:
+        """A v1 assertions.json (no ``harness`` field) defaults to
+        ``"claude-code"`` per DEC-006."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_assertions_v2(
+            skill_dir, rid="has_header", passed=True, harness=None
+        )
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].harness == "claude-code"
+
+    def test_malformed_harness_in_v2_sidecar_falls_back(
+        self, tmp_path: Path
+    ) -> None:
+        """A v2 assertions.json with ``harness: 1`` (non-string) loads
+        cleanly with ``harness="claude-code"`` rather than propagating
+        a non-string into ``IterationRecord`` keys."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        payload: dict = {
+            "schema_version": 2,
+            "skill": "s",
+            "iteration": 1,
+            "harness": 1,
+            "runs": [
+                {
+                    "run": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "results": [
+                        {
+                            "id": "x",
+                            "name": "x",
+                            "passed": True,
+                            "message": "",
+                            "kind": "custom",
+                            "evidence": None,
+                            "raw_data": None,
+                        },
+                    ],
+                },
+            ],
+        }
+        (skill_dir / "assertions.json").write_text(json.dumps(payload))
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].harness == "claude-code"
+
+
+class TestRecordsFromExtractionHarness:
+    """US-005 (#152): extraction.json bumped to v4 with ``harness``.
+    Records read from v4 sidecars carry the harness; v1/v2/v3 reads
+    default to ``"claude-code"``.
+    """
+
+    def test_reads_harness_from_v4_sidecar(self, tmp_path: Path) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_extraction_v4(
+            skill_dir, field_id="f1", passed=True, harness="codex"
+        )
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].layer == "L2"
+        assert records[0].harness == "codex"
+
+    def test_defaults_harness_for_v3_legacy(self, tmp_path: Path) -> None:
+        """A v3 extraction.json (no ``harness`` field) defaults to
+        ``"claude-code"`` per DEC-006."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_extraction_v4(
+            skill_dir, field_id="f1", passed=True, harness=None
+        )
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].harness == "claude-code"
+
+
+class TestRecordsFromGradingHarness:
+    """US-005 (#152): grading.json bumped to v4 with ``harness``."""
+
+    def test_reads_harness_from_v4_sidecar(self, tmp_path: Path) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_grading_v4(
+            skill_dir, rid="quality", passed=True, harness="codex"
+        )
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].layer == "L3"
+        assert records[0].harness == "codex"
+
+    def test_defaults_harness_for_v3_legacy(self, tmp_path: Path) -> None:
+        """A v3 grading.json (no ``harness`` field) defaults to
+        ``"claude-code"`` per DEC-006."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_grading_v4(
+            skill_dir, rid="quality", passed=True, harness=None
+        )
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].harness == "claude-code"
+
+
+class TestApplyThresholdsFourTupleKeys:
+    """US-005 (#152): ``apply_thresholds`` consumes the new 4-tuple
+    ``(harness, provider, layer, id)`` aggregate dict key without
+    raising and propagates ``harness`` into the resulting
+    ``AuditVerdict``.
+    """
+
+    def test_handles_four_tuple_keys(self) -> None:
+        aggs = {
+            ("codex", "openai", "L3", "x"): AuditAggregate(
+                layer="L3",
+                id="x",
+                total_with_runs=20,
+                with_fails=0,
+                with_pass_rate=1.0,
+                total_baseline_runs=0,
+                baseline_fails=0,
+                baseline_pass_rate=None,
+                provider="openai",
+                harness="codex",
+            ),
+        }
+        verdicts = apply_thresholds(
+            aggs, min_fail_rate=0.0, min_discrimination=0.05
+        )
+        assert len(verdicts) == 1
+        assert verdicts[0].provider == "openai"
+        assert verdicts[0].verdict == Verdict.FLAG_ALWAYS_PASS
+
+    def test_mixed_harness_end_to_end(self, tmp_path: Path) -> None:
+        """End-to-end: two iteration dirs, one with harness=claude-code
+        and one with harness=codex, sharing the same (provider, layer,
+        id) but producing two distinct aggregates."""
+        clauditor_dir = tmp_path / ".clauditor"
+        _write_grading_v4(
+            clauditor_dir / "iteration-1" / "s",
+            rid="x",
+            passed=True,
+            harness="claude-code",
+        )
+        _write_grading_v4(
+            clauditor_dir / "iteration-2" / "s",
+            rid="x",
+            passed=True,
+            harness="codex",
+        )
+        records, _ = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        agg = aggregate(records)
+        assert ("claude-code", "anthropic", "L3", "x") in agg
+        assert ("codex", "anthropic", "L3", "x") in agg
+        assert len(agg) == 2
