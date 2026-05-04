@@ -5,7 +5,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/152
 - **Branch:** `feature/152-sidecar-harness-field`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/152-sidecar-harness-field`
-- **Phase:** detailing
+- **Phase:** published
+- **PR:** https://github.com/wjduenow/clauditor/pull/167
 - **Sessions:** 1 (2026-05-03)
 - **Depends on:** #147 (CLOSED — provider_source field, MAX_SCHEMA_VERSION map), #151 (CLOSED — EvalSpec.harness + four-layer precedence + construct_harness)
 - **Blocks:** #153 (cross-{harness,provider} grouping refusal in audit/trend/compare)
