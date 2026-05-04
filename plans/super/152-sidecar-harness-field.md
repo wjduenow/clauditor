@@ -5,8 +5,30 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/152
 - **Branch:** `feature/152-sidecar-harness-field`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/152-sidecar-harness-field`
-- **Phase:** published
+- **Phase:** devolved
 - **PR:** https://github.com/wjduenow/clauditor/pull/167
+
+## Beads manifest
+
+- **Epic:** `clauditor-8zd` — #152: Multi-harness sidecar harness field
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/152-sidecar-harness-field`
+- **Branch:** `feature/152-sidecar-harness-field`
+
+| Story | Bead ID | Depends on |
+|---|---|---|
+| US-001 — SkillResult.harness field | `clauditor-gfo` | (foundation) |
+| US-002 — assertions.json v1 → v2 | `clauditor-ynm` | gfo |
+| US-003 — ExtractionReport v3 → v4 | `clauditor-oth` | gfo |
+| US-004 — GradingReport v3 → v4 | `clauditor-8fd` | gfo |
+| US-005 — IterationRecord/AuditAggregate + 4-tuple grouping | `clauditor-ycl` | ynm, oth, 8fd |
+| US-006 — Renderers + render_json v3 + harnesses_seen[] | `clauditor-db9` | ycl |
+| US-007 — history.jsonl v2 → v3 | `clauditor-e0b` | gfo |
+| US-008 — Pytest fixtures auto-populate harness | `clauditor-ptd` | gfo, 8fd |
+| US-009 — Docs (rule + cli-reference) | `clauditor-k4n` | ynm, oth, 8fd, ycl, db9, e0b, ptd |
+| Quality Gate — code review ×4 + CodeRabbit | `clauditor-mdp` | k4n, db9, e0b, ptd |
+| Patterns & Memory | `clauditor-8n6` | mdp |
+
+Initial ready queue (no active blockers): **`clauditor-gfo`** (US-001 foundation).
 - **Sessions:** 1 (2026-05-03)
 - **Depends on:** #147 (CLOSED — provider_source field, MAX_SCHEMA_VERSION map), #151 (CLOSED — EvalSpec.harness + four-layer precedence + construct_harness)
 - **Blocks:** #153 (cross-{harness,provider} grouping refusal in audit/trend/compare)
