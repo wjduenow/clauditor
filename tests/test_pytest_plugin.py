@@ -723,6 +723,126 @@ class TestClauditorGraderFactory:
         call = mock_grade.await_args
         assert call.args[0] == "captured skill output"
 
+    def test_uses_harness_from_eval_spec(self, tmp_path, monkeypatch):
+        """#152 US-008: when ``eval_spec.harness`` is set, the fixture
+        threads it through ``spec.run`` (which honors the spec field
+        per #151 US-007), and ``result.harness`` (set by the runner
+        per #152 US-001) propagates into ``grade_quality(harness=...)``.
+
+        We mock ``grade_quality`` to inspect the kwarg shape — the
+        production code path is: ``spec.run()`` returns a SkillResult
+        whose ``harness`` field reflects the spec preference, and the
+        fixture passes that value as ``harness=`` to ``grade_quality``.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        request = self._request_with_model()
+
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.grading_provider = None
+        mock_eval_spec.grading_model = "claude-sonnet-4-6"
+        # Author preference: codex harness.
+        mock_eval_spec.harness = "codex"
+
+        # Simulate the runner's projection of the resolved harness onto
+        # SkillResult.harness (#152 US-001). spec.run() — already wrapped
+        # by clauditor_spec to honor eval_spec.harness — returns this.
+        mock_run_result = MagicMock()
+        mock_run_result.output = "captured codex output"
+        mock_run_result.harness = "codex"
+        mock_spec = MagicMock()
+        mock_spec.eval_spec = mock_eval_spec
+        mock_spec.run.return_value = mock_run_result
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            return mock_spec
+
+        canned = MagicMock()
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new=AsyncMock(return_value=canned),
+        ) as mock_grade:
+            factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+            factory(tmp_path / "skill.md")
+
+        # grade_quality received the SkillResult's harness verbatim.
+        call = mock_grade.await_args
+        assert call.kwargs.get("harness") == "codex"
+
+    def test_defaults_harness_to_claude_code_when_eval_spec_unset(
+        self, tmp_path, monkeypatch
+    ):
+        """#152 US-008: when ``eval_spec.harness`` is unset (default
+        ``"auto"``) and the runner produces a default-harness
+        SkillResult, the fixture passes ``"claude-code"`` to
+        ``grade_quality``. Verifies the default-flow stays at
+        ``"claude-code"`` post-#152.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        request = self._request_with_model()
+
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.grading_provider = None
+        mock_eval_spec.grading_model = "claude-sonnet-4-6"
+        # Default: "auto" — clauditor_spec leaves harness_name_override
+        # as None, and the runner's default ClaudeCodeHarness produces
+        # SkillResult.harness == "claude-code".
+        mock_eval_spec.harness = "auto"
+
+        mock_run_result = MagicMock()
+        mock_run_result.output = "captured default output"
+        mock_run_result.harness = "claude-code"
+        mock_spec = MagicMock()
+        mock_spec.eval_spec = mock_eval_spec
+        mock_spec.run.return_value = mock_run_result
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            return mock_spec
+
+        canned = MagicMock()
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new=AsyncMock(return_value=canned),
+        ) as mock_grade:
+            factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+            factory(tmp_path / "skill.md")
+
+        call = mock_grade.await_args
+        assert call.kwargs.get("harness") == "claude-code"
+
+    def test_harness_defaults_to_claude_code_when_output_provided(
+        self, tmp_path, monkeypatch
+    ):
+        """When the caller passes ``output=`` directly, no skill
+        subprocess runs, so the fixture falls back to ``"claude-code"``
+        as the harness label — there's no SkillResult to read it from.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        request = self._request_with_model()
+
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.grading_provider = None
+        mock_eval_spec.grading_model = "claude-sonnet-4-6"
+        mock_eval_spec.harness = "codex"  # Should NOT be threaded; no run.
+
+        mock_spec = MagicMock()
+        mock_spec.eval_spec = mock_eval_spec
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            return mock_spec
+
+        canned = MagicMock()
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new=AsyncMock(return_value=canned),
+        ) as mock_grade:
+            factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+            factory(tmp_path / "skill.md", output="pre-captured output")
+
+        # spec.run was NOT called — output was provided directly.
+        mock_spec.run.assert_not_called()
+        call = mock_grade.await_args
+        assert call.kwargs.get("harness") == "claude-code"
+
 
 class TestClauditorTriggersFactory:
     """Direct coverage of clauditor_triggers error branch."""
@@ -742,6 +862,55 @@ class TestClauditorTriggersFactory:
         factory = clauditor_triggers.__wrapped__(request, fake_clauditor_spec)
         with pytest.raises(ValueError, match="No eval spec found"):
             factory(tmp_path / "skill.md")
+
+    def test_uses_harness_from_eval_spec(self, tmp_path, monkeypatch):
+        """#152 US-008: when ``eval_spec.harness`` is set, the triggers
+        fixture still works correctly. ``TriggerReport`` has no
+        ``harness`` field (the trigger-precision judge classifies
+        queries against a description and does NOT run the skill
+        subprocess), so this is a regression-guard verifying the
+        fixture stays compatible when the spec author has set a
+        non-default harness preference.
+
+        Mirrors the structural shape of
+        ``TestClauditorGraderFactory::test_uses_harness_from_eval_spec``
+        but documents the absence of harness threading at the trigger
+        layer.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {"--clauditor-model": "claude-sonnet-4-6"}.get(opt)
+        )
+
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.grading_provider = None
+        mock_eval_spec.grading_model = "claude-sonnet-4-6"
+        mock_eval_spec.harness = "codex"  # Author preference
+
+        mock_spec = MagicMock()
+        mock_spec.eval_spec = mock_eval_spec
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            return mock_spec
+
+        canned = MagicMock()
+        with patch(
+            "clauditor.triggers.test_triggers",
+            new=AsyncMock(return_value=canned),
+        ) as mock_triggers:
+            factory = clauditor_triggers.__wrapped__(request, fake_clauditor_spec)
+            result = factory(tmp_path / "skill.md")
+
+        # Triggers ran without raising despite the codex harness preference.
+        # No ``harness=`` kwarg is passed (TriggerReport has no harness
+        # axis per #152's scope; harness is recorded on captures, not
+        # trigger-precision results).
+        assert result is canned
+        call = mock_triggers.await_args
+        assert "harness" not in call.kwargs
+        # spec.run is NOT called — triggers does not run the skill.
+        mock_spec.run.assert_not_called()
 
 
 class TestClauditorBlindCompareFactory:
