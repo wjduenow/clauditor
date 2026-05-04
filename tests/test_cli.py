@@ -851,8 +851,13 @@ class TestCmdGradeSaveDiff:
         assert assertions_path.is_file()
 
         payload = json.loads(assertions_path.read_text())
-        # FIX-7 (#25): sidecar envelopes pin schema_version=1.
-        assert payload["schema_version"] == 1
+        # FIX-7 (#25): sidecar envelopes pin schema_version.
+        # #152 US-002: assertions.json bumped 1 → 2 with top-level
+        # ``harness`` field. ``--output`` mode has no SkillResult, so
+        # the writer falls back to ``"claude-code"`` (the default
+        # harness_name).
+        assert payload["schema_version"] == 2
+        assert payload["harness"] == "claude-code"
         assert payload["skill"] == "test-skill"
         assert payload["iteration"] == 1
         assert len(payload["runs"]) == 1
