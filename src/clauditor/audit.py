@@ -824,8 +824,16 @@ def render_markdown(
     else:
         for v in flagged:
             reasons = "; ".join(v.reasons) if v.reasons else v.verdict.value
+            # #152 N2: include harness in the bullet so mixed-harness
+            # audits don't produce visually identical bullets for the
+            # same (layer, id) under different harnesses. Provider is
+            # included for L2/L3 only — L1's "anthropic" placeholder
+            # would just add noise.
+            head = f"{v.layer} {v.harness}"
+            if v.layer in ("L2", "L3"):
+                head = f"{head}/{v.provider}"
             lines.append(
-                f"- **{v.layer} `{_md_escape(v.id)}`** — "
+                f"- **{head} `{_md_escape(v.id)}`** — "
                 f"{_md_escape(reasons)}"
             )
     lines.append("")
