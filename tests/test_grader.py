@@ -1167,6 +1167,86 @@ class TestExtractionReport:
         with pytest.raises(ValueError, match="no stable id"):
             build_extraction_report(extracted, spec)
 
+    def test_to_json_emits_v4_with_harness(self):
+        """#152 US-003: ``to_json`` emits ``schema_version: 4`` first
+        key and includes a top-level ``harness`` field."""
+        report = ExtractionReport(
+            skill_name="s",
+            model="m",
+            results=[],
+            declared_field_ids=["v1"],
+            harness="codex",
+        )
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert next(iter(data)) == "schema_version"
+        assert data["schema_version"] == 4
+        assert data["harness"] == "codex"
+
+    def test_from_json_v4_round_trip(self):
+        """#152 US-003: v4 ``to_json`` then ``from_json`` preserves
+        the ``harness`` field verbatim."""
+        original = ExtractionReport(
+            skill_name="s",
+            model="m",
+            results=[],
+            declared_field_ids=["v1"],
+            harness="codex",
+        )
+        restored = ExtractionReport.from_json(original.to_json())
+        assert restored.harness == "codex"
+
+    def test_from_json_v3_defaults_harness_to_claude_code(self):
+        """#152 US-003: v3 sidecars (no ``harness``) load with
+        ``harness="claude-code"`` defaulted so pre-#152 history
+        loads cleanly."""
+        v3_payload = json.dumps({
+            "schema_version": 3,
+            "skill_name": "legacy-v3",
+            "model": "haiku",
+            "transport_source": "cli",
+            "provider_source": "anthropic",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {},
+        })
+        restored = ExtractionReport.from_json(v3_payload)
+        assert restored.harness == "claude-code"
+        assert restored.provider_source == "anthropic"
+
+    def test_from_json_v1_v2_legacy_still_load(self):
+        """#152 US-003: v1 and v2 sidecars (pre-provider, pre-harness)
+        still load with all legacy fields defaulted."""
+        v1_payload = json.dumps({
+            "schema_version": 1,
+            "skill_name": "legacy-v1",
+            "model": "haiku",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {},
+        })
+        v1_report = ExtractionReport.from_json(v1_payload)
+        assert v1_report.harness == "claude-code"
+        assert v1_report.provider_source == "anthropic"
+        assert v1_report.transport_source == "api"
+
+        v2_payload = json.dumps({
+            "schema_version": 2,
+            "skill_name": "legacy-v2",
+            "model": "haiku",
+            "transport_source": "cli",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {},
+        })
+        v2_report = ExtractionReport.from_json(v2_payload)
+        assert v2_report.harness == "claude-code"
+        assert v2_report.provider_source == "anthropic"
+        assert v2_report.transport_source == "cli"
+
 
 class TestExtractionPromptHardening:
     def test_build_extraction_prompt_fences_untrusted_content(self) -> None:
@@ -1642,10 +1722,10 @@ class TestExtractionReportTransport:
         report = self._report()
         assert report.transport_source == "api"
 
-    def test_to_json_schema_version_bumped_to_3(self):
+    def test_to_json_schema_version_bumped_to_4(self):
         report = self._report(transport_source="cli")
         data = json.loads(report.to_json())
-        assert data["schema_version"] == 3
+        assert data["schema_version"] == 4
 
     def test_schema_version_is_first_key(self):
         report = self._report(transport_source="cli")
@@ -1803,9 +1883,11 @@ class TestExtractionReportProviderSource:
         )
         assert report.provider_source == "anthropic"
 
-    def test_extraction_report_to_json_v3_emits_provider_source(self):
-        """v3 to_json emits ``schema_version: 3`` first key,
-        ``provider_source`` field present."""
+    def test_extraction_report_to_json_v4_emits_provider_source(self):
+        """v4 to_json emits ``schema_version: 4`` first key,
+        ``provider_source`` field present (#152 US-003 bumped v3→v4
+        to add the ``harness`` field; ``provider_source`` continues
+        to ride along)."""
         report = ExtractionReport(
             skill_name="s",
             model="m",
@@ -1816,7 +1898,7 @@ class TestExtractionReportProviderSource:
         raw = report.to_json()
         data = json.loads(raw)
         assert next(iter(data)) == "schema_version"
-        assert data["schema_version"] == 3
+        assert data["schema_version"] == 4
         assert data["provider_source"] == "openai"
 
     def test_extraction_report_from_json_v3_round_trips(self):
