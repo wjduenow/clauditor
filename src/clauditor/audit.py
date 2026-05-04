@@ -700,15 +700,23 @@ def _fmt_disc(value: float | None) -> str:
 
 
 def _sorted_verdicts(verdicts: list[AuditVerdict]) -> list[AuditVerdict]:
-    """Sort verdicts by ``(provider, layer, id)`` for stable rendering.
+    """Sort verdicts by ``(harness, provider, layer, id)`` for stable rendering.
 
     DEC-004 (#147): all three render paths share the same sort order so
     a reader scanning ``stdout`` / markdown / JSON in succession sees
     rows in the same sequence. ``apply_thresholds`` already returns
     verdicts in this order today, but renderers re-sort defensively in
     case a caller hands in a list constructed differently.
+
+    US-006 (#152): widened the sort key to include ``harness`` (first)
+    so mixed-harness audits render all-claude-code rows before
+    all-codex rows; within a harness, the existing ``(provider, layer,
+    id)`` ordering preserves pre-#152 row sequence for single-harness
+    audits.
     """
-    return sorted(verdicts, key=lambda v: (v.provider, v.layer, v.id))
+    return sorted(
+        verdicts, key=lambda v: (v.harness, v.provider, v.layer, v.id)
+    )
 
 
 def _providers_seen(verdicts: list[AuditVerdict]) -> list[str]:
@@ -721,23 +729,54 @@ def _providers_seen(verdicts: list[AuditVerdict]) -> list[str]:
     return sorted({v.provider for v in verdicts})
 
 
-def render_stdout_table(verdicts: list[AuditVerdict]) -> str:
-    """Compact table: provider, layer, id, with%, verdict.
+def _harnesses_seen(verdicts: list[AuditVerdict]) -> list[str]:
+    """Return the sorted list of distinct harnesses across ``verdicts``.
 
-    DEC-004 (#147): leftmost ``PROVIDER`` column (~11 chars wide) so a
-    mixed-provider audit shows which provider's SDK produced each
-    grouped result. Sort order: ``(provider, layer, id)``.
+    DEC-010 (#152): the audit-output JSON v3 carries a top-level
+    ``harnesses_seen`` array (sibling to ``providers_seen``) so JSON
+    consumers can detect mixed-harness history without iterating
+    ``assertions[]``.
+    """
+    return sorted({v.harness for v in verdicts})
+
+
+# DEC-008 (#152): em-dash (U+2014) is the stdout/markdown placeholder
+# rendered in L1 rows' PROVIDER column. L1 makes no LLM call so
+# "anthropic" is a placeholder, not a real value — the em-dash makes
+# the absence visible to humans. The on-disk JSON output keeps the
+# ``"provider": "anthropic"`` placeholder for downstream consumers
+# (semantically honest for mixed-layer aggregation).
+_L1_PROVIDER_DISPLAY = "—"
+
+
+def render_stdout_table(verdicts: list[AuditVerdict]) -> str:
+    """Compact table: harness, provider, layer, id, with%, verdict.
+
+    DEC-009 (#152): leftmost ``HARNESS`` column (~11 chars wide), then
+    ``PROVIDER`` (~11 chars wide), then layer/id/with%/verdict. Column
+    order matches the grouping-key tuple order
+    ``(harness, provider, layer, id)``.
+
+    DEC-008 (#152): L1 rows render the PROVIDER cell as ``"—"``
+    (em-dash, U+2014) since L1 makes no LLM call. L2/L3 rows render
+    the real provider value.
     """
     header = (
-        f"{'PROVIDER':<11} {'LAYER':<6} {'ID':<40} "
+        f"{'HARNESS':<11} {'PROVIDER':<11} {'LAYER':<6} {'ID':<40} "
         f"{'WITH%':>8} {'VERDICT':<24}"
     )
     lines = [header, "-" * len(header)]
     for v in _sorted_verdicts(verdicts):
         agg = v.aggregate
         with_pct = _fmt_pct(agg.with_pass_rate) if agg else "-"
+        # DEC-008: L1 PROVIDER cell shows em-dash placeholder; L2/L3
+        # render the real provider value.
+        provider_display = (
+            _L1_PROVIDER_DISPLAY if v.layer == "L1" else v.provider
+        )
         lines.append(
-            f"{v.provider[:11]:<11} {v.layer:<6} {v.id[:40]:<40} "
+            f"{v.harness[:11]:<11} {provider_display[:11]:<11} "
+            f"{v.layer:<6} {v.id[:40]:<40} "
             f"{with_pct:>8} {v.verdict.value:<24}"
         )
     return "\n".join(lines)
@@ -800,22 +839,31 @@ def render_markdown(
             lines.append("_No data._")
             lines.append("")
             continue
-        # DEC-004 (#147): leftmost ``provider`` column so mixed-provider
-        # audits show which provider's SDK produced each row.
+        # DEC-009 (#152): leftmost ``harness`` column, then ``provider``
+        # so mixed-harness/mixed-provider audits show both dimensions.
+        # DEC-008 (#152): L1 rows render provider as ``—`` (em-dash,
+        # U+2014) since L1 makes no LLM call. L2/L3 rows render the
+        # real provider value. Provider cell is NOT backtick-quoted
+        # for L1 because the em-dash is a typographic placeholder, not
+        # a code identifier.
         lines.append(
-            "| provider | id | runs | with% | baseline% | "
+            "| harness | provider | id | runs | with% | baseline% | "
             "discrimination | verdict |"
         )
         lines.append(
-            "|----------|----|------|-------|-----------|"
+            "|---------|----------|----|------|-------|-----------|"
             "----------------|---------|"
         )
         for v in layer_rows:
             agg = v.aggregate
             if agg is None:
                 continue
+            if v.layer == "L1":
+                provider_cell = _L1_PROVIDER_DISPLAY
+            else:
+                provider_cell = f"`{_md_escape(v.provider)}`"
             lines.append(
-                f"| `{_md_escape(v.provider)}` | "
+                f"| `{_md_escape(v.harness)}` | {provider_cell} | "
                 f"`{_md_escape(v.id)}` | {agg.total_with_runs} | "
                 f"{_fmt_pct(agg.with_pass_rate)} | "
                 f"{_fmt_pct(agg.baseline_pass_rate)} | "
@@ -841,8 +889,18 @@ def render_json(
     new ``provider`` field on each ``assertions[]`` entry. DEC-010
     (#147): adds a top-level ``providers_seen`` array (sorted
     alphabetically) so JSON consumers can detect mixed-provider history
-    without iterating ``assertions[]``. Sort order across ``assertions``
-    matches the stdout/markdown renderers: ``(provider, layer, id)``.
+    without iterating ``assertions[]``.
+
+    DEC-010 (#152): ``schema_version`` bumped from 2 to 3 to signal the
+    new ``harness`` field on each ``assertions[]`` entry plus the new
+    top-level ``harnesses_seen`` array (sibling to ``providers_seen``).
+    Sort order across ``assertions`` matches the stdout/markdown
+    renderers: ``(harness, provider, layer, id)``.
+
+    DEC-008 (#152): L1 entries keep ``"provider": "anthropic"``
+    placeholder in the JSON output (the em-dash is stdout/markdown
+    only) — keeps mixed-layer JSON aggregation semantically honest for
+    downstream consumers.
     """
     sorted_verdicts = _sorted_verdicts(verdicts)
     assertions_list: list[dict] = []
@@ -850,6 +908,7 @@ def render_json(
         agg = v.aggregate
         assertions_list.append(
             {
+                "harness": v.harness,
                 "provider": v.provider,
                 "layer": v.layer,
                 "id": v.id,
@@ -865,11 +924,12 @@ def render_json(
             }
         )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "skill": skill,
         "timestamp": timestamp,
         "iterations": iterations_analyzed,
         "thresholds": dict(thresholds),
         "providers_seen": _providers_seen(verdicts),
+        "harnesses_seen": _harnesses_seen(verdicts),
         "assertions": assertions_list,
     }

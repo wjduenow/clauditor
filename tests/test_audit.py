@@ -558,6 +558,7 @@ class TestRenderers:
             timestamp="20260101T000000Z",
         )
         # US-004 (#147): bumped to schema_version 2 + ``providers_seen``.
+        # US-006 (#152): bumped to schema_version 3 + ``harnesses_seen``.
         assert set(payload.keys()) == {
             "schema_version",
             "skill",
@@ -565,12 +566,14 @@ class TestRenderers:
             "iterations",
             "thresholds",
             "providers_seen",
+            "harnesses_seen",
             "assertions",
         }
-        assert payload["schema_version"] == 2
+        assert payload["schema_version"] == 3
         assert isinstance(payload["assertions"], list)
         first = payload["assertions"][0]
         for key in (
+            "harness",
             "provider",
             "layer",
             "id",
@@ -729,10 +732,13 @@ class TestCmdAuditExitCode:
 
 
 class TestSchemaVersion:
-    def test_audit_render_json_has_schema_version_2(self) -> None:
+    def test_audit_render_json_has_schema_version_3(self) -> None:
         """US-004 (#147): audit JSON output bumped from v1 to v2 to
         signal the new ``provider`` per-assertion field + top-level
-        ``providers_seen`` array (DEC-005, DEC-010)."""
+        ``providers_seen`` array (DEC-005, DEC-010 of #147).
+        US-006 (#152): bumped to v3 to signal the new ``harness``
+        per-assertion field + top-level ``harnesses_seen`` array
+        (DEC-010 of #152)."""
         payload = render_json(
             [],
             skill="s",
@@ -740,7 +746,7 @@ class TestSchemaVersion:
             thresholds={"last": 20},
             timestamp="t",
         )
-        assert payload["schema_version"] == 2
+        assert payload["schema_version"] == 3
 
 
 class TestIsAcceptedVersion:
@@ -1853,7 +1859,7 @@ class TestRenderProviderColumn:
 
     def test_render_json_v2_schema_version_first_key(self) -> None:
         """Acceptance criterion 1: ``schema_version`` is the first key
-        and equals 2 (DEC-005)."""
+        and equals 3 (DEC-005 of #147 + DEC-010 of #152 bump)."""
         payload = render_json(
             self._single_provider_verdicts(),
             skill="s",
@@ -1863,7 +1869,7 @@ class TestRenderProviderColumn:
         )
         first_key = next(iter(payload.keys()))
         assert first_key == "schema_version"
-        assert payload["schema_version"] == 2
+        assert payload["schema_version"] == 3
 
     def test_render_json_v2_includes_provider_per_assertion(self) -> None:
         """Acceptance criterion 2: every ``assertions[]`` entry carries
@@ -1994,12 +2000,23 @@ class TestRenderProviderColumn:
 
     def test_render_stdout_table_has_provider_column(self) -> None:
         """Acceptance criterion 6: ``PROVIDER`` column header + one row
-        per ``(provider, layer, id)``."""
+        per ``(provider, layer, id)``.
+
+        US-006 (#152): ``HARNESS`` is now the leftmost column;
+        ``PROVIDER`` follows. L1 rows render the PROVIDER cell as the
+        em-dash placeholder per DEC-008, so only L2/L3 rows surface
+        the actual provider string.
+        """
         table = render_stdout_table(self._mixed_verdicts())
-        # Header has PROVIDER as the leftmost column.
+        # Header has HARNESS as the leftmost column, PROVIDER second.
         first_line = table.splitlines()[0]
-        assert first_line.startswith("PROVIDER")
-        assert "PROVIDER" in table
+        assert first_line.startswith("HARNESS")
+        assert "PROVIDER" in first_line
+        assert first_line.index("HARNESS") < first_line.index("PROVIDER")
+        # Anthropic appears in L3 row (provider cell) and openai in
+        # the openai L3 row. The L1 anthropic row renders ``—`` in the
+        # provider cell, so the substring ``anthropic`` only surfaces
+        # on the anthropic L3 row.
         assert "anthropic" in table
         assert "openai" in table
 
@@ -2009,13 +2026,13 @@ class TestRenderProviderColumn:
         body_lines = [
             line
             for line in table.splitlines()
-            if line and not line.startswith(("PROVIDER", "-"))
+            if line and not line.startswith(("HARNESS", "-"))
         ]
         # The anthropic L1 row should come before the anthropic L3 row,
-        # which should come before the openai L3 row.
+        # which should come before the openai L3 row. L1 row's provider
+        # cell is the em-dash placeholder so identify it by id.
         ant_l1_idx = next(
-            i for i, ln in enumerate(body_lines)
-            if "ant_only" in ln and "anthropic" in ln
+            i for i, ln in enumerate(body_lines) if "ant_only" in ln
         )
         openai_idx = next(
             i for i, ln in enumerate(body_lines) if "openai" in ln
@@ -2024,7 +2041,9 @@ class TestRenderProviderColumn:
 
     def test_render_markdown_has_provider_column(self) -> None:
         """Acceptance criterion 7: per-layer markdown table has
-        ``| provider |`` as the first column."""
+        ``| provider |`` after ``| harness |`` (US-006 of #152
+        widened the leftmost column to harness).
+        """
         md = render_markdown(
             self._mixed_verdicts(),
             skill="s",
@@ -2032,17 +2051,21 @@ class TestRenderProviderColumn:
             thresholds={"last": 10},
             timestamp="t",
         )
-        assert "| provider |" in md
-        # Header column ordering: provider must come before id.
+        assert "| harness | provider |" in md
+        # Header column ordering: harness < provider < id.
         header_line = next(
             line for line in md.splitlines()
-            if line.startswith("| provider |")
+            if line.startswith("| harness |")
         )
+        assert header_line.index("harness") < header_line.index("provider")
         assert header_line.index("provider") < header_line.index("id")
 
     def test_render_markdown_renders_provider_value_in_row(self) -> None:
         """Mixed-provider markdown surfaces both ``anthropic`` and
-        ``openai`` in row cells under L3 detail."""
+        ``openai`` in row cells under L3 detail. L1 rows render
+        provider as ``—`` per DEC-008 so the L1 detail section is
+        intentionally not asserted on for provider strings.
+        """
         md = render_markdown(
             self._mixed_verdicts(),
             skill="s",
@@ -2050,14 +2073,19 @@ class TestRenderProviderColumn:
             thresholds={"last": 10},
             timestamp="t",
         )
-        # Both providers appear inside backtick-quoted cells under
-        # the L3 detail table.
-        assert "`anthropic`" in md
-        assert "`openai`" in md
+        # L3 detail surfaces both providers in backtick-quoted cells.
+        l3_section = md.split("## L3 detail", 1)[1]
+        assert "`anthropic`" in l3_section
+        assert "`openai`" in l3_section
 
     def test_render_stdout_table_truncates_long_provider(self) -> None:
         """Provider column is ~11 chars wide; longer strings are
-        truncated to keep the column-aligned layout."""
+        truncated to keep the column-aligned layout.
+
+        US-006 (#152): the leftmost column is now HARNESS (also
+        ~11 chars wide); PROVIDER is the second column. Truncation
+        applies to both columns.
+        """
         long_provider_agg = AuditAggregate(
             layer="L3",
             id="x",
@@ -2076,10 +2104,12 @@ class TestRenderProviderColumn:
         )
         table = render_stdout_table(verdicts)
         body = table.splitlines()[2]
-        # Only 11 a's appear in the leftmost column slice.
-        assert body.startswith("a" * 11)
-        # And there is whitespace after — the column is bounded.
-        assert body[11] == " "
+        # Leftmost is HARNESS column (claude-code, 11 chars), then space,
+        # then PROVIDER column truncated to 11 a's, then space.
+        assert body.startswith("claude-code ")
+        # Provider cell starts at position 12 with 11 a's.
+        assert body[12:23] == "a" * 11
+        assert body[23] == " "
 
 
 # --------------------------------------------------------------------------- #
@@ -2535,3 +2565,319 @@ class TestApplyThresholdsFourTupleKeys:
         assert ("claude-code", "anthropic", "L3", "x") in agg
         assert ("codex", "anthropic", "L3", "x") in agg
         assert len(agg) == 2
+
+
+class TestRenderStdoutTableHarness:
+    """US-006 (#152): ``render_stdout_table`` adds a leftmost ``HARNESS``
+    column. L1 rows render PROVIDER cell as ``"—"`` (em-dash, U+2014)
+    placeholder per DEC-008; L2/L3 keep the real provider value.
+    The HARNESS cell is real for every layer (L1 included) since the
+    skill subprocess is harnessed by definition.
+    Traces to: DEC-008, DEC-009.
+    """
+
+    def _mixed_verdicts(self) -> list[AuditVerdict]:
+        """One L1 row (claude-code/anthropic) + one L3 row (codex/openai)."""
+        l1 = AuditAggregate(
+            layer="L1",
+            id="has_header",
+            total_with_runs=10,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+            harness="claude-code",
+        )
+        l3 = AuditAggregate(
+            layer="L3",
+            id="quality",
+            total_with_runs=10,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="openai",
+            harness="codex",
+        )
+        return apply_thresholds(
+            {
+                ("claude-code", "anthropic", "L1", "has_header"): l1,
+                ("codex", "openai", "L3", "quality"): l3,
+            },
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+
+    def test_includes_harness_column_leftmost(self) -> None:
+        """Header order: HARNESS is the first column, then PROVIDER."""
+        table = render_stdout_table(self._mixed_verdicts())
+        header = table.splitlines()[0]
+        assert header.startswith("HARNESS")
+        assert "HARNESS" in header
+        assert "PROVIDER" in header
+        assert header.index("HARNESS") < header.index("PROVIDER")
+
+    def test_l1_row_shows_em_dash_for_provider(self) -> None:
+        """L1 row's PROVIDER cell is ``"—"`` (U+2014), not ``"anthropic"``.
+        L2/L3 rows keep the real provider value.
+        """
+        table = render_stdout_table(self._mixed_verdicts())
+        body_lines = [
+            line
+            for line in table.splitlines()
+            if line and not line.startswith(("HARNESS", "-"))
+        ]
+        l1_line = next(line for line in body_lines if "has_header" in line)
+        # L1 row: PROVIDER cell shows em-dash, not 'anthropic'.
+        assert "—" in l1_line  # em-dash present
+        assert "anthropic" not in l1_line  # placeholder NOT shown
+        l3_line = next(line for line in body_lines if "quality" in line)
+        # L3 row keeps the real provider value.
+        assert "openai" in l3_line
+
+    def test_l1_row_shows_real_harness(self) -> None:
+        """L1 row's HARNESS cell is the actual value, NOT em-dash."""
+        table = render_stdout_table(self._mixed_verdicts())
+        body_lines = [
+            line
+            for line in table.splitlines()
+            if line and not line.startswith(("HARNESS", "-"))
+        ]
+        l1_line = next(line for line in body_lines if "has_header" in line)
+        # HARNESS cell shows real value, not em-dash.
+        assert l1_line.startswith("claude-code")
+        l3_line = next(line for line in body_lines if "quality" in line)
+        assert l3_line.startswith("codex")
+
+
+class TestRenderMarkdownHarness:
+    """US-006 (#152): ``render_markdown`` per-layer detail tables get a
+    ``| harness |`` column added before the existing ``| provider |``
+    column. L1 detail table renders provider as ``"—"`` em-dash.
+    Traces to: DEC-008, DEC-009.
+    """
+
+    def _mixed_verdicts(self) -> list[AuditVerdict]:
+        l1 = AuditAggregate(
+            layer="L1",
+            id="has_header",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+            harness="claude-code",
+        )
+        l3 = AuditAggregate(
+            layer="L3",
+            id="quality",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="openai",
+            harness="codex",
+        )
+        return apply_thresholds(
+            {
+                ("claude-code", "anthropic", "L1", "has_header"): l1,
+                ("codex", "openai", "L3", "quality"): l3,
+            },
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+
+    def test_per_layer_table_includes_harness_column(self) -> None:
+        """Per-layer markdown detail tables show ``| harness | provider |``
+        with harness BEFORE provider in the header row.
+        """
+        md = render_markdown(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        # Header has harness before provider.
+        assert "| harness |" in md
+        header_line = next(
+            line for line in md.splitlines()
+            if line.startswith("| harness |")
+        )
+        assert header_line.index("harness") < header_line.index("provider")
+
+    def test_l1_row_renders_em_dash_for_provider_in_markdown(self) -> None:
+        """L1 markdown row renders provider cell as ``—`` (em-dash);
+        L2/L3 keep the real provider value.
+        """
+        md = render_markdown(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        # Find the L1 detail section.
+        l1_section = md.split("## L1 detail", 1)[1].split("## L", 1)[0]
+        # L1 row's provider cell is em-dash, not 'anthropic'.
+        assert "—" in l1_section
+        # The provider 'anthropic' string should NOT appear inside an
+        # L1 row backtick cell. (The header line itself doesn't contain
+        # 'anthropic', so checking the row body is sufficient.)
+        l1_data_lines = [
+            line
+            for line in l1_section.splitlines()
+            if line.startswith("| `claude-code`")
+        ]
+        assert len(l1_data_lines) == 1
+        assert "anthropic" not in l1_data_lines[0]
+
+
+class TestRenderJsonHarnessV3:
+    """US-006 (#152): ``render_json`` bumps to ``schema_version: 3``,
+    adds top-level ``harnesses_seen[]`` (sorted, deduped), and each
+    ``assertions[]`` entry gains a ``"harness": str`` field. L1 entries
+    keep ``"provider": "anthropic"`` placeholder in JSON output (the
+    em-dash is stdout/markdown-only per DEC-008).
+    Traces to: DEC-008, DEC-010.
+    """
+
+    def _mixed_verdicts(self) -> list[AuditVerdict]:
+        l1 = AuditAggregate(
+            layer="L1",
+            id="has_header",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+            harness="claude-code",
+        )
+        l3 = AuditAggregate(
+            layer="L3",
+            id="quality",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="openai",
+            harness="codex",
+        )
+        return apply_thresholds(
+            {
+                ("claude-code", "anthropic", "L1", "has_header"): l1,
+                ("codex", "openai", "L3", "quality"): l3,
+            },
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+
+    def test_schema_version_3(self) -> None:
+        """First key is ``schema_version: 3``."""
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        first_key = next(iter(payload.keys()))
+        assert first_key == "schema_version"
+        assert payload["schema_version"] == 3
+
+    def test_includes_harnesses_seen_array(self) -> None:
+        """Top-level ``harnesses_seen`` is a sorted, deduped list."""
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        assert "harnesses_seen" in payload
+        assert payload["harnesses_seen"] == ["claude-code", "codex"]
+
+    def test_harnesses_seen_sorted_not_insertion_order(self) -> None:
+        """Stronger sort guard: feed harnesses whose alphabetical order
+        differs from insertion order so a regression that returned
+        ``list(set(...))`` would be caught.
+        """
+        agg_factory = lambda harness: AuditAggregate(  # noqa: E731
+            layer="L3",
+            id="x",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+            harness=harness,
+        )
+        verdicts = apply_thresholds(
+            {
+                ("zebra", "anthropic", "L3", "x"): agg_factory("zebra"),
+                ("codex", "anthropic", "L3", "x"): agg_factory("codex"),
+                ("alpha", "anthropic", "L3", "x"): agg_factory("alpha"),
+                ("claude-code", "anthropic", "L3", "x"):
+                    agg_factory("claude-code"),
+            },
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+        payload = render_json(
+            verdicts,
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        assert payload["harnesses_seen"] == [
+            "alpha",
+            "claude-code",
+            "codex",
+            "zebra",
+        ]
+
+    def test_per_entry_harness_field(self) -> None:
+        """Each ``assertions[]`` entry has a ``"harness"`` field."""
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        assert len(payload["assertions"]) == 2
+        for entry in payload["assertions"]:
+            assert "harness" in entry
+            assert entry["harness"] in {"claude-code", "codex"}
+
+    def test_l1_entry_keeps_anthropic_placeholder_in_json(self) -> None:
+        """JSON output keeps ``"provider": "anthropic"`` for L1 (the
+        em-dash is stdout/markdown only per DEC-008).
+        """
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        l1_entry = next(
+            entry for entry in payload["assertions"]
+            if entry["layer"] == "L1"
+        )
+        assert l1_entry["provider"] == "anthropic"
+        assert l1_entry["harness"] == "claude-code"
