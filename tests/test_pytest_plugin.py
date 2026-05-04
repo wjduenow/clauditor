@@ -281,6 +281,9 @@ class TestClauditorSpecInputFiles:
         mock_spec = MagicMock(spec=SkillSpec)
         mock_eval_spec = MagicMock()
         mock_eval_spec.input_files = []
+        # US-007 (#151): set harness="auto" so the spec-field-honoring
+        # branch does NOT wrap (matches the default for unset specs).
+        mock_eval_spec.harness = "auto"
         mock_spec.eval_spec = mock_eval_spec
         original_run = mock_spec.run
 
@@ -315,6 +318,9 @@ class TestClauditorSpecInputFiles:
         mock_spec = MagicMock(spec=SkillSpec)
         mock_eval_spec = MagicMock()
         mock_eval_spec.input_files = ["/abs/path/sales.csv"]
+        # US-007 (#151): "auto" harness — the wrapping happens here
+        # because of input_files, not because of a non-auto harness.
+        mock_eval_spec.harness = "auto"
         mock_spec.eval_spec = mock_eval_spec
         original_run = mock_spec.run
         original_run.return_value = "RESULT"
@@ -851,6 +857,9 @@ class TestClauditorNoApiKeyOption:
         mock_spec = MagicMock(spec=SkillSpec)
         mock_eval_spec = MagicMock()
         mock_eval_spec.input_files = []
+        # US-007 (#151): set harness="auto" so the spec-field-honoring
+        # branch does NOT wrap (preserves pre-US-007 behavior here).
+        mock_eval_spec.harness = "auto"
         mock_spec.eval_spec = mock_eval_spec
         original_run = mock_spec.run
 
@@ -1824,3 +1833,155 @@ class TestFixtureModelOverrideThreading:
         ):
             with pytest.raises(ValueError, match="unknown provider"):
                 _dispatch_fixture_auth_guard(eval_spec, "grader")
+
+
+class TestFixtureHonorsHarness:
+    """US-007 (#151) / DEC-005: ``clauditor_spec`` fixture honors
+    ``eval_spec.harness`` automatically — no new fixture kwarg.
+
+    A spec author who writes ``"harness": "codex"`` in eval.json gets
+    the Codex harness when they run ``spec.run()`` from a fixture,
+    without the test having to pass any kwarg. ``"auto"`` (and unset)
+    falls through to the default runner so the resolver's auto path
+    can fire at the CLI seam — the fixture itself does not auto-resolve.
+    """
+
+    def _request(self):
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": 300,
+                "--clauditor-claude-bin": "claude",
+                "--clauditor-no-api-key": False,
+            }[opt]
+        )
+        return request
+
+    def test_codex_spec_threads_harness_override(self, tmp_path):
+        """``eval_spec.harness == "codex"`` threads
+        ``harness_name_override="codex"`` into ``original_run``.
+
+        DEC-005: spec-author intent (``"codex"``) is honored
+        automatically when ``spec.run()`` is called from the fixture.
+        """
+        from clauditor.spec import SkillSpec
+
+        request = self._request()
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_eval_spec.harness = "codex"
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = mock_spec.run
+        original_run.return_value = "RESULT"
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+
+        # Wrapping happened because the spec declares a non-auto harness
+        assert result.run is not original_run
+
+        ret = result.run()
+        assert ret == "RESULT"
+        original_run.assert_called_once()
+        call_kwargs = original_run.call_args.kwargs
+        assert call_kwargs.get("harness_name_override") == "codex"
+
+    def test_auto_spec_does_not_override_harness(self, tmp_path):
+        """``eval_spec.harness == "auto"`` (or unset) leaves the
+        wrapper unattached so ``spec.run`` is called verbatim — the
+        resolver's auto path is the CLI seam's responsibility.
+        """
+        from clauditor.spec import SkillSpec
+
+        request = self._request()
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_eval_spec.harness = "auto"
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = mock_spec.run
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+
+        # No wrapping — the spec field is "auto" AND there are no
+        # other reasons (no input_files, no --clauditor-no-api-key).
+        assert result.run is original_run
+
+    def test_caller_harness_override_wins_over_spec(self, tmp_path):
+        """Caller-provided ``harness_name_override=`` (operator intent)
+        wins over ``eval_spec.harness`` (author intent), mirroring the
+        ``env_override`` / ``timeout_override`` precedence shape.
+        """
+        from clauditor.spec import SkillSpec
+
+        request = self._request()
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_eval_spec.harness = "codex"
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = mock_spec.run
+        original_run.return_value = "RESULT"
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+
+        # Caller passes "claude-code" — should override the spec's "codex".
+        result.run(harness_name_override="claude-code")
+        assert (
+            original_run.call_args.kwargs.get("harness_name_override")
+            == "claude-code"
+        )
+
+    def test_same_harness_spec_does_not_force_override(self, tmp_path):
+        """CodeRabbit review feedback on PR #166: when
+        ``eval_spec.harness`` matches the runner's current harness
+        (default ``"claude-code"`` for the fixture-built runner), the
+        plugin must NOT thread ``harness_name_override="claude-code"``
+        through to ``SkillSpec.run``. Otherwise ``SkillSpec.run`` would
+        reconstruct a fresh ``SkillRunner`` via
+        ``construct_harness("claude-code")``, dropping any custom
+        ``--clauditor-claude-bin`` carried by the fixture's runner.
+        """
+        from clauditor.spec import SkillSpec
+
+        request = self._request()
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        # Spec declares the same harness the fixture-built runner already
+        # uses (the default ``ClaudeCodeHarness``).
+        mock_eval_spec.harness = "claude-code"
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = mock_spec.run
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+
+        # No wrapping — the spec's harness matches the runner's
+        # current harness AND there are no other reasons for wrapping
+        # (no input_files, no --clauditor-no-api-key).
+        assert result.run is original_run

@@ -6,7 +6,12 @@ import argparse
 import sys
 from pathlib import Path
 
+from clauditor._harnesses import construct_harness
 from clauditor._harnesses._claude_code import env_without_api_key
+from clauditor._providers import (
+    CodexAuthMissingError,
+    check_codex_auth,
+)
 from clauditor.runner import (
     SkillRunner,
     env_with_sync_tasks,
@@ -17,7 +22,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``run`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int
+    from clauditor.cli import _harness_choice, _positive_int
 
     p_run = subparsers.add_parser("run", help="Run a skill and print output")
     p_run.add_argument("skill", help="Skill name (e.g., find-kid-activities)")
@@ -58,6 +63,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "caveats."
         ),
     )
+    p_run.add_argument(
+        "--harness",
+        type=_harness_choice,
+        default=None,
+        choices=("claude-code", "codex", "auto"),
+        help=(
+            "Override the harness selection: 'claude-code' (Anthropic "
+            "Claude CLI), 'codex' (OpenAI Codex CLI), or 'auto' (prefer "
+            "claude-code when available). Three-layer precedence (no "
+            "spec layer): this flag > CLAUDITOR_HARNESS env > default "
+            "'auto'."
+        ),
+    )
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -65,16 +83,46 @@ def cmd_run(args: argparse.Namespace) -> int:
     # Shared helper lives in ``clauditor.cli`` (package __init__). Import
     # lazily to avoid a circular import at module load: ``clauditor.cli``
     # imports this module to register the subparser.
-    from clauditor.cli import _render_skill_error
+    from clauditor.cli import _render_skill_error, _resolve_harness
 
-    runner = SkillRunner(
-        project_dir=Path(args.project_dir) if args.project_dir else Path.cwd(),
+    # #151 US-005 / DEC-006 / DEC-012: resolve harness via the four-layer
+    # precedence helper. ``run`` has no eval spec, so the spec layer is
+    # skipped (eval_spec=None). Fail fast if the resolved harness is
+    # "codex" and Codex auth is missing. ``run`` has no provider-grader
+    # axis, so harness auth is the only pre-call check.
+    harness_name = _resolve_harness(args, None)
+    if harness_name == "codex":
+        try:
+            check_codex_auth("run")
+        except CodexAuthMissingError as exc:
+            # Template already starts with "ERROR: " — print verbatim
+            # to avoid a doubled "ERROR: ERROR: " prefix (matches the
+            # AnthropicAuthMissingError / OpenAIAuthMissingError
+            # handlers in cli/grade.py).
+            print(str(exc), file=sys.stderr)
+            return 2
+
+    project_dir = (
+        Path(args.project_dir) if args.project_dir else Path.cwd()
     )
+    if harness_name == "claude-code":
+        runner = SkillRunner(project_dir=project_dir)
+    else:
+        runner = SkillRunner(
+            project_dir=project_dir,
+            harness=construct_harness(harness_name),
+        )
     # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags through
     # to the runner. Defaults are both None (today's behavior; runner
     # falls back to its own ``self.timeout`` default of 300s).
+    #
+    # ``harness_name`` is threaded into ``env_without_api_key`` so the
+    # codex branch preserves ``OPENAI_API_KEY`` (Copilot review feedback
+    # on PR #166): otherwise ``--no-api-key`` would launch the Codex
+    # subprocess without usable auth even though :func:`check_codex_auth`
+    # accepted it.
     env_override: dict[str, str] | None = (
-        env_without_api_key()
+        env_without_api_key(harness_name=harness_name)
         if getattr(args, "no_api_key", False)
         else None
     )

@@ -175,7 +175,41 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
         has_input_files = (
             spec.eval_spec is not None and bool(spec.eval_spec.input_files)
         )
-        if has_input_files or fixture_env_override is not None:
+        # US-007 (#151) / DEC-005: when ``eval_spec.harness`` is set to
+        # a concrete value (``"claude-code"`` or ``"codex"``), thread it
+        # to ``SkillSpec.run`` as ``harness_name_override`` so the
+        # spec-author preference is honored automatically — no new
+        # fixture kwarg per DEC-005. ``"auto"`` (and unset) leaves the
+        # override as ``None`` so ``SkillSpec.run`` falls through to
+        # ``self.runner`` (the resolver's auto path is the CLI seam's
+        # responsibility, not the fixture's).
+        #
+        # Same-harness skip (CodeRabbit review feedback on PR #166):
+        # when the spec's harness already matches the runner's current
+        # harness (e.g. spec sets ``harness="claude-code"`` and the
+        # fixture's base ``runner`` is ``ClaudeCodeHarness`` with a
+        # custom ``--clauditor-claude-bin``), do NOT request an override
+        # — ``SkillSpec.run`` would otherwise reconstruct a fresh runner
+        # via ``construct_harness("claude-code")`` and lose the fixture's
+        # configured Claude binary. ``SkillSpec.run`` itself also has
+        # a same-harness skip layer; this fixture-side check is
+        # defense-in-depth and avoids the unnecessary override-path
+        # entry in the closure below.
+        spec_harness_override: str | None = None
+        if (
+            spec.eval_spec is not None
+            and spec.eval_spec.harness != "auto"
+        ):
+            current_harness_name = getattr(
+                getattr(runner, "harness", None), "name", None
+            )
+            if spec.eval_spec.harness != current_harness_name:
+                spec_harness_override = spec.eval_spec.harness
+        if (
+            has_input_files
+            or fixture_env_override is not None
+            or spec_harness_override is not None
+        ):
             original_run = spec.run
             default_run_dir = tmp_path / f"clauditor_run_{id(spec)}"
 
@@ -185,6 +219,7 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
                 run_dir: Path | None = None,
                 env_override: dict[str, str] | None = None,
                 timeout_override: int | None = None,
+                harness_name_override: str | None = None,
             ):
                 effective_run_dir = run_dir
                 if has_input_files and effective_run_dir is None:
@@ -201,12 +236,26 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
                     if env_override is not None
                     else fixture_env_override
                 )
-                if effective_env is not None or timeout_override is not None:
+                # US-007 (#151) / DEC-005: caller-provided
+                # ``harness_name_override=`` (operator intent) wins over
+                # the spec-field default (author intent), mirroring the
+                # ``env_override`` / ``timeout_override`` precedence.
+                effective_harness = (
+                    harness_name_override
+                    if harness_name_override is not None
+                    else spec_harness_override
+                )
+                if (
+                    effective_env is not None
+                    or timeout_override is not None
+                    or effective_harness is not None
+                ):
                     return original_run(
                         args,
                         run_dir=effective_run_dir,
                         env_override=effective_env,
                         timeout_override=timeout_override,
+                        harness_name_override=effective_harness,
                     )
                 return original_run(args, run_dir=effective_run_dir)
 

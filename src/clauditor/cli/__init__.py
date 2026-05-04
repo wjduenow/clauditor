@@ -74,6 +74,26 @@ def _provider_choice(value: str) -> str:
     return value
 
 
+def _harness_choice(value: str) -> str:
+    """argparse type: accept one of ``"claude-code"``, ``"codex"``, ``"auto"``.
+
+    DEC-002 / DEC-011 of ``plans/super/151-harness-precedence.md``.
+    Mirrors :func:`_transport_choice` and :func:`_provider_choice` shape —
+    shared across the skill-execution commands (``validate``, ``grade``,
+    ``capture``, ``run``) where ``--harness`` is wired, so help text and
+    error messages stay consistent. (The LLM-mediated grader commands
+    use ``--transport`` / ``--grading-provider`` instead; ``--harness``
+    governs the skill subprocess, not the grading SDK call.) argparse
+    maps the ``ArgumentTypeError`` to a clean exit 2 at parse time per
+    ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    """
+    if value not in ("claude-code", "codex", "auto"):
+        raise argparse.ArgumentTypeError(
+            f"must be one of 'claude-code', 'codex', 'auto', got {value!r}"
+        )
+    return value
+
+
 def _provider_concrete_choice(value: str) -> str:
     """argparse type: accept ``"anthropic"`` or ``"openai"`` only.
 
@@ -90,6 +110,66 @@ def _provider_concrete_choice(value: str) -> str:
             f"must be one of 'anthropic', 'openai', got {value!r}"
         )
     return value
+
+
+def _resolve_harness(args: argparse.Namespace, eval_spec=None) -> str:
+    """Resolve harness using four-layer precedence.
+
+    DEC-002 / DEC-006 / DEC-007 / DEC-011 of
+    ``plans/super/151-harness-precedence.md``. CLI flag >
+    ``CLAUDITOR_HARNESS`` env > ``EvalSpec.harness`` > default
+    ``"auto"``. Whitespace-only env values normalize to ``None`` so
+    they are treated as unset, matching the parallel
+    :func:`_resolve_grader_transport` and
+    :func:`_resolve_grading_provider` shape.
+
+    The pure resolver :func:`clauditor._providers.resolve_harness`
+    treats an explicit ``"auto"`` at any precedence layer as
+    fall-through to the next layer (so a user passing
+    ``--harness=auto`` is asking the auto branch to decide, not
+    pinning the literal string ``"auto"`` over their env var).
+    When the auto branch picks ``"codex"`` (because ``claude`` is
+    not on PATH but ``codex`` is) the second tuple element returned
+    by the pure helper equals ``"codex"`` and this wrapper fires
+    :func:`clauditor._providers._auth.announce_auto_codex_harness`
+    BEFORE returning the resolved name. Explicit non-``"auto"``
+    selections at any layer (and auto resolving to ``"claude-code"``)
+    do NOT fire the announcement.
+
+    ``eval_spec`` is the loaded ``EvalSpec`` (or ``None`` when the
+    calling command has no eval spec — e.g. ``run``). The wrapper
+    accepts ``getattr(args, "harness", None)`` defensively so call
+    sites that have not (yet) registered ``--harness`` on their
+    subparser still resolve cleanly.
+
+    Raises ``SystemExit(2)`` on any ``ValueError`` from the pure
+    resolver (invalid env / spec value, or ``"auto"`` resolution
+    when neither ``claude`` nor ``codex`` is on PATH). Printing the
+    error to stderr before exit centralizes the routing per
+    ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    """
+    import os
+
+    from clauditor._providers import resolve_harness
+    from clauditor._providers._auth import announce_auto_codex_harness
+
+    cli_value = getattr(args, "harness", None)
+    env_value = os.environ.get("CLAUDITOR_HARNESS")
+    if env_value is not None and env_value.strip() == "":
+        env_value = None
+    spec_value = eval_spec.harness if eval_spec is not None else None
+
+    try:
+        name, auto_resolved_to = resolve_harness(
+            cli_value, env_value, spec_value
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+
+    if auto_resolved_to == "codex":
+        announce_auto_codex_harness()
+    return name
 
 
 def _resolve_grader_transport(args: argparse.Namespace, eval_spec=None) -> str:

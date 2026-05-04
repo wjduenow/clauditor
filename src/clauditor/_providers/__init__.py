@@ -19,6 +19,7 @@ class object regardless of which module raised it.
 from __future__ import annotations
 
 import re
+import shutil
 from typing import Any, Literal, cast
 
 # Anthropic-default grading model used when ``grading_model`` is unset
@@ -40,6 +41,14 @@ _ANTHROPIC_DEFAULT_GRADING_MODEL: Literal["claude-sonnet-4-6"] = "claude-sonnet-
 _VALID_GRADING_PROVIDER_VALUES: frozenset[str] = frozenset(
     ("anthropic", "openai", "auto")
 )
+
+# Valid harness values across all four precedence layers (CLI override,
+# env override, spec field, default). ``"auto"`` is the default; the
+# resolver picks ``"claude-code"`` first when the ``claude`` binary is
+# on PATH and falls back to ``"codex"`` when only the ``codex`` binary
+# is available (DEC-001 / DEC-002 of
+# ``plans/super/151-harness-precedence.md``).
+_VALID_HARNESS_VALUES: tuple[str, ...] = ("claude-code", "codex", "auto")
 
 # Regex for OpenAI o-series reasoning models (``o1``, ``o4-mini``,
 # ``o3-pro``, ...). The pattern matches a leading ``o`` followed by
@@ -100,6 +109,40 @@ class OpenAIAuthMissingError(Exception):
     """
 
 
+class CodexAuthMissingError(Exception):
+    """Raised when no usable Codex authentication path is available.
+
+    Thrown by :func:`check_codex_auth` when neither ``CODEX_API_KEY``
+    nor ``OPENAI_API_KEY`` is set (both checked via whitespace-trimmed
+    non-empty). Codex accepts either env var — ``CODEX_API_KEY`` is
+    the harness-native name; ``OPENAI_API_KEY`` is honored as a
+    fallback because Codex's underlying transport ultimately routes
+    to OpenAI.
+
+    DEC-003 / DEC-010 of ``plans/super/151-harness-precedence.md``:
+    Codex is a HARNESS axis, not a PROVIDER axis. The
+    :func:`check_provider_auth` dispatcher does NOT grow a Codex
+    branch — the CLI seam directly calls :func:`check_codex_auth`
+    when the resolved harness is ``"codex"``. The exception class
+    lives here next to its siblings to preserve the class-identity
+    invariant per ``.claude/rules/back-compat-shim-discipline.md``
+    Pattern 2: every ``except CodexAuthMissingError`` ladder catches
+    the same class object regardless of which module raised it.
+
+    Distinct from :class:`AnthropicAuthMissingError` AND
+    :class:`OpenAIAuthMissingError` by design: the CLI layer routes
+    ``CodexAuthMissingError`` to exit 2 (pre-call input-validation
+    error per ``.claude/rules/llm-cli-exit-code-taxonomy.md``) — the
+    same exit code the other auth-missing classes route to, but via
+    a structurally distinct ``except`` branch.
+
+    Subclass of :class:`Exception` directly, NOT of
+    :class:`AnthropicAuthMissingError`, :class:`OpenAIAuthMissingError`,
+    or any helper-error class — a common ancestor would defeat the
+    structural-routing invariant every CLI dispatcher depends on.
+    """
+
+
 # Re-export the auth-helper surface from ``_auth.py``. Imported AFTER
 # ``AnthropicAuthMissingError`` is defined so ``_auth.py``'s deferred
 # / direct ``from clauditor._providers import AnthropicAuthMissingError``
@@ -126,16 +169,21 @@ class OpenAIAuthMissingError(Exception):
 from clauditor._providers._auth import (  # noqa: E402, I001
     _AUTH_MISSING_TEMPLATE,
     _AUTH_MISSING_TEMPLATE_KEY_ONLY,
+    _AUTO_CODEX_ANNOUNCEMENT,
     _CALL_ANTHROPIC_DEPRECATION_NOTICE,
+    _CODEX_AUTH_MISSING_TEMPLATE,
     _IMPLICIT_NO_API_KEY_ANNOUNCEMENT,
     _OPENAI_AUTH_MISSING_TEMPLATE,
     _api_key_is_set,
     _claude_cli_is_available,
+    _codex_api_key_is_set,
     _openai_api_key_is_set,
+    announce_auto_codex_harness,
     announce_call_anthropic_deprecation,
     announce_implicit_no_api_key,
     check_any_auth_available,
     check_api_key_only,
+    check_codex_auth,
     check_openai_auth,
     check_provider_auth,
 )
@@ -471,25 +519,171 @@ def resolve_grading_model(eval_spec: Any, provider: str) -> str:
     )
 
 
+def _validate_harness_value(value: str, layer: str) -> None:
+    """Raise ``ValueError`` when ``value`` is outside the literal set.
+
+    ``layer`` is a human-readable name of the precedence layer
+    (``"CLI --harness"``, ``"CLAUDITOR_HARNESS"``, or
+    ``"EvalSpec.harness"``) interpolated into the message so a CLI
+    caller routing the failure to exit 2 can name the layer the
+    operator should fix.
+    """
+    if value not in _VALID_HARNESS_VALUES:
+        raise ValueError(
+            f"{layer} must be one of 'claude-code', 'codex', 'auto', "
+            f"got {value!r}"
+        )
+
+
+def resolve_harness(
+    cli_override: str | None,
+    env_override: str | None,
+    spec_value: str | None,
+) -> tuple[str, str | None]:
+    """Pick the winning harness via four-layer precedence.
+
+    DEC-001 / DEC-002 / DEC-009 / DEC-011 of
+    ``plans/super/151-harness-precedence.md``. Pure helper per
+    ``.claude/rules/pure-compute-vs-io-split.md``: reads no env /
+    filesystem state directly — all three precedence inputs are
+    passed in. The CLI seam ``_resolve_harness`` (US-004) is
+    responsible for reading ``os.environ["CLAUDITOR_HARNESS"]``
+    (with whitespace normalization) and passing the result as
+    ``env_override``.
+
+    The single I/O concession is :func:`shutil.which` for PATH
+    lookup when the resolved value is ``"auto"`` — this is the
+    first four-layer resolver in clauditor that touches PATH from
+    the pure layer (precedent: ``_claude_cli_is_available`` in
+    ``_providers/_auth.py``). PATH is treated as contract, not
+    state — operators set it once at session start, and the
+    resolver's read is idempotent within a process.
+
+    Precedence (highest → lowest): CLI override > env override >
+    spec value > default ``"auto"``. A layer is "set" when its
+    value is non-``None`` AND non-``"auto"``: an explicit
+    ``"auto"`` at any layer is equivalent to "no preference at
+    this layer", so the chain falls through to the next layer.
+    This matches operator intuition — passing ``--harness=auto``
+    on the CLI should mean "let the auto branch decide", not
+    "the literal string auto wins over my env var".
+
+    When the winning value (or the fall-through default) is
+    ``"auto"``, the resolver runs PATH lookup:
+
+    - ``shutil.which("claude")`` is checked first → return
+      ``("claude-code", None)`` when found.
+    - Otherwise ``shutil.which("codex")`` → return
+      ``("codex", "codex")``. The second tuple element flags the
+      auto-resolution path so the CLI wrapper can fire
+      ``announce_auto_codex_harness()``.
+    - Neither found → raise ``ValueError`` naming all three
+      escape hatches (CLI flag, env var, spec field) so the
+      CLI's exit-2 message tells the operator how to fix it.
+
+    When the winning value is ``"claude-code"`` or ``"codex"``
+    explicitly (a non-``"auto"`` literal at any precedence
+    layer), the resolver returns ``(value, None)`` — no PATH
+    lookup, no announcement. Operators who pinned a harness
+    accept the responsibility of having the binary available.
+
+    Args:
+        cli_override: Value from the ``--harness`` argparse flag
+            (``None`` when the flag was not passed).
+        env_override: Value of ``os.environ["CLAUDITOR_HARNESS"]``
+            (or ``None`` when unset / whitespace-only — the CLI
+            seam normalizes whitespace-only env values to ``None``
+            before calling this helper). For defense-in-depth this
+            helper also strips and treats empty as ``None``.
+        spec_value: Value of ``EvalSpec.harness`` (or ``None``
+            when no eval spec is attached). The spec dataclass
+            defaults to ``"auto"`` so most callers pass that
+            literal here, which falls through to the default
+            branch identically.
+
+    Returns:
+        ``(name, auto_resolved_to)`` where ``name`` is one of
+        ``{"claude-code", "codex"}`` and ``auto_resolved_to`` is
+        ``"codex"`` when the auto branch picked codex (so the
+        CLI wrapper knows to fire
+        ``announce_auto_codex_harness``), and ``None`` in every
+        other case (explicit literal at any layer, or auto
+        picked claude-code).
+
+    Raises:
+        ValueError: A non-``None`` precedence layer holds an
+            invalid value, OR the resolved value is ``"auto"``
+            and neither ``claude`` nor ``codex`` is on PATH.
+    """
+    # Defensive whitespace-strip on env_override: the CLI wrapper
+    # is supposed to normalize whitespace-only env to ``None``,
+    # but a non-CLI caller (a future direct invocation, a test)
+    # might pass a raw env value. Strip-then-empty-check keeps
+    # the resolver robust either way.
+    if env_override is not None:
+        stripped_env = env_override.strip()
+        env_override = stripped_env if stripped_env != "" else None
+
+    if cli_override is not None and cli_override != "auto":
+        _validate_harness_value(cli_override, "CLI --harness")
+        return (cli_override, None)
+    if env_override is not None and env_override != "auto":
+        _validate_harness_value(env_override, "CLAUDITOR_HARNESS")
+        return (env_override, None)
+    if spec_value is not None and spec_value != "auto":
+        _validate_harness_value(spec_value, "EvalSpec.harness")
+        return (spec_value, None)
+
+    # Validate any explicit ``"auto"`` value too — guards against a
+    # future caller passing a non-string sentinel by mistake. The
+    # resolver still falls through to the auto branch below.
+    if cli_override is not None:
+        _validate_harness_value(cli_override, "CLI --harness")
+    if env_override is not None:
+        _validate_harness_value(env_override, "CLAUDITOR_HARNESS")
+    if spec_value is not None:
+        _validate_harness_value(spec_value, "EvalSpec.harness")
+
+    # Auto branch: prefer claude-code when the claude CLI is on
+    # PATH (zero-friction upgrade for pre-#151 Anthropic operators
+    # per DEC-002 / Phase-2 review note 10), fall back to codex
+    # when only the codex CLI is available.
+    if shutil.which("claude") is not None:
+        return ("claude-code", None)
+    if shutil.which("codex") is not None:
+        return ("codex", "codex")
+    raise ValueError(
+        "harness=auto: neither 'claude' nor 'codex' is on PATH. "
+        "Install one of the harness CLIs, or pin a harness "
+        "explicitly via --harness=<name> (claude-code or codex), "
+        "the CLAUDITOR_HARNESS=<name> env var, or the 'harness' "
+        "field in eval.json."
+    )
+
+
 __all__ = [
     "AnthropicAuthMissingError",
     "AnthropicHelperError",
     "AnthropicResult",
     "ClaudeCLIError",
+    "CodexAuthMissingError",
     "ModelResult",
     "OpenAIAuthMissingError",
     "OpenAIHelperError",
+    "announce_auto_codex_harness",
     "announce_call_anthropic_deprecation",
     "announce_implicit_no_api_key",
     "call_anthropic",
     "call_model",
     "check_any_auth_available",
     "check_api_key_only",
+    "check_codex_auth",
     "check_openai_auth",
     "check_provider_auth",
     "infer_provider_from_model",
     "resolve_grading_model",
     "resolve_grading_provider",
+    "resolve_harness",
     "resolve_transport",
     # Private surface re-exported for back-compat with the
     # ``clauditor._anthropic`` shim and for tests that introspect
@@ -497,10 +691,13 @@ __all__ = [
     # flag is deliberately absent — see the import comment above.
     "_AUTH_MISSING_TEMPLATE",
     "_AUTH_MISSING_TEMPLATE_KEY_ONLY",
+    "_AUTO_CODEX_ANNOUNCEMENT",
     "_CALL_ANTHROPIC_DEPRECATION_NOTICE",
+    "_CODEX_AUTH_MISSING_TEMPLATE",
     "_IMPLICIT_NO_API_KEY_ANNOUNCEMENT",
     "_OPENAI_AUTH_MISSING_TEMPLATE",
     "_api_key_is_set",
     "_claude_cli_is_available",
+    "_codex_api_key_is_set",
     "_openai_api_key_is_set",
 ]

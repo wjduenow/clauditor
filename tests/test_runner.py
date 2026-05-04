@@ -3327,6 +3327,48 @@ class TestEnvWithoutApiKey:
         assert "ANTHROPIC_API_KEY" in base
         assert base["FOO"] == "bar"
 
+    def test_codex_harness_preserves_openai_api_key(self):
+        """Copilot review feedback on PR #166: when the skill subprocess
+        runs under the Codex harness, ``OPENAI_API_KEY`` is one of the
+        two valid Codex auth env vars and MUST be preserved. Stripping
+        it would launch the Codex subprocess without usable auth even
+        though :func:`check_codex_auth` accepted it from ``os.environ``.
+
+        Anthropic env vars are still stripped because Codex does not
+        need them.
+        """
+        base = {
+            "OPENAI_API_KEY": "sk-openai",
+            "CODEX_API_KEY": "ck-codex",
+            "ANTHROPIC_API_KEY": "sk-ant",
+            "ANTHROPIC_AUTH_TOKEN": "tok-ant",
+            "PATH": "/usr/bin",
+        }
+        result = env_without_api_key(base, harness_name="codex")
+        # OpenAI/Codex auth preserved (Codex needs them).
+        assert result["OPENAI_API_KEY"] == "sk-openai"
+        assert result["CODEX_API_KEY"] == "ck-codex"
+        # Anthropic auth still stripped (Codex does not need them).
+        assert "ANTHROPIC_API_KEY" not in result
+        assert "ANTHROPIC_AUTH_TOKEN" not in result
+        assert result["PATH"] == "/usr/bin"
+
+    def test_claude_code_harness_strips_openai_api_key(self):
+        """Default behavior preserved for the claude-code harness:
+        ``OPENAI_API_KEY`` is stripped alongside the Anthropic vars.
+        Explicit ``harness_name="claude-code"`` matches the
+        no-kwarg default — defends DEC-008 of #145 by re-asserting it.
+        """
+        base = {
+            "OPENAI_API_KEY": "sk-openai",
+            "ANTHROPIC_API_KEY": "sk-ant",
+            "PATH": "/usr/bin",
+        }
+        result = env_without_api_key(base, harness_name="claude-code")
+        assert "OPENAI_API_KEY" not in result
+        assert "ANTHROPIC_API_KEY" not in result
+        assert result["PATH"] == "/usr/bin"
+
 
 class TestEnvWithSyncTasks:
     """Pure-unit tests for :func:`clauditor.runner.env_with_sync_tasks`.

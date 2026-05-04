@@ -353,6 +353,20 @@ class TestValidateVerboseInvocation:
         args.eval = str(eval_path)
         args.output = None
         args.json = False
+        # #151 US-005: ``_resolve_harness`` reads ``args.harness``.
+        # MagicMock returns a fresh MagicMock for any attribute, which
+        # fails the literal-set validator. Pin to ``None`` so the
+        # resolver falls through to the env-var layer.
+        args.harness = None
+        # CodeRabbit review feedback on PR #166: pin the other
+        # ``cmd_validate``-read attributes to defaults so the test
+        # exercises the default branch. ``MagicMock`` returns truthy
+        # MagicMock instances for un-pinned attrs which would silently
+        # toggle ``--no-api-key`` / ``--sync-tasks`` and produce a
+        # non-default ``--timeout``.
+        args.no_api_key = False
+        args.sync_tasks = False
+        args.timeout = None
         args.verbose = True
         args.no_transcript = False
 
@@ -361,6 +375,12 @@ class TestValidateVerboseInvocation:
             spec.skill_name = "demo"
             spec.eval_spec = MagicMock()
             spec.eval_spec.test_args = ""
+            # #151 US-005: ``_resolve_harness`` reads ``eval_spec.harness``.
+            # MagicMock returns a fresh MagicMock for any attribute access,
+            # which fails the literal-set validator. Pin to ``None`` so the
+            # resolver falls through to the env-var layer (autouse fixture
+            # pins ``CLAUDITOR_HARNESS=claude-code``).
+            spec.eval_spec.harness = None
             spec.eval_spec.assertions = [
                 MagicMock(
                     name="a1",
@@ -433,6 +453,18 @@ class TestValidateVerboseInvocation:
         args.eval = None
         args.output = None
         args.json = False
+        # #151 US-005: ``_resolve_harness`` reads ``args.harness``.
+        # MagicMock returns a fresh MagicMock for any attribute, which
+        # fails the literal-set validator. Pin to ``None`` so the
+        # resolver falls through to the env-var layer.
+        args.harness = None
+        # CodeRabbit review feedback on PR #166: pin the other
+        # ``cmd_validate``-read attributes to defaults so the test
+        # exercises the default branch (see comment on the analogous
+        # block above).
+        args.no_api_key = False
+        args.sync_tasks = False
+        args.timeout = None
         args.verbose = False
         args.no_transcript = False
 
@@ -441,6 +473,12 @@ class TestValidateVerboseInvocation:
             spec.skill_name = "demo"
             spec.eval_spec = MagicMock()
             spec.eval_spec.test_args = ""
+            # #151 US-005: ``_resolve_harness`` reads ``eval_spec.harness``.
+            # MagicMock returns a fresh MagicMock for any attribute access,
+            # which fails the literal-set validator. Pin to ``None`` so the
+            # resolver falls through to the env-var layer (autouse fixture
+            # pins ``CLAUDITOR_HARNESS=claude-code``).
+            spec.eval_spec.harness = None
             spec.eval_spec.assertions = []
             spec.run.return_value = fake_skill_result
             from_file.return_value = spec

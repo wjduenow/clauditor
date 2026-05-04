@@ -13,8 +13,10 @@ from clauditor import history
 from clauditor._harnesses._claude_code import env_without_api_key
 from clauditor._providers import (
     AnthropicAuthMissingError,
+    CodexAuthMissingError,
     OpenAIAuthMissingError,
     announce_implicit_no_api_key,
+    check_codex_auth,
     check_provider_auth,
 )
 from clauditor.assertions import AssertionSet, run_assertions
@@ -38,6 +40,7 @@ if TYPE_CHECKING:
 
 def _resolve_grade_env_override(
     args: argparse.Namespace,
+    harness_name: str | None = None,
 ) -> tuple[dict[str, str] | None, bool]:
     """Decide the skill-subprocess env override and notice-firing bit.
 
@@ -59,6 +62,13 @@ def _resolve_grade_env_override(
 
     Whitespace-only env values are treated as absent (matching
     :func:`clauditor._anthropic._api_key_is_set`).
+
+    ``harness_name`` (Copilot review feedback on PR #166): threaded
+    into :func:`env_without_api_key` so the codex branch preserves
+    ``OPENAI_API_KEY`` (otherwise ``--no-api-key`` or the
+    ``--transport cli`` implicit-strip coupling would launch the Codex
+    subprocess without usable auth even though :func:`check_codex_auth`
+    accepted it from ``os.environ``).
     """
     from clauditor.cli import should_strip_api_key_for_skill_subprocess
 
@@ -71,7 +81,7 @@ def _resolve_grade_env_override(
     auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
     key_was_present = bool(api_key.strip() or auth_token.strip())
     env_override = (
-        env_without_api_key()
+        env_without_api_key(harness_name=harness_name)
         if (explicit_strip or implicit_strip)
         else None
     )
@@ -84,6 +94,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
     from clauditor.cli import (
+        _harness_choice,
         _positive_int,
         _provider_choice,
         _transport_choice,
@@ -247,6 +258,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "EvalSpec.grading_provider > default 'auto'."
         ),
     )
+    p_grade.add_argument(
+        "--harness",
+        type=_harness_choice,
+        default=None,
+        choices=("claude-code", "codex", "auto"),
+        help=(
+            "Override the harness selection: 'claude-code' (Anthropic "
+            "Claude CLI), 'codex' (OpenAI Codex CLI), or 'auto' (prefer "
+            "claude-code when available). Four-layer precedence: this "
+            "flag > CLAUDITOR_HARNESS env > EvalSpec.harness > default "
+            "'auto'."
+        ),
+    )
 
 
 def _load_and_validate_grade_args(
@@ -357,7 +381,7 @@ def cmd_grade(args: argparse.Namespace) -> int:
     # The resolved provider is threaded down through every grader
     # entry point per #146 US-006 (orchestrators no longer re-read
     # ``eval_spec.grading_provider``).
-    from clauditor.cli import _resolve_grading_provider
+    from clauditor.cli import _resolve_grading_provider, _resolve_harness
 
     provider = _resolve_grading_provider(args, spec.eval_spec)
     try:
@@ -368,6 +392,38 @@ def cmd_grade(args: argparse.Namespace) -> int:
     except OpenAIAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+    # #151 US-005 / DEC-006 / DEC-012: resolve harness via the four-layer
+    # precedence helper, then fail fast if the resolved harness is
+    # "codex" and Codex auth is missing. Auth-check ordering: provider
+    # auth FIRST (already above) so a missing ANTHROPIC_API_KEY for
+    # grading is reported before a missing CODEX_API_KEY for execution;
+    # harness auth SECOND. Both fire when applicable. Guard lands BEFORE
+    # allocate_iteration so we do not leave an abandoned
+    # iteration-N-tmp/ staging dir behind when the guard fires. Skipped
+    # when the entire run is captured-text (``--output`` AND no
+    # ``--variance`` AND no ``--baseline``) because no subprocess fires
+    # — the auto-resolve PATH check would otherwise be a hostile UX
+    # regression for the captured-output workflow.
+    needs_subprocess = (
+        not args.output
+        or bool(args.variance)
+        or bool(getattr(args, "baseline", False))
+    )
+    if needs_subprocess:
+        harness_name: str | None = _resolve_harness(args, spec.eval_spec)
+        if harness_name == "codex":
+            try:
+                check_codex_auth("grade")
+            except CodexAuthMissingError as exc:
+                # Template already starts with "ERROR: " — print verbatim
+                # to avoid a doubled "ERROR: ERROR: " prefix (matches the
+                # AnthropicAuthMissingError / OpenAIAuthMissingError
+                # handlers in cli/grade.py).
+                print(str(exc), file=sys.stderr)
+                return 2
+    else:
+        harness_name = None
 
     # #146 US-006 / DEC-004: pick the per-provider default model when
     # the spec's ``grading_model`` is unset. ``args.model`` (if the
@@ -430,6 +486,7 @@ def cmd_grade(args: argparse.Namespace) -> int:
             spec=spec,
             model=model,
             provider=provider,
+            harness_name=harness_name,
             clauditor_dir=clauditor_dir,
             workspace=workspace,
         )
@@ -512,6 +569,7 @@ def _run_skill_variants(
     spec: SkillSpec,
     workspace: IterationWorkspace,
     n_variance: int,
+    harness_name: str | None,
 ) -> tuple[
     list[tuple[str, list[dict]]],
     list[SkillResult | None],
@@ -544,7 +602,9 @@ def _run_skill_variants(
     # Copilot feedback on duplication). Traces to DEC-001, DEC-003,
     # DEC-006, DEC-007, DEC-008, DEC-009 of
     # plans/super/95-subscription-auth-flag.md.
-    env_override, should_announce = _resolve_grade_env_override(args)
+    env_override, should_announce = _resolve_grade_env_override(
+        args, harness_name=harness_name
+    )
     if should_announce:
         announce_implicit_no_api_key()
     timeout_override = getattr(args, "timeout", None)
@@ -581,6 +641,7 @@ def _run_skill_variants(
             timeout_override=timeout_override,
             env_override=env_override,
             sync_tasks_override=sync_tasks_override,
+            harness_name_override=harness_name,
         )
         if not primary_skill_result.succeeded_cleanly:
             print(
@@ -613,6 +674,7 @@ def _run_skill_variants(
             timeout_override=timeout_override,
             env_override=env_override,
             sync_tasks_override=sync_tasks_override,
+            harness_name_override=harness_name,
         )
         if not variance_result.succeeded_cleanly:
             print(
@@ -699,6 +761,7 @@ def _write_workspace_sidecars(
     model: str,
     transport: str = "auto",
     provider: str = "anthropic",
+    harness_name: str | None = None,
 ) -> Benchmark | None:
     """Write grading/assertions/extraction/baseline/benchmark sidecars.
 
@@ -754,7 +817,9 @@ def _write_workspace_sidecars(
         # lockstep by construction. The ``should_announce`` return is
         # deliberately ignored here — the primary arm already fired the
         # notice (and the helper is idempotent per US-002 regardless).
-        env_override, _ = _resolve_grade_env_override(args)
+        env_override, _ = _resolve_grade_env_override(
+            args, harness_name=harness_name
+        )
         # Tier 1.5 of GitHub #103: when --sync-tasks fires, the
         # baseline arm must also run synchronously so the delta
         # compares like-for-like. spec.runner.run_raw (used by the
@@ -774,6 +839,7 @@ def _write_workspace_sidecars(
             provider=provider,
             env_override=env_override,
             timeout_override=timeout_override,
+            harness_name=harness_name,
         )
 
     return None
@@ -921,6 +987,7 @@ def _write_baseline_and_benchmark(
     provider: str = "anthropic",
     env_override: dict[str, str] | None = None,
     timeout_override: int | None = None,
+    harness_name: str | None = None,
 ) -> Benchmark | None:
     """Run the baseline phase and compute+persist the benchmark delta.
 
@@ -941,6 +1008,7 @@ def _write_baseline_and_benchmark(
         provider=provider,
         env_override=env_override,
         timeout_override=timeout_override,
+        harness_name=harness_name,
     )
 
     # #28 US-002: compute the pair-run benchmark delta and persist
@@ -998,6 +1066,7 @@ def _run_baseline_phase(
     provider: str = "anthropic",
     env_override: dict[str, str] | None = None,
     timeout_override: int | None = None,
+    harness_name: str | None = None,
 ) -> tuple[GradingReport, SkillResult]:
     """Run the baseline (no skill prefix) and persist sidecars.
 
@@ -1010,10 +1079,19 @@ def _run_baseline_phase(
     ``--baseline`` run (otherwise the baseline subprocess would bypass
     the flags, defeating their intent).
 
+    ``harness_name`` (#151 US-005 / DEC-013): the resolved harness name
+    must match the primary arm's harness so the A/B comparison isolates
+    the variable. When non-default, materialize a fresh
+    :class:`SkillRunner` with the override harness for the baseline
+    invocation (mirrors :meth:`SkillSpec.run`'s
+    ``harness_name_override`` shape).
+
     Returns ``(GradingReport, SkillResult)`` so the caller can feed
     them to :func:`clauditor.benchmark.compute_benchmark`.
     """
+    from clauditor._harnesses import construct_harness
     from clauditor.baseline import compute_baseline
+    from clauditor.runner import SkillRunner
     from clauditor.workspace import stage_inputs
 
     test_args = spec.eval_spec.test_args or ""
@@ -1026,7 +1104,23 @@ def _run_baseline_phase(
         stage_inputs(baseline_run_dir, sources)
         effective_cwd = baseline_run_dir / "inputs"
     print(f"Running baseline (no skill prefix) {test_args}...")
-    baseline_result = spec.runner.run_raw(
+
+    # #151 US-005 / DEC-013: when a non-default harness was resolved,
+    # materialize a fresh ``SkillRunner`` with that harness so the
+    # baseline runs under the same harness as the primary. Constructing
+    # a new runner (rather than mutating ``spec.runner.harness``) avoids
+    # mutating shared state across calls. ``harness_name`` is ``None``
+    # only on captured-output runs that never reach this path; treat
+    # ``"claude-code"`` and ``None`` the same way (preserve historical
+    # ``spec.runner`` behavior).
+    baseline_runner = spec.runner
+    if harness_name is not None and harness_name != "claude-code":
+        baseline_runner = SkillRunner(
+            project_dir=spec.runner.project_dir,
+            timeout=spec.runner.timeout,
+            harness=construct_harness(harness_name),
+        )
+    baseline_result = baseline_runner.run_raw(
         test_args,
         cwd=effective_cwd,
         env=env_override,
@@ -1114,6 +1208,7 @@ def _cmd_grade_with_workspace(
     spec: SkillSpec,
     model: str,
     provider: str,
+    harness_name: str | None,
     clauditor_dir: Path,
     workspace: IterationWorkspace,
 ) -> int:
@@ -1129,7 +1224,7 @@ def _cmd_grade_with_workspace(
         skill_output_total,
         skill_duration_total,
         error_rc,
-    ) = _run_skill_variants(args, spec, workspace, n_variance)
+    ) = _run_skill_variants(args, spec, workspace, n_variance, harness_name)
     if error_rc is not None:
         return error_rc
 
@@ -1187,6 +1282,7 @@ def _cmd_grade_with_workspace(
             model=model,
             transport=grader_transport,
             provider=provider,
+            harness_name=harness_name,
         )
         _write_timing_and_finalize(
             workspace=workspace,

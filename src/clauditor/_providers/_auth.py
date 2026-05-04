@@ -381,6 +381,157 @@ def check_provider_auth(provider: str, cmd_name: str) -> None:
     )
 
 
+# DEC-007 / DEC-010 (#151 US-003): one-shot stderr announcement when
+# the four-layer harness resolver auto-resolves to ``"codex"`` (i.e. no
+# explicit CLI flag, env var, or spec field; ``claude`` not on PATH;
+# ``codex`` on PATH). Flipped to ``True`` after the first emission per
+# Python process. Co-located with the other one-shot announcement flags
+# (:data:`_announced_implicit_no_api_key`,
+# :data:`_announced_call_anthropic_deprecation`) per
+# ``.claude/rules/centralized-sdk-call.md`` "Implicit-coupling
+# announcements — an emerging family". The notice is auth-coupled (it
+# names ``CODEX_API_KEY`` / ``OPENAI_API_KEY``) so this module is the
+# right home rather than ``_providers/_anthropic.py`` (transport-coupled
+# notices live there). Tests reset via the
+# ``monkeypatch.setattr(..., False)`` autouse fixture pattern,
+# targeting the canonical flag location at
+# ``clauditor._providers._auth._announced_auto_codex_harness``.
+_announced_auto_codex_harness: bool = False
+
+
+# DEC-007 / DEC-011 (#151 US-003): the auto→codex announcement emitted
+# on the first auto-resolution per Python process. Names env-var names
+# only (NEVER interpolates values) per Auth review #7 of the plan. Two
+# durable substrings tests pin: ``CODEX_API_KEY`` and ``OPENAI_API_KEY``
+# — the env-var names users must export to authenticate Codex. The
+# remainder of the message is stylistic copy and may be edited without
+# churning tests.
+_AUTO_CODEX_ANNOUNCEMENT: Final[str] = (
+    "clauditor: auto-resolved harness to 'codex' (claude CLI not on "
+    "PATH; codex CLI present). Codex needs CODEX_API_KEY or "
+    "OPENAI_API_KEY exported. If you want Claude Code instead, "
+    "install the claude CLI and then pin --harness=claude-code (or "
+    "CLAUDITOR_HARNESS=claude-code)."
+)
+
+
+def announce_auto_codex_harness() -> None:
+    """Emit the auto→codex harness notice to stderr once per process.
+
+    DEC-007 / DEC-011 (#151 US-003). Called by the CLI wrapper
+    ``_resolve_harness`` (US-004) when the four-layer harness resolver
+    returns ``auto_resolved_to == "codex"`` — i.e. no explicit CLI
+    flag, env var, or spec field forced the choice; ``claude`` is not
+    on PATH; ``codex`` is. The one-shot module flag
+    :data:`_announced_auto_codex_harness` ensures a single
+    announcement per Python process regardless of how many subsequent
+    CLI commands resolve under the same conditions.
+
+    Same shape as :func:`announce_implicit_no_api_key` (#95 US-002)
+    and :func:`announce_call_anthropic_deprecation` (#144 US-007):
+    public helper, print-and-flip, one-shot per process. Tests reset
+    via ``monkeypatch.setattr`` on the canonical flag location.
+
+    Per ``.claude/rules/centralized-sdk-call.md`` "Implicit-coupling
+    announcements — an emerging family", the helper lives in
+    ``_providers/_auth.py`` because the notice is auth-coupled (it
+    names ``CODEX_API_KEY`` / ``OPENAI_API_KEY``). Transport-coupled
+    notices live in ``_providers/_anthropic.py``.
+    """
+    global _announced_auto_codex_harness
+    if _announced_auto_codex_harness:
+        return
+    print(_AUTO_CODEX_ANNOUNCEMENT, file=sys.stderr)
+    _announced_auto_codex_harness = True
+
+
+# DEC-003 / DEC-010 (#151 US-003): message template for
+# :func:`check_codex_auth`, the strict-OR pre-flight guard for the
+# Codex harness. Mirrors :data:`_OPENAI_AUTH_MISSING_TEMPLATE` in shape
+# — single ``{cmd_name}`` interpolation, naming the env-var names
+# users must export, and listing the commands that don't require auth
+# so users see the escape hatch.
+#
+# Three durable substrings tests pin: ``CODEX_API_KEY`` and
+# ``OPENAI_API_KEY`` (the two env-var names Codex accepts), plus
+# ``platform.openai.com`` (the canonical place to obtain a key —
+# Codex's underlying transport routes to OpenAI).
+_CODEX_AUTH_MISSING_TEMPLATE = (
+    "ERROR: Neither CODEX_API_KEY nor OPENAI_API_KEY is set.\n"
+    "clauditor {cmd_name} runs the codex harness, which needs an API\n"
+    "key. Get a key at https://platform.openai.com/api-keys, then\n"
+    "export CODEX_API_KEY=... (preferred) or OPENAI_API_KEY=... and\n"
+    "re-run.\n"
+    "Commands that don't need a key: lint, init, badge, audit, trend."
+)
+
+
+def _codex_api_key_is_set() -> bool:
+    """Return True when ``CODEX_API_KEY`` is present and non-empty.
+
+    Whitespace-only values count as absent — same shape as
+    :func:`_api_key_is_set` for ``ANTHROPIC_API_KEY`` and
+    :func:`_openai_api_key_is_set` for ``OPENAI_API_KEY``. Codex's
+    own "could not resolve authentication" path triggers on these
+    shapes, and the pre-flight guard's whole point is to catch the
+    failure with an actionable message upstream.
+    """
+    value = os.environ.get("CODEX_API_KEY")
+    return value is not None and value.strip() != ""
+
+
+def check_codex_auth(cmd_name: str) -> None:
+    """Pre-flight guard: raise if neither Codex env var is set.
+
+    DEC-003 / DEC-010 of ``plans/super/151-harness-precedence.md``.
+    Pure helper raising :class:`CodexAuthMissingError` when
+    ``CODEX_API_KEY`` AND ``OPENAI_API_KEY`` are both absent, empty,
+    or whitespace-only. Strict-OR semantics: at least one of the two
+    env vars must be set (non-empty after whitespace trimming). There
+    is no CLI-fallback branch — Codex has no documented "subscription
+    only" auth analog like Claude Pro/Max.
+
+    Codex is a HARNESS axis, not a PROVIDER axis (DEC-010): the
+    :func:`check_provider_auth` dispatcher is unchanged; the CLI seam
+    directly calls :func:`check_codex_auth` when the resolved harness
+    is ``"codex"``.
+
+    Pure function per ``.claude/rules/pure-compute-vs-io-split.md``:
+    reads ``os.environ`` only; does NOT print to stderr, does NOT call
+    ``sys.exit``, does NOT log. The CLI wrapper catches
+    :class:`CodexAuthMissingError` (a direct subclass of
+    :class:`Exception`, NOT :class:`AnthropicAuthMissingError`,
+    :class:`OpenAIAuthMissingError`, or any helper-error class) and
+    maps it to ``return 2`` per
+    ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+
+    Args:
+        cmd_name: Subcommand label (e.g. ``"grade"``, ``"validate"``,
+            ``"capture"``, ``"run"``) interpolated into the error
+            message so users see ``clauditor grade`` for immediately
+            actionable UX.
+
+    Raises:
+        CodexAuthMissingError: when neither ``CODEX_API_KEY`` nor
+            ``OPENAI_API_KEY`` is set (both checked via whitespace-
+            trimmed non-empty). Message contains the three durable
+            substrings (``CODEX_API_KEY``, ``OPENAI_API_KEY``,
+            ``platform.openai.com``) and the interpolated command
+            name.
+    """
+    if _codex_api_key_is_set() or _openai_api_key_is_set():
+        return None
+    # Local import to avoid a module-load circular hazard analogous to
+    # ``AnthropicAuthMissingError`` (defined in ``_providers/__init__``
+    # so both the auth helpers and the SDK seam reference it). At call
+    # time the parent package is fully initialized.
+    from clauditor._providers import CodexAuthMissingError
+
+    raise CodexAuthMissingError(
+        _CODEX_AUTH_MISSING_TEMPLATE.format(cmd_name=cmd_name)
+    )
+
+
 def check_api_key_only(cmd_name: str) -> None:
     """Strict pre-flight guard: raise if ``ANTHROPIC_API_KEY`` is missing.
 

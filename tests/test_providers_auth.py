@@ -892,3 +892,289 @@ class TestOpenAiApiKeyIsSet:
 
         monkeypatch.setenv("OPENAI_API_KEY", "   \t\n")
         assert _openai_api_key_is_set() is False
+
+
+class TestCheckCodexAuth:
+    """Unit tests for the Codex pre-flight auth guard (US-003 / DEC-003 / DEC-010).
+
+    Pins DEC-003 of ``plans/super/151-harness-precedence.md``: strict-OR
+    pre-flight guard raising :class:`CodexAuthMissingError` when neither
+    ``CODEX_API_KEY`` nor ``OPENAI_API_KEY`` is set (both checked via
+    whitespace-trimmed non-empty). No CLI-fallback branch — Codex has no
+    documented "subscription only" auth analog like Claude Pro/Max.
+
+    Codex is a HARNESS axis, not a PROVIDER axis (DEC-010): the
+    :func:`check_provider_auth` dispatcher is unchanged; the CLI seam
+    directly calls :func:`check_codex_auth` when the resolved harness
+    is ``"codex"``.
+    """
+
+    def test_only_codex_api_key_set_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import check_codex_auth
+
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert check_codex_auth("grade") is None
+
+    def test_only_openai_api_key_set_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import check_codex_auth
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        assert check_codex_auth("grade") is None
+
+    def test_both_keys_set_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import check_codex_auth
+
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        assert check_codex_auth("grade") is None
+
+    def test_neither_key_set_raises_with_hint(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(CodexAuthMissingError) as exc_info:
+            check_codex_auth("grade")
+        message = str(exc_info.value)
+        # DEC-003 / DEC-010 durable substrings.
+        assert "CODEX_API_KEY" in message
+        assert "OPENAI_API_KEY" in message
+        assert "platform.openai.com" in message
+        # Command-name interpolation.
+        assert "clauditor grade" in message
+
+    def test_both_empty_strings_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+
+        monkeypatch.setenv("CODEX_API_KEY", "")
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        with pytest.raises(CodexAuthMissingError):
+            check_codex_auth("grade")
+
+    def test_both_whitespace_only_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Whitespace-only values are treated as unset for both env vars."""
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+
+        monkeypatch.setenv("CODEX_API_KEY", "   \t\n")
+        monkeypatch.setenv("OPENAI_API_KEY", "  ")
+        with pytest.raises(CodexAuthMissingError):
+            check_codex_auth("grade")
+
+    def test_codex_whitespace_openai_set_passes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Strict-OR: whitespace-only CODEX_API_KEY but valid OPENAI_API_KEY
+        passes — at least one env var is set."""
+        from clauditor._providers import check_codex_auth
+
+        monkeypatch.setenv("CODEX_API_KEY", "   ")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        assert check_codex_auth("grade") is None
+
+    def test_cmd_name_interpolation_validate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(CodexAuthMissingError) as exc_info:
+            check_codex_auth("validate")
+        assert "clauditor validate" in str(exc_info.value)
+
+    def test_codex_auth_missing_error_is_direct_exception_subclass(
+        self,
+    ) -> None:
+        """DEC-010 + ``.claude/rules/llm-cli-exit-code-taxonomy.md``:
+        ``CodexAuthMissingError`` is a direct subclass of
+        :class:`Exception`, NOT of :class:`AnthropicAuthMissingError`,
+        :class:`OpenAIAuthMissingError`, or any helper-error class. A
+        common ancestor would defeat the structural-routing invariant
+        CLI dispatchers depend on.
+        """
+        from clauditor._providers import (
+            AnthropicAuthMissingError,
+            CodexAuthMissingError,
+            OpenAIAuthMissingError,
+        )
+
+        assert not issubclass(CodexAuthMissingError, AnthropicAuthMissingError)
+        assert not issubclass(CodexAuthMissingError, OpenAIAuthMissingError)
+        # And the converse — the existing classes do not inherit from Codex.
+        assert not issubclass(AnthropicAuthMissingError, CodexAuthMissingError)
+        assert not issubclass(OpenAIAuthMissingError, CodexAuthMissingError)
+        # Direct base is Exception.
+        assert CodexAuthMissingError.__bases__ == (Exception,)
+
+    def test_constant_substrings(self) -> None:
+        """Prose-presence check on the message template."""
+        from clauditor._providers import _CODEX_AUTH_MISSING_TEMPLATE
+
+        assert "CODEX_API_KEY" in _CODEX_AUTH_MISSING_TEMPLATE
+        assert "OPENAI_API_KEY" in _CODEX_AUTH_MISSING_TEMPLATE
+        assert "platform.openai.com" in _CODEX_AUTH_MISSING_TEMPLATE
+        assert "{cmd_name}" in _CODEX_AUTH_MISSING_TEMPLATE
+
+    def test_codex_auth_missing_error_class_identity(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Per ``.claude/rules/back-compat-shim-discipline.md`` Pattern 2:
+        the ``CodexAuthMissingError`` instance raised by
+        :func:`check_codex_auth` (which imports the class locally from
+        ``clauditor._providers`` inside the function body) MUST be an
+        instance of the same class object users import from
+        ``clauditor._providers``. Defining the class twice (e.g. a
+        local re-declaration in ``_auth.py``) would silently break
+        ``except CodexAuthMissingError`` at any call site that imported
+        from the canonical seam.
+        """
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(CodexAuthMissingError) as exc_info:
+            check_codex_auth("grade")
+        # The raised instance must be an exact instance of the canonical
+        # class, not a same-named-but-distinct re-declaration.
+        assert type(exc_info.value) is CodexAuthMissingError
+
+
+class TestCheckProviderAuthCodexUnchanged:
+    """Regression: per DEC-010, ``check_provider_auth`` does NOT grow a
+    Codex branch. Codex is a HARNESS axis, not a PROVIDER axis. Calling
+    ``check_provider_auth("codex", ...)`` must still raise ``ValueError``
+    (unknown provider) — the CLI seam directly calls
+    :func:`check_codex_auth` when the resolved harness is ``"codex"``.
+    """
+
+    def test_codex_provider_string_raises_value_error(self) -> None:
+        from clauditor._providers import check_provider_auth
+
+        with pytest.raises(ValueError) as exc_info:
+            check_provider_auth("codex", "grade")
+        assert "unknown provider" in str(exc_info.value)
+        assert "'codex'" in str(exc_info.value)
+
+
+class TestAnnounceAutoCodexHarness:
+    """DEC-007 / DEC-011 (#151 US-003): one-shot stderr notice emitted
+    on the first auto→codex resolution per Python process.
+
+    Parallel to :class:`TestAnnounceImplicitNoApiKey` and
+    :class:`TestCallAnthropicDeprecationAnnouncement` — same autouse-
+    reset pattern; same one-shot-per-process contract. Tests pin two
+    durable substrings (``CODEX_API_KEY``, ``OPENAI_API_KEY``) per
+    ``.claude/rules/precall-env-validation.md``'s durable-substring
+    discipline so stylistic copy edits don't churn tests.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_announcement_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every test starts with the one-shot flag set to False."""
+        monkeypatch.setattr(
+            "clauditor._providers._auth._announced_auto_codex_harness",
+            False,
+        )
+
+    def test_first_call_emits_announcement(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from clauditor._providers import announce_auto_codex_harness
+
+        announce_auto_codex_harness()
+        captured = capsys.readouterr()
+        from clauditor._providers import _AUTO_CODEX_ANNOUNCEMENT
+
+        assert _AUTO_CODEX_ANNOUNCEMENT in captured.err
+
+    def test_second_call_silent(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from clauditor._providers import announce_auto_codex_harness
+
+        announce_auto_codex_harness()
+        # Drain the first emission.
+        capsys.readouterr()
+        announce_auto_codex_harness()
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_constant_names_codex_env_var(self) -> None:
+        """First durable substring — users must see ``CODEX_API_KEY``
+        so they know which env var Codex prefers."""
+        from clauditor._providers import _AUTO_CODEX_ANNOUNCEMENT
+
+        assert "CODEX_API_KEY" in _AUTO_CODEX_ANNOUNCEMENT
+
+    def test_constant_names_openai_env_var(self) -> None:
+        """Second durable substring — users must see ``OPENAI_API_KEY``
+        so they know the fallback env var Codex accepts."""
+        from clauditor._providers import _AUTO_CODEX_ANNOUNCEMENT
+
+        assert "OPENAI_API_KEY" in _AUTO_CODEX_ANNOUNCEMENT
+
+    def test_constant_does_not_interpolate_values(self) -> None:
+        """Auth review #7 (#151): the announcement names env-var names
+        only; it MUST NOT interpolate values. A leaked secret in the
+        constant would surface in the test text — fail closed."""
+        from clauditor._providers import _AUTO_CODEX_ANNOUNCEMENT
+
+        # No format placeholders for values.
+        assert "{value" not in _AUTO_CODEX_ANNOUNCEMENT
+        # No literal "sk-" prefixed tokens (canonical OpenAI/Codex key
+        # shape).
+        assert "sk-" not in _AUTO_CODEX_ANNOUNCEMENT
+
+    def test_autouse_fixture_resets_flag_between_tests_first_half(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """First test of a pair — proves first-call emission works."""
+        from clauditor._providers import announce_auto_codex_harness
+
+        announce_auto_codex_harness()
+        captured = capsys.readouterr()
+        assert captured.err != ""
+
+    def test_autouse_fixture_resets_flag_between_tests_second_half(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Second test of the pair — if the autouse fixture did not
+        reset the flag, this test would see silence (the flag would
+        still be ``True`` from the first test). Seeing an emission
+        here proves the fixture reset works."""
+        from clauditor._providers import announce_auto_codex_harness
+
+        announce_auto_codex_harness()
+        captured = capsys.readouterr()
+        assert captured.err != ""

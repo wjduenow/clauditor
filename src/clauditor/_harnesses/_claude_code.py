@@ -59,28 +59,61 @@ _monotonic = time.monotonic
 _API_KEY_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY")
 
 
+# Harness-aware strip set: when the skill subprocess runs under the
+# Codex harness, ``OPENAI_API_KEY`` is one of the two valid Codex auth
+# env vars (along with ``CODEX_API_KEY``). Stripping it would launch
+# the Codex subprocess without usable auth, breaking ``capture`` /
+# ``run`` / ``validate`` / ``grade`` whenever the operator passed
+# ``--no-api-key`` (or ``--transport cli`` triggered the implicit
+# strip) AND relied on ``OPENAI_API_KEY`` rather than
+# ``CODEX_API_KEY``. The Anthropic-only set preserves the
+# ``--no-api-key`` invariant for the Anthropic side (the operator
+# wanted Anthropic-key-less subscription auth) while leaving Codex
+# auth intact. Copilot review feedback on PR #166.
+_API_KEY_ENV_VARS_ANTHROPIC_ONLY = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+
 def env_without_api_key(
     base_env: dict[str, str] | None = None,
+    *,
+    harness_name: str | None = None,
 ) -> dict[str, str]:
     """Return a new env dict with provider auth env vars removed.
 
     Pure, non-mutating helper per
     ``.claude/rules/non-mutating-scrub.md``. When ``base_env`` is
     ``None``, reads from ``os.environ``. Always returns a new dict
-    (never mutates the input). Strips ``ANTHROPIC_API_KEY``,
-    ``ANTHROPIC_AUTH_TOKEN``, and ``OPENAI_API_KEY``; preserves every
-    other key (including ``ANTHROPIC_BASE_URL``, ``OPENAI_BASE_URL``,
-    ``OPENAI_ORG_ID``, and ``OPENAI_PROJECT_ID``).
+    (never mutates the input).
 
-    ``OPENAI_API_KEY`` is included for parity with the Anthropic
-    stripping when grading via OpenAI under ``--transport cli``: a
-    skill subprocess could spawn a child that calls the OpenAI API,
-    so the operator's quota must not be implicitly delegated to an
-    untrusted skill (DEC-008 of
+    Default behavior (``harness_name`` unset or ``"claude-code"``):
+    strips ``ANTHROPIC_API_KEY``, ``ANTHROPIC_AUTH_TOKEN``, and
+    ``OPENAI_API_KEY``; preserves every other key (including
+    ``ANTHROPIC_BASE_URL``, ``OPENAI_BASE_URL``, ``OPENAI_ORG_ID``,
+    and ``OPENAI_PROJECT_ID``).
+
+    ``OPENAI_API_KEY`` is included in the default strip set for parity
+    with the Anthropic stripping when grading via OpenAI under
+    ``--transport cli``: a skill subprocess could spawn a child that
+    calls the OpenAI API, so the operator's quota must not be
+    implicitly delegated to an untrusted skill (DEC-008 of
     ``plans/super/145-openai-provider.md``).
+
+    ``harness_name="codex"`` (Copilot review feedback on PR #166):
+    preserve ``OPENAI_API_KEY`` so the Codex subprocess retains valid
+    auth. The Codex harness uses ``CODEX_API_KEY`` (preferred) or
+    ``OPENAI_API_KEY``; stripping the latter would launch Codex
+    without usable auth even though :func:`check_codex_auth` accepted
+    it from ``os.environ``. Anthropic env vars are still stripped
+    because Codex does not need them and a leaked Anthropic key
+    inside an untrusted subprocess is undesirable.
     """
     source = base_env if base_env is not None else os.environ
-    return {k: v for k, v in source.items() if k not in _API_KEY_ENV_VARS}
+    strip_set = (
+        _API_KEY_ENV_VARS_ANTHROPIC_ONLY
+        if harness_name == "codex"
+        else _API_KEY_ENV_VARS
+    )
+    return {k: v for k, v in source.items() if k not in strip_set}
 
 
 # Soft cap applied to stream-json ``result`` text surfaced on
