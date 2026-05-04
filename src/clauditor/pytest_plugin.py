@@ -447,11 +447,19 @@ def clauditor_grader(request: pytest.FixtureRequest, clauditor_spec):
             or spec.eval_spec.grading_model
             or resolve_grading_model(spec.eval_spec, provider)
         )
+        harness = "claude-code"
         if output is None:
             result = spec.run()
             output = result.output
+            harness = result.harness
         return asyncio.run(
-            grade_quality(output, spec.eval_spec, model, provider=provider)
+            grade_quality(
+                output,
+                spec.eval_spec,
+                model,
+                provider=provider,
+                harness=harness,
+            )
         )
 
     return _factory

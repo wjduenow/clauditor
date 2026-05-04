@@ -303,6 +303,7 @@ class TestComputeBaseline:
             "claude-sonnet-4-20250514",
             thresholds=eval_spec.grade_thresholds,
             provider="anthropic",
+            harness=sr.harness,
         )
 
     def test_skill_name_and_iteration_propagated(self) -> None:
