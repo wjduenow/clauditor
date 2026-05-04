@@ -66,7 +66,18 @@ class SkillResult:
     args: str
     duration_seconds: float = 0.0
     error: str | None = None
-    # runtime-only — do not serialize to sidecars without bumping schema_version
+    # #152 US-001 / DEC-002: name of the harness that produced this
+    # result, populated from the active ``Harness.name`` ClassVar at
+    # ``SkillRunner._invoke`` construction time. Default
+    # ``"claude-code"`` keeps existing direct-construction call sites
+    # (tests, fixtures) green. **Adopted-for-sidecar field**: every
+    # downstream sidecar emitter (assertions.json v2, plus future
+    # extraction.json / grading.json bumps) reads this value to stamp
+    # the harness axis. Distinct from observation-only fields below
+    # (``error_category``, ``api_key_source``, ``harness_metadata``)
+    # which remain runtime-only — do not serialize to sidecars without
+    # bumping schema_version.
+    harness: str = "claude-code"
     error_category: (
         Literal[
             "rate_limit",
@@ -428,6 +439,10 @@ class SkillRunner:
             args=args,
             duration_seconds=invoke.duration_seconds,
             error=invoke.error,
+            # #152 US-001 / DEC-002: stamp the active harness's name
+            # ClassVar so every downstream sidecar emitter can read
+            # ``result.harness`` to get the harness axis value.
+            harness=harness_for_call.name,
             error_category=invoke.error_category,
             input_tokens=invoke.input_tokens,
             output_tokens=invoke.output_tokens,
