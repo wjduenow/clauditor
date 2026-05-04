@@ -140,6 +140,7 @@ def compute_baseline(
             model,
             thresholds=eval_spec.grade_thresholds,
             provider=provider,
+            harness=skill_result.harness,
         )
     )
 

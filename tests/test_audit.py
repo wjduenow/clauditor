@@ -739,17 +739,18 @@ class TestIsAcceptedVersion:
     branch and the unknown-filename ``KeyError`` contract.
     """
 
-    def test_is_accepted_version_grading_json_accepts_1_2_3(self) -> None:
+    def test_is_accepted_version_grading_json_accepts_1_2_3_4(self) -> None:
         from clauditor.audit import _is_accepted_version
 
         assert _is_accepted_version("grading.json", 1) is True
         assert _is_accepted_version("grading.json", 2) is True
         assert _is_accepted_version("grading.json", 3) is True
+        assert _is_accepted_version("grading.json", 4) is True
 
-    def test_is_accepted_version_grading_json_rejects_4(self) -> None:
+    def test_is_accepted_version_grading_json_rejects_5(self) -> None:
         from clauditor.audit import _is_accepted_version
 
-        assert _is_accepted_version("grading.json", 4) is False
+        assert _is_accepted_version("grading.json", 5) is False
 
     def test_is_accepted_version_extraction_json_accepts_1_2_3(self) -> None:
         from clauditor.audit import _is_accepted_version
@@ -806,8 +807,10 @@ class TestIsAcceptedVersion:
         assert _is_accepted_version("baseline_assertions.json", 1) is True
         # #152 US-002: assertions.json now accepts v2 (harness field).
         assert _is_accepted_version("baseline_assertions.json", 2) is True
-        assert _is_accepted_version("baseline_grading.json", 4) is False
         assert _is_accepted_version("baseline_assertions.json", 3) is False
+        # #152 US-004: grading.json now accepts v4 (harness field).
+        assert _is_accepted_version("baseline_grading.json", 4) is True
+        assert _is_accepted_version("baseline_grading.json", 5) is False
 
     def test_is_accepted_version_unknown_filename_raises_key_error(
         self,
@@ -1018,13 +1021,13 @@ class TestAuditLegacyCompat:
         self, tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """A grading.json with ``schema_version=4`` (out of accepted
-        range 1..3 per US-002 / DEC-008 of #147) must be skipped with a
+        """A grading.json with ``schema_version=5`` (out of accepted
+        range 1..4 post-#152 / DEC-008 of #147) must be skipped with a
         stderr warning."""
         clauditor_dir = tmp_path / ".clauditor"
         skill_dir = clauditor_dir / "iteration-1" / "s"
         self._write_grading_sidecar(
-            skill_dir, version=4, transport_source="api"
+            skill_dir, version=5, transport_source="api"
         )
         records, skipped = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
@@ -1032,7 +1035,7 @@ class TestAuditLegacyCompat:
         assert records == []
         assert skipped == 1
         err = capsys.readouterr().err
-        assert "schema_version=4" in err
+        assert "schema_version=5" in err
 
     def test_extraction_unknown_schema_version_still_skipped(
         self, tmp_path: Path,
@@ -1054,14 +1057,14 @@ class TestAuditLegacyCompat:
         err = capsys.readouterr().err
         assert "schema_version=5" in err
 
-    def test_baseline_sidecar_v4_skipped_with_baseline_prefix_stripped(
+    def test_baseline_sidecar_v5_skipped_with_baseline_prefix_stripped(
         self, tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """A ``baseline_grading.json`` with v4 must be skipped with the
-        same warning as canonical ``grading.json``. Exercises the
-        ``base.startswith("baseline_")`` branch in
-        ``_check_schema_version`` so the rejection-path's
+        """A ``baseline_grading.json`` with v5 must be skipped with the
+        same warning as canonical ``grading.json`` (post-#152 grading
+        max is 4). Exercises the ``base.startswith("baseline_")``
+        branch in ``_check_schema_version`` so the rejection-path's
         ``MAX_SCHEMA_VERSION[base]`` lookup uses the family's max
         rather than crashing on an unknown ``baseline_*`` key."""
         import json
@@ -1069,7 +1072,7 @@ class TestAuditLegacyCompat:
         skill_dir = clauditor_dir / "iteration-1" / "s"
         skill_dir.mkdir(parents=True)
         payload = {
-            "schema_version": 4,
+            "schema_version": 5,
             "skill_name": "s",
             "model": "claude-sonnet-4-6",
             "transport_source": "api",
@@ -1083,7 +1086,7 @@ class TestAuditLegacyCompat:
         )
         assert records == []
         err = capsys.readouterr().err
-        assert "schema_version=4" in err
+        assert "schema_version=5" in err
 
 
 class TestCmdAuditInvalidSkillName:

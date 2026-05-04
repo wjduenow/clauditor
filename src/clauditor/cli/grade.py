@@ -1219,11 +1219,26 @@ def _grade_all_runs(
     transport: str = "auto",
     *,
     provider: str = "anthropic",
+    skill_results: list[SkillResult | None] | None = None,
 ) -> list[GradingReport]:
-    """Grade every run's output concurrently and return the per-run reports."""
+    """Grade every run's output concurrently and return the per-run reports.
+
+    ``skill_results`` is a parallel list to ``run_outputs``; when
+    provided, each entry's ``harness`` value flows into the matching
+    :class:`GradingReport.harness` so the on-disk ``grading.json`` v4
+    sidecar (#152) records which harness produced the output. Captured
+    ``--output`` runs land as ``None`` in ``skill_results``; those
+    fall back to the ``"claude-code"`` default.
+    """
     import asyncio
 
     from clauditor.quality_grader import grade_quality
+
+    def _harness_for(idx: int) -> str:
+        if skill_results is None:
+            return "claude-code"
+        result = skill_results[idx] if idx < len(skill_results) else None
+        return result.harness if result is not None else "claude-code"
 
     async def _grade_all() -> list[GradingReport]:
         return list(
@@ -1236,8 +1251,9 @@ def _grade_all_runs(
                         thresholds=spec.eval_spec.grade_thresholds,
                         transport=transport,
                         provider=provider,
+                        harness=_harness_for(idx),
                     )
-                    for text, _ev in run_outputs
+                    for idx, (text, _ev) in enumerate(run_outputs)
                 ]
             )
         )
@@ -1277,7 +1293,12 @@ def _cmd_grade_with_workspace(
 
     primary_text = run_outputs[0][0]
     reports = _grade_all_runs(
-        run_outputs, spec, model, transport=grader_transport, provider=provider
+        run_outputs,
+        spec,
+        model,
+        transport=grader_transport,
+        provider=provider,
+        skill_results=skill_results,
     )
     primary_report = reports[0]
 

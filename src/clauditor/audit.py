@@ -52,7 +52,7 @@ from clauditor.paths import resolve_clauditor_dir
 MAX_SCHEMA_VERSION: dict[str, int] = {
     "assertions.json": 2,
     "extraction.json": 4,
-    "grading.json": 3,
+    "grading.json": 4,
 }
 
 

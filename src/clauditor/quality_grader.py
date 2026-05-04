@@ -102,6 +102,17 @@ class GradingReport:
     # ``provider_source`` to ``"anthropic"`` when reading legacy v1/v2
     # sidecars.
     provider_source: str = "anthropic"
+    # ``harness`` records which skill harness produced the underlying
+    # output this report grades — ``"claude-code"`` (default) or
+    # ``"codex"`` (#149+). Populated from :class:`SkillResult.harness`
+    # by orchestrators that have a SkillResult in scope; defaults to
+    # ``"claude-code"`` for direct callers (mainly tests). Persisted
+    # into ``grading.json`` at ``schema_version=4`` per DEC-004 /
+    # DEC-006 of ``plans/super/152-sidecar-harness-field.md``. The
+    # audit loader accepts ``{1, 2, 3, 4}`` and defaults missing
+    # ``harness`` to ``"claude-code"`` when reading legacy v1/v2/v3
+    # sidecars.
+    harness: str = "claude-code"
 
     @property
     def passed(self) -> bool:
@@ -129,20 +140,22 @@ class GradingReport:
     def to_json(self) -> str:
         """Serialize the report to a JSON string.
 
-        Emits ``schema_version: 3`` as the first key per
-        ``.claude/rules/json-schema-version.md``. Version 3 adds the
-        ``provider_source`` field on disk (v2 added
-        ``transport_source``); the audit loader accepts ``{1, 2, 3}``
-        and defaults missing ``transport_source`` to ``"api"`` and
-        missing ``provider_source`` to ``"anthropic"`` when reading
-        legacy v1/v2 sidecars.
+        Emits ``schema_version: 4`` as the first key per
+        ``.claude/rules/json-schema-version.md``. Version 4 adds the
+        ``harness`` field on disk (v3 added ``provider_source``, v2
+        added ``transport_source``); the audit loader accepts
+        ``{1, 2, 3, 4}`` and defaults missing ``transport_source`` to
+        ``"api"``, missing ``provider_source`` to ``"anthropic"``,
+        and missing ``harness`` to ``"claude-code"`` when reading
+        legacy sidecars.
         """
         data = {
-            "schema_version": 3,
+            "schema_version": 4,
             "skill_name": self.skill_name,
             "model": self.model,
             "transport_source": self.transport_source,
             "provider_source": self.provider_source,
+            "harness": self.harness,
             "duration_seconds": self.duration_seconds,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
@@ -171,10 +184,12 @@ class GradingReport:
     def from_json(cls, data: str) -> GradingReport:
         """Deserialize a GradingReport from a JSON string.
 
-        Tolerates schema versions ``1``, ``2``, and ``3``. A missing
-        ``transport_source`` defaults to ``"api"`` so pre-#86 sidecars
-        load cleanly; a missing ``provider_source`` defaults to
-        ``"anthropic"`` so pre-#147 sidecars load cleanly.
+        Tolerates schema versions ``1``, ``2``, ``3``, and ``4``. A
+        missing ``transport_source`` defaults to ``"api"`` so pre-#86
+        sidecars load cleanly; a missing ``provider_source`` defaults
+        to ``"anthropic"`` so pre-#147 sidecars load cleanly; a
+        missing ``harness`` defaults to ``"claude-code"`` so pre-#152
+        sidecars load cleanly.
         """
         parsed = json.loads(data)
         results = [
@@ -206,6 +221,7 @@ class GradingReport:
             provider_source=str(
                 parsed.get("provider_source") or "anthropic"
             ),
+            harness=str(parsed.get("harness") or "claude-code"),
         )
 
     def summary(self) -> str:
@@ -1031,6 +1047,7 @@ def _grading_failure_report(
     reasoning: str,
     transport_source: str = "api",
     provider_source: str = "anthropic",
+    harness: str = "claude-code",
 ) -> GradingReport:
     """Build a failed :class:`GradingReport` for a parse/alignment failure.
 
@@ -1056,6 +1073,7 @@ def _grading_failure_report(
         output_tokens=output_tokens,
         transport_source=transport_source,
         provider_source=provider_source,
+        harness=harness,
     )
 
 
@@ -1070,6 +1088,7 @@ def build_grading_report(
     output_tokens: int,
     transport_source: str = "api",
     provider_source: str = "anthropic",
+    harness: str = "claude-code",
 ) -> GradingReport:
     """Parse ``response_text`` into a :class:`GradingReport`.
 
@@ -1094,6 +1113,7 @@ def build_grading_report(
         "output_tokens": output_tokens,
         "transport_source": transport_source,
         "provider_source": provider_source,
+        "harness": harness,
     }
     if not response_text:
         return _grading_failure_report(
@@ -1136,6 +1156,7 @@ def build_grading_report(
         output_tokens=output_tokens,
         transport_source=transport_source,
         provider_source=provider_source,
+        harness=harness,
     )
 
 
@@ -1163,6 +1184,7 @@ async def grade_quality(
     transport: str = "auto",
     *,
     provider: str = "anthropic",
+    harness: str = "claude-code",
 ) -> GradingReport:
     """Layer 3: Grade skill output against rubric criteria using an LLM.
 
@@ -1254,6 +1276,7 @@ async def grade_quality(
         output_tokens=total_output_tokens,
         transport_source=last_source,
         provider_source=last_provider,
+        harness=harness,
     )
 
 
