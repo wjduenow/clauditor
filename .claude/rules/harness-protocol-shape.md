@@ -84,6 +84,26 @@ identity. Class-level so the value is immutable per harness type — no
 instance variance. `ClaudeCodeHarness.name = "claude-code"`,
 `MockHarness.name = "mock"`, `CodexHarness.name = "codex"`.
 
+#### Sidecar identity (post-#152)
+
+`Harness.name` is now load-bearing for on-disk sidecar identity, not
+just an observability label. `SkillRunner._invoke` reads
+`self.harness.name` at `SkillResult` construction time and stamps it
+onto `SkillResult.harness`; downstream sidecar emitters
+(`assertions.json` v2, `extraction.json` v4, `grading.json` v4,
+`history.jsonl` v3) thread that string through verbatim into the
+`harness` field on each persisted record. Audit aggregation then
+groups by the 4-tuple `(harness, provider, layer, id)` so two runs
+of the same skill under different harnesses (e.g. `claude-code` vs
+`codex`) produce distinct buckets rather than averaging across
+them. See `.claude/rules/json-schema-version.md` "Schema version
+bumps for #152" for the persisted-side contract. Practical
+consequence for harness implementers: the `name` ClassVar is now a
+public-data identifier — choose it carefully, do not change it
+without considering the legacy-read defaults that downstream loaders
+already key on (`"claude-code"` is the default for missing-field
+reads).
+
 ### Why `invoke` accepts `subject: str | None = None`
 
 `subject` is an optional human-readable label (e.g. `"L2 extraction"`)
