@@ -128,6 +128,7 @@ def compute_baseline(
                 eval_spec,
                 skill_name=skill_name,
                 provider=provider,
+                harness=skill_result.harness,
             )
         )
 

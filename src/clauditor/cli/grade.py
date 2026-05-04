@@ -808,6 +808,17 @@ def _write_workspace_sidecars(
     )
 
     if spec.eval_spec.sections:
+        # #152 US-003: pass the harness that produced the underlying
+        # skill output so the sidecar honestly records which harness
+        # produced the text being extracted. Falls back to
+        # ``"claude-code"`` (the ``ExtractionReport.harness`` default)
+        # for ``--output`` mode where every entry of
+        # ``skill_results`` is ``None``.
+        harness_for_extraction = "claude-code"
+        for sr in skill_results:
+            if sr is not None:
+                harness_for_extraction = sr.harness
+                break
         _write_extraction_sidecar(
             skill_dir,
             primary_text,
@@ -815,6 +826,7 @@ def _write_workspace_sidecars(
             model,
             transport=transport,
             provider=provider,
+            harness=harness_for_extraction,
         )
 
     if getattr(args, "baseline", False):
@@ -973,6 +985,7 @@ def _write_extraction_sidecar(
     transport: str = "auto",
     *,
     provider: str = "anthropic",
+    harness: str = "claude-code",
 ) -> None:
     """Run Layer 2 schema extraction and persist ``extraction.json``.
 
@@ -980,6 +993,11 @@ def _write_extraction_sidecar(
     the surrounding ``cmd_grade`` invocation. Passed through verbatim
     so OpenAI-graded skills don't fall back to ``extract_and_report``'s
     Anthropic-default model (CodeRabbit finding on PR #164).
+
+    ``harness`` is the name of the harness that produced
+    ``primary_text`` (read off the originating ``SkillResult.harness``
+    by the caller). Persisted into ``extraction.json`` at
+    ``schema_version=4`` per #152 US-003 / DEC-004.
     """
     import asyncio
 
@@ -993,6 +1011,7 @@ def _write_extraction_sidecar(
             skill_name=spec.skill_name,
             transport=transport,
             provider=provider,
+            harness=harness,
         )
     )
     (skill_dir / "extraction.json").write_text(

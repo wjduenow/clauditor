@@ -757,11 +757,14 @@ class TestIsAcceptedVersion:
         assert _is_accepted_version("extraction.json", 1) is True
         assert _is_accepted_version("extraction.json", 2) is True
         assert _is_accepted_version("extraction.json", 3) is True
+        assert _is_accepted_version("extraction.json", 4) is True
 
-    def test_is_accepted_version_extraction_json_rejects_4(self) -> None:
+    def test_is_accepted_version_extraction_json_rejects_5(self) -> None:
+        # #152 US-003 bumped extraction.json from v3 → v4. The next
+        # un-accepted version is now 5.
         from clauditor.audit import _is_accepted_version
 
-        assert _is_accepted_version("extraction.json", 4) is False
+        assert _is_accepted_version("extraction.json", 5) is False
 
     def test_is_accepted_version_assertions_json_accepts_1_and_2(self) -> None:
         """#152 US-002: assertions.json bumped 1 → 2 with top-level
@@ -1035,12 +1038,13 @@ class TestAuditLegacyCompat:
         self, tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """An extraction.json with ``schema_version=4`` (out of accepted
-        range 1..3) must be skipped with a stderr warning."""
+        """An extraction.json with ``schema_version=5`` (out of accepted
+        range 1..4 — #152 US-003 bumped the max to 4) must be skipped
+        with a stderr warning."""
         clauditor_dir = tmp_path / ".clauditor"
         skill_dir = clauditor_dir / "iteration-1" / "s"
         self._write_extraction_sidecar(
-            skill_dir, version=4, transport_source="api"
+            skill_dir, version=5, transport_source="api"
         )
         records, skipped = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
@@ -1048,7 +1052,7 @@ class TestAuditLegacyCompat:
         assert records == []
         assert skipped == 1
         err = capsys.readouterr().err
-        assert "schema_version=4" in err
+        assert "schema_version=5" in err
 
     def test_baseline_sidecar_v4_skipped_with_baseline_prefix_stripped(
         self, tmp_path: Path,

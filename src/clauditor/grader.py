@@ -92,11 +92,12 @@ class ExtractionReport:
     .. code-block:: json
 
         {
-          "schema_version": 3,
+          "schema_version": 4,
           "skill_name": "...",
           "model": "...",
           "transport_source": "api",
           "provider_source": "anthropic",
+          "harness": "claude-code",
           "input_tokens": 0,
           "output_tokens": 0,
           "parse_errors": [],
@@ -121,10 +122,15 @@ class ExtractionReport:
     ``plans/super/86-claude-cli-transport.md``). ``provider_source``
     records which provider backend produced the response —
     ``"anthropic"`` or ``"openai"`` (added in v3 per DEC-001 /
-    DEC-006 of ``plans/super/147-sidecar-provider-field.md``). The
-    audit loader accepts ``{1, 2, 3}`` and defaults missing
-    ``transport_source`` to ``"api"`` and missing ``provider_source``
-    to ``"anthropic"`` when reading legacy v1/v2 sidecars.
+    DEC-006 of ``plans/super/147-sidecar-provider-field.md``).
+    ``harness`` records which skill harness produced the underlying
+    skill output that was extracted — ``"claude-code"`` (current
+    default) or ``"codex"`` (#149+) (added in v4 per DEC-004 /
+    DEC-006 of ``plans/super/152-sidecar-harness-field.md``). The
+    audit loader accepts ``{1, 2, 3, 4}`` and defaults missing
+    ``transport_source`` to ``"api"``, missing ``provider_source``
+    to ``"anthropic"``, and missing ``harness`` to ``"claude-code"``
+    when reading legacy v1/v2/v3 sidecars.
     """
 
     skill_name: str
@@ -139,10 +145,18 @@ class ExtractionReport:
     # response — ``"anthropic"`` (current) or ``"openai"`` (#145+).
     # Persisted into ``extraction.json`` at ``schema_version=3`` per
     # DEC-001 / DEC-006 of ``plans/super/147-sidecar-provider-field.md``.
-    # The audit loader accepts ``{1, 2, 3}`` and defaults missing
+    # The audit loader accepts ``{1, 2, 3, 4}`` and defaults missing
     # ``provider_source`` to ``"anthropic"`` when reading legacy v1/v2
     # sidecars.
     provider_source: str = "anthropic"
+    # ``harness`` records which skill harness produced the underlying
+    # skill output extracted by Layer 2 — ``"claude-code"`` (current
+    # default) or ``"codex"`` (#149+). Persisted into
+    # ``extraction.json`` at ``schema_version=4`` per DEC-004 /
+    # DEC-006 of ``plans/super/152-sidecar-harness-field.md``. The
+    # audit loader defaults missing ``harness`` to ``"claude-code"``
+    # when reading legacy v1/v2/v3 sidecars.
+    harness: str = "claude-code"
 
     @property
     def passed(self) -> bool:
@@ -153,13 +167,14 @@ class ExtractionReport:
     def to_json(self) -> str:
         """Serialize the report to a JSON string.
 
-        Emits ``schema_version: 3`` as the first key per
-        ``.claude/rules/json-schema-version.md``. Version 3 adds the
-        ``provider_source`` field on disk (v2 added
-        ``transport_source``); the audit loader accepts ``{1, 2, 3}``
-        and defaults missing ``transport_source`` to ``"api"`` and
-        missing ``provider_source`` to ``"anthropic"`` when reading
-        legacy v1/v2 sidecars.
+        Emits ``schema_version: 4`` as the first key per
+        ``.claude/rules/json-schema-version.md``. Version 4 adds the
+        ``harness`` field on disk (v3 added ``provider_source``, v2
+        added ``transport_source``); the audit loader accepts
+        ``{1, 2, 3, 4}`` and defaults missing ``transport_source`` to
+        ``"api"``, missing ``provider_source`` to ``"anthropic"``, and
+        missing ``harness`` to ``"claude-code"`` when reading legacy
+        v1/v2/v3 sidecars.
         """
         by_id: dict[str, list[dict]] = {}
         # Pre-populate every declared field id with an empty list so the
@@ -172,11 +187,12 @@ class ExtractionReport:
                 {k: v for k, v in r.to_dict().items() if k != "field_id"}
             )
         payload = {
-            "schema_version": 3,
+            "schema_version": 4,
             "skill_name": self.skill_name,
             "model": self.model,
             "transport_source": self.transport_source,
             "provider_source": self.provider_source,
+            "harness": self.harness,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "parse_errors": list(self.parse_errors),
@@ -188,10 +204,12 @@ class ExtractionReport:
     def from_json(cls, text: str) -> ExtractionReport:
         """Deserialize an ExtractionReport from a JSON string.
 
-        Tolerates schema versions ``1``, ``2``, and ``3``. A missing
-        ``transport_source`` defaults to ``"api"`` so pre-#86 sidecars
-        load cleanly; a missing ``provider_source`` defaults to
-        ``"anthropic"`` so pre-#147 sidecars load cleanly.
+        Tolerates schema versions ``1``, ``2``, ``3``, and ``4``. A
+        missing ``transport_source`` defaults to ``"api"`` so pre-#86
+        sidecars load cleanly; a missing ``provider_source`` defaults
+        to ``"anthropic"`` so pre-#147 sidecars load cleanly; a
+        missing ``harness`` defaults to ``"claude-code"`` so
+        pre-#152 sidecars load cleanly.
         """
         data = json.loads(text)
         results: list[FieldExtractionResult] = []
@@ -224,6 +242,7 @@ class ExtractionReport:
             provider_source=str(
                 data.get("provider_source") or "anthropic"
             ),
+            harness=str(data.get("harness") or "claude-code"),
         )
 
 
@@ -238,6 +257,7 @@ def build_extraction_report(
     parse_errors: list[str] | None = None,
     transport_source: str = "api",
     provider_source: str = "anthropic",
+    harness: str = "claude-code",
 ) -> ExtractionReport:
     """Build a field-id-keyed ``ExtractionReport`` from extracted output.
 
@@ -327,6 +347,7 @@ def build_extraction_report(
         declared_field_ids=declared_field_ids,
         transport_source=transport_source,
         provider_source=provider_source,
+        harness=harness,
     )
 
 
@@ -748,6 +769,7 @@ def build_extraction_report_from_text(
     output_tokens: int,
     transport_source: str = "api",
     provider_source: str = "anthropic",
+    harness: str = "claude-code",
 ) -> ExtractionReport:
     """Parse ``response_text`` into an :class:`ExtractionReport`.
 
@@ -770,6 +792,7 @@ def build_extraction_report_from_text(
             parse_errors=["grader returned no text blocks"],
             transport_source=transport_source,
             provider_source=provider_source,
+            harness=harness,
         )
 
     parse = parse_extraction_response(response_text, eval_spec)
@@ -789,6 +812,7 @@ def build_extraction_report_from_text(
             parse_errors=[err.message for err in parse.parse_errors],
             transport_source=transport_source,
             provider_source=provider_source,
+            harness=harness,
         )
     return build_extraction_report(
         parse.extracted,
@@ -800,6 +824,7 @@ def build_extraction_report_from_text(
         parse_errors=[err.message for err in parse.parse_errors],
         transport_source=transport_source,
         provider_source=provider_source,
+        harness=harness,
     )
 
 
@@ -924,6 +949,7 @@ async def extract_and_report(
     skill_name: str = "",
     transport: str = "auto",
     provider: str = "anthropic",
+    harness: str = "claude-code",
 ) -> ExtractionReport:
     """Layer 2 wrapper that returns a field-id-keyed :class:`ExtractionReport`.
 
@@ -961,4 +987,5 @@ async def extract_and_report(
         output_tokens=output_tokens,
         transport_source=source,
         provider_source=last_provider,
+        harness=harness,
     )
