@@ -4840,6 +4840,7 @@ class TestCmdTrend:
                 metrics={"count": i + 1},
                 command="grade",
                 provider="anthropic",
+                harness="claude-code",
                 path=path,
             )
 
@@ -4946,6 +4947,7 @@ class TestCmdTrend:
             {},
             command="grade",
             provider="anthropic",
+            harness="claude-code",
             path=path,
             iteration=1,
             workspace_path="ws/1",
@@ -4979,6 +4981,7 @@ class TestCmdTrendCommandFilter:
                 metrics={},
                 command="grade",
                 provider="anthropic",
+                harness="claude-code",
                 path=path,
             )
         for i in range(2):
@@ -4989,6 +4992,7 @@ class TestCmdTrendCommandFilter:
                 metrics={"skill": {"input_tokens": 100 + i}},
                 command="extract",
                 provider="anthropic",
+                harness="claude-code",
                 path=path,
             )
 
@@ -5063,6 +5067,7 @@ class TestCmdTrendCommandFilter:
             metrics={},
             command="grade",
             provider="anthropic",
+            harness="claude-code",
             path=path,
         )
         rc = main(
@@ -5093,6 +5098,7 @@ class TestCmdTrendDottedPath:
                 metrics={"grader": {"input_tokens": tok}},
                 command="grade",
                 provider="anthropic",
+                harness="claude-code",
                 path=path,
             )
         rc = main(["trend", "test-skill", "--metric", "grader.input_tokens"])
@@ -5127,6 +5133,7 @@ class TestCmdTrendDottedPath:
             metrics={"grader": {"input_tokens": 500}},
             command="grade",
             provider="anthropic",
+            harness="claude-code",
             path=path,
         )
         history.append_record(
@@ -5136,6 +5143,7 @@ class TestCmdTrendDottedPath:
             metrics={"grader": {"input_tokens": "n/a"}},
             command="grade",
             provider="anthropic",
+            harness="claude-code",
             path=path,
         )
         rc = main(["trend", "test-skill", "--metric", "grader.input_tokens"])
@@ -5170,6 +5178,7 @@ class TestCmdTrendListMetrics:
             },
             command="grade",
             provider="anthropic",
+            harness="claude-code",
             path=path,
         )
         history.append_record(
@@ -5182,6 +5191,7 @@ class TestCmdTrendListMetrics:
             },
             command="extract",
             provider="anthropic",
+            harness="claude-code",
             path=path,
         )
 
@@ -5244,6 +5254,7 @@ class TestCmdTrendListMetrics:
             metrics={},
             command="grade",
             provider="anthropic",
+            harness="claude-code",
             path=path,
         )
         rc = main(["trend", "test-skill", "--list-metrics"])
@@ -5391,6 +5402,7 @@ class TestCmdTrendProviderFilter:
                 metrics={},
                 command="grade",
                 provider="anthropic",
+                harness="claude-code",
                 path=path,
             )
         for i in range(2):
@@ -5401,6 +5413,7 @@ class TestCmdTrendProviderFilter:
                 metrics={},
                 command="grade",
                 provider="openai",
+                harness="claude-code",
                 path=path,
             )
 
@@ -5415,6 +5428,7 @@ class TestCmdTrendProviderFilter:
                 metrics={},
                 command="grade",
                 provider=provider,
+                harness="claude-code",
                 path=path,
             )
 
@@ -5537,6 +5551,7 @@ class TestCmdTrendProviderFilter:
                 metrics={},
                 command="grade",
                 provider="anthropic",
+                harness="claude-code",
                 path=path,
             )
         for i in range(3):
@@ -5547,6 +5562,7 @@ class TestCmdTrendProviderFilter:
                 metrics={},
                 command="grade",
                 provider="openai",
+                harness="claude-code",
                 path=path,
             )
 
@@ -5638,8 +5654,8 @@ class TestCmdGradeHistory:
         assert record["skill"] == "test-skill"
         assert record["pass_rate"] == 1.0
         assert record["mean_score"] == 0.9
-        # #147 DEC-012: schema bumped to 2 with mandatory ``provider``.
-        assert record["schema_version"] == 2
+        # #152 DEC-005: schema bumped to 3 with mandatory ``harness``.
+        assert record["schema_version"] == 3
         assert record["command"] == "grade"
         # Default eval-spec uses anthropic; provider is threaded from
         # the four-layer ``_resolve_grading_provider`` resolution.
@@ -5682,7 +5698,7 @@ class TestCmdGradeHistory:
         assert rc == 0
         history_path = tmp_path / ".clauditor" / "history.jsonl"
         record = json.loads(history_path.read_text().splitlines()[0])
-        assert record["schema_version"] == 2
+        assert record["schema_version"] == 3
         assert record["provider"] == "openai"
 
     def test_grade_history_records_metrics(self, tmp_path, monkeypatch):
@@ -5940,8 +5956,8 @@ class TestCmdExtractHistory:
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["skill"] == "test-skill"
-        # #147 DEC-012: history schema bumped to 2 with mandatory provider.
-        assert record["schema_version"] == 2
+        # #152 DEC-005: history schema bumped to 3 with mandatory harness.
+        assert record["schema_version"] == 3
         assert record["command"] == "extract"
         assert record["provider"] == "anthropic"
         assert record["pass_rate"] is None
@@ -6004,7 +6020,7 @@ class TestCmdExtractHistory:
         assert rc == 0
         history_path = tmp_path / ".clauditor" / "history.jsonl"
         record = json.loads(history_path.read_text().splitlines()[0])
-        assert record["schema_version"] == 2
+        assert record["schema_version"] == 3
         assert record["provider"] == "openai"
 
     def test_extract_live_run_records_skill_and_grader_tokens(
@@ -6076,8 +6092,8 @@ class TestCmdValidateHistory:
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["skill"] == "test-skill"
-        # #147 DEC-012: history schema bumped to 2 with mandatory provider.
-        assert record["schema_version"] == 2
+        # #152 DEC-005: history schema bumped to 3 with mandatory harness.
+        assert record["schema_version"] == 3
         assert record["command"] == "validate"
         # Validate runs Layer 1 only; provider is the placeholder
         # ``"anthropic"`` per #147 DEC-002 / DEC-012.
