@@ -822,7 +822,7 @@ class TestClauditorGraderFactory:
         mock_eval_spec = MagicMock()
         mock_eval_spec.grading_provider = None
         mock_eval_spec.grading_model = "claude-sonnet-4-6"
-        mock_eval_spec.harness = "codex"  # Should NOT be threaded; no run.
+        mock_eval_spec.harness = "codex"  # Concrete harness on spec.
 
         mock_spec = MagicMock()
         mock_spec.eval_spec = mock_eval_spec
@@ -841,7 +841,9 @@ class TestClauditorGraderFactory:
         # spec.run was NOT called — output was provided directly.
         mock_spec.run.assert_not_called()
         call = mock_grade.await_args
-        assert call.kwargs.get("harness") == "claude-code"
+        # When output= is provided and eval_spec.harness is a concrete
+        # value (not "auto"), the fixture uses the spec's harness.
+        assert call.kwargs.get("harness") == "codex"
 
 
 class TestClauditorTriggersFactory:

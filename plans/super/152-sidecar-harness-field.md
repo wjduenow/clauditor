@@ -112,7 +112,7 @@ No `workflow-project.md` exists.
 
 ### #147 canonical pattern to mirror
 
-#147's structural moves that #152 will replay:
+Issue #147's structural moves that #152 will replay:
 - **DEC-001 (field naming)** — `provider_source` was the on-disk byte-identical field name. For #152 the field is just `harness` (no `_source` suffix; harness identity is materialized by #151, not a "source" choice the user makes mid-call).
 - **DEC-002 (L1 placeholder)** — #147 left L1 at v1 with `IterationRecord.provider="anthropic"` placeholder. #152 inverts this: assertions.json bumps to v2 because L1 *can* be honestly stamped (the harness ran the skill that produced the output being asserted on). After #152, the L1 placeholder for `provider` remains (no LLM call) but `harness` is real.
 - **DEC-008 (MAX_SCHEMA_VERSION map)** — already in place; #152 is a one-number-per-file edit.

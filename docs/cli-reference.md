@@ -591,7 +591,7 @@ Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "command": "grade",
   "ts": "2026-04-13T15:00:00+00:00",
   "skill": "find-restaurants",
@@ -599,6 +599,8 @@ Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.
   "workspace_path": ".clauditor/iteration-4/find-restaurants",
   "pass_rate": 0.83,
   "mean_score": 0.75,
+  "provider": "anthropic",
+  "harness": "claude-code",
   "metrics": {
     "skill":   {"input_tokens": 1200, "output_tokens": 800},
     "quality": {"input_tokens": 900,  "output_tokens": 350},

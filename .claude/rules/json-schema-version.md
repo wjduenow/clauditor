@@ -157,8 +157,8 @@ skill subprocess. The harness identity is materialized once by #151's
 resolver, stamped onto `SkillResult.harness` at `SkillRunner._invoke`
 construction time (US-001), and threaded into every downstream sidecar
 emitter from there. The field name deliberately omits the `_source`
-suffix that `provider_source` carries: `provider_source` records a
-per-call API/CLI transport choice, while `harness` records what
+suffix that `provider_source` carries: `provider_source` records which
+provider backend served the grader call, while `harness` records what
 materially ran the skill — they are conceptually distinct, and the name
 keeps them visually distinguishable on disk per DEC-001 of
 `plans/super/152-sidecar-harness-field.md`.
