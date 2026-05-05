@@ -17,7 +17,9 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from clauditor.cli.grade import _write_assertions_sidecar
+from unittest.mock import AsyncMock, patch
+
+from clauditor.cli.grade import _grade_all_runs, _write_assertions_sidecar
 from clauditor.spec import SkillSpec
 from clauditor.workspace import IterationWorkspace
 from tests.conftest import build_eval_spec
@@ -152,3 +154,30 @@ class TestWriteAssertionsSidecar:
         assert "skill" in keys
         assert "iteration" in keys
         assert "runs" in keys
+
+
+class TestGradeAllRunsHarness:
+    """#152: _grade_all_runs defaults harness to 'claude-code' when
+    skill_results is None (the --output path where no SkillResult exists).
+    """
+
+    def test_defaults_harness_when_skill_results_is_none(self) -> None:
+        """skill_results=None → grade_quality gets harness='claude-code'."""
+        spec = MagicMock(spec=SkillSpec)
+        spec.eval_spec = build_eval_spec()
+        canned = MagicMock()
+
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new=AsyncMock(return_value=canned),
+        ) as mock_grade:
+            reports = _grade_all_runs(
+                run_outputs=[("hello world", [])],
+                spec=spec,
+                model="claude-sonnet-4-6",
+                skill_results=None,
+            )
+
+        assert len(reports) == 1
+        call = mock_grade.await_args
+        assert call.kwargs.get("harness") == "claude-code"
