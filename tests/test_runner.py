@@ -158,6 +158,52 @@ class TestSkillResultSucceeded:
 
 
 # ---------------------------------------------------------------------------
+# SkillResult.harness field (#152 US-001 / clauditor-gfo)
+# ---------------------------------------------------------------------------
+
+
+class TestSkillResult:
+    """``SkillResult.harness`` is the foundation for #152 sidecar emitters.
+
+    DEC-002 of ``plans/super/152-sidecar-harness-field.md``: the field
+    is populated from the active harness's ``name`` ClassVar at every
+    ``SkillResult(...)`` construction site inside ``SkillRunner._invoke``.
+    """
+
+    def test_harness_field_present_with_default(self):
+        """Direct dataclass construction yields ``harness == "claude-code"``."""
+        result = SkillResult(
+            output="hi", exit_code=0, skill_name="t", args=""
+        )
+        assert result.harness == "claude-code"
+
+
+class TestSkillRunner:
+    """``SkillRunner._invoke`` stamps ``SkillResult.harness`` from
+    ``self.harness.name`` per ``harness-protocol-shape.md``.
+    """
+
+    def test_invoke_populates_harness_from_active_harness(self):
+        """A custom ``MockHarness`` (name="mock") plumbs through verbatim."""
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir="/tmp", harness=mock)
+        result = runner.run("foo")
+        assert result.harness == "mock"
+
+    def test_invoke_populates_harness_claude_code_default(self):
+        """Default ``ClaudeCodeHarness`` stamps ``"claude-code"`` on the result."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=make_fake_skill_stream("ok"),
+        ):
+            result = runner.run("my-skill")
+        assert result.harness == "claude-code"
+
+
+# ---------------------------------------------------------------------------
 # Harness protocol + InvokeResult.harness_metadata (US-001 / clauditor-3sm.1)
 # ---------------------------------------------------------------------------
 

@@ -347,6 +347,10 @@ class TestValidateVerboseInvocation:
         fake_skill_result.duration_seconds = 0.1
         fake_skill_result.input_tokens = 0
         fake_skill_result.output_tokens = 0
+        # #152 US-001: SkillResult.harness is JSON-serialized into the
+        # assertions.json sidecar; MagicMock's auto-attr would not be
+        # serializable.
+        fake_skill_result.harness = "claude-code"
 
         args = MagicMock()
         args.skill = str(skill_path)
@@ -447,6 +451,10 @@ class TestValidateVerboseInvocation:
         fake_skill_result.duration_seconds = 0.0
         fake_skill_result.input_tokens = 0
         fake_skill_result.output_tokens = 0
+        # #152 US-001: SkillResult.harness is JSON-serialized into the
+        # assertions.json sidecar; pin so MagicMock auto-attr does not
+        # propagate.
+        fake_skill_result.harness = "claude-code"
 
         args = MagicMock()
         args.skill = "demo.md"

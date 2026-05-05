@@ -8,9 +8,10 @@ block characters.
 
 Each record is a JSON object with the following top-level keys:
 
-- ``schema_version``: int, ``2`` (current). v1 records are still readable
-  for back-compat — ``read_records`` defaults their missing ``provider``
-  to ``"anthropic"`` per #147 DEC-012.
+- ``schema_version``: int, ``3`` (current). v1 and v2 records are still
+  readable for back-compat — ``read_records`` defaults their missing
+  ``provider`` to ``"anthropic"`` (per #147 DEC-012) and missing
+  ``harness`` to ``"claude-code"`` (per #152 DEC-005).
 - ``command``: one of ``"grade"``, ``"extract"``, ``"validate"``
 - ``ts``: ISO-8601 UTC timestamp
 - ``skill``: skill name
@@ -22,6 +23,10 @@ Each record is a JSON object with the following top-level keys:
 - ``provider``: str — which model provider's SDK served the grading call
   (``"anthropic"`` or ``"openai"``). Required (keyword-only) on
   ``append_record``; defaults to ``"anthropic"`` on legacy v1 reads.
+- ``harness``: str — which harness ran the skill subprocess
+  (``"claude-code"`` or ``"codex"``). Required (keyword-only) on
+  ``append_record``; defaults to ``"claude-code"`` on legacy v1/v2
+  reads (#152 DEC-005).
 
 ``iteration`` and ``workspace_path`` are always written, even when
 ``None``, so the on-disk record shape is predictable.
@@ -73,11 +78,13 @@ def _default_path() -> Path:
 
 
 SPARK_GLYPHS = "_.-=#"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
-# v1 records are still readable; ``read_records`` defaults missing
-# ``provider`` to ``"anthropic"`` for legacy lines per #147 DEC-012.
-_ACCEPTED_SCHEMA_VERSIONS: frozenset[int] = frozenset({1, 2})
+# v1 and v2 records are still readable; ``read_records`` defaults
+# missing ``provider`` to ``"anthropic"`` for legacy lines (#147
+# DEC-012) and missing ``harness`` to ``"claude-code"`` for v1/v2
+# lines (#152 DEC-005).
+_ACCEPTED_SCHEMA_VERSIONS: frozenset[int] = frozenset({1, 2, 3})
 
 _FLOCK_UNSUPPORTED_WARNED = False
 
@@ -132,6 +139,7 @@ def append_record(
     *,
     command: Literal["grade", "extract", "validate"],
     provider: str,
+    harness: str,
     path: Path | None = None,
     iteration: int | None = None,
     workspace_path: str | None = None,
@@ -149,6 +157,11 @@ def append_record(
     provider's SDK served the grading call (``"anthropic"`` or
     ``"openai"``). Per #147 DEC-012 this field is mandatory on writes;
     legacy v1 reads default to ``"anthropic"``.
+
+    ``harness`` is required (keyword-only) and identifies which harness
+    ran the skill subprocess (``"claude-code"`` or ``"codex"``). Per
+    #152 DEC-005 this field is mandatory on writes; legacy v1/v2 reads
+    default to ``"claude-code"``.
 
     Concurrent appends from multiple processes are serialized via an
     ``fcntl.flock`` exclusive lock on ``<history_parent>/.lock`` so each
@@ -175,6 +188,22 @@ def append_record(
             "provider must be a resolved provider name "
             "(use 'anthropic' or 'openai', not 'auto')"
         )
+    # Defense in depth: ``harness`` should already be a resolved harness
+    # name (one of ``"claude-code"`` / ``"codex"``) by the time it
+    # reaches this seam — the CLI plumbs it through ``_resolve_harness``
+    # per #151's four-layer precedence. Mirror the provider validation
+    # shape: reject the unresolved sentinel ``"auto"`` and any
+    # blank/non-string so a future caller that bypasses the resolver
+    # cannot corrupt ``trend``/``audit`` grouping semantics.
+    if not isinstance(harness, str) or not harness.strip():
+        raise ValueError(
+            f"harness must be a non-blank string; got {harness!r}"
+        )
+    if harness == "auto":
+        raise ValueError(
+            "harness must be a resolved harness name "
+            "(use 'claude-code' or 'codex', not 'auto')"
+        )
     if path is None:
         path = _default_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -189,6 +218,7 @@ def append_record(
         "iteration": iteration,
         "workspace_path": workspace_path,
         "provider": provider,
+        "harness": harness,
     }
     line = json.dumps(record) + "\n"
     lock_path = path.parent / ".lock"
@@ -200,9 +230,10 @@ def append_record(
 def _check_schema_version(data: dict, source: Path, lineno: int) -> bool:
     """Return ``True`` if ``data`` has an accepted schema version.
 
-    Per #147 DEC-012, both v1 and v2 records are accepted; v1 records are
-    legacy and have ``provider`` defaulted in :func:`read_records`. Records
-    with a mismatched version are skipped with a stderr warning per
+    Per #147 DEC-012 / #152 DEC-005, v1, v2, and v3 records are accepted;
+    v1/v2 records are legacy and have ``provider`` (v1) and ``harness``
+    (v1/v2) defaulted in :func:`read_records`. Records with a mismatched
+    version are skipped with a stderr warning per
     ``.claude/rules/json-schema-version.md``.
     """
     version = data.get("schema_version")
@@ -264,6 +295,11 @@ def read_records(
             # treat the field as guaranteed-present per DEC-012.
             if "provider" not in record:
                 record["provider"] = "anthropic"
+            # v1/v2 records (pre-#152) lack ``harness``. Default to
+            # ``"claude-code"`` so downstream consumers can treat the
+            # field as guaranteed-present per #152 DEC-005.
+            if "harness" not in record:
+                record["harness"] = "claude-code"
             records.append(record)
     return records
 

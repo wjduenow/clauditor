@@ -786,6 +786,16 @@ def _write_workspace_sidecars(
         primary_report.to_json(), encoding="utf-8"
     )
 
+    # #152 US-002: stamp the harness on assertions.json. Single harness
+    # per command invocation (DEC-S2=A), so we read it from the first
+    # SkillResult — which has been populated from ``Harness.name`` since
+    # US-001. In ``--output`` mode there is no SkillResult; fall back to
+    # the resolved ``harness_name`` (or its default of ``"claude-code"``)
+    # so the field is always present.
+    if skill_results and skill_results[0] is not None:
+        assertions_harness = skill_results[0].harness
+    else:
+        assertions_harness = harness_name or "claude-code"
     _write_assertions_sidecar(
         args=args,
         spec=spec,
@@ -794,9 +804,21 @@ def _write_workspace_sidecars(
         run_outputs=run_outputs,
         verbose=verbose,
         no_transcript=no_transcript,
+        harness=assertions_harness,
     )
 
     if spec.eval_spec.sections:
+        # #152 US-003: pass the harness that produced the underlying
+        # skill output so the sidecar honestly records which harness
+        # produced the text being extracted. Falls back to
+        # ``"claude-code"`` (the ``ExtractionReport.harness`` default)
+        # for ``--output`` mode where every entry of
+        # ``skill_results`` is ``None``.
+        harness_for_extraction = "claude-code"
+        for sr in skill_results:
+            if sr is not None:
+                harness_for_extraction = sr.harness
+                break
         _write_extraction_sidecar(
             skill_dir,
             primary_text,
@@ -804,6 +826,7 @@ def _write_workspace_sidecars(
             model,
             transport=transport,
             provider=provider,
+            harness=harness_for_extraction,
         )
 
     if getattr(args, "baseline", False):
@@ -882,6 +905,7 @@ def _write_assertions_sidecar(
     run_outputs: list[tuple[str, list[dict]]],
     verbose: bool,
     no_transcript: bool,
+    harness: str = "claude-code",
 ) -> None:
     """Run L1 assertions per run, write ``assertions.json``, emit slices.
 
@@ -889,6 +913,14 @@ def _write_assertions_sidecar(
     auditor can jump from a failing row to the stream-json that
     produced it (US-004). Under ``verbose`` mode, failing-run transcript
     slices are printed to stderr (US-007).
+
+    ``harness`` (#152 US-002 / DEC-003): name of the harness that
+    produced the runs (one harness per command invocation per
+    DEC-S2=A). Stamped at the top level of ``assertions.json`` under
+    the ``harness`` key (schema_version 2). Defaults to ``"claude-code"``
+    so direct callers without the field stay green (the production
+    call site in ``_write_workspace_sidecars`` always passes the
+    resolved value).
     """
     from clauditor.cli import _print_failing_transcript_slice, _relative_to_repo
 
@@ -926,8 +958,12 @@ def _write_assertions_sidecar(
                     idx, run_outputs[idx][1], sys.stderr
                 )
 
+    # #152 US-002: schema_version bumped 1 → 2 with a top-level
+    # ``harness`` field. Canonical key order: schema_version, harness,
+    # skill, iteration, runs (per DEC-003 / DEC-013).
     assertions_payload = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "harness": harness,
         "skill": spec.skill_name,
         "iteration": workspace.iteration,
         "runs": [
@@ -949,6 +985,7 @@ def _write_extraction_sidecar(
     transport: str = "auto",
     *,
     provider: str = "anthropic",
+    harness: str = "claude-code",
 ) -> None:
     """Run Layer 2 schema extraction and persist ``extraction.json``.
 
@@ -956,6 +993,11 @@ def _write_extraction_sidecar(
     the surrounding ``cmd_grade`` invocation. Passed through verbatim
     so OpenAI-graded skills don't fall back to ``extract_and_report``'s
     Anthropic-default model (CodeRabbit finding on PR #164).
+
+    ``harness`` is the name of the harness that produced
+    ``primary_text`` (read off the originating ``SkillResult.harness``
+    by the caller). Persisted into ``extraction.json`` at
+    ``schema_version=4`` per #152 US-003 / DEC-004.
     """
     import asyncio
 
@@ -969,6 +1011,7 @@ def _write_extraction_sidecar(
             skill_name=spec.skill_name,
             transport=transport,
             provider=provider,
+            harness=harness,
         )
     )
     (skill_dir / "extraction.json").write_text(
@@ -1176,11 +1219,26 @@ def _grade_all_runs(
     transport: str = "auto",
     *,
     provider: str = "anthropic",
+    skill_results: list[SkillResult | None] | None = None,
 ) -> list[GradingReport]:
-    """Grade every run's output concurrently and return the per-run reports."""
+    """Grade every run's output concurrently and return the per-run reports.
+
+    ``skill_results`` is a parallel list to ``run_outputs``; when
+    provided, each entry's ``harness`` value flows into the matching
+    :class:`GradingReport.harness` so the on-disk ``grading.json`` v4
+    sidecar (#152) records which harness produced the output. Captured
+    ``--output`` runs land as ``None`` in ``skill_results``; those
+    fall back to the ``"claude-code"`` default.
+    """
     import asyncio
 
     from clauditor.quality_grader import grade_quality
+
+    def _harness_for(idx: int) -> str:
+        if skill_results is None:
+            return "claude-code"
+        result = skill_results[idx] if idx < len(skill_results) else None
+        return result.harness if result is not None else "claude-code"
 
     async def _grade_all() -> list[GradingReport]:
         return list(
@@ -1193,8 +1251,9 @@ def _grade_all_runs(
                         thresholds=spec.eval_spec.grade_thresholds,
                         transport=transport,
                         provider=provider,
+                        harness=_harness_for(idx),
                     )
-                    for text, _ev in run_outputs
+                    for idx, (text, _ev) in enumerate(run_outputs)
                 ]
             )
         )
@@ -1234,7 +1293,12 @@ def _cmd_grade_with_workspace(
 
     primary_text = run_outputs[0][0]
     reports = _grade_all_runs(
-        run_outputs, spec, model, transport=grader_transport, provider=provider
+        run_outputs,
+        spec,
+        model,
+        transport=grader_transport,
+        provider=provider,
+        skill_results=skill_results,
     )
     primary_report = reports[0]
 
@@ -1302,6 +1366,7 @@ def _cmd_grade_with_workspace(
         benchmark=benchmark,
         metrics_dict=metrics_dict,
         provider=provider,
+        harness_name=harness_name,
     )
 
     # Determine exit code
@@ -1328,6 +1393,7 @@ def _report_grade_to_user(
     benchmark: Benchmark | None,
     metrics_dict: dict,
     provider: str,
+    harness_name: str | None,
 ) -> None:
     """Emit the grade report, diff/baseline delta blocks, and history row.
 
@@ -1370,6 +1436,7 @@ def _report_grade_to_user(
             primary_report=primary_report,
             metrics_dict=metrics_dict,
             provider=provider,
+            harness_name=harness_name,
         )
 
 
@@ -1509,12 +1576,19 @@ def _append_grade_history_record(
     primary_report: GradingReport,
     metrics_dict: dict,
     provider: str,
+    harness_name: str | None,
 ) -> None:
     """Append a ``command="grade"`` row to ``history.jsonl`` (US-006).
 
     ``provider`` is the resolved grading provider (``"anthropic"`` or
     ``"openai"``) per #147 DEC-012; threaded down from ``cmd_grade``'s
     four-layer ``_resolve_grading_provider`` resolution.
+
+    ``harness_name`` is the resolved skill harness (``"claude-code"`` or
+    ``"codex"``) per #152 DEC-005; threaded down from ``cmd_grade``'s
+    ``_resolve_harness`` call. ``None`` collapses to ``"claude-code"``
+    (the default harness) so non-live-run paths still produce a record
+    with a concrete harness value.
     """
     from clauditor.cli import _relative_to_repo
 
@@ -1527,6 +1601,7 @@ def _append_grade_history_record(
             metrics=metrics_dict,
             command="grade",
             provider=provider,
+            harness=harness_name or "claude-code",
             iteration=workspace.iteration,
             workspace_path=workspace_rel,
         )

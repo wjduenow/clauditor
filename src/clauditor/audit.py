@@ -50,9 +50,9 @@ from clauditor.paths import resolve_clauditor_dir
 # filename rather than re-listing the accepted set. See DEC-008 in
 # ``plans/super/147-sidecar-provider-field.md``.
 MAX_SCHEMA_VERSION: dict[str, int] = {
-    "assertions.json": 1,
-    "extraction.json": 3,
-    "grading.json": 3,
+    "assertions.json": 2,
+    "extraction.json": 4,
+    "grading.json": 4,
 }
 
 
@@ -102,6 +102,21 @@ def _provider_or_default(value: object) -> str:
     if isinstance(value, str) and value.strip():
         return value
     return "anthropic"
+
+
+def _harness_or_default(value: object) -> str:
+    """Return ``value`` when it is a non-blank ``str``, else ``"claude-code"``.
+
+    US-005 (#152): mirror of :func:`_provider_or_default` for the
+    harness axis. Defends the three ``_records_from_*`` helpers
+    against malformed v2/v4 sidecars that store ``harness`` as a
+    non-string. Defaults to ``"claude-code"`` per DEC-006 so legacy
+    v1/v2/v3 reads (with no ``harness`` field) and malformed reads
+    both produce structurally-string-typed aggregate keys.
+    """
+    if isinstance(value, str) and value.strip():
+        return value
+    return "claude-code"
 
 
 def _check_schema_version(
@@ -166,6 +181,14 @@ class IterationRecord:
     has no LLM call to attribute, but ``IterationRecord`` keeps a
     uniform shape across layers so audit grouping does not have to
     branch by layer.
+
+    US-005 (#152): the ``harness`` field records which harness CLI
+    produced the underlying skill output. Loaded from the v2
+    assertions / v4 grading-and-extraction sidecars' ``harness``
+    field; defaults to ``"claude-code"`` for legacy reads per DEC-006.
+    Unlike ``provider`` (which carries an ``"anthropic"`` placeholder
+    for L1), ``harness`` is real for every layer because every layer's
+    underlying skill ran through some harness.
     """
 
     iteration: int
@@ -174,17 +197,24 @@ class IterationRecord:
     passed: bool
     with_skill: bool  # True for primary, False for baseline sidecar
     provider: str = "anthropic"
+    harness: str = "claude-code"
 
 
 @dataclass
 class AuditAggregate:
-    """Aggregate pass-rate statistics for one ``(provider, layer, id)`` triple.
+    """Aggregate stats for one ``(harness, provider, layer, id)`` key.
 
-    US-003 (#147): keyed by ``(provider, layer, id)`` so mixed-provider
-    history (the same eval run under both Anthropic and OpenAI) groups
-    into separate aggregates instead of being averaged together. The
-    ``provider`` field defaults to ``"anthropic"`` to keep direct
-    constructor calls in tests working without per-test edits.
+    US-003 (#147): added the ``provider`` dimension so mixed-provider
+    history (the same eval run under both Anthropic and OpenAI)
+    groups into separate aggregates instead of being averaged
+    together.
+
+    US-005 (#152): added the ``harness`` dimension so mixed-harness
+    history (the same eval run under both Claude Code and Codex)
+    groups separately too. Aggregate dict keys are now 4-tuples
+    ``(harness, provider, layer, id)`` per DEC-007. The ``harness``
+    field defaults to ``"claude-code"`` to keep direct constructor
+    calls in tests working without per-test edits.
     """
 
     layer: str
@@ -196,6 +226,7 @@ class AuditAggregate:
     baseline_fails: int
     baseline_pass_rate: float | None
     provider: str = "anthropic"
+    harness: str = "claude-code"
 
     @property
     def discrimination(self) -> float | None:
@@ -253,11 +284,14 @@ def _records_from_assertions(
         return []
     records: list[IterationRecord] = []
     # DEC-002 (#147): L1 records carry ``provider="anthropic"`` as a
-    # placeholder. Assertions sidecars stay at schema_version=1 (no
-    # ``provider_source`` field — L1 has no LLM call to attribute), but
+    # placeholder. Assertions sidecars carry no ``provider_source``
+    # field even at v2 — L1 has no LLM call to attribute, but
     # ``IterationRecord`` keeps a uniform shape across layers so the
-    # ``aggregate()`` group key is always 3-tuple. The honest harness
-    # dimension lands in #152.
+    # ``aggregate()`` group key is always uniform.
+    # US-005 (#152): assertions.json bumped to v2 with a top-level
+    # ``harness`` field. Read it through the defensive helper; v1
+    # legacy reads default to ``"claude-code"`` per DEC-006.
+    harness = _harness_or_default(data.get("harness"))
     for run in data.get("runs", []) or []:
         for result in run.get("results", []) or []:
             rid = result.get("id")
@@ -271,6 +305,7 @@ def _records_from_assertions(
                     passed=bool(result.get("passed", False)),
                     with_skill=with_skill,
                     provider="anthropic",
+                    harness=harness,
                 )
             )
     return records
@@ -295,6 +330,9 @@ def _records_from_extraction(
     # ``1`` or ``True`` (which a malformed v3 sidecar could carry) so
     # downstream sorting/rendering never sees a non-string provider.
     provider = _provider_or_default(data.get("provider_source"))
+    # US-005 (#152): extraction.json bumped to v4 with ``harness``
+    # field; v1/v2/v3 reads default to ``"claude-code"`` per DEC-006.
+    harness = _harness_or_default(data.get("harness"))
     for field_id, entries in (data.get("fields") or {}).items():
         for entry in entries or []:
             if "passed" not in entry:
@@ -308,6 +346,7 @@ def _records_from_extraction(
                     passed=passed,
                     with_skill=with_skill,
                     provider=provider,
+                    harness=harness,
                 )
             )
     return records
@@ -331,6 +370,9 @@ def _records_from_grading(
     # ``provider_source``; v1/v2 reads default to ``"anthropic"``.
     # ``_provider_or_default`` rejects non-string truthy values.
     provider = _provider_or_default(data.get("provider_source"))
+    # US-005 (#152): grading.json bumped to v4 with ``harness`` field;
+    # v1/v2/v3 reads default to ``"claude-code"`` per DEC-006.
+    harness = _harness_or_default(data.get("harness"))
     for result in data.get("results", []) or []:
         # DEC-001 / #25: L3 results are keyed by their stable spec id.
         # Drop records missing an ``id`` entirely — falling back to the
@@ -348,6 +390,7 @@ def _records_from_grading(
                 passed=bool(result.get("passed", False)),
                 with_skill=with_skill,
                 provider=provider,
+                harness=harness,
             )
         )
     return records
@@ -444,23 +487,28 @@ def load_iterations(
 
 def aggregate(
     records: list[IterationRecord],
-) -> dict[tuple[str, str, str], AuditAggregate]:
-    """Group records by ``(provider, layer, id)`` and compute pass rates.
+) -> dict[tuple[str, str, str, str], AuditAggregate]:
+    """Group records by ``(harness, provider, layer, id)`` and compute pass rates.
 
     US-003 (#147): expanded the grouping key from ``(layer, id)`` to
-    ``(provider, layer, id)`` so mixed-provider history (the same eval
-    run under both Anthropic and OpenAI) groups separately. Pre-#147
-    history (no ``provider_source`` on disk) defaults every record's
-    provider to ``"anthropic"`` and produces a single bucket per
-    ``(layer, id)`` keyed under ``("anthropic", layer, id)``, so
-    single-provider audit reports keep their pre-#147 shape.
+    ``(provider, layer, id)`` so mixed-provider history groups
+    separately.
+
+    US-005 (#152): expanded the grouping key further to
+    ``(harness, provider, layer, id)`` so mixed-harness history (the
+    same eval run under both Claude Code and Codex) groups separately
+    too. Pre-#152 history (no ``harness`` on disk) defaults every
+    record's harness to ``"claude-code"`` and produces a single bucket
+    per ``(provider, layer, id)`` keyed under
+    ``("claude-code", provider, layer, id)``, so single-harness audit
+    reports keep their pre-#152 shape.
 
     With-skill and baseline records are tallied separately so callers
     can compare them (see :attr:`AuditAggregate.discrimination`).
     """
-    buckets: dict[tuple[str, str, str], dict[str, int]] = {}
+    buckets: dict[tuple[str, str, str, str], dict[str, int]] = {}
     for r in records:
-        key = (r.provider, r.layer, r.id)
+        key = (r.harness, r.provider, r.layer, r.id)
         bucket = buckets.setdefault(
             key,
             {
@@ -479,8 +527,8 @@ def aggregate(
             if not r.passed:
                 bucket["baseline_fails"] += 1
 
-    result: dict[tuple[str, str, str], AuditAggregate] = {}
-    for (provider, layer, rid), b in buckets.items():
+    result: dict[tuple[str, str, str, str], AuditAggregate] = {}
+    for (harness, provider, layer, rid), b in buckets.items():
         with_total = b["with_total"]
         baseline_total = b["baseline_total"]
         with_pass_rate = (
@@ -495,7 +543,7 @@ def aggregate(
             )
         else:
             baseline_pass_rate = None
-        result[(provider, layer, rid)] = AuditAggregate(
+        result[(harness, provider, layer, rid)] = AuditAggregate(
             layer=layer,
             id=rid,
             total_with_runs=with_total,
@@ -505,6 +553,7 @@ def aggregate(
             baseline_fails=b["baseline_fails"],
             baseline_pass_rate=baseline_pass_rate,
             provider=provider,
+            harness=harness,
         )
     return result
 
@@ -518,11 +567,13 @@ def aggregate(
 class AuditVerdict:
     """A threshold classification over one :class:`AuditAggregate`.
 
-    US-003 (#147): the ``provider`` field carries through from the
-    underlying :class:`AuditAggregate`'s 3-tuple key so renderers
-    (US-004) can surface the provider dimension in the audit output.
-    Defaults to ``"anthropic"`` so direct test fixture constructions
-    that predate #147 keep working without per-test edits.
+    US-003 (#147): added the ``provider`` field so renderers can
+    surface the provider dimension in the audit output.
+
+    US-005 (#152): added the ``harness`` field so renderers (US-006)
+    can surface the harness dimension. Defaults to ``"claude-code"``
+    so direct test fixture constructions that predate #152 keep
+    working without per-test edits.
     """
 
     layer: str
@@ -531,6 +582,7 @@ class AuditVerdict:
     reasons: list[str] = field(default_factory=list)
     aggregate: AuditAggregate | None = None
     provider: str = "anthropic"
+    harness: str = "claude-code"
 
     @property
     def is_flagged(self) -> bool:
@@ -538,7 +590,7 @@ class AuditVerdict:
 
 
 def apply_thresholds(
-    aggregates: dict[tuple[str, str, str], AuditAggregate],
+    aggregates: dict[tuple[str, str, str, str], AuditAggregate],
     *,
     min_fail_rate: float,
     min_discrimination: float,
@@ -564,11 +616,12 @@ def apply_thresholds(
     preserved on disk; only the verdict stream filters them out.
     """
     verdicts: list[AuditVerdict] = []
-    # US-003 (#147): unpack the 3-tuple ``(provider, layer, id)`` key
-    # produced by :func:`aggregate`. ``sorted`` orders provider first so
-    # an audit report renders all-anthropic rows across all layers
-    # before openai rows; layer/id break ties within a provider.
-    for (provider, layer, rid), agg in sorted(aggregates.items()):
+    # US-005 (#152): unpack the 4-tuple ``(harness, provider, layer,
+    # id)`` key produced by :func:`aggregate`. ``sorted`` orders
+    # harness first, then provider, then layer, then id — so an audit
+    # report renders all-claude-code rows before all-codex rows, and
+    # within a harness all-anthropic rows before openai rows.
+    for (harness, provider, layer, rid), agg in sorted(aggregates.items()):
         if agg.total_with_runs == 0:
             continue
         reasons: list[str] = []
@@ -613,6 +666,7 @@ def apply_thresholds(
                 reasons=reasons,
                 aggregate=agg,
                 provider=provider,
+                harness=harness,
             )
         )
     return verdicts
@@ -646,15 +700,23 @@ def _fmt_disc(value: float | None) -> str:
 
 
 def _sorted_verdicts(verdicts: list[AuditVerdict]) -> list[AuditVerdict]:
-    """Sort verdicts by ``(provider, layer, id)`` for stable rendering.
+    """Sort verdicts by ``(harness, provider, layer, id)`` for stable rendering.
 
     DEC-004 (#147): all three render paths share the same sort order so
     a reader scanning ``stdout`` / markdown / JSON in succession sees
     rows in the same sequence. ``apply_thresholds`` already returns
     verdicts in this order today, but renderers re-sort defensively in
     case a caller hands in a list constructed differently.
+
+    US-006 (#152): widened the sort key to include ``harness`` (first)
+    so mixed-harness audits render all-claude-code rows before
+    all-codex rows; within a harness, the existing ``(provider, layer,
+    id)`` ordering preserves pre-#152 row sequence for single-harness
+    audits.
     """
-    return sorted(verdicts, key=lambda v: (v.provider, v.layer, v.id))
+    return sorted(
+        verdicts, key=lambda v: (v.harness, v.provider, v.layer, v.id)
+    )
 
 
 def _providers_seen(verdicts: list[AuditVerdict]) -> list[str]:
@@ -667,23 +729,54 @@ def _providers_seen(verdicts: list[AuditVerdict]) -> list[str]:
     return sorted({v.provider for v in verdicts})
 
 
-def render_stdout_table(verdicts: list[AuditVerdict]) -> str:
-    """Compact table: provider, layer, id, with%, verdict.
+def _harnesses_seen(verdicts: list[AuditVerdict]) -> list[str]:
+    """Return the sorted list of distinct harnesses across ``verdicts``.
 
-    DEC-004 (#147): leftmost ``PROVIDER`` column (~11 chars wide) so a
-    mixed-provider audit shows which provider's SDK produced each
-    grouped result. Sort order: ``(provider, layer, id)``.
+    DEC-010 (#152): the audit-output JSON v3 carries a top-level
+    ``harnesses_seen`` array (sibling to ``providers_seen``) so JSON
+    consumers can detect mixed-harness history without iterating
+    ``assertions[]``.
+    """
+    return sorted({v.harness for v in verdicts})
+
+
+# DEC-008 (#152): em-dash (U+2014) is the stdout/markdown placeholder
+# rendered in L1 rows' PROVIDER column. L1 makes no LLM call so
+# "anthropic" is a placeholder, not a real value — the em-dash makes
+# the absence visible to humans. The on-disk JSON output keeps the
+# ``"provider": "anthropic"`` placeholder for downstream consumers
+# (semantically honest for mixed-layer aggregation).
+_L1_PROVIDER_DISPLAY = "—"
+
+
+def render_stdout_table(verdicts: list[AuditVerdict]) -> str:
+    """Compact table: harness, provider, layer, id, with%, verdict.
+
+    DEC-009 (#152): leftmost ``HARNESS`` column (~11 chars wide), then
+    ``PROVIDER`` (~11 chars wide), then layer/id/with%/verdict. Column
+    order matches the grouping-key tuple order
+    ``(harness, provider, layer, id)``.
+
+    DEC-008 (#152): L1 rows render the PROVIDER cell as ``"—"``
+    (em-dash, U+2014) since L1 makes no LLM call. L2/L3 rows render
+    the real provider value.
     """
     header = (
-        f"{'PROVIDER':<11} {'LAYER':<6} {'ID':<40} "
+        f"{'HARNESS':<11} {'PROVIDER':<11} {'LAYER':<6} {'ID':<40} "
         f"{'WITH%':>8} {'VERDICT':<24}"
     )
     lines = [header, "-" * len(header)]
     for v in _sorted_verdicts(verdicts):
         agg = v.aggregate
         with_pct = _fmt_pct(agg.with_pass_rate) if agg else "-"
+        # DEC-008: L1 PROVIDER cell shows em-dash placeholder; L2/L3
+        # render the real provider value.
+        provider_display = (
+            _L1_PROVIDER_DISPLAY if v.layer == "L1" else v.provider
+        )
         lines.append(
-            f"{v.provider[:11]:<11} {v.layer:<6} {v.id[:40]:<40} "
+            f"{v.harness[:11]:<11} {provider_display[:11]:<11} "
+            f"{v.layer:<6} {v.id[:40]:<40} "
             f"{with_pct:>8} {v.verdict.value:<24}"
         )
     return "\n".join(lines)
@@ -731,8 +824,16 @@ def render_markdown(
     else:
         for v in flagged:
             reasons = "; ".join(v.reasons) if v.reasons else v.verdict.value
+            # #152 N2: include harness in the bullet so mixed-harness
+            # audits don't produce visually identical bullets for the
+            # same (layer, id) under different harnesses. Provider is
+            # included for L2/L3 only — L1's "anthropic" placeholder
+            # would just add noise.
+            head = f"{v.layer} {v.harness}"
+            if v.layer in ("L2", "L3"):
+                head = f"{head}/{v.provider}"
             lines.append(
-                f"- **{v.layer} `{_md_escape(v.id)}`** — "
+                f"- **{head} `{_md_escape(v.id)}`** — "
                 f"{_md_escape(reasons)}"
             )
     lines.append("")
@@ -746,22 +847,31 @@ def render_markdown(
             lines.append("_No data._")
             lines.append("")
             continue
-        # DEC-004 (#147): leftmost ``provider`` column so mixed-provider
-        # audits show which provider's SDK produced each row.
+        # DEC-009 (#152): leftmost ``harness`` column, then ``provider``
+        # so mixed-harness/mixed-provider audits show both dimensions.
+        # DEC-008 (#152): L1 rows render provider as ``—`` (em-dash,
+        # U+2014) since L1 makes no LLM call. L2/L3 rows render the
+        # real provider value. Provider cell is NOT backtick-quoted
+        # for L1 because the em-dash is a typographic placeholder, not
+        # a code identifier.
         lines.append(
-            "| provider | id | runs | with% | baseline% | "
+            "| harness | provider | id | runs | with% | baseline% | "
             "discrimination | verdict |"
         )
         lines.append(
-            "|----------|----|------|-------|-----------|"
+            "|---------|----------|----|------|-------|-----------|"
             "----------------|---------|"
         )
         for v in layer_rows:
             agg = v.aggregate
             if agg is None:
                 continue
+            if v.layer == "L1":
+                provider_cell = _L1_PROVIDER_DISPLAY
+            else:
+                provider_cell = f"`{_md_escape(v.provider)}`"
             lines.append(
-                f"| `{_md_escape(v.provider)}` | "
+                f"| `{_md_escape(v.harness)}` | {provider_cell} | "
                 f"`{_md_escape(v.id)}` | {agg.total_with_runs} | "
                 f"{_fmt_pct(agg.with_pass_rate)} | "
                 f"{_fmt_pct(agg.baseline_pass_rate)} | "
@@ -787,8 +897,18 @@ def render_json(
     new ``provider`` field on each ``assertions[]`` entry. DEC-010
     (#147): adds a top-level ``providers_seen`` array (sorted
     alphabetically) so JSON consumers can detect mixed-provider history
-    without iterating ``assertions[]``. Sort order across ``assertions``
-    matches the stdout/markdown renderers: ``(provider, layer, id)``.
+    without iterating ``assertions[]``.
+
+    DEC-010 (#152): ``schema_version`` bumped from 2 to 3 to signal the
+    new ``harness`` field on each ``assertions[]`` entry plus the new
+    top-level ``harnesses_seen`` array (sibling to ``providers_seen``).
+    Sort order across ``assertions`` matches the stdout/markdown
+    renderers: ``(harness, provider, layer, id)``.
+
+    DEC-008 (#152): L1 entries keep ``"provider": "anthropic"``
+    placeholder in the JSON output (the em-dash is stdout/markdown
+    only) — keeps mixed-layer JSON aggregation semantically honest for
+    downstream consumers.
     """
     sorted_verdicts = _sorted_verdicts(verdicts)
     assertions_list: list[dict] = []
@@ -796,6 +916,7 @@ def render_json(
         agg = v.aggregate
         assertions_list.append(
             {
+                "harness": v.harness,
                 "provider": v.provider,
                 "layer": v.layer,
                 "id": v.id,
@@ -811,11 +932,12 @@ def render_json(
             }
         )
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "skill": skill,
         "timestamp": timestamp,
         "iterations": iterations_analyzed,
         "thresholds": dict(thresholds),
         "providers_seen": _providers_seen(verdicts),
+        "harnesses_seen": _harnesses_seen(verdicts),
         "assertions": assertions_list,
     }
