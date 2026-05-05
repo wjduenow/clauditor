@@ -3642,6 +3642,31 @@ class TestCmdExtract:
         assert "results" in data
         assert len(data["results"]) == 2
 
+    def test_extract_output_uses_spec_harness_for_history(self, tmp_path):
+        """--output mode reads eval_spec.harness for the history record."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+
+        eval_spec = _make_eval_spec(sections=_make_sections(), harness="codex")
+        spec = _make_spec(eval_spec=eval_spec)
+        results = self._make_extraction_results(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+            patch("clauditor.cli.extract.history") as mock_history,
+        ):
+            rc = main(["extract", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+        mock_history.append_record.assert_called_once()
+        call_kwargs = mock_history.append_record.call_args.kwargs
+        assert call_kwargs["harness"] == "codex"
+
     def test_extract_failed(self, tmp_path):
         """Returns 1 when extraction grading fails."""
         output_file = tmp_path / "output.txt"

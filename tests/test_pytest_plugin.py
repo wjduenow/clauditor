@@ -845,6 +845,35 @@ class TestClauditorGraderFactory:
         # value (not "auto"), the fixture uses the spec's harness.
         assert call.kwargs.get("harness") == "codex"
 
+    def test_output_provided_auto_harness_defaults_to_claude_code(
+        self, tmp_path
+    ):
+        """output= with harness='auto' falls back to 'claude-code'."""
+        request = self._request_with_model()
+
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.grading_provider = None
+        mock_eval_spec.grading_model = "claude-sonnet-4-6"
+        mock_eval_spec.harness = "auto"  # Default — should fall back.
+
+        mock_spec = MagicMock()
+        mock_spec.eval_spec = mock_eval_spec
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            return mock_spec
+
+        canned = MagicMock()
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new=AsyncMock(return_value=canned),
+        ) as mock_grade:
+            factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+            factory(tmp_path / "skill.md", output="pre-captured output")
+
+        mock_spec.run.assert_not_called()
+        call = mock_grade.await_args
+        assert call.kwargs.get("harness") == "claude-code"
+
 
 class TestClauditorTriggersFactory:
     """Direct coverage of clauditor_triggers error branch."""
