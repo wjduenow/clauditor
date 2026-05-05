@@ -15,9 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from unittest.mock import MagicMock
-
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from clauditor.cli.grade import _grade_all_runs, _write_assertions_sidecar
 from clauditor.spec import SkillSpec
