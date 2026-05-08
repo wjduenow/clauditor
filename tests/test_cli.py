@@ -2804,6 +2804,305 @@ class TestCmdCompareBlindProviderAuth:
         assert rc == 0
 
 
+class TestCmdCompareCrossAxis:
+    """#153 US-005: ``compare`` delta cross-axis detection + ``--cross-*`` opt-in flags.
+
+    The ``compare --blind`` path is intentionally untouched per the
+    ticket; these tests cover only the delta path (positional
+    ``.grade.json`` and numeric ``--skill --from --to`` modes).
+    Silent-skip on ``.txt`` capture pairs (DEC-003) is exercised by
+    ``test_compare_two_txt_files_silent_skip``. Multi-axis refusal
+    (DEC-011) names every still-uncovered axis when only one
+    ``--cross-*`` flag is passed.
+    """
+
+    @staticmethod
+    def _write_grading_with_harness(
+        path, *, harness="claude-code", provider="anthropic"
+    ):
+        """Write a minimal ``grading.json`` carrying the supplied
+        harness/provider metadata to ``path``.
+
+        ``path`` may be a directory (writes ``grading.json`` inside it)
+        or a file path ending in ``.grade.json``. Inline per DEC-009 of
+        ``plans/super/153-cross-axis-comparability.md`` — the helper is
+        kept local to this class rather than promoted to ``conftest.py``
+        because compare tests are the only consumers and the test-fixture
+        shadowing hazard noted in ``CLAUDE.md`` argues against extracting.
+        """
+        from pathlib import Path as _Path
+        path = _Path(path)
+        results = [
+            GradingResult(
+                criterion="c1",
+                passed=True,
+                score=0.9,
+                evidence="",
+                reasoning="",
+            )
+        ]
+        report = GradingReport(
+            skill_name=path.parent.name if path.is_dir() else path.stem,
+            model="test-model",
+            results=results,
+            duration_seconds=0.0,
+            thresholds=GradeThresholds(),
+            metrics={},
+            harness=harness,
+            provider_source=provider,
+        )
+        if path.suffix == "" or path.is_dir():
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "grading.json").write_text(report.to_json())
+            return path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(report.to_json())
+        return path
+
+    def test_compare_two_iters_same_harness_silent(self, tmp_path, capsys):
+        """Same-harness pair (both ``claude-code``): no warning, normal exit."""
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            harness="claude-code",
+        )
+        rc = main(["compare", str(before_dir), str(after_dir)])
+        # Both have identical pass results → "no flips" and rc=0.
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "Mixed harnesses" not in captured.err
+        assert "comparing across" not in captured.err
+
+    def test_compare_two_iters_mixed_harness_refuses_exit_2(
+        self, tmp_path, capsys
+    ):
+        """Mixed-harness iteration dirs without opt-in → exit 2 + refusal."""
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            harness="codex",
+        )
+        rc = main(["compare", str(before_dir), str(after_dir)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed harnesses" in err
+        assert "'claude-code'" in err
+        assert "'codex'" in err
+        assert "--cross-harness" in err
+
+    def test_compare_two_iters_mixed_harness_cross_flag_succeeds(
+        self, tmp_path, capsys
+    ):
+        """Mixed-harness pair + ``--cross-harness`` → normal exit + WARNING."""
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            harness="codex",
+        )
+        rc = main(
+            [
+                "compare",
+                str(before_dir),
+                str(after_dir),
+                "--cross-harness",
+            ]
+        )
+        # Both reports pass identically → no regression → rc=0.
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "comparing across harnesses" in captured.err
+        assert "'claude-code'" in captured.err
+        assert "'codex'" in captured.err
+
+    def test_compare_two_grade_json_mixed_harness_refuses(
+        self, tmp_path, capsys
+    ):
+        """Two flat ``.grade.json`` files with different harness → exit 2."""
+        before = self._write_grading_with_harness(
+            tmp_path / "before.grade.json",
+            harness="claude-code",
+        )
+        after = self._write_grading_with_harness(
+            tmp_path / "after.grade.json",
+            harness="codex",
+        )
+        rc = main(["compare", str(before), str(after)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed harnesses" in err
+        assert "--cross-harness" in err
+
+    def test_compare_two_grade_json_cross_harness_flag_succeeds(
+        self, tmp_path, capsys
+    ):
+        """Mixed-harness ``.grade.json`` pair + ``--cross-harness`` → ok + WARN."""
+        before = self._write_grading_with_harness(
+            tmp_path / "before.grade.json",
+            harness="claude-code",
+        )
+        after = self._write_grading_with_harness(
+            tmp_path / "after.grade.json",
+            harness="codex",
+        )
+        rc = main(
+            ["compare", str(before), str(after), "--cross-harness"]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "comparing across harnesses" in captured.err
+
+    def test_compare_two_iters_mixed_provider_refuses_exit_2(
+        self, tmp_path, capsys
+    ):
+        """Mixed-provider pair without opt-in → exit 2 + refusal."""
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            provider="anthropic",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            provider="openai",
+        )
+        rc = main(["compare", str(before_dir), str(after_dir)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed providers" in err
+        assert "'anthropic'" in err
+        assert "'openai'" in err
+        assert "--cross-provider" in err
+
+    def test_compare_provider_cross_flag_succeeds(self, tmp_path, capsys):
+        """Mixed-provider pair + ``--cross-provider`` → normal exit + WARN."""
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            provider="anthropic",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            provider="openai",
+        )
+        rc = main(
+            [
+                "compare",
+                str(before_dir),
+                str(after_dir),
+                "--cross-provider",
+            ]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "comparing across providers" in captured.err
+        assert "'anthropic'" in captured.err
+        assert "'openai'" in captured.err
+
+    def test_compare_two_txt_files_silent_skip(self, tmp_path, capsys):
+        """``.txt`` capture pair has no harness/provider metadata → silent-skip.
+
+        Per DEC-003: when either input is a ``.txt`` capture, the
+        cross-axis check is skipped entirely. The diff proceeds
+        normally with no refusal and no WARNING — we have no way to
+        know whether the captures came from different harnesses.
+        """
+        before_txt = tmp_path / "before.txt"
+        after_txt = tmp_path / "after.txt"
+        before_txt.write_text("hello world")
+        after_txt.write_text("hello world")
+
+        eval_spec = _make_eval_spec(
+            assertions=[{"type": "contains", "needle": "hello"}]
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(
+                [
+                    "compare",
+                    str(before_txt),
+                    str(after_txt),
+                    "--spec",
+                    "skill.md",
+                ]
+            )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "Mixed harnesses" not in captured.err
+        assert "Mixed providers" not in captured.err
+        assert "comparing across" not in captured.err
+
+    def test_compare_both_axes_mixed_only_cross_harness_refuses(
+        self, tmp_path, capsys
+    ):
+        """DEC-011: both axes mixed + only ``--cross-harness`` → exit 2.
+
+        The provider axis is still uncovered, so the run refuses with
+        the provider refusal message naming ``--cross-provider``. The
+        single-axis opt-in does NOT silently allow the other axis to
+        slip through.
+        """
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            harness="codex",
+            provider="openai",
+        )
+        rc = main(
+            [
+                "compare",
+                str(before_dir),
+                str(after_dir),
+                "--cross-harness",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Harness axis was opted in → emits its WARNING.
+        assert "comparing across harnesses" in err
+        # Provider axis is the still-uncovered one → refusal.
+        assert "Mixed providers" in err
+        assert "--cross-provider" in err
+
+    def test_compare_both_axes_mixed_both_flags_succeeds_with_two_warnings(
+        self, tmp_path, capsys
+    ):
+        """Both flags + both axes mixed → normal exit + two WARNINGs."""
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            harness="codex",
+            provider="openai",
+        )
+        rc = main(
+            [
+                "compare",
+                str(before_dir),
+                str(after_dir),
+                "--cross-harness",
+                "--cross-provider",
+            ]
+        )
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "comparing across harnesses" in err
+        assert "comparing across providers" in err
+
+
 class TestCmdGradeCompareFlagRemoved:
     """US-003: the legacy --compare flag on grade is gone."""
 

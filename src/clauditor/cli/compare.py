@@ -79,6 +79,39 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "(requires --spec). Prints a preference verdict."
         ),
     )
+    # #153 US-005: cross-axis opt-in flags for delta mode. Per DEC-007
+    # of ``plans/super/153-cross-axis-comparability.md`` ``compare``
+    # has only two inputs, so a "filter" doesn't fit the model — we
+    # ship only the opt-in side. Per DEC-002 the flags are strictly
+    # orthogonal: ``--cross-harness`` allows mixed harness only, and
+    # ``--cross-provider`` allows mixed provider only. A pair mixed on
+    # both axes requires both flags. The ``--blind`` path is
+    # deliberately untouched per the ticket; these flags only
+    # influence the delta path.
+    p_compare.add_argument(
+        "--cross-harness",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow comparing across mixed harnesses "
+            "(claude-code vs codex). Only meaningful in delta mode "
+            "(positional .grade.json or --skill/--from/--to); "
+            "silent-skip when either input is a .txt capture. "
+            "Results may not be comparable."
+        ),
+    )
+    p_compare.add_argument(
+        "--cross-provider",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow comparing across mixed providers "
+            "(anthropic vs openai). Only meaningful in delta mode "
+            "(positional .grade.json or --skill/--from/--to); "
+            "silent-skip when either input is a .txt capture. "
+            "Results may not be comparable."
+        ),
+    )
     p_compare.add_argument(
         "--transport",
         type=_transport_choice,
@@ -157,6 +190,37 @@ def _load_assertion_set(
     raise ValueError(
         f"Unsupported file type for {path}: expected .txt or .grade.json"
     )
+
+
+def _load_grading_metadata(path: Path) -> dict[str, str]:
+    """Read ``harness`` and ``provider_source`` from a grade-json input.
+
+    Accepts a directory containing ``grading.json`` or a flat
+    ``.grade.json`` / ``grading.json`` file. Returns a dict suitable
+    for :func:`clauditor.audit.detect_mixed_dimension` (keys
+    ``"harness"`` and ``"provider"``). #153 US-005: mirrors the
+    audit-side metadata extraction so the same pure
+    ``detect_mixed_dimension`` helper consumed by ``trend`` can also
+    drive ``compare`` cross-axis detection.
+
+    Reuses :class:`GradingReport.from_json` so legacy v1/v2/v3
+    sidecars (no ``harness`` / ``provider_source`` field) backfill
+    the canonical defaults (``"claude-code"`` / ``"anthropic"``).
+    Raises ``ValueError`` only when the file is missing entirely;
+    a malformed JSON propagates the underlying decoder error.
+    """
+    from clauditor.quality_grader import GradingReport
+
+    if path.is_dir():
+        grading = path / "grading.json"
+        if not grading.is_file():
+            raise ValueError(f"no grading.json found in {path}")
+        path = grading
+    report = GradingReport.from_json(path.read_text())
+    return {
+        "harness": report.harness,
+        "provider": report.provider_source,
+    }
 
 
 def _file_kind(path: Path) -> str:
@@ -484,6 +548,56 @@ def cmd_compare(args: argparse.Namespace) -> int:
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
+
+    # #153 US-005: cross-axis comparability check. Runs only when both
+    # inputs carry harness/provider metadata — i.e. both are
+    # ``.grade.json`` (flat file or iteration-dir/grading.json).
+    # Per DEC-003: ``.txt`` capture pairs silent-skip because the raw
+    # capture format has no metadata to compare. Per DEC-011: when
+    # both axes are mismatched and only one ``--cross-*`` is passed,
+    # refuse and name the still-uncovered axis. The detection runs
+    # AFTER ``_load_assertion_set`` (which may raise on malformed
+    # JSON, surfacing the parse error first) and BEFORE
+    # ``diff_assertion_sets`` so a refused run produces no diff
+    # output.
+    if before_kind == "grade.json" and after_kind == "grade.json":
+        from clauditor.audit import detect_mixed_dimension
+
+        try:
+            before_meta = _load_grading_metadata(before_path)
+            after_meta = _load_grading_metadata(after_path)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
+        records = [before_meta, after_meta]
+        cross_harness = bool(getattr(args, "cross_harness", False))
+        cross_provider = bool(getattr(args, "cross_provider", False))
+        refused = False
+        for dimension, opt_in, label_singular, label_plural in (
+            ("harness", cross_harness, "harness", "harnesses"),
+            ("provider", cross_provider, "provider", "providers"),
+        ):
+            is_mixed, values_seen = detect_mixed_dimension(
+                records, dimension=dimension
+            )
+            if not is_mixed:
+                continue
+            values_str = ", ".join(repr(v) for v in values_seen)
+            if opt_in:
+                print(
+                    f"WARNING: comparing across {label_plural} "
+                    f"({values_str}) — results may not be comparable.",
+                    file=sys.stderr,
+                )
+                continue
+            print(
+                f"ERROR: Mixed {label_plural} detected ({values_str}). "
+                f"Pass --cross-{label_singular} to allow comparing.",
+                file=sys.stderr,
+            )
+            refused = True
+        if refused:
+            return 2
 
     flips = diff_assertion_sets(before_set, after_set)
 
