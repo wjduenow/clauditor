@@ -583,19 +583,20 @@ def cmd_compare(args: argparse.Namespace) -> int:
     # capture format has no metadata to compare. Per DEC-011: when
     # both axes are mismatched and only one ``--cross-*`` is passed,
     # refuse and name the still-uncovered axis. The detection runs
-    # AFTER ``_load_assertion_set`` (which may raise on malformed
-    # JSON, surfacing the parse error first) and BEFORE
-    # ``diff_assertion_sets`` so a refused run produces no diff
-    # output.
+    # AFTER ``_load_assertion_set`` (which raises on malformed JSON or
+    # missing files, surfacing parse errors via the try/except above)
+    # and BEFORE ``diff_assertion_sets`` so a refused run produces no
+    # diff output. ``_load_grading_metadata`` and ``_load_assertion_set``
+    # both route through the shared :func:`_load_grading_report_safe`
+    # parse seam, so any malformed-sidecar failure has already surfaced
+    # at the assertion-set load above; the metadata load here cannot
+    # raise unless the file changed between the two reads (a theoretical
+    # race not worth a wider try/except).
     if before_kind == "grade.json" and after_kind == "grade.json":
         from clauditor.audit import detect_mixed_dimension
 
-        try:
-            before_meta = _load_grading_metadata(before_path)
-            after_meta = _load_grading_metadata(after_path)
-        except ValueError as e:
-            print(f"ERROR: {e}", file=sys.stderr)
-            return 2
+        before_meta = _load_grading_metadata(before_path)
+        after_meta = _load_grading_metadata(after_path)
         records = [before_meta, after_meta]
         cross_harness = bool(getattr(args, "cross_harness", False))
         cross_provider = bool(getattr(args, "cross_provider", False))

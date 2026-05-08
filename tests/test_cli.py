@@ -3219,6 +3219,39 @@ class TestCmdCompareCrossAxis:
         assert "Mixed providers detected" in err
         assert "WARNING: comparing across" not in err
 
+    def test_compare_malformed_non_dict_grading_json_exits_2(
+        self, tmp_path, capsys
+    ):
+        """A ``grading.json`` whose JSON root is a list (not a dict)
+        triggers an ``AttributeError`` deep in
+        ``GradingReport.from_json``. ``_load_grading_report_safe``
+        catches it and re-raises as a ``ValueError``, producing a
+        clean exit-2 + stable stderr substring.
+
+        Pre-PR-#168-review, the AttributeError catch was added in
+        ``_load_grading_metadata`` only and was unreachable because
+        ``_load_assertion_set`` (called first) parsed the file
+        independently and let the AttributeError escape as a
+        traceback. The PR review surfaced this; the fix extracted
+        ``_load_grading_report_safe`` as the single normalized parse
+        seam shared by both call sites — this test exercises that
+        seam through the ``_load_assertion_set`` path, which is what
+        runs first in ``cmd_compare``.
+        """
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        # Malformed: JSON array instead of object at the root.
+        after_dir = tmp_path / ".clauditor" / "iteration-2" / "foo"
+        after_dir.mkdir(parents=True)
+        (after_dir / "grading.json").write_text("[]")
+        rc = main(["compare", str(before_dir), str(after_dir)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "malformed grading.json" in err
+
     def test_compare_iter_dir_without_grading_json_exits_2(
         self, tmp_path, capsys
     ):
