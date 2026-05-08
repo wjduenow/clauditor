@@ -5683,6 +5683,166 @@ class TestCmdTrendProviderFilter:
         assert "\t0.4" in out
 
 
+class TestCmdTrendHarnessFilter:
+    """``clauditor trend --harness`` (#153 US-003).
+
+    Mirror of ``TestCmdTrendProviderFilter`` for the harness axis.
+    Traces to DEC-006/DEC-008 (mixed-harness refusal exit 2; refusal
+    message names ONLY ``--harness X`` filter — US-004 will retrofit
+    the ``--cross-harness`` suffix once that flag exists).
+    """
+
+    def _seed_mixed_harness(self, path, skill="test-skill"):
+        """Seed 3 claude-code + 2 codex grade records (same provider)."""
+        from clauditor import history
+
+        for i in range(3):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness="claude-code",
+                path=path,
+            )
+        for i in range(2):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.8 + i * 0.05,
+                mean_score=0.7,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness="codex",
+                path=path,
+            )
+
+    def _seed_single_harness(
+        self, path, skill="test-skill", harness="claude-code", n=3
+    ):
+        from clauditor import history
+
+        for i in range(n):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness=harness,
+                path=path,
+            )
+
+    def test_mixed_harness_history_refuses_exit_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Mixed-harness history without ``--harness`` → exit 2."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed harnesses" in err
+        assert "claude-code" in err
+        assert "codex" in err
+        assert "--harness claude-code" in err
+
+    def test_harness_filter_codex_renders_filtered_records(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` on mixed history filters to codex records."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--harness",
+                "codex",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        # Only the 2 codex records should appear.
+        assert len(data_lines) == 2
+
+    def test_harness_filter_claude_code_on_mixed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness claude-code`` on mixed history filters to claude-code."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--harness",
+                "claude-code",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        # Only the 3 claude-code records should appear.
+        assert len(data_lines) == 3
+
+    def test_harness_filter_empty_result_exits_1(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` on all-claude-code history → exit 1."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_single_harness(
+            tmp_path / ".clauditor" / "history.jsonl",
+            harness="claude-code",
+        )
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--harness",
+                "codex",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "codex" in err
+        assert "no records" in err.lower()
+
+    def test_harness_concrete_choice_rejects_auto(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness auto`` rejected by argparse → exit 2 (validator)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_single_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "trend",
+                    "test-skill",
+                    "--metric",
+                    "pass_rate",
+                    "--harness",
+                    "auto",
+                ]
+            )
+        assert exc_info.value.code == 2
+
+
 class TestCmdGradeHistory:
     """cmd_grade appends a history record (US-006)."""
 
