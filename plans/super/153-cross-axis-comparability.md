@@ -4,11 +4,13 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/153
 - **Branch:** `feature/153-cross-axis-comparability`
 - **Worktree:** `/Users/wesduenow/Projects/worktrees/clauditor/153-cross-axis-comparability`
-- **Phase:** `approved`
-- **Sessions:** 1
+- **Phase:** `devolved`
+- **Sessions:** 2
 - **Last session:** 2026-05-07
 - **Total decisions:** 11 (DEC-001 through DEC-011)
 - **PR URL:** https://github.com/wjduenow/clauditor/pull/168 (draft, approved)
+- **Beads epic:** `clauditor-h2l`
+- **Beads tasks:** `clauditor-h2l.1` (US-001) through `clauditor-h2l.7` (US-007)
 
 ---
 
@@ -504,4 +506,23 @@ Each story validated against the rules surfaced by Convention Checker:
 
 ## Phase 4 status
 
-Detailing complete. 7 stories defined (5 implementation + 1 quality gate + 1 patterns & memory). All stories trace to DECs and `.claude/rules/`. Ready for review and PR publication.
+Detailing complete. 7 stories defined (5 implementation + 1 quality gate + 1 patterns & memory). All stories trace to DECs and `.claude/rules/`. PR #168 published and approved.
+
+---
+
+## Beads Manifest (Phase 7 — Devolved)
+
+| Story | Bead ID | Type | Depends on |
+|---|---|---|---|
+| Epic | `clauditor-h2l` | epic | — |
+| US-001 — Pure helper `detect_mixed_dimension` | `clauditor-h2l.1` | task | (none) |
+| US-002 — `_harness_concrete_choice` argparse helper | `clauditor-h2l.2` | task | (none) |
+| US-003 — Trend mixed-harness detection + `--harness` filter | `clauditor-h2l.3` | task | h2l.1, h2l.2 |
+| US-004 — Trend `--cross-{harness,provider}` opt-in + multi-axis refusal + retrofit | `clauditor-h2l.4` | task | h2l.3 |
+| US-005 — Compare delta cross-axis detection + `--cross-*` flags | `clauditor-h2l.5` | task | h2l.1, h2l.3 |
+| US-006 — Quality Gate (code review × 4 + CodeRabbit + validation) | `clauditor-h2l.6` | task | h2l.1, h2l.2, h2l.3, h2l.4, h2l.5 |
+| US-007 — Patterns & Memory | `clauditor-h2l.7` | task (P4) | h2l.6 |
+
+**Ready-to-claim** at devolve time: `clauditor-h2l.1` and `clauditor-h2l.2` (no dependencies). Ralph or a manual claimant should start with one of these.
+
+**Worktree:** `/Users/wesduenow/Projects/worktrees/clauditor/153-cross-axis-comparability` on branch `feature/153-cross-axis-comparability` (off `dev`).
