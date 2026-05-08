@@ -175,11 +175,14 @@ def cmd_trend(args: argparse.Namespace) -> int:
     #
     # Mixed-state per axis is computed from the full filtered set
     # BEFORE the ``--last`` slice so a user with mixed history cannot
-    # silently slip past the refusal by narrowing the window.
-    # ``_normalized_provider`` / ``_normalized_harness`` coerce
-    # missing/non-string/blank values to canonical defaults so a
-    # malformed v2 record (``provider: null`` or a stray int) cannot
-    # raise ``TypeError`` mid-sort.
+    # silently slip past the refusal by narrowing the window. The
+    # pure helper :func:`clauditor.audit.detect_mixed_dimension`
+    # (#153 US-001 / DEC-010) is the canonical mixed-axis detector;
+    # both ``trend`` and ``compare`` route through it so a future
+    # change to coercion semantics or sort order propagates uniformly.
+    # ``_normalized_provider`` / ``_normalized_harness`` are still
+    # used below for per-record filtering (where the helper's
+    # aggregate shape doesn't fit).
     #
     # DEC-011 multi-axis refusal: when both axes are mixed and only
     # one ``--cross-*`` flag is passed, the un-opted-in axis still
@@ -189,30 +192,34 @@ def cmd_trend(args: argparse.Namespace) -> int:
     # their refusal check (else the user would see a WARNING line for
     # the axis they opted into immediately above the refusal for the
     # axis they did not — confusing on a CI log).
-    providers_seen = sorted({_normalized_provider(rec) for rec in records})
-    harnesses_seen = sorted({_normalized_harness(rec) for rec in records})
+    from clauditor.audit import detect_mixed_dimension
+
+    provider_mixed, providers_seen = detect_mixed_dimension(
+        records, dimension="provider"
+    )
+    harness_mixed, harnesses_seen = detect_mixed_dimension(
+        records, dimension="harness"
+    )
 
     refusal_messages: list[str] = []
 
-    if args.provider is None and not args.cross_provider:
-        if len(providers_seen) > 1:
-            providers_str = ", ".join(repr(p) for p in providers_seen)
-            refusal_messages.append(
-                f"ERROR: Mixed providers detected in history for skill "
-                f"'{args.skill_name}' ({providers_str}). Pass "
-                f"--provider anthropic (or --provider openai) to filter, "
-                f"or --cross-provider to allow averaging."
-            )
+    if args.provider is None and not args.cross_provider and provider_mixed:
+        providers_str = ", ".join(repr(p) for p in providers_seen)
+        refusal_messages.append(
+            f"ERROR: Mixed providers detected in history for skill "
+            f"'{args.skill_name}' ({providers_str}). Pass "
+            f"--provider anthropic (or --provider openai) to filter, "
+            f"or --cross-provider to allow averaging."
+        )
 
-    if args.harness is None and not args.cross_harness:
-        if len(harnesses_seen) > 1:
-            harnesses_str = ", ".join(repr(h) for h in harnesses_seen)
-            refusal_messages.append(
-                f"ERROR: Mixed harnesses detected in history for skill "
-                f"'{args.skill_name}' ({harnesses_str}). Pass "
-                f"--harness claude-code (or --harness codex) to filter, "
-                f"or --cross-harness to allow averaging."
-            )
+    if args.harness is None and not args.cross_harness and harness_mixed:
+        harnesses_str = ", ".join(repr(h) for h in harnesses_seen)
+        refusal_messages.append(
+            f"ERROR: Mixed harnesses detected in history for skill "
+            f"'{args.skill_name}' ({harnesses_str}). Pass "
+            f"--harness claude-code (or --harness codex) to filter, "
+            f"or --cross-harness to allow averaging."
+        )
 
     if refusal_messages:
         for msg in refusal_messages:
@@ -233,7 +240,7 @@ def cmd_trend(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-    elif args.cross_provider and len(providers_seen) > 1:
+    elif args.cross_provider and provider_mixed:
         providers_str = ", ".join(repr(p) for p in providers_seen)
         print(
             f"WARNING: averaging across providers ({providers_str}) "
@@ -255,7 +262,7 @@ def cmd_trend(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-    elif args.cross_harness and len(harnesses_seen) > 1:
+    elif args.cross_harness and harness_mixed:
         harnesses_str = ", ".join(repr(h) for h in harnesses_seen)
         print(
             f"WARNING: averaging across harnesses ({harnesses_str}) "

@@ -206,8 +206,13 @@ def _load_grading_metadata(path: Path) -> dict[str, str]:
     Reuses :class:`GradingReport.from_json` so legacy v1/v2/v3
     sidecars (no ``harness`` / ``provider_source`` field) backfill
     the canonical defaults (``"claude-code"`` / ``"anthropic"``).
-    Raises ``ValueError`` only when the file is missing entirely;
-    a malformed JSON propagates the underlying decoder error.
+    Raises ``ValueError`` when the file is missing OR malformed:
+    JSON decode errors are already :class:`ValueError` subclasses;
+    a JSON root that is not a dict (e.g. ``[]``) would otherwise
+    raise :class:`AttributeError` from inside ``from_json`` — we
+    re-raise as ``ValueError`` so the caller's single
+    ``except ValueError`` clause routes both cases to the same
+    user-facing exit-2 + stderr error path.
     """
     from clauditor.quality_grader import GradingReport
 
@@ -216,7 +221,12 @@ def _load_grading_metadata(path: Path) -> dict[str, str]:
         if not grading.is_file():
             raise ValueError(f"no grading.json found in {path}")
         path = grading
-    report = GradingReport.from_json(path.read_text())
+    try:
+        report = GradingReport.from_json(path.read_text())
+    except (AttributeError, TypeError, KeyError) as exc:
+        raise ValueError(
+            f"malformed grading.json at {path}: {exc}"
+        ) from exc
     return {
         "harness": report.harness,
         "provider": report.provider_source,

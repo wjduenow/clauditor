@@ -3102,6 +3102,31 @@ class TestCmdCompareCrossAxis:
         assert "comparing across harnesses" in err
         assert "comparing across providers" in err
 
+    def test_compare_iter_dir_without_grading_json_exits_2(
+        self, tmp_path, capsys
+    ):
+        """A directory missing ``grading.json`` surfaces a ``ValueError``
+        from ``_load_grading_metadata`` which the CLI routes to exit 2
+        with a stable substring on stderr.
+
+        Quality-gate regression: prior to QG pass 2, this branch was
+        uncovered — an iteration dir whose ``grading.json`` was missing
+        (mid-write, accidentally deleted, etc.) would silently surface
+        through the same exit-2 path but had no test pinning the
+        message shape.
+        """
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        # Empty after_dir — no grading.json inside.
+        after_dir = tmp_path / ".clauditor" / "iteration-2" / "foo"
+        after_dir.mkdir(parents=True)
+        rc = main(["compare", str(before_dir), str(after_dir)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "no grading.json found" in err
 
 class TestCmdGradeCompareFlagRemoved:
     """US-003: the legacy --compare flag on grade is gone."""
@@ -5736,6 +5761,60 @@ class TestNormalizedProvider:
             {_normalized_provider(rec) for rec in records}
         )
         assert providers_seen == ["anthropic", "openai"]
+
+
+class TestNormalizedHarness:
+    """Defense-in-depth helper for the harness axis (#153 US-003).
+
+    Mirror of :class:`TestNormalizedProvider`. ``read_records`` already
+    backfills missing ``harness`` for legacy v1/v2 lines (#152 DEC-005);
+    ``_normalized_harness`` additionally guards against ``harness: null``,
+    a stray int, or a blank/whitespace-only string so a malformed mixed
+    history file cannot raise ``TypeError`` mid-sort and crash trend.
+    """
+
+    def test_valid_string_passes_through(self):
+        from clauditor.cli.trend import _normalized_harness
+
+        assert _normalized_harness({"harness": "claude-code"}) == "claude-code"
+        assert _normalized_harness({"harness": "codex"}) == "codex"
+
+    def test_missing_key_defaults_claude_code(self):
+        from clauditor.cli.trend import _normalized_harness
+
+        assert _normalized_harness({}) == "claude-code"
+
+    def test_none_defaults_claude_code(self):
+        from clauditor.cli.trend import _normalized_harness
+
+        assert _normalized_harness({"harness": None}) == "claude-code"
+
+    def test_blank_string_defaults_claude_code(self):
+        from clauditor.cli.trend import _normalized_harness
+
+        assert _normalized_harness({"harness": ""}) == "claude-code"
+        assert _normalized_harness({"harness": "   "}) == "claude-code"
+
+    def test_int_defaults_claude_code(self):
+        from clauditor.cli.trend import _normalized_harness
+
+        assert _normalized_harness({"harness": 1}) == "claude-code"
+
+    def test_mixed_records_sort_without_typeerror(self):
+        """Regression: a malformed record with ``harness: null`` next
+        to normal string records does not raise ``TypeError``."""
+        from clauditor.cli.trend import _normalized_harness
+
+        records = [
+            {"harness": "codex"},
+            {"harness": None},
+            {"harness": "claude-code"},
+            {"harness": 1},
+        ]
+        harnesses_seen = sorted(
+            {_normalized_harness(rec) for rec in records}
+        )
+        assert harnesses_seen == ["claude-code", "codex"]
 
 
 class TestCmdTrendProviderFilter:
