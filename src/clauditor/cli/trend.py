@@ -86,7 +86,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         default="grade",
         help="Filter history records by command (default: grade)",
     )
-    p_trend.add_argument(
+    # #153 US-004 DEC-001: ``--<dim>`` filter and ``--cross-<dim>`` opt-in
+    # are mutually exclusive per axis. Two SEPARATE mutex groups (one per
+    # axis) so ``--harness X --cross-provider`` is valid (filter the
+    # harness axis, allow mixed provider). A single global mutex group
+    # would over-couple the axes.
+    p_provider_group = p_trend.add_mutually_exclusive_group()
+    p_provider_group.add_argument(
         "--provider",
         type=_provider_concrete_choice,
         default=None,
@@ -96,7 +102,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "mixed providers."
         ),
     )
-    p_trend.add_argument(
+    p_provider_group.add_argument(
+        "--cross-provider",
+        dest="cross_provider",
+        action="store_true",
+        help=(
+            "Allow averaging across mixed providers "
+            "(results may not be comparable)"
+        ),
+    )
+
+    p_harness_group = p_trend.add_mutually_exclusive_group()
+    p_harness_group.add_argument(
         "--harness",
         type=_harness_concrete_choice,
         default=None,
@@ -104,6 +121,15 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "Filter history records by harness "
             "('claude-code' or 'codex'). Required when history contains "
             "mixed harnesses."
+        ),
+    )
+    p_harness_group.add_argument(
+        "--cross-harness",
+        dest="cross_harness",
+        action="store_true",
+        help=(
+            "Allow averaging across mixed harnesses "
+            "(results may not be comparable)"
         ),
     )
     p_trend.add_argument(
@@ -143,25 +169,58 @@ def cmd_trend(args: argparse.Namespace) -> int:
             )
             return 1
 
-    # Provider refusal / filter (DEC-003, DEC-009, DEC-011 of #147).
-    # Computed from the full filtered set BEFORE the --last slice so a
-    # user with mixed history cannot silently slip past the refusal by
-    # narrowing the window. ``_normalized_provider`` coerces
-    # missing/non-string/blank values to ``"anthropic"`` so a
+    # Provider + harness refusal / filter / opt-in (#153 US-004,
+    # extending #147 DEC-003 / DEC-009 / DEC-011 for the provider
+    # axis and #153 US-003 for the harness axis).
+    #
+    # Mixed-state per axis is computed from the full filtered set
+    # BEFORE the ``--last`` slice so a user with mixed history cannot
+    # silently slip past the refusal by narrowing the window.
+    # ``_normalized_provider`` / ``_normalized_harness`` coerce
+    # missing/non-string/blank values to canonical defaults so a
     # malformed v2 record (``provider: null`` or a stray int) cannot
     # raise ``TypeError`` mid-sort.
+    #
+    # DEC-011 multi-axis refusal: when both axes are mixed and only
+    # one ``--cross-*`` flag is passed, the un-opted-in axis still
+    # refuses. We collect refusals from both axes first, then if any
+    # refusal landed we print them all together and exit 2. WARNINGs
+    # for opted-in axes are deferred until both axes have cleared
+    # their refusal check (else the user would see a WARNING line for
+    # the axis they opted into immediately above the refusal for the
+    # axis they did not — confusing on a CI log).
     providers_seen = sorted({_normalized_provider(rec) for rec in records})
-    if args.provider is None:
+    harnesses_seen = sorted({_normalized_harness(rec) for rec in records})
+
+    refusal_messages: list[str] = []
+
+    if args.provider is None and not args.cross_provider:
         if len(providers_seen) > 1:
             providers_str = ", ".join(repr(p) for p in providers_seen)
-            print(
+            refusal_messages.append(
                 f"ERROR: Mixed providers detected in history for skill "
                 f"'{args.skill_name}' ({providers_str}). Pass "
-                f"--provider anthropic or --provider openai to filter.",
-                file=sys.stderr,
+                f"--provider anthropic (or --provider openai) to filter, "
+                f"or --cross-provider to allow averaging."
             )
-            return 2
-    else:
+
+    if args.harness is None and not args.cross_harness:
+        if len(harnesses_seen) > 1:
+            harnesses_str = ", ".join(repr(h) for h in harnesses_seen)
+            refusal_messages.append(
+                f"ERROR: Mixed harnesses detected in history for skill "
+                f"'{args.skill_name}' ({harnesses_str}). Pass "
+                f"--harness claude-code (or --harness codex) to filter, "
+                f"or --cross-harness to allow averaging."
+            )
+
+    if refusal_messages:
+        for msg in refusal_messages:
+            print(msg, file=sys.stderr)
+        return 2
+
+    # Provider filter or opt-in WARNING.
+    if args.provider is not None:
         records = [
             rec
             for rec in records
@@ -174,29 +233,16 @@ def cmd_trend(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+    elif args.cross_provider and len(providers_seen) > 1:
+        providers_str = ", ".join(repr(p) for p in providers_seen)
+        print(
+            f"WARNING: averaging across providers ({providers_str}) "
+            f"— results may not be comparable.",
+            file=sys.stderr,
+        )
 
-    # Harness refusal / filter (#153 US-003 — mirror of the provider
-    # check above for the harness axis). Computed from the full
-    # filtered set BEFORE the --last slice so a user with mixed
-    # history cannot silently slip past the refusal by narrowing the
-    # window. ``_normalized_harness`` coerces missing/non-string/blank
-    # values to ``"claude-code"`` so a malformed v2 record
-    # (``harness: null`` or a stray int) cannot raise ``TypeError``
-    # mid-sort. The refusal message names ONLY the ``--harness X``
-    # filter — US-004 will retrofit a ``--cross-harness`` opt-in
-    # suffix once that flag exists (DEC-008 of #153 plan).
-    harnesses_seen = sorted({_normalized_harness(rec) for rec in records})
-    if args.harness is None:
-        if len(harnesses_seen) > 1:
-            harnesses_str = ", ".join(repr(h) for h in harnesses_seen)
-            print(
-                f"ERROR: Mixed harnesses detected in history for skill "
-                f"'{args.skill_name}' ({harnesses_str}). Pass "
-                f"--harness claude-code (or --harness codex) to filter.",
-                file=sys.stderr,
-            )
-            return 2
-    else:
+    # Harness filter or opt-in WARNING.
+    if args.harness is not None:
         records = [
             rec
             for rec in records
@@ -209,6 +255,13 @@ def cmd_trend(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+    elif args.cross_harness and len(harnesses_seen) > 1:
+        harnesses_str = ", ".join(repr(h) for h in harnesses_seen)
+        print(
+            f"WARNING: averaging across harnesses ({harnesses_str}) "
+            f"— results may not be comparable.",
+            file=sys.stderr,
+        )
 
     last_n = args.last
     if last_n is not None and last_n > 0:

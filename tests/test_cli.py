@@ -5492,17 +5492,27 @@ class TestCmdTrendProviderFilter:
     def test_mixed_provider_history_refuses_exit_2(
         self, tmp_path, monkeypatch, capsys
     ):
-        """Mixed-provider history without ``--provider`` → exit 2 (DEC-003)."""
+        """Mixed-provider history without ``--provider`` → exit 2 (DEC-003).
+
+        Asserts the byte-stable lead-in (``"Mixed providers detected in
+        history for skill"``) is preserved after the #153 US-004 DEC-008
+        retrofit, AND the new ``--cross-provider`` opt-in suffix is
+        present.
+        """
         monkeypatch.chdir(tmp_path)
         self._seed_mixed(tmp_path / ".clauditor" / "history.jsonl")
 
         rc = main(["trend", "test-skill", "--metric", "pass_rate"])
         assert rc == 2
         err = capsys.readouterr().err
-        assert "Mixed providers" in err
+        # Byte-stable lead-in (DEC-008 — must not break older CI parsers).
+        assert "Mixed providers detected in history for skill" in err
         assert "anthropic" in err
         assert "openai" in err
         assert "--provider" in err
+        # #153 US-004 DEC-008 retrofit: refusal now also names the
+        # ``--cross-provider`` opt-in flag.
+        assert "--cross-provider" in err
 
     def test_provider_filter_renders_filtered_records(
         self, tmp_path, monkeypatch, capsys
@@ -5739,17 +5749,26 @@ class TestCmdTrendHarnessFilter:
     def test_mixed_harness_history_refuses_exit_2(
         self, tmp_path, monkeypatch, capsys
     ):
-        """Mixed-harness history without ``--harness`` → exit 2."""
+        """Mixed-harness history without ``--harness`` → exit 2.
+
+        Asserts the byte-stable lead-in (``"Mixed harnesses detected in
+        history for skill"``) survives the #153 US-004 DEC-008 retrofit
+        AND the new ``--cross-harness`` opt-in suffix is present.
+        """
         monkeypatch.chdir(tmp_path)
         self._seed_mixed_harness(tmp_path / ".clauditor" / "history.jsonl")
 
         rc = main(["trend", "test-skill", "--metric", "pass_rate"])
         assert rc == 2
         err = capsys.readouterr().err
-        assert "Mixed harnesses" in err
+        # Byte-stable lead-in (DEC-008 — must not break older CI parsers).
+        assert "Mixed harnesses detected in history for skill" in err
         assert "claude-code" in err
         assert "codex" in err
         assert "--harness claude-code" in err
+        # #153 US-004 DEC-008 retrofit: refusal now also names the
+        # ``--cross-harness`` opt-in flag.
+        assert "--cross-harness" in err
 
     def test_harness_filter_codex_renders_filtered_records(
         self, tmp_path, monkeypatch, capsys
@@ -5841,6 +5860,291 @@ class TestCmdTrendHarnessFilter:
                 ]
             )
         assert exc_info.value.code == 2
+
+
+class TestCmdTrendCrossOptIn:
+    """``clauditor trend --cross-{harness,provider}`` opt-in flags (#153 US-004).
+
+    Traces to DEC-001 (per-axis mutex groups), DEC-002 (per-axis flags
+    strictly orthogonal), DEC-005 (WARNING format), DEC-008 (retrofit
+    existing provider + harness refusal-message suffixes to mention the
+    new opt-in), DEC-011 (multi-axis refusal: when one axis is
+    opt-in-flagged but the other is still mixed without its flag,
+    refuse and name the still-uncovered axis).
+    """
+
+    def _seed_mixed_provider(self, path, skill="test-skill"):
+        """Seed 3 anthropic + 2 openai grade records (same harness)."""
+        from clauditor import history
+
+        for i in range(3):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness="claude-code",
+                path=path,
+            )
+        for i in range(2):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.8 + i * 0.05,
+                mean_score=0.7,
+                metrics={},
+                command="grade",
+                provider="openai",
+                harness="claude-code",
+                path=path,
+            )
+
+    def _seed_mixed_harness(self, path, skill="test-skill"):
+        """Seed 3 claude-code + 2 codex grade records (same provider)."""
+        from clauditor import history
+
+        for i in range(3):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness="claude-code",
+                path=path,
+            )
+        for i in range(2):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.8 + i * 0.05,
+                mean_score=0.7,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness="codex",
+                path=path,
+            )
+
+    def _seed_mixed_both(self, path, skill="test-skill"):
+        """Seed records mixed on BOTH axes (4 distinct combos).
+
+        Two anthropic+claude-code, two anthropic+codex, two
+        openai+claude-code, two openai+codex — so providers and
+        harnesses are each mixed independently.
+        """
+        from clauditor import history
+
+        combos = [
+            ("anthropic", "claude-code"),
+            ("anthropic", "codex"),
+            ("openai", "claude-code"),
+            ("openai", "codex"),
+        ]
+        score = 0.5
+        for provider, harness in combos:
+            for _ in range(2):
+                history.append_record(
+                    skill=skill,
+                    pass_rate=score,
+                    mean_score=0.6,
+                    metrics={},
+                    command="grade",
+                    provider=provider,
+                    harness=harness,
+                    path=path,
+                )
+                score += 0.05
+
+    def test_cross_provider_flag_allows_mixed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Mixed-provider history + ``--cross-provider`` → exit 0 + WARNING."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_provider(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--cross-provider",
+            ]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "WARNING: averaging across providers" in captured.err
+        # Stdout still renders the TSV.
+        data_lines = [ln for ln in captured.out.splitlines() if "\t" in ln]
+        assert len(data_lines) == 5
+
+    def test_cross_harness_flag_allows_mixed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Mixed-harness history + ``--cross-harness`` → exit 0 + WARNING."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--cross-harness",
+            ]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "WARNING: averaging across harnesses" in captured.err
+        data_lines = [ln for ln in captured.out.splitlines() if "\t" in ln]
+        assert len(data_lines) == 5
+
+    def test_cross_provider_and_provider_filter_mutex_error(
+        self, tmp_path, monkeypatch
+    ):
+        """``--provider X --cross-provider`` → argparse mutex (exit 2)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_provider(tmp_path / ".clauditor" / "history.jsonl")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "trend",
+                    "test-skill",
+                    "--metric",
+                    "pass_rate",
+                    "--provider",
+                    "anthropic",
+                    "--cross-provider",
+                ]
+            )
+        assert exc_info.value.code == 2
+
+    def test_cross_harness_and_harness_filter_mutex_error(
+        self, tmp_path, monkeypatch
+    ):
+        """``--harness X --cross-harness`` → argparse mutex (exit 2)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "trend",
+                    "test-skill",
+                    "--metric",
+                    "pass_rate",
+                    "--harness",
+                    "claude-code",
+                    "--cross-harness",
+                ]
+            )
+        assert exc_info.value.code == 2
+
+    def test_both_axes_mixed_only_cross_harness_refuses(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Both mixed + only ``--cross-harness`` → refuse provider (DEC-011)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_both(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--cross-harness",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Provider refusal still fires (DEC-011 — name the still-uncovered axis).
+        assert "Mixed providers detected in history for skill" in err
+        assert "--cross-provider" in err
+        # Harness refusal must NOT fire (axis was opted-in).
+        assert "Mixed harnesses detected in history" not in err
+
+    def test_both_axes_mixed_only_cross_provider_refuses(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Both mixed + only ``--cross-provider`` → refuse harness (DEC-011)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_both(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--cross-provider",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Harness refusal still fires (DEC-011 — name the still-uncovered axis).
+        assert "Mixed harnesses detected in history for skill" in err
+        assert "--cross-harness" in err
+        # Provider refusal must NOT fire (axis was opted-in).
+        assert "Mixed providers detected in history" not in err
+
+    def test_both_axes_mixed_both_flags_succeeds_with_two_warnings(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Both axes mixed + both ``--cross-*`` flags → exit 0 + two WARNINGs."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_both(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--cross-provider",
+                "--cross-harness",
+            ]
+        )
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "WARNING: averaging across providers" in err
+        assert "WARNING: averaging across harnesses" in err
+
+    def test_provider_refusal_message_now_mentions_cross_provider(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """DEC-008 retrofit: provider refusal stderr names ``--cross-provider``."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_provider(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Byte-stable lead-in survives the retrofit.
+        assert "Mixed providers detected in history for skill" in err
+        # New suffix mentions the opt-in flag.
+        assert "--cross-provider" in err
+        assert "to allow averaging" in err
+
+    def test_harness_refusal_message_now_mentions_cross_harness(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """DEC-008 retrofit: harness refusal stderr names ``--cross-harness``."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Byte-stable lead-in survives the retrofit (US-003 substring).
+        assert "Mixed harnesses detected in history for skill" in err
+        # New suffix mentions the opt-in flag.
+        assert "--cross-harness" in err
+        assert "to allow averaging" in err
 
 
 class TestCmdGradeHistory:
