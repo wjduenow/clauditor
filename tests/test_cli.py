@@ -5346,6 +5346,38 @@ class TestProviderConcreteChoice:
             _provider_concrete_choice("openi")
 
 
+class TestHarnessConcreteChoice:
+    """``_harness_concrete_choice`` argparse type validator (#153 US-002).
+
+    DEC-006: rejects ``"auto"`` (distinct from ``_harness_choice`` which
+    accepts auto for the four-layer-precedence resolution). Trend reads
+    pre-resolved history records, so it has no model/spec context to
+    resolve auto against. Mirrors ``_provider_concrete_choice``.
+    """
+
+    def test_accepts_claude_code(self):
+        from clauditor.cli import _harness_concrete_choice
+
+        assert _harness_concrete_choice("claude-code") == "claude-code"
+
+    def test_accepts_codex(self):
+        from clauditor.cli import _harness_concrete_choice
+
+        assert _harness_concrete_choice("codex") == "codex"
+
+    def test_rejects_auto(self):
+        from clauditor.cli import _harness_concrete_choice
+
+        with pytest.raises(argparse.ArgumentTypeError, match="claude-code"):
+            _harness_concrete_choice("auto")
+
+    def test_rejects_unknown(self):
+        from clauditor.cli import _harness_concrete_choice
+
+        with pytest.raises(argparse.ArgumentTypeError, match="foo"):
+            _harness_concrete_choice("foo")
+
+
 class TestNormalizedProvider:
     """Defense-in-depth helper guards malformed history records.
 
