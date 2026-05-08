@@ -112,6 +112,25 @@ def _provider_concrete_choice(value: str) -> str:
     return value
 
 
+def _harness_concrete_choice(value: str) -> str:
+    """argparse type: accept ``"claude-code"`` or ``"codex"`` only.
+
+    DEC-006 of ``plans/super/153-cross-axis-comparability.md``. Sibling
+    to :func:`_harness_choice` but rejects ``"auto"`` because the
+    consuming command (``clauditor trend``) has no model/spec
+    context to resolve ``"auto"`` against — trend reads history
+    records that already carry a concrete harness value. Mirrors
+    :func:`_provider_concrete_choice` shape. argparse maps the
+    ``ArgumentTypeError`` to a clean exit 2 at parse time per
+    ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    """
+    if value not in ("claude-code", "codex"):
+        raise argparse.ArgumentTypeError(
+            f"must be one of 'claude-code', 'codex', got {value!r}"
+        )
+    return value
+
+
 def _resolve_harness(args: argparse.Namespace, eval_spec=None) -> str:
     """Resolve harness using four-layer precedence.
 

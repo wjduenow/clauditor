@@ -2274,6 +2274,74 @@ class TestHarnessOrDefault:
         assert _harness_or_default(["codex"]) == "claude-code"
 
 
+class TestDetectMixedDimension:
+    """US-001 (#153): pure helper for cross-axis comparability.
+
+    ``detect_mixed_dimension`` consumes a list of dict records and
+    returns ``(is_mixed, sorted_unique_values)`` for the named
+    dimension, defensively coercing missing/non-string/None values via
+    the existing ``_provider_or_default`` / ``_harness_or_default``
+    helpers (DEC-010). No I/O, no side effects, never raises.
+
+    Traces to: DEC-010, ``pure-compute-vs-io-split.md``.
+    """
+
+    def test_single_value_not_mixed(self) -> None:
+        from clauditor.audit import detect_mixed_dimension
+        records = [{"provider": "anthropic"}, {"provider": "anthropic"}]
+        is_mixed, values = detect_mixed_dimension(
+            records, dimension="provider"
+        )
+        assert is_mixed is False
+        assert values == ["anthropic"]
+
+    def test_mixed_sorts_and_dedupes(self) -> None:
+        from clauditor.audit import detect_mixed_dimension
+        records = [{"provider": "openai"}, {"provider": "anthropic"}]
+        is_mixed, values = detect_mixed_dimension(
+            records, dimension="provider"
+        )
+        assert is_mixed is True
+        assert values == ["anthropic", "openai"]
+
+    def test_missing_key_defaults_anthropic(self) -> None:
+        from clauditor.audit import detect_mixed_dimension
+        records = [{"provider": "openai"}, {}]
+        is_mixed, values = detect_mixed_dimension(
+            records, dimension="provider"
+        )
+        assert is_mixed is True
+        assert values == ["anthropic", "openai"]
+
+    def test_non_string_values_coerced_safely(self) -> None:
+        from clauditor.audit import detect_mixed_dimension
+        records = [
+            {"provider": "  "},
+            {"provider": None},
+            {"provider": 42},
+        ]
+        is_mixed, values = detect_mixed_dimension(
+            records, dimension="provider"
+        )
+        assert is_mixed is False
+        assert values == ["anthropic"]
+
+    def test_harness_mirror(self) -> None:
+        from clauditor.audit import detect_mixed_dimension
+        records = [{"harness": "codex"}, {"harness": "claude-code"}]
+        is_mixed, values = detect_mixed_dimension(
+            records, dimension="harness"
+        )
+        assert is_mixed is True
+        assert values == ["claude-code", "codex"]
+
+    def test_empty_input(self) -> None:
+        from clauditor.audit import detect_mixed_dimension
+        is_mixed, values = detect_mixed_dimension([], dimension="provider")
+        assert is_mixed is False
+        assert values == []
+
+
 class TestHarnessDimension:
     """US-005 (#152): ``IterationRecord`` / ``AuditAggregate`` carry
     ``harness``; aggregation groups by 4-tuple

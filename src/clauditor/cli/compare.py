@@ -79,6 +79,41 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "(requires --spec). Prints a preference verdict."
         ),
     )
+    # #153 US-005: cross-axis opt-in flags for delta mode. Per DEC-007
+    # of ``plans/super/153-cross-axis-comparability.md`` ``compare``
+    # has only two inputs, so a "filter" doesn't fit the model — we
+    # ship only the opt-in side. Per DEC-002 the flags are strictly
+    # orthogonal: ``--cross-harness`` allows mixed harness only, and
+    # ``--cross-provider`` allows mixed provider only. A pair mixed on
+    # both axes requires both flags. The ``--blind`` path is
+    # deliberately untouched per the ticket; these flags only
+    # influence the delta path.
+    p_compare.add_argument(
+        "--cross-harness",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow comparing across mixed harnesses "
+            "(claude-code vs codex). Only meaningful when comparing two "
+            "grade reports (iteration dirs / grading.json / .grade.json); "
+            "the cross-axis check is skipped when both inputs are .txt "
+            "captures because raw captures carry no harness metadata. "
+            "Results may not be comparable."
+        ),
+    )
+    p_compare.add_argument(
+        "--cross-provider",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow comparing across mixed providers "
+            "(anthropic vs openai). Only meaningful when comparing two "
+            "grade reports (iteration dirs / grading.json / .grade.json); "
+            "the cross-axis check is skipped when both inputs are .txt "
+            "captures because raw captures carry no provider metadata. "
+            "Results may not be comparable."
+        ),
+    )
     p_compare.add_argument(
         "--transport",
         type=_transport_choice,
@@ -108,17 +143,27 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
-def _load_assertion_set(
-    path: Path, spec_path: str | None, eval_path: str | None
-) -> AssertionSet:
-    """Load an AssertionSet from either a ``.txt`` or ``.grade.json`` file.
+def _load_grading_report_safe(path: Path):
+    """Resolve a grade-report path and parse it with normalized error handling.
 
-    For ``.txt`` files, a skill spec is required and Layer 1 assertions are
-    run against the file's contents. For ``.grade.json`` files, the saved
-    GradingReport is deserialized and each GradingResult is adapted into an
-    AssertionResult so the two formats can be diffed uniformly.
+    Single source of truth for ``.grade.json`` / ``grading.json`` /
+    iteration-dir loading in compare. Both :func:`_load_assertion_set`
+    (assertion diff path) and :func:`_load_grading_metadata` (cross-axis
+    metadata path) route through this helper so a malformed sidecar
+    surfaces the same ``ValueError`` shape regardless of which call site
+    sees it first.
+
+    Resolves a directory input by appending ``grading.json``. Raises
+    ``ValueError`` when the file is missing OR malformed:
+    :class:`json.JSONDecodeError` is already a :class:`ValueError`
+    subclass; a JSON root that is not a dict (e.g. ``[]``) would
+    otherwise raise :class:`AttributeError` from inside
+    ``GradingReport.from_json`` — we catch and re-raise so callers'
+    single ``except ValueError`` clause routes both cases to the same
+    exit-2 + stderr path.
+
+    Returns the loaded :class:`GradingReport`.
     """
-    from clauditor.assertions import AssertionResult
     from clauditor.quality_grader import GradingReport
 
     if path.is_dir():
@@ -126,6 +171,27 @@ def _load_assertion_set(
         if not grading.is_file():
             raise ValueError(f"no grading.json found in {path}")
         path = grading
+    try:
+        return GradingReport.from_json(path.read_text())
+    except (AttributeError, TypeError, KeyError) as exc:
+        raise ValueError(
+            f"malformed grading.json at {path}: {exc}"
+        ) from exc
+
+
+def _load_assertion_set(
+    path: Path, spec_path: str | None, eval_path: str | None
+) -> AssertionSet:
+    """Load an AssertionSet from either a ``.txt`` or ``.grade.json`` file.
+
+    For ``.txt`` files, a skill spec is required and Layer 1 assertions are
+    run against the file's contents. For ``.grade.json`` files, the saved
+    GradingReport is deserialized via :func:`_load_grading_report_safe`
+    (single normalized parse seam) and each GradingResult is adapted into
+    an AssertionResult so the two formats can be diffed uniformly.
+    """
+    from clauditor.assertions import AssertionResult
+
     suffix = "".join(path.suffixes)
     if path.suffix == ".txt":
         if not spec_path:
@@ -138,11 +204,12 @@ def _load_assertion_set(
         output = path.read_text()
         return run_assertions(output, spec.eval_spec.assertions)
     if (
-        suffix.endswith(".grade.json")
+        path.is_dir()
+        or suffix.endswith(".grade.json")
         or path.name.endswith(".grade.json")
         or path.name == "grading.json"
     ):
-        report = GradingReport.from_json(path.read_text())
+        report = _load_grading_report_safe(path)
         results = [
             AssertionResult(
                 name=r.criterion,
@@ -157,6 +224,30 @@ def _load_assertion_set(
     raise ValueError(
         f"Unsupported file type for {path}: expected .txt or .grade.json"
     )
+
+
+def _load_grading_metadata(path: Path) -> dict[str, str]:
+    """Read ``harness`` and ``provider_source`` from a grade-json input.
+
+    Accepts a directory containing ``grading.json`` or a flat
+    ``.grade.json`` / ``grading.json`` file. Returns a dict suitable
+    for :func:`clauditor.audit.detect_mixed_dimension` (keys
+    ``"harness"`` and ``"provider"``). #153 US-005: mirrors the
+    audit-side metadata extraction so the same pure
+    ``detect_mixed_dimension`` helper consumed by ``trend`` can also
+    drive ``compare`` cross-axis detection.
+
+    Routes through :func:`_load_grading_report_safe` so legacy v1/v2/v3
+    sidecars (no ``harness`` / ``provider_source`` field) backfill the
+    canonical defaults via ``GradingReport.from_json``, and malformed
+    sidecars surface as ``ValueError`` regardless of which call site
+    parsed them first.
+    """
+    report = _load_grading_report_safe(path)
+    return {
+        "harness": report.harness,
+        "provider": report.provider_source,
+    }
 
 
 def _file_kind(path: Path) -> str:
@@ -484,6 +575,68 @@ def cmd_compare(args: argparse.Namespace) -> int:
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
+
+    # #153 US-005: cross-axis comparability check. Runs only when both
+    # inputs carry harness/provider metadata — i.e. both are
+    # ``.grade.json`` (flat file or iteration-dir/grading.json).
+    # Per DEC-003: ``.txt`` capture pairs silent-skip because the raw
+    # capture format has no metadata to compare. Per DEC-011: when
+    # both axes are mismatched and only one ``--cross-*`` is passed,
+    # refuse and name the still-uncovered axis. The detection runs
+    # AFTER ``_load_assertion_set`` (which raises on malformed JSON or
+    # missing files, surfacing parse errors via the try/except above)
+    # and BEFORE ``diff_assertion_sets`` so a refused run produces no
+    # diff output. ``_load_grading_metadata`` and ``_load_assertion_set``
+    # both route through the shared :func:`_load_grading_report_safe`
+    # parse seam, so any malformed-sidecar failure has already surfaced
+    # at the assertion-set load above; the metadata load here cannot
+    # raise unless the file changed between the two reads (a theoretical
+    # race not worth a wider try/except).
+    if before_kind == "grade.json" and after_kind == "grade.json":
+        from clauditor.audit import detect_mixed_dimension
+
+        before_meta = _load_grading_metadata(before_path)
+        after_meta = _load_grading_metadata(after_path)
+        records = [before_meta, after_meta]
+        cross_harness = bool(getattr(args, "cross_harness", False))
+        cross_provider = bool(getattr(args, "cross_provider", False))
+        # Mirror trend's collect-then-print ordering (#153 DEC-011 +
+        # cross-axis-comparability-refusal rule's "WARNINGs do not
+        # appear above refusals" invariant). When both axes are mixed
+        # and only one ``--cross-*`` flag is passed, the un-opted-in
+        # axis still refuses; emitting the WARNING for the opted-in
+        # axis above the ERROR for the other axis is misleading on a
+        # CI log (looks like the command proceeded). Collect both
+        # categories, print refusals first, exit 2 if any landed,
+        # otherwise print warnings.
+        refusal_messages: list[str] = []
+        warning_messages: list[str] = []
+        for dimension, opt_in, label_singular, label_plural in (
+            ("harness", cross_harness, "harness", "harnesses"),
+            ("provider", cross_provider, "provider", "providers"),
+        ):
+            is_mixed, values_seen = detect_mixed_dimension(
+                records, dimension=dimension
+            )
+            if not is_mixed:
+                continue
+            values_str = ", ".join(repr(v) for v in values_seen)
+            if opt_in:
+                warning_messages.append(
+                    f"WARNING: comparing across {label_plural} "
+                    f"({values_str}) — results may not be comparable."
+                )
+                continue
+            refusal_messages.append(
+                f"ERROR: Mixed {label_plural} detected ({values_str}). "
+                f"Pass --cross-{label_singular} to allow comparing."
+            )
+        if refusal_messages:
+            for msg in refusal_messages:
+                print(msg, file=sys.stderr)
+            return 2
+        for msg in warning_messages:
+            print(msg, file=sys.stderr)
 
     flips = diff_assertion_sets(before_set, after_set)
 

@@ -415,6 +415,71 @@ shape the orchestrator uses around the four helpers),
 `.claude/rules/harness-protocol-shape.md` (lists CodexHarness as
 the second non-mock canonical implementation).
 
+### Eighth anchor (cross-axis mixed-dimension detection)
+
+`src/clauditor/audit.py::detect_mixed_dimension` — pure helper
+introduced in #153 to drive the cross-axis comparability refusal
+on both `trend` and `compare`. Signature: `(records: list[dict],
+*, dimension: Literal["harness", "provider"]) -> tuple[bool,
+list[str]]`. Sibling of the per-axis coercers
+`_provider_or_default` (audit.py:91) and `_harness_or_default`
+(audit.py:108); reuses them as the dispatch table so coercion
+semantics for non-string / blank / `None` records cannot drift
+between caller commands. No I/O, never raises.
+
+Two callers, both thin orchestrators:
+
+- `src/clauditor/cli/trend.py::cmd_trend` — calls
+  `detect_mixed_dimension` once per axis on the full filtered
+  set BEFORE the `--last` slice, collects refusal messages from
+  both axes into a list, and prints them together at exit 2 if
+  any axis is mixed without an opt-in (DEC-011 multi-axis
+  refusal). Per-axis WARNINGs for opt-in flags fire only after
+  every axis has cleared its refusal check.
+- `src/clauditor/cli/compare.py::cmd_compare` — calls
+  `detect_mixed_dimension` on a 2-element list (the two
+  compared inputs' metadata dicts) inside the `before_kind ==
+  "grade.json" and after_kind == "grade.json"` gate. Per
+  DEC-003, `.txt` capture pairs silent-skip — the helper is
+  never called when metadata is unavailable.
+
+Tests: `tests/test_audit.py::TestDetectMixedDimension` (line
+2277) — six unit tests on the pure helper. No `tmp_path`, no
+subprocess mocks, no fixtures beyond inline list literals. Each
+edge case (single-value, mixed, missing key, non-string,
+harness mirror, empty input) is one assertion away.
+
+Why the split mattered specifically here:
+
+- **One seam, two commands**: `trend` averages over many
+  records; `compare` deltas exactly two. Both must reject mixed-
+  axis aggregation with byte-identical message lead-ins
+  (`"Mixed <plural> detected"`) and identical coercion
+  semantics. Routing both through the same pure helper makes
+  this structural — a future change to coercion (e.g. adding
+  whitespace-stripping or case normalization) propagates
+  uniformly.
+- **Tests trivially cover the malformed-record paths**: the
+  fourth test case (whitespace-only / `None` / non-string
+  values default safely) is impossible to write cleanly when
+  the detection logic is inlined inside `cmd_trend` or
+  `cmd_compare` — those entry points require iteration-dir
+  fixtures and full history files. The pure helper accepts
+  `[{"provider": "  "}, {"provider": None}, {"provider": 42}]`
+  as a single inline literal.
+- **Future axes plug in without orchestrator churn**: when
+  `transport_source` (or any other stack-identity dimension)
+  joins as a third axis, the pure helper gains one Literal
+  member and one dispatch-table entry; the orchestrator code
+  in `cmd_trend` / `cmd_compare` extends by one
+  `detect_mixed_dimension(records, dimension="transport_source")`
+  call. The `.claude/rules/cross-axis-comparability-refusal.md`
+  rule codifies the full extension recipe.
+
+Traces to DEC-010 of `plans/super/153-cross-axis-comparability.md`.
+Companion rule: `.claude/rules/cross-axis-comparability-refusal.md`
+(the per-axis refusal+filter+opt-in shape this helper drives).
+
 ## When this rule applies
 
 Any new code that combines spec/config resolution with a
