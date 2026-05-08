@@ -24,6 +24,23 @@ def _normalized_provider(rec: dict) -> str:
     return "anthropic"
 
 
+def _normalized_harness(rec: dict) -> str:
+    """Coerce a history record's ``harness`` to a safe string.
+
+    Returns ``"claude-code"`` for missing keys, non-string values, and
+    blank/whitespace-only strings. ``read_records`` already backfills
+    missing keys for legacy v1/v2 lines, but this helper additionally
+    handles the "raw record contains ``null`` or a non-string" case so
+    ``sorted({_normalized_harness(rec) for rec in records})`` cannot
+    raise ``TypeError`` on a malformed mixed-history file. Mirror of
+    :func:`_normalized_provider` for the harness axis (#153 US-003).
+    """
+    harness = rec.get("harness")
+    if isinstance(harness, str) and harness.strip():
+        return harness
+    return "claude-code"
+
+
 def _positive_int(value: str) -> int:
     """argparse type: accept integers >= 1."""
     try:
@@ -42,7 +59,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     # this module during CLI registration, so a top-level
     # ``from clauditor.cli import _provider_concrete_choice`` resolves
     # ``clauditor.cli`` mid-initialization.
-    from clauditor.cli import _provider_concrete_choice
+    from clauditor.cli import _harness_concrete_choice, _provider_concrete_choice
 
     p_trend = subparsers.add_parser(
         "trend",
@@ -77,6 +94,16 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "Filter history records by grading provider "
             "('anthropic' or 'openai'). Required when history contains "
             "mixed providers."
+        ),
+    )
+    p_trend.add_argument(
+        "--harness",
+        type=_harness_concrete_choice,
+        default=None,
+        help=(
+            "Filter history records by harness "
+            "('claude-code' or 'codex'). Required when history contains "
+            "mixed harnesses."
         ),
     )
     p_trend.add_argument(
@@ -143,6 +170,41 @@ def cmd_trend(args: argparse.Namespace) -> int:
         if not records:
             print(
                 f"ERROR: no records for provider '{args.provider}' "
+                f"for skill '{args.skill_name}'.",
+                file=sys.stderr,
+            )
+            return 1
+
+    # Harness refusal / filter (#153 US-003 — mirror of the provider
+    # check above for the harness axis). Computed from the full
+    # filtered set BEFORE the --last slice so a user with mixed
+    # history cannot silently slip past the refusal by narrowing the
+    # window. ``_normalized_harness`` coerces missing/non-string/blank
+    # values to ``"claude-code"`` so a malformed v2 record
+    # (``harness: null`` or a stray int) cannot raise ``TypeError``
+    # mid-sort. The refusal message names ONLY the ``--harness X``
+    # filter — US-004 will retrofit a ``--cross-harness`` opt-in
+    # suffix once that flag exists (DEC-008 of #153 plan).
+    harnesses_seen = sorted({_normalized_harness(rec) for rec in records})
+    if args.harness is None:
+        if len(harnesses_seen) > 1:
+            harnesses_str = ", ".join(repr(h) for h in harnesses_seen)
+            print(
+                f"ERROR: Mixed harnesses detected in history for skill "
+                f"'{args.skill_name}' ({harnesses_str}). Pass "
+                f"--harness claude-code (or --harness codex) to filter.",
+                file=sys.stderr,
+            )
+            return 2
+    else:
+        records = [
+            rec
+            for rec in records
+            if _normalized_harness(rec) == args.harness
+        ]
+        if not records:
+            print(
+                f"ERROR: no records for harness '{args.harness}' "
                 f"for skill '{args.skill_name}'.",
                 file=sys.stderr,
             )
