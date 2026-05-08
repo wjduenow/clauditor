@@ -29,6 +29,7 @@ import sys
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 from clauditor.paths import resolve_clauditor_dir
 
@@ -119,6 +120,36 @@ def _harness_or_default(value: object) -> str:
     return "claude-code"
 
 
+def detect_mixed_dimension(
+    records: list[dict], *, dimension: Literal["harness", "provider"]
+) -> tuple[bool, list[str]]:
+    """Return ``(is_mixed, sorted_unique_values)`` for ``dimension``.
+
+    US-001 (#153): pure helper consumed by ``trend`` and ``compare``
+    to refuse cross-axis averaging unless the operator opts in. Walks
+    ``records`` once, reading the ``dimension`` field via ``dict.get``
+    (so missing keys default), and routes each value through the
+    sibling ``_provider_or_default`` / ``_harness_or_default``
+    coercer so non-string / blank / ``None`` entries all collapse to
+    the canonical default. Returns the alphabetically-sorted unique
+    set and a ``bool`` indicating whether more than one distinct
+    value survived coercion.
+
+    No I/O, no side effects, never raises. ``dimension`` is
+    constrained to the two axes clauditor groups by; a future axis
+    would extend the ``Literal`` and the dispatch table together.
+
+    Traces to: DEC-010 of ``plans/super/153-cross-axis-comparability.md``
+    and ``.claude/rules/pure-compute-vs-io-split.md``.
+    """
+    coercer = (
+        _provider_or_default if dimension == "provider"
+        else _harness_or_default
+    )
+    unique = sorted({coercer(rec.get(dimension)) for rec in records})
+    return len(unique) > 1, unique
+
+
 def _check_schema_version(
     data: dict, *, iteration_dir: Path | str, filename: str
 ) -> bool:
@@ -150,6 +181,7 @@ __all__ = [
     "Verdict",
     "aggregate",
     "apply_thresholds",
+    "detect_mixed_dimension",
     "load_iterations",
     "render_json",
     "render_markdown",
