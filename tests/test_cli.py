@@ -3047,6 +3047,13 @@ class TestCmdCompareCrossAxis:
         the provider refusal message naming ``--cross-provider``. The
         single-axis opt-in does NOT silently allow the other axis to
         slip through.
+
+        Per the cross-axis-comparability-refusal rule's "Do NOT print
+        WARNINGs above refusals" invariant (PR #168 Copilot/CodeRabbit
+        review), the harness WARNING must NOT appear when the run
+        ultimately refuses on the provider axis. Compare collects
+        warnings during the per-axis scan and only emits them if no
+        refusals land — mirror of trend's behavior.
         """
         before_dir = self._write_grading_with_harness(
             tmp_path / ".clauditor" / "iteration-1" / "foo",
@@ -3068,11 +3075,12 @@ class TestCmdCompareCrossAxis:
         )
         assert rc == 2
         err = capsys.readouterr().err
-        # Harness axis was opted in → emits its WARNING.
-        assert "comparing across harnesses" in err
         # Provider axis is the still-uncovered one → refusal.
         assert "Mixed providers" in err
         assert "--cross-provider" in err
+        # Harness WARNING is suppressed because the run refused on the
+        # provider axis. Pinning the collect-then-print invariant.
+        assert "WARNING: comparing across harnesses" not in err
 
     def test_compare_both_axes_mixed_both_flags_succeeds_with_two_warnings(
         self, tmp_path, capsys
@@ -3101,6 +3109,115 @@ class TestCmdCompareCrossAxis:
         err = capsys.readouterr().err
         assert "comparing across harnesses" in err
         assert "comparing across providers" in err
+
+    def test_compare_numeric_ref_mixed_harness_refuses(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``compare --skill X --from 1 --to 2`` exercises the numeric-ref
+        CLI resolution path (CodeRabbit PR #168 review).
+
+        The numeric-ref form constructs ``.clauditor/iteration-N/<skill>/``
+        paths through a different code branch than positional inputs.
+        Cross-axis detection must fire on this path too.
+        """
+        monkeypatch.chdir(tmp_path)
+        # Seed iteration-1 (claude-code) and iteration-2 (codex).
+        self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "test-skill",
+            harness="codex",
+            provider="anthropic",
+        )
+        rc = main(
+            [
+                "compare",
+                "--skill",
+                "test-skill",
+                "--from",
+                "1",
+                "--to",
+                "2",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed harnesses detected" in err
+        assert "--cross-harness" in err
+
+    def test_compare_numeric_ref_cross_harness_succeeds(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``compare --skill X --from 1 --to 2 --cross-harness`` opt-in
+        path on the numeric-ref form. Exit code reflects the diff
+        outcome (0 or 1) rather than the cross-axis refusal."""
+        monkeypatch.chdir(tmp_path)
+        self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "test-skill",
+            harness="codex",
+            provider="anthropic",
+        )
+        rc = main(
+            [
+                "compare",
+                "--skill",
+                "test-skill",
+                "--from",
+                "1",
+                "--to",
+                "2",
+                "--cross-harness",
+            ]
+        )
+        # Same content → no flips → exit 0.
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "WARNING: comparing across harnesses" in err
+
+    def test_compare_warning_does_not_appear_above_refusal(
+        self, tmp_path, capsys
+    ):
+        """When both axes are mixed and only one ``--cross-*`` is passed,
+        the WARNING for the opted-in axis must NOT appear above the
+        ERROR for the un-opted axis (Copilot/CodeRabbit PR #168 review).
+
+        Pinning the collect-then-print invariant aligns compare with
+        trend's behavior and the
+        ``cross-axis-comparability-refusal.md`` rule's "Do NOT print
+        WARNINGs above refusals" antipattern.
+        """
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            harness="codex",  # mixed harness
+            provider="openai",  # mixed provider
+        )
+        rc = main(
+            [
+                "compare",
+                str(before_dir),
+                str(after_dir),
+                "--cross-harness",
+                # No --cross-provider → provider axis still refuses.
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Refusal landed; warning must NOT have printed.
+        assert "Mixed providers detected" in err
+        assert "WARNING: comparing across" not in err
 
     def test_compare_iter_dir_without_grading_json_exits_2(
         self, tmp_path, capsys
@@ -6523,6 +6640,72 @@ class TestCmdTrendCrossOptIn:
         # New suffix mentions the opt-in flag.
         assert "--cross-harness" in err
         assert "to allow averaging" in err
+
+    def test_mixed_axis_refusal_runs_before_last_slice(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Pin the pre-``--last`` invariant for the cross-axis path
+        (CodeRabbit PR #168 review).
+
+        The cross-axis check must operate on the FULL filtered set, not
+        the post-``--last`` slice. A regression that reordered the
+        ``--last`` cut above the cross-axis detection would let a user
+        with mixed history slip past the refusal by passing a small
+        ``--last`` window that happens to contain only one dimension
+        value. This test seeds 5 mixed-provider records and a ``--last
+        2`` window large enough to also be one-axis if the slice ran
+        first; the refusal must still fire because the full set is
+        mixed.
+        """
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_provider(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--last",
+                "2",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed providers detected in history for skill" in err
+
+    def test_cross_axis_opt_in_with_last_succeeds(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--cross-provider --last N`` produces a WARNING and proceeds.
+
+        Companion to ``test_mixed_axis_refusal_runs_before_last_slice``.
+        Verifies the WARNING fires before the slice runs (it sees the
+        full filtered set), and the slice still applies to the trend
+        rendering output.
+        """
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_provider(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--cross-provider",
+                "--last",
+                "2",
+            ]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "WARNING: averaging across providers" in captured.err
+        # Stdout has at most --last data rows.
+        data_lines = [
+            line for line in captured.out.splitlines() if line.strip()
+        ]
+        assert len(data_lines) <= 2
 
 
 class TestCmdGradeHistory:

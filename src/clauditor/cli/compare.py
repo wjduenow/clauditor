@@ -94,9 +94,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         default=False,
         help=(
             "Allow comparing across mixed harnesses "
-            "(claude-code vs codex). Only meaningful in delta mode "
-            "(positional .grade.json or --skill/--from/--to); "
-            "silent-skip when either input is a .txt capture. "
+            "(claude-code vs codex). Only meaningful when comparing two "
+            "grade reports (iteration dirs / grading.json / .grade.json); "
+            "the cross-axis check is skipped when both inputs are .txt "
+            "captures because raw captures carry no harness metadata. "
             "Results may not be comparable."
         ),
     )
@@ -106,9 +107,10 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         default=False,
         help=(
             "Allow comparing across mixed providers "
-            "(anthropic vs openai). Only meaningful in delta mode "
-            "(positional .grade.json or --skill/--from/--to); "
-            "silent-skip when either input is a .txt capture. "
+            "(anthropic vs openai). Only meaningful when comparing two "
+            "grade reports (iteration dirs / grading.json / .grade.json); "
+            "the cross-axis check is skipped when both inputs are .txt "
+            "captures because raw captures carry no provider metadata. "
             "Results may not be comparable."
         ),
     )
@@ -141,17 +143,27 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
-def _load_assertion_set(
-    path: Path, spec_path: str | None, eval_path: str | None
-) -> AssertionSet:
-    """Load an AssertionSet from either a ``.txt`` or ``.grade.json`` file.
+def _load_grading_report_safe(path: Path):
+    """Resolve a grade-report path and parse it with normalized error handling.
 
-    For ``.txt`` files, a skill spec is required and Layer 1 assertions are
-    run against the file's contents. For ``.grade.json`` files, the saved
-    GradingReport is deserialized and each GradingResult is adapted into an
-    AssertionResult so the two formats can be diffed uniformly.
+    Single source of truth for ``.grade.json`` / ``grading.json`` /
+    iteration-dir loading in compare. Both :func:`_load_assertion_set`
+    (assertion diff path) and :func:`_load_grading_metadata` (cross-axis
+    metadata path) route through this helper so a malformed sidecar
+    surfaces the same ``ValueError`` shape regardless of which call site
+    sees it first.
+
+    Resolves a directory input by appending ``grading.json``. Raises
+    ``ValueError`` when the file is missing OR malformed:
+    :class:`json.JSONDecodeError` is already a :class:`ValueError`
+    subclass; a JSON root that is not a dict (e.g. ``[]``) would
+    otherwise raise :class:`AttributeError` from inside
+    ``GradingReport.from_json`` — we catch and re-raise so callers'
+    single ``except ValueError`` clause routes both cases to the same
+    exit-2 + stderr path.
+
+    Returns the loaded :class:`GradingReport`.
     """
-    from clauditor.assertions import AssertionResult
     from clauditor.quality_grader import GradingReport
 
     if path.is_dir():
@@ -159,6 +171,27 @@ def _load_assertion_set(
         if not grading.is_file():
             raise ValueError(f"no grading.json found in {path}")
         path = grading
+    try:
+        return GradingReport.from_json(path.read_text())
+    except (AttributeError, TypeError, KeyError) as exc:
+        raise ValueError(
+            f"malformed grading.json at {path}: {exc}"
+        ) from exc
+
+
+def _load_assertion_set(
+    path: Path, spec_path: str | None, eval_path: str | None
+) -> AssertionSet:
+    """Load an AssertionSet from either a ``.txt`` or ``.grade.json`` file.
+
+    For ``.txt`` files, a skill spec is required and Layer 1 assertions are
+    run against the file's contents. For ``.grade.json`` files, the saved
+    GradingReport is deserialized via :func:`_load_grading_report_safe`
+    (single normalized parse seam) and each GradingResult is adapted into
+    an AssertionResult so the two formats can be diffed uniformly.
+    """
+    from clauditor.assertions import AssertionResult
+
     suffix = "".join(path.suffixes)
     if path.suffix == ".txt":
         if not spec_path:
@@ -171,11 +204,12 @@ def _load_assertion_set(
         output = path.read_text()
         return run_assertions(output, spec.eval_spec.assertions)
     if (
-        suffix.endswith(".grade.json")
+        path.is_dir()
+        or suffix.endswith(".grade.json")
         or path.name.endswith(".grade.json")
         or path.name == "grading.json"
     ):
-        report = GradingReport.from_json(path.read_text())
+        report = _load_grading_report_safe(path)
         results = [
             AssertionResult(
                 name=r.criterion,
@@ -203,30 +237,13 @@ def _load_grading_metadata(path: Path) -> dict[str, str]:
     ``detect_mixed_dimension`` helper consumed by ``trend`` can also
     drive ``compare`` cross-axis detection.
 
-    Reuses :class:`GradingReport.from_json` so legacy v1/v2/v3
-    sidecars (no ``harness`` / ``provider_source`` field) backfill
-    the canonical defaults (``"claude-code"`` / ``"anthropic"``).
-    Raises ``ValueError`` when the file is missing OR malformed:
-    JSON decode errors are already :class:`ValueError` subclasses;
-    a JSON root that is not a dict (e.g. ``[]``) would otherwise
-    raise :class:`AttributeError` from inside ``from_json`` — we
-    re-raise as ``ValueError`` so the caller's single
-    ``except ValueError`` clause routes both cases to the same
-    user-facing exit-2 + stderr error path.
+    Routes through :func:`_load_grading_report_safe` so legacy v1/v2/v3
+    sidecars (no ``harness`` / ``provider_source`` field) backfill the
+    canonical defaults via ``GradingReport.from_json``, and malformed
+    sidecars surface as ``ValueError`` regardless of which call site
+    parsed them first.
     """
-    from clauditor.quality_grader import GradingReport
-
-    if path.is_dir():
-        grading = path / "grading.json"
-        if not grading.is_file():
-            raise ValueError(f"no grading.json found in {path}")
-        path = grading
-    try:
-        report = GradingReport.from_json(path.read_text())
-    except (AttributeError, TypeError, KeyError) as exc:
-        raise ValueError(
-            f"malformed grading.json at {path}: {exc}"
-        ) from exc
+    report = _load_grading_report_safe(path)
     return {
         "harness": report.harness,
         "provider": report.provider_source,
@@ -582,7 +599,17 @@ def cmd_compare(args: argparse.Namespace) -> int:
         records = [before_meta, after_meta]
         cross_harness = bool(getattr(args, "cross_harness", False))
         cross_provider = bool(getattr(args, "cross_provider", False))
-        refused = False
+        # Mirror trend's collect-then-print ordering (#153 DEC-011 +
+        # cross-axis-comparability-refusal rule's "WARNINGs do not
+        # appear above refusals" invariant). When both axes are mixed
+        # and only one ``--cross-*`` flag is passed, the un-opted-in
+        # axis still refuses; emitting the WARNING for the opted-in
+        # axis above the ERROR for the other axis is misleading on a
+        # CI log (looks like the command proceeded). Collect both
+        # categories, print refusals first, exit 2 if any landed,
+        # otherwise print warnings.
+        refusal_messages: list[str] = []
+        warning_messages: list[str] = []
         for dimension, opt_in, label_singular, label_plural in (
             ("harness", cross_harness, "harness", "harnesses"),
             ("provider", cross_provider, "provider", "providers"),
@@ -594,20 +621,21 @@ def cmd_compare(args: argparse.Namespace) -> int:
                 continue
             values_str = ", ".join(repr(v) for v in values_seen)
             if opt_in:
-                print(
+                warning_messages.append(
                     f"WARNING: comparing across {label_plural} "
-                    f"({values_str}) — results may not be comparable.",
-                    file=sys.stderr,
+                    f"({values_str}) — results may not be comparable."
                 )
                 continue
-            print(
+            refusal_messages.append(
                 f"ERROR: Mixed {label_plural} detected ({values_str}). "
-                f"Pass --cross-{label_singular} to allow comparing.",
-                file=sys.stderr,
+                f"Pass --cross-{label_singular} to allow comparing."
             )
-            refused = True
-        if refused:
+        if refusal_messages:
+            for msg in refusal_messages:
+                print(msg, file=sys.stderr)
             return 2
+        for msg in warning_messages:
+            print(msg, file=sys.stderr)
 
     flips = diff_assertion_sets(before_set, after_set)
 

@@ -3,7 +3,7 @@
 ## Meta
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/153
 - **Branch:** `feature/153-cross-axis-comparability`
-- **Worktree:** `/Users/wesduenow/Projects/worktrees/clauditor/153-cross-axis-comparability`
+- **Worktree:** `<worktrees-root>/clauditor/153-cross-axis-comparability` (per-developer; original path redacted)
 - **Phase:** `devolved`
 - **Sessions:** 2
 - **Last session:** 2026-05-07
@@ -127,13 +127,13 @@ When both inputs are loadable as `GradingReport` (positional `.grade.json` paths
 
 Refusal stderr message follows the existing `--provider` refusal shape verbatim, with `provider`/`harness` substituted:
 
-```
+```text
 ERROR: Mixed harnesses detected in history for skill 'X' ('claude-code', 'codex'). Pass --harness claude-code (or --harness codex) to filter, or --cross-harness to allow averaging.
 ```
 
 Opt-in WARNING is similarly terse, single-line, on stderr:
 
-```
+```text
 WARNING: averaging across harnesses ('claude-code', 'codex') — results may not be comparable.
 ```
 
@@ -200,7 +200,7 @@ Compare has exactly two inputs (before/after); a "filter" is just an equality ch
 
 Keep the byte-stable lead-in `"Mixed providers detected in history for skill"` so existing tests don't break, but extend the suffix to mention BOTH `--provider X` filter and `--cross-provider` opt-in. New harness refusal message follows the same template:
 
-```
+```text
 ERROR: Mixed providers detected in history for skill 'X' ('anthropic', 'openai').
 Pass --provider anthropic (or --provider openai) to filter, or --cross-provider to allow averaging.
 
@@ -224,7 +224,7 @@ When a user passes `--cross-harness` but the history is also mixed on provider (
 
 Example message:
 
-```
+```text
 ERROR: Mixed providers detected in history for skill 'X' ('anthropic', 'openai').
 Pass --provider anthropic (or --provider openai) to filter, or --cross-provider to allow averaging.
 (--cross-harness was provided but the harness axis is not the only mixed dimension.)
