@@ -102,7 +102,33 @@ class IterationContext:
         ``.claude/rules/constant-with-type-info.md`` — ``bool`` is a
         subclass of ``int`` in Python and would otherwise pass
         ``isinstance(val, int)`` checks).
+
+        Hard-rejects any ``schema_version`` value other than the
+        current ``_CONTEXT_SCHEMA_VERSION`` (today: ``1``). Defends
+        the always-v1 contract documented in
+        ``.claude/rules/json-schema-version.md`` — ``context.json``
+        is engineered so the two anticipated follow-ups (#169
+        ``cost_usd``, #170 ``reasoning_tokens``) populate already-
+        nullable fields WITHOUT bumping the schema. A future bump
+        will need to lift this gate explicitly; that is the point —
+        it forces a deliberate decision rather than a silent
+        forward-compat drift. ``bool`` is rejected explicitly per
+        ``.claude/rules/constant-with-type-info.md`` (``True``
+        compares as ``1`` and would otherwise pass an integer
+        equality check).
         """
+        schema_version = data.get("schema_version", _CONTEXT_SCHEMA_VERSION)
+        if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+            raise ValueError(
+                f"IterationContext.from_dict: 'schema_version' must be int, "
+                f"got {type(schema_version).__name__} {schema_version!r}"
+            )
+        if schema_version != _CONTEXT_SCHEMA_VERSION:
+            raise ValueError(
+                f"IterationContext.from_dict: unsupported 'schema_version' "
+                f"{schema_version!r}; expected {_CONTEXT_SCHEMA_VERSION}"
+            )
+
         harness = data["harness"]
         if harness not in _VALID_HARNESSES:
             raise ValueError(
@@ -181,5 +207,5 @@ class IterationContext:
             sandbox_mode=sandbox_mode,
             reasoning_tokens=reasoning_tokens,
             cost_usd=cost_usd,
-            schema_version=data.get("schema_version", _CONTEXT_SCHEMA_VERSION),
+            schema_version=schema_version,
         )

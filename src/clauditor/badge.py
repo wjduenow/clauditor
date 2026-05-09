@@ -73,7 +73,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from clauditor.audit import _read_json, _scan_iteration_dirs
+from clauditor.audit import _check_schema_version, _read_json, _scan_iteration_dirs
 from clauditor.context import IterationContext
 
 __all__ = [
@@ -261,13 +261,18 @@ class Badge:
 
         Written to a sibling file ``<skill>.clauditor.json`` alongside
         the shields.io badge JSON. Carries the per-layer breakdown,
-        thresholds, iteration number, and ``generated_at`` timestamp
-        for trend-audit / forensic consumers.
+        thresholds, iteration number, ``generated_at`` timestamp, and
+        (when available) the optional ``context`` block for
+        trend-audit / forensic consumers.
 
-        First key is ``schema_version: 1`` per
-        ``.claude/rules/json-schema-version.md``. Shape unchanged
-        from the pre-split ``clauditor`` sub-dict so existing
-        docstrings / tests of the nested shape still apply.
+        First key is ``schema_version: 2`` (the value of
+        :data:`_CLAUDITOR_EXTENSION_SCHEMA_VERSION`) per
+        ``.claude/rules/json-schema-version.md``. Bumped 1 → 2 in
+        #154 US-006 (DEC-006) when the optional ``context`` field
+        landed; v1 readers default ``context`` to ``None``. The
+        ``context`` block is omitted entirely when
+        ``ext.context is None`` per the layer-omission shape — see
+        :func:`_extension_to_dict`.
         """
         return _extension_to_dict(self.clauditor)
 
@@ -817,16 +822,34 @@ def load_iteration_context(iteration_skill_dir: Path) -> IterationContext | None
 
     Returns the parsed :class:`IterationContext` when the file
     exists and validates; returns ``None`` for missing file, JSON
-    parse error, or :class:`IterationContext.from_dict` rejection
-    (closed-set discriminator outside its valid range, bool-for-int,
-    etc.). Defensive read shape mirrors :func:`audit._read_json` —
+    parse error, out-of-range ``schema_version``, or
+    :class:`IterationContext.from_dict` rejection (closed-set
+    discriminator outside its valid range, bool-for-int, etc.).
+    Defensive read shape mirrors :func:`audit._read_context` —
     a malformed sidecar must not abort the whole badge command.
+
+    The ``schema_version`` check is delegated to
+    :func:`audit._check_schema_version` so the badge reader and
+    the audit reader behave consistently across the whole sidecar
+    family (per ``.claude/rules/json-schema-version.md`` the same
+    ``MAX_SCHEMA_VERSION["context.json"]`` registry gates both
+    readers — without this check, badge generation could silently
+    embed an unsupported future ``context.json`` version that
+    ``clauditor audit`` would reject).
 
     Pure from the caller's perspective: best-effort read, never
     raises on the common error paths, never mutates the input path.
     """
     raw = _read_json(iteration_skill_dir / "context.json")
     if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    if not _check_schema_version(
+        raw,
+        iteration_dir=str(iteration_skill_dir),
+        filename="context.json",
+    ):
         return None
     try:
         return IterationContext.from_dict(raw)

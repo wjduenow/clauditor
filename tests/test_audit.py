@@ -560,7 +560,8 @@ class TestRenderers:
         )
         # US-004 (#147): bumped to schema_version 2 + ``providers_seen``.
         # US-006 (#152): bumped to schema_version 3 + ``harnesses_seen``.
-        # #154 US-005 / DEC-005: always emits ``iteration_contexts`` array.
+        # #154 US-005 / DEC-005: bumped to schema_version 4 with new
+        # ``iteration_contexts`` array (always emitted).
         assert set(payload.keys()) == {
             "schema_version",
             "skill",
@@ -572,7 +573,7 @@ class TestRenderers:
             "assertions",
             "iteration_contexts",
         }
-        assert payload["schema_version"] == 3
+        assert payload["schema_version"] == 4
         assert isinstance(payload["assertions"], list)
         first = payload["assertions"][0]
         for key in (
@@ -735,13 +736,15 @@ class TestCmdAuditExitCode:
 
 
 class TestSchemaVersion:
-    def test_audit_render_json_has_schema_version_3(self) -> None:
+    def test_audit_render_json_has_schema_version_4(self) -> None:
         """US-004 (#147): audit JSON output bumped from v1 to v2 to
         signal the new ``provider`` per-assertion field + top-level
         ``providers_seen`` array (DEC-005, DEC-010 of #147).
         US-006 (#152): bumped to v3 to signal the new ``harness``
         per-assertion field + top-level ``harnesses_seen`` array
-        (DEC-010 of #152)."""
+        (DEC-010 of #152).
+        #154 US-005 / DEC-005: bumped to v4 to signal the new
+        top-level ``iteration_contexts`` array."""
         payload = render_json(
             [],
             skill="s",
@@ -749,7 +752,7 @@ class TestSchemaVersion:
             thresholds={"last": 20},
             timestamp="t",
         )
-        assert payload["schema_version"] == 3
+        assert payload["schema_version"] == 4
 
 
 class TestIsAcceptedVersion:
@@ -1862,7 +1865,8 @@ class TestRenderProviderColumn:
 
     def test_render_json_v2_schema_version_first_key(self) -> None:
         """Acceptance criterion 1: ``schema_version`` is the first key
-        and equals 3 (DEC-005 of #147 + DEC-010 of #152 bump)."""
+        and equals 4 (DEC-005 of #147 + DEC-010 of #152 + #154 US-005
+        DEC-005 bump for ``iteration_contexts``)."""
         payload = render_json(
             self._single_provider_verdicts(),
             skill="s",
@@ -1872,7 +1876,7 @@ class TestRenderProviderColumn:
         )
         first_key = next(iter(payload.keys()))
         assert first_key == "schema_version"
-        assert payload["schema_version"] == 3
+        assert payload["schema_version"] == 4
 
     def test_render_json_v2_includes_provider_per_assertion(self) -> None:
         """Acceptance criterion 2: every ``assertions[]`` entry carries
@@ -2812,12 +2816,15 @@ class TestRenderMarkdownHarness:
 
 
 class TestRenderJsonHarnessV3:
-    """US-006 (#152): ``render_json`` bumps to ``schema_version: 3``,
-    adds top-level ``harnesses_seen[]`` (sorted, deduped), and each
+    """US-006 (#152): ``render_json`` bumps ``schema_version`` to add
+    top-level ``harnesses_seen[]`` (sorted, deduped), and each
     ``assertions[]`` entry gains a ``"harness": str`` field. L1 entries
     keep ``"provider": "anthropic"`` placeholder in JSON output (the
-    em-dash is stdout/markdown-only per DEC-008).
-    Traces to: DEC-008, DEC-010.
+    em-dash is stdout/markdown-only per DEC-008). #154 US-005 / DEC-005
+    further bumped the audit-output ``schema_version`` from 3 to 4
+    when the new top-level ``iteration_contexts`` array landed; the
+    harness invariants tested in this class are unchanged.
+    Traces to: DEC-008, DEC-010 (#152) + DEC-005 (#154 US-005).
     """
 
     def _mixed_verdicts(self) -> list[AuditVerdict]:
@@ -2854,8 +2861,8 @@ class TestRenderJsonHarnessV3:
             min_discrimination=0.05,
         )
 
-    def test_schema_version_3(self) -> None:
-        """First key is ``schema_version: 3``."""
+    def test_schema_version_4(self) -> None:
+        """First key is ``schema_version: 4`` (post-#154 bump)."""
         payload = render_json(
             self._mixed_verdicts(),
             skill="s",
@@ -2865,7 +2872,7 @@ class TestRenderJsonHarnessV3:
         )
         first_key = next(iter(payload.keys()))
         assert first_key == "schema_version"
-        assert payload["schema_version"] == 3
+        assert payload["schema_version"] == 4
 
     def test_includes_harnesses_seen_array(self) -> None:
         """Top-level ``harnesses_seen`` is a sorted, deduped list."""

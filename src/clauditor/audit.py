@@ -1088,6 +1088,17 @@ def render_json(
     Sort order across ``assertions`` matches the stdout/markdown
     renderers: ``(harness, provider, layer, id)``.
 
+    #154 US-005 / DEC-005: ``schema_version`` bumped from 3 to 4 to
+    signal the new top-level ``iteration_contexts`` array — a shape
+    change that adds a new sibling key to the audit-output payload.
+    JSON consumers that branch on ``schema_version`` need a stable
+    signal to detect the shape change (per
+    ``.claude/rules/json-schema-version.md``: "when a future bump
+    ships, writers emit ``schema_version: <next>``"). v3 readers
+    should expect the field to be absent; v4 readers can treat
+    ``iteration_contexts == []`` as "no contexts available" (the
+    legacy-iterations case).
+
     DEC-008 (#152): L1 entries keep ``"provider": "anthropic"``
     placeholder in the JSON output (the em-dash is stdout/markdown
     only) — keeps mixed-layer JSON aggregation semantically honest for
@@ -1149,7 +1160,7 @@ def render_json(
             )
 
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "skill": skill,
         "timestamp": timestamp,
         "iterations": iterations_analyzed,

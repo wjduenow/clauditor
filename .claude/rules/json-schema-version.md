@@ -168,7 +168,7 @@ single source of truth for the v1 shape:
 | `schema_version`       | `int = 1`      | always non-null (first key per the invariant)  |
 | `harness`              | `str`          | always non-null — `{"claude-code", "codex"}`   |
 | `provider`             | `str \| None`  | null when no LLM grading happened — `{"anthropic", "openai"}` when set |
-| `model_runner`         | `str`          | always non-null — model the harness used to run the skill |
+| `model_runner`         | `str \| None`  | null when the harness cannot expose the actually-used model (e.g. the `claude` CLI's stream-json `result` carries no model field, so `ClaudeCodeHarness` records `None` when neither the constructor nor the per-call override pinned a value); fabricating a default would be a lie |
 | `model_grader`         | `str \| None`  | null iff `provider` is null                    |
 | `system_prompt_source` | `str`          | always non-null — `{"explicit", "agents_md", "skill_md"}` |
 | `sandbox_mode`         | `str \| None`  | null when `harness != "codex"` — `{"read-only", "workspace-write", "danger-full-access"}` when set |
@@ -225,6 +225,20 @@ Readers:
 Follow-up tickets that will populate the nullable placeholders
 WITHOUT bumping the schema: #169 (`cost_usd` pricing module) and
 #170 (`reasoning_tokens` per-provider capture).
+
+**Audit-output JSON bump (`render_json` v3 → v4).** Independent of
+the per-sidecar `MAX_SCHEMA_VERSION["context.json"]: 1`
+registration above, the audit-output JSON envelope itself bumped
+from `schema_version: 3` to `schema_version: 4` in #154 US-005
+(DEC-005) when the new top-level `iteration_contexts` array
+landed. The bump follows the same shape as the #147 v1→v2 bump
+and the #152 v2→v3 bump: a new top-level field is a SHAPE change
+that demands a `schema_version` increment so downstream JSON
+consumers have a stable signal to branch on. v3 readers should
+expect the `iteration_contexts` field to be absent; v4 readers
+can treat `iteration_contexts == []` as "no contexts available"
+(the legacy-iterations case). File anchor:
+`src/clauditor/audit.py::render_json`.
 ### Schema version bumps for #152 (`harness` field)
 
 `#152` added `harness` — the harness-axis sibling to `provider_source` —

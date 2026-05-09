@@ -1534,3 +1534,58 @@ class TestLoadIterationContext:
         }
         (skill_dir / "context.json").write_text(json.dumps(bad))
         assert load_iteration_context(skill_dir) is None
+
+    def test_returns_none_for_unsupported_schema_version(self, tmp_path, capsys):
+        """Out-of-range ``schema_version`` (e.g. ``999``) → ``None`` PLUS
+        a stderr warning via :func:`audit._check_schema_version`.
+
+        Mirrors the audit-side reader: badge generation must NOT silently
+        embed a future, unsupported ``context.json`` revision when
+        :func:`clauditor.audit._read_context` would deliberately skip it.
+        Without this gate the two readers would diverge on which
+        sidecars are accepted.
+        """
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        bad = {
+            "schema_version": 999,
+            "harness": "claude-code",
+            "provider": "anthropic",
+            "model_runner": "x",
+            "model_grader": None,
+            "system_prompt_source": "agents_md",
+            "sandbox_mode": None,
+        }
+        (skill_dir / "context.json").write_text(json.dumps(bad))
+        assert load_iteration_context(skill_dir) is None
+        captured = capsys.readouterr()
+        # Stderr names the file + the expected accepted range so an
+        # operator can immediately diagnose the version mismatch.
+        assert "context.json" in captured.err
+        assert "999" in captured.err
+
+    def test_returns_none_when_schema_version_missing(self, tmp_path, capsys):
+        """A ``context.json`` payload without ``schema_version`` →
+        ``None`` (the version guard treats missing as out-of-range)."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        bad = {
+            "harness": "claude-code",
+            "provider": "anthropic",
+            "model_runner": "x",
+            "model_grader": None,
+            "system_prompt_source": "agents_md",
+            "sandbox_mode": None,
+        }
+        (skill_dir / "context.json").write_text(json.dumps(bad))
+        assert load_iteration_context(skill_dir) is None
+        captured = capsys.readouterr()
+        assert "context.json" in captured.err
+
+    def test_returns_none_when_top_level_not_dict(self, tmp_path):
+        """A ``context.json`` whose top level is not a dict (e.g. a
+        scalar JSON value) → ``None`` silently."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        (skill_dir / "context.json").write_text("42")
+        assert load_iteration_context(skill_dir) is None

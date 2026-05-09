@@ -360,3 +360,60 @@ class TestResolveAgentsMd:
         assert "escapes" in msg
         assert str(outside.resolve()) in msg
         assert str(project_root.resolve()) in msg
+
+    def test_legacy_layout_skips_skill_dir_tier(self, tmp_path):
+        """Legacy ``<name>.md`` skills MUST skip the per-skill AGENTS.md
+        tier and fall through directly to the project-root tier.
+
+        For a legacy skill ``<commands>/foo.md``, ``skill_path.parent``
+        is the shared commands directory (``<commands>/``), NOT a
+        per-skill directory. Treating that as a per-skill anchor would
+        let one ``AGENTS.md`` in the commands directory silently
+        override the documented project-root fallback for every legacy
+        skill there. The first tier is restricted to modern
+        ``SKILL.md`` layouts; legacy layouts skip it.
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        commands_dir = project_root / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        # Legacy skill: ``<commands>/foo.md`` (NOT ``<commands>/foo/SKILL.md``).
+        skill_path = commands_dir / "foo.md"
+        skill_path.write_text("---\nname: foo\n---\n")
+
+        # An AGENTS.md in the shared commands directory would be the
+        # tier-1 candidate for a modern-layout skill at this anchor.
+        # For the legacy skill, this file MUST be skipped — it is not
+        # a per-skill override.
+        commands_agents = commands_dir / "AGENTS.md"
+        commands_agents.write_text("# commands-dir agents (must NOT win)")
+
+        # Project-root AGENTS.md is the only legitimate tier for this
+        # legacy skill; the resolver must return it.
+        project_agents = project_root / "AGENTS.md"
+        project_agents.write_text("# project agents (the legitimate winner)")
+
+        result = resolve_agents_md(skill_path, project_root)
+        assert result == project_agents.resolve()
+        # Defensive: confirm the commands-dir file was NOT silently
+        # consulted. Equality above is sufficient, but spell out the
+        # invariant for the next reader.
+        assert result != commands_agents.resolve()
+
+    def test_legacy_layout_returns_none_when_only_skill_dir_agents(self, tmp_path):
+        """Legacy skill with an ``AGENTS.md`` only in the skill's
+        ``parent`` (commands) directory and NO project-root file →
+        ``None``. Tier 1 is gated to modern layouts, so the
+        commands-dir file is invisible to the resolver."""
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        commands_dir = project_root / ".claude" / "commands"
+        commands_dir.mkdir(parents=True)
+        skill_path = commands_dir / "foo.md"
+        skill_path.write_text("---\nname: foo\n---\n")
+
+        commands_agents = commands_dir / "AGENTS.md"
+        commands_agents.write_text("# commands-dir agents")
+
+        result = resolve_agents_md(skill_path, project_root)
+        assert result is None

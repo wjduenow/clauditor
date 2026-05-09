@@ -108,6 +108,72 @@ class TestIterationContextSerialization:
         assert ctx.schema_version == 1
 
 
+class TestIterationContextSchemaVersionGate:
+    """Hard-rejection of unsupported / malformed ``schema_version``.
+
+    Defends the always-v1 contract documented in
+    ``.claude/rules/json-schema-version.md``: ``context.json`` is
+    engineered so the two anticipated follow-ups (#169 ``cost_usd``,
+    #170 ``reasoning_tokens``) populate already-nullable fields
+    WITHOUT a schema bump. Any future bump must lift this gate
+    deliberately rather than letting a stale reader silently ingest
+    a forward-incompatible payload.
+    """
+
+    def test_rejects_higher_schema_version(self) -> None:
+        payload = _full_payload()
+        payload["schema_version"] = 2
+        with pytest.raises(ValueError) as exc:
+            IterationContext.from_dict(payload)
+        msg = str(exc.value)
+        assert "schema_version" in msg
+        assert "2" in msg
+        assert "expected 1" in msg
+
+    def test_rejects_zero_schema_version(self) -> None:
+        payload = _full_payload()
+        payload["schema_version"] = 0
+        with pytest.raises(ValueError) as exc:
+            IterationContext.from_dict(payload)
+        assert "schema_version" in str(exc.value)
+
+    def test_rejects_negative_schema_version(self) -> None:
+        payload = _full_payload()
+        payload["schema_version"] = -1
+        with pytest.raises(ValueError) as exc:
+            IterationContext.from_dict(payload)
+        assert "schema_version" in str(exc.value)
+
+    def test_rejects_string_schema_version(self) -> None:
+        payload = _full_payload()
+        payload["schema_version"] = "1"
+        with pytest.raises(ValueError) as exc:
+            IterationContext.from_dict(payload)
+        msg = str(exc.value)
+        assert "schema_version" in msg
+        assert "must be int" in msg
+
+    def test_rejects_bool_schema_version(self) -> None:
+        # bool is an int subclass in Python; reject explicitly per
+        # .claude/rules/constant-with-type-info.md.
+        payload = _full_payload()
+        payload["schema_version"] = True
+        with pytest.raises(ValueError) as exc:
+            IterationContext.from_dict(payload)
+        msg = str(exc.value)
+        assert "schema_version" in msg
+        assert "must be int" in msg
+
+    def test_rejects_none_schema_version(self) -> None:
+        # Explicit JSON ``null`` for schema_version (distinct from
+        # missing-key, which uses the default).
+        payload = _full_payload()
+        payload["schema_version"] = None
+        with pytest.raises(ValueError) as exc:
+            IterationContext.from_dict(payload)
+        assert "schema_version" in str(exc.value)
+
+
 class TestIterationContextValidation:
     def test_from_dict_rejects_unknown_harness(self) -> None:
         payload = _full_payload()

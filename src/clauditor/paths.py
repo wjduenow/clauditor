@@ -146,10 +146,20 @@ def resolve_agents_md(skill_path: Path, project_root: Path) -> Path | None:
 
     Two-tier search per DEC-009 of ``plans/super/154-context-sidecar.md``:
 
-    1. ``<skill_path.parent>/AGENTS.md`` — the modern-layout per-skill
-       override. Anchor: the skill directory.
+    1. **Modern layout only** (``skill_path.name == "SKILL.md"``):
+       ``<skill_path.parent>/AGENTS.md`` — the per-skill override.
+       Anchor: the skill directory. Skipped for legacy ``<name>.md``
+       layouts because ``skill_path.parent`` for a legacy skill points
+       at the shared commands directory (e.g.
+       ``.claude/commands/``), NOT a per-skill directory — letting one
+       ``AGENTS.md`` there silently override the project-root fallback
+       for every legacy skill in the directory would surprise authors
+       and make the resolver's behavior context-dependent on the
+       layout. Legacy layouts skip this tier and fall through to the
+       project-root tier.
     2. ``<project_root>/AGENTS.md`` — the Codex / OpenAI ecosystem
-       project-root convention. Anchor: ``project_root``.
+       project-root convention. Anchor: ``project_root``. Always
+       consulted.
 
     For each candidate, the search short-circuits when ``Path.is_file``
     returns ``True`` and applies the canonical path-validation recipe
@@ -174,10 +184,15 @@ def resolve_agents_md(skill_path: Path, project_root: Path) -> Path | None:
     Pure: the only I/O is the ``stat()`` implicit in ``is_file`` and
     ``resolve``; no stderr writes; no subprocess; no global state.
     """
-    candidates: list[tuple[Path, Path]] = [
-        (skill_path.parent / "AGENTS.md", skill_path.parent),
-        (project_root / "AGENTS.md", project_root),
-    ]
+    candidates: list[tuple[Path, Path]] = []
+    # Tier 1 fires only for modern-layout skills (``<dir>/SKILL.md``)
+    # because ``skill_path.parent`` is a per-skill directory in that
+    # layout. For legacy ``<name>.md`` skills the parent is the shared
+    # commands directory, so a tier-1 hit there would be a surprising
+    # cross-skill override — skip it entirely.
+    if skill_path.name == "SKILL.md":
+        candidates.append((skill_path.parent / "AGENTS.md", skill_path.parent))
+    candidates.append((project_root / "AGENTS.md", project_root))
     for candidate, anchor in candidates:
         if not candidate.is_file():
             continue

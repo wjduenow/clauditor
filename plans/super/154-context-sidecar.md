@@ -228,13 +228,15 @@ User answered scoping Q1–Q6 in order: B (with follow-up ticket), A (with follo
 
 ### Decisions resolved post-Architecture-Review (user: "All Confirm")
 
-#### DEC-007: `model_runner: str` (always-non-null); harness contract guarantees `harness_metadata["model"]`
+#### DEC-007: `model_runner: str | None` (nullable); harness contract guarantees the **key** `harness_metadata["model"]` is present (value MAY be `None`)
 
-**Decision:** `IterationContext.model_runner` is typed `str` (never `None`). The contract is: every harness MUST populate `harness_metadata["model"]` on every successful invoke. CodexHarness already satisfies this (`_codex.py:747`); ClaudeCodeHarness gains it in this PR per DEC-004. The sidecar writer reads `skill_result.harness_metadata["model"]` directly — a `KeyError` here is loud and surfaces a contract violation immediately rather than persisting `null` and hiding the bug.
+**Decision:** `IterationContext.model_runner` is typed `str | None`. The contract is: every harness MUST populate the **key** `harness_metadata["model"]` on every successful invoke (presence required so the sidecar writer can use an unguarded subscript and fail loudly on a contract violation), but the **value** MAY be `None` when the harness legitimately cannot expose the model that was actually used. CodexHarness always populates a concrete string (`_codex.py:747`); ClaudeCodeHarness gains the key in this PR per DEC-004 but may stamp the value as `None` when neither the constructor nor the per-call override pinned a model — the `claude` CLI's stream-json `result` message carries no model field, so the actually-used model cannot be recovered after the fact. Recording a fabricated default (e.g. `"claude-sonnet-4-6"`) would be a lie that defeats the comparability purpose of `model_runner`. `None` is the honest "no model recorded" signal.
 
-**Rationale:** The architectural review noted that "always-non-null" is only safe if the harness contract is mechanically enforced. By making the read an unguarded subscript (not `.get("model", None)`), any future harness that forgets to populate the key fails its first integration test loudly. Defaulting to `None` would silently mask the bug — opposite of `pre-llm-contract-hard-validate.md`'s spirit.
+**Post-QG narrative update:** The original DEC-007 wording ("always-non-null `str`") proved too strict in QG: forcing `ClaudeCodeHarness` to fabricate a default for the unpinned-model case was rejected as worse than nullable. The contract was tightened to "key always present" and the type was relaxed to `str | None`. The `IterationContext.from_dict` validator and the audit/badge readers all accept `None` end-to-end; the rendered `audit --verbose` column emits `"-"` for the null case.
 
-**Validation criteria embedded:** ClaudeCodeHarness invoke unit test asserts `result.harness_metadata["model"]` matches the resolved model (default + override paths); CodexHarness retains its existing assertion; CLI integration test asserts `context.json["model_runner"]` round-trips.
+**Rationale:** The architectural review's "always-non-null is only safe if the harness contract is mechanically enforced" insight still holds — the contract enforcement just landed on key-presence (unguarded subscript) rather than value-non-nullability. A future harness that forgets to populate the key still fails its first integration test loudly. Allowing `None` for the value preserves the loud-failure-on-key-omission shape while admitting the honest "harness cannot recover this" case.
+
+**Validation criteria embedded:** ClaudeCodeHarness invoke unit test asserts `result.harness_metadata["model"]` is present (key always set, value may be `None`); CodexHarness retains its existing concrete-string assertion; CLI integration test asserts `context.json["model_runner"]` round-trips both `str` and `None` values.
 
 #### DEC-008: `system_prompt_source` flows via `harness_metadata["system_prompt_source"]`
 
@@ -287,7 +289,7 @@ The "project root" anchor is whatever clauditor's existing project-root resolver
 Story ordering follows the natural data-flow direction: foundation (dataclass + validators) → harness-side data sources → resolver → sidecar writer → readers (audit + badge) → rule refresh → quality gate → patterns. Each story is sized for one Ralph context window.
 
 Project validation command (embedded in every story's acceptance criteria):
-```
+```bash
 uv run ruff check src/ tests/ && uv run pytest --cov=clauditor --cov-report=term-missing
 ```
 The 80% coverage gate is enforced.
@@ -571,7 +573,7 @@ The 80% coverage gate is enforced.
 
 ### Dependency graph
 
-```
+```text
 US-001 ────┬─→ US-003 ──┐
            ├─→ US-004 ──┼─→ US-005 ──┐
 US-002 ────┴─→ US-003   │             ├─→ US-008 ──→ US-009
