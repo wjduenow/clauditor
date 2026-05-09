@@ -86,6 +86,108 @@ class TestPytestPlugin:
         result = pytester.runpytest_inprocess()
         result.assert_outcomes(passed=1)
 
+    def test_clauditor_harness_option_accepts_codex(self, pytester):
+        """--clauditor-harness=codex parses cleanly."""
+        pytester.makepyfile("""
+            def test_harness_option(request):
+                assert request.config.getoption("--clauditor-harness") == "codex"
+        """)
+        result = pytester.runpytest_inprocess("--clauditor-harness=codex")
+        result.assert_outcomes(passed=1)
+
+    def test_clauditor_harness_option_accepts_claude_code(self, pytester):
+        """--clauditor-harness=claude-code parses cleanly."""
+        pytester.makepyfile("""
+            def test_harness_option(request):
+                assert (
+                    request.config.getoption("--clauditor-harness") == "claude-code"
+                )
+        """)
+        result = pytester.runpytest_inprocess("--clauditor-harness=claude-code")
+        result.assert_outcomes(passed=1)
+
+    def test_clauditor_harness_option_accepts_auto(self, pytester):
+        """--clauditor-harness=auto parses cleanly."""
+        pytester.makepyfile("""
+            def test_harness_option(request):
+                assert request.config.getoption("--clauditor-harness") == "auto"
+        """)
+        result = pytester.runpytest_inprocess("--clauditor-harness=auto")
+        result.assert_outcomes(passed=1)
+
+    def test_clauditor_harness_option_rejects_invalid(self, pytester):
+        """--clauditor-harness=invalid is rejected by argparse."""
+        pytester.makepyfile("""
+            def test_noop():
+                pass
+        """)
+        result = pytester.runpytest_inprocess("--clauditor-harness=invalid")
+        # argparse error → pytest exits with usage error code (4)
+        assert result.ret != 0
+
+    def test_clauditor_grading_provider_accepts_openai(self, pytester):
+        """--clauditor-grading-provider=openai parses cleanly."""
+        pytester.makepyfile("""
+            def test_provider_option(request):
+                assert (
+                    request.config.getoption("--clauditor-grading-provider")
+                    == "openai"
+                )
+        """)
+        result = pytester.runpytest_inprocess(
+            "--clauditor-grading-provider=openai"
+        )
+        result.assert_outcomes(passed=1)
+
+    def test_clauditor_grading_provider_accepts_anthropic(self, pytester):
+        """--clauditor-grading-provider=anthropic parses cleanly."""
+        pytester.makepyfile("""
+            def test_provider_option(request):
+                assert (
+                    request.config.getoption("--clauditor-grading-provider")
+                    == "anthropic"
+                )
+        """)
+        result = pytester.runpytest_inprocess(
+            "--clauditor-grading-provider=anthropic"
+        )
+        result.assert_outcomes(passed=1)
+
+    def test_clauditor_grading_provider_accepts_auto(self, pytester):
+        """--clauditor-grading-provider=auto parses cleanly."""
+        pytester.makepyfile("""
+            def test_provider_option(request):
+                assert (
+                    request.config.getoption("--clauditor-grading-provider")
+                    == "auto"
+                )
+        """)
+        result = pytester.runpytest_inprocess(
+            "--clauditor-grading-provider=auto"
+        )
+        result.assert_outcomes(passed=1)
+
+    def test_clauditor_grading_provider_rejects_invalid(self, pytester):
+        """--clauditor-grading-provider=invalid is rejected by argparse."""
+        pytester.makepyfile("""
+            def test_noop():
+                pass
+        """)
+        result = pytester.runpytest_inprocess(
+            "--clauditor-grading-provider=invalid"
+        )
+        assert result.ret != 0
+
+    def test_clauditor_harness_appears_in_help(self, pytester):
+        """--clauditor-harness shows up in pytest --help output."""
+        result = pytester.runpytest_inprocess("--help")
+        result.stdout.fnmatch_lines(["*--clauditor-harness*"])
+
+    def test_clauditor_grading_provider_appears_in_help(self, pytester):
+        """--clauditor-grading-provider shows up in pytest --help output."""
+        result = pytester.runpytest_inprocess("--help")
+        result.stdout.fnmatch_lines(["*--clauditor-grading-provider*"])
+
 
 class TestPluginFunctionsDirect:
     """Direct unit tests for plugin functions to ensure coverage."""
@@ -99,7 +201,7 @@ class TestPluginFunctionsDirect:
         parser.getgroup.assert_called_once_with(
             "clauditor", "Claude Code skill testing"
         )
-        assert group.addoption.call_count == 6
+        assert group.addoption.call_count == 8
         # Verify option names
         option_names = [call.args[0] for call in group.addoption.call_args_list]
         assert "--clauditor-project-dir" in option_names
@@ -108,6 +210,8 @@ class TestPluginFunctionsDirect:
         assert "--clauditor-grade" in option_names
         assert "--clauditor-model" in option_names
         assert "--clauditor-no-api-key" in option_names
+        assert "--clauditor-harness" in option_names
+        assert "--clauditor-grading-provider" in option_names
 
     def test_pytest_configure_adds_marker(self):
         """pytest_configure registers the clauditor_grade, network, and slow markers."""
