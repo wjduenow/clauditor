@@ -5,9 +5,9 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/154
 - **Branch:** `feature/154-context-sidecar`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/154-context-sidecar`
-- **PR:** TBD
-- **Phase:** detailing
-- **Epic:** TBD
+- **PR:** https://github.com/wjduenow/clauditor/pull/171
+- **Phase:** devolved
+- **Epic:** clauditor-hqv
 - **Sessions:** 1 (2026-05-08)
 - **Total decisions:** 11 (DEC-001 through DEC-011)
 - **Depends on:** #149 (CLOSED — `CodexHarness`), #152 (CLOSED — `harness` field on L1/L2/L3 sidecars)
@@ -585,4 +585,21 @@ US-001 and US-002 are independent; everything downstream depends on at least one
 
 ## Beads Manifest
 
-_(Pending — populated on devolve.)_
+- **Epic:** `clauditor-hqv` — #154: per-iteration context.json sidecar
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/154-context-sidecar`
+- **Branch:** `feature/154-context-sidecar`
+- **Plan PR:** https://github.com/wjduenow/clauditor/pull/171
+
+| ID | Story | Priority | Depends on |
+|---|---|---|---|
+| `clauditor-hqv.1` | US-001 — IterationContext dataclass + to_json/from_dict + closed-set validators | P2 | — |
+| `clauditor-hqv.2` | US-002 — harness_metadata['model'] in ClaudeCodeHarness + sandbox_mode closed-set in CodexHarness | P2 | — |
+| `clauditor-hqv.3` | US-003 — AGENTS.md resolver in SkillSpec.run + system_prompt_source stamping | P2 | hqv.2 |
+| `clauditor-hqv.4` | US-004 — sidecar writer in cli/grade.py + cli/validate.py | P2 | hqv.1, hqv.2, hqv.3 |
+| `clauditor-hqv.5` | US-005 — audit --verbose reads context + per-iteration block render + MAX_SCHEMA_VERSION registration | P2 | hqv.1, hqv.4 |
+| `clauditor-hqv.6` | US-006 — badge ClauditorExtension v1→v2 bump with optional context field | P2 | hqv.1, hqv.4 |
+| `clauditor-hqv.7` | US-007 — refresh json-schema-version.md with context.json paragraph | P3 | hqv.1, hqv.5 |
+| `clauditor-hqv.8` | Quality Gate — code review x4 + CodeRabbit | P2 | hqv.1..hqv.7 |
+| `clauditor-hqv.9` | Patterns & Memory — update conventions and docs | P4 | hqv.8 |
+
+**Initial ready set:** `clauditor-hqv.1` (US-001) + `clauditor-hqv.2` (US-002) — both unblocked, can run in parallel.
