@@ -4,6 +4,8 @@ import importlib
 import re
 from pathlib import Path
 
+import pytest
+
 import clauditor.paths as _paths_mod
 
 importlib.reload(_paths_mod)
@@ -12,6 +14,7 @@ from clauditor.paths import (  # noqa: E402
     SKILL_NAME_RE,
     derive_project_dir,
     derive_skill_name,
+    resolve_agents_md,
     resolve_clauditor_dir,
 )
 
@@ -241,3 +244,119 @@ class TestDeriveProjectDir:
         skill_path.write_text("---\nname: foo\n---\n")
         # parent.parent.parent.parent = tmp_path / "a" / "b"
         assert derive_project_dir(skill_path) == tmp_path / "a" / "b"
+
+
+class TestResolveAgentsMd:
+    """Unit tests for the pure ``resolve_agents_md`` helper.
+
+    Two-tier search per DEC-009 of ``plans/super/154-context-sidecar.md``:
+    skill dir wins over project root; both validated by the canonical
+    path-validation recipe (``Path.resolve(strict=True)`` then
+    ``is_relative_to(anchor)``).
+    """
+
+    def test_skill_dir_wins_when_both_exist(self, tmp_path):
+        """Skill-dir ``AGENTS.md`` short-circuits the search; project-
+        root file is not consulted when the skill-dir tier has a hit."""
+        project_root = tmp_path
+        skill_dir = project_root / ".claude" / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text("---\nname: foo\n---\n")
+        skill_agents = skill_dir / "AGENTS.md"
+        skill_agents.write_text("# skill agents")
+        project_agents = project_root / "AGENTS.md"
+        project_agents.write_text("# project agents")
+
+        result = resolve_agents_md(skill_path, project_root)
+        assert result == skill_agents.resolve()
+
+    def test_falls_back_to_project_root(self, tmp_path):
+        """When only the project-root tier has an AGENTS.md, the
+        helper returns its validated path."""
+        project_root = tmp_path
+        skill_dir = project_root / ".claude" / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text("---\nname: foo\n---\n")
+        project_agents = project_root / "AGENTS.md"
+        project_agents.write_text("# project agents")
+
+        result = resolve_agents_md(skill_path, project_root)
+        assert result == project_agents.resolve()
+
+    def test_returns_none_when_neither_exists(self, tmp_path):
+        """Neither tier yields a file → return ``None``."""
+        project_root = tmp_path
+        skill_dir = project_root / ".claude" / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text("---\nname: foo\n---\n")
+
+        result = resolve_agents_md(skill_path, project_root)
+        assert result is None
+
+    def test_rejects_symlink_escape_from_skill_dir(self, tmp_path):
+        """A symlink at ``<skill_dir>/AGENTS.md`` whose resolved target
+        sits outside the skill dir raises :class:`ValueError` naming
+        both the offending input and the anchor it escaped.
+
+        Defense-in-depth: even though the symlink lives under the skill
+        dir, ``Path.resolve(strict=True)`` follows it to the real
+        target, and the ``is_relative_to`` check flags the escape.
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        skill_dir = project_root / ".claude" / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text("---\nname: foo\n---\n")
+
+        # Real file living outside both anchors.
+        outside = tmp_path / "outside.md"
+        outside.write_text("# outside")
+
+        # Symlink under skill_dir pointing at the outside file.
+        skill_agents = skill_dir / "AGENTS.md"
+        skill_agents.symlink_to(outside)
+
+        with pytest.raises(ValueError) as exc_info:
+            resolve_agents_md(skill_path, project_root)
+
+        msg = str(exc_info.value)
+        assert "AGENTS.md" in msg
+        assert "escapes" in msg
+        # The resolved-target path AND the anchor are both in the message
+        # so the operator can immediately see what went wrong.
+        assert str(outside.resolve()) in msg
+        assert str(skill_dir.resolve()) in msg
+
+    def test_rejects_path_outside_anchor(self, tmp_path):
+        """Defense-in-depth check: a symlink at the project-root tier
+        that escapes the project root anchor also raises ``ValueError``.
+
+        Exercises the second-tier branch of the resolver (the skill-dir
+        tier has no AGENTS.md, the project-root tier has a hostile
+        symlink).
+        """
+        project_root = tmp_path / "project"
+        project_root.mkdir()
+        skill_dir = project_root / ".claude" / "skills" / "foo"
+        skill_dir.mkdir(parents=True)
+        skill_path = skill_dir / "SKILL.md"
+        skill_path.write_text("---\nname: foo\n---\n")
+
+        outside = tmp_path / "elsewhere.md"
+        outside.write_text("# elsewhere")
+
+        project_agents = project_root / "AGENTS.md"
+        project_agents.symlink_to(outside)
+
+        with pytest.raises(ValueError) as exc_info:
+            resolve_agents_md(skill_path, project_root)
+
+        msg = str(exc_info.value)
+        assert "AGENTS.md" in msg
+        assert "escapes" in msg
+        assert str(outside.resolve()) in msg
+        assert str(project_root.resolve()) in msg

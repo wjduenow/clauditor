@@ -906,10 +906,16 @@ def tmp_skill_file(tmp_path):
 
 
 @pytest.fixture
-def mock_runner():
+def mock_runner(tmp_path):
     """Factory fixture returning a MagicMock SkillRunner.
 
     The mock's .run() returns a configurable SkillResult.
+
+    The mock's ``project_dir`` defaults to a fresh ``tmp_path`` so that
+    helpers walking the project root (e.g. ``resolve_agents_md`` from
+    US-003 of #154) do not accidentally pick up files in the real
+    repo-root cwd. Tests that need a specific project_dir can override
+    via ``project_dir=`` kwarg.
 
     Usage:
         def test_something(mock_runner):
@@ -925,9 +931,10 @@ def mock_runner():
         args: str = "",
         duration_seconds: float = 1.0,
         error: str | None = None,
+        project_dir: Path | None = None,
     ) -> MagicMock:
         mock = MagicMock(spec=SkillRunner)
-        mock.project_dir = Path.cwd()
+        mock.project_dir = project_dir if project_dir is not None else tmp_path
         result = SkillResult(
             output=output,
             exit_code=exit_code,
