@@ -683,6 +683,15 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
     lacks an eval spec or ``user_prompt`` is empty; the exception is
     propagated untouched so tests can assert on it.
 
+    Factory kwargs (US-004 of #155):
+
+    - ``provider``: override the grading provider for this call.
+      Sits at the top of the operator-intent precedence stack
+      (kwarg > ``--clauditor-grading-provider`` > env > spec) per
+      DEC-007 of ``plans/super/155-pytest-fixtures-parametrize.md``.
+    - ``model``: override the grading model for this call. Wins over
+      ``--clauditor-model``.
+
     Model precedence (highest → lowest):
 
     1. Explicit ``model=`` kwarg on this factory call.
@@ -695,12 +704,18 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
 
     from clauditor.quality_grader import BlindReport, blind_compare_from_spec
 
+    pytest_model_option = request.config.getoption("--clauditor-model")
+    pytest_provider_option = request.config.getoption(
+        "--clauditor-grading-provider"
+    )
+
     def _factory(
         skill_path: str | Path,
         output_a: str,
         output_b: str,
         eval_path: str | Path | None = None,
         *,
+        provider: str | None = None,
         model: str | None = None,
     ) -> BlindReport:
         # DEC-006 (#146 US-007) + #162 US-001: load spec first so the
@@ -714,16 +729,27 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
         spec = clauditor_spec(skill_path, eval_path)
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
-        effective_model = model or request.config.getoption("--clauditor-model")
+        # US-004 of #155 (DEC-007): operator-intent precedence —
+        # factory kwarg > pytest CLI option. The kwarg wins at the
+        # call site; either feeds into ``provider_override`` /
+        # ``model_override`` below, which then thread through the
+        # helpers as ``cli_override`` to the pure resolver.
+        provider_override = provider or pytest_provider_option
+        effective_model = model or pytest_model_option
         # Per CodeRabbit finding on PR #164: thread the operator-intent
         # model (``model=`` kwarg or ``--clauditor-model``) into auth
         # dispatch + provider resolution so an OpenAI model on a
         # default spec routes to OpenAI auth, not Anthropic.
         _dispatch_fixture_auth_guard(
-            spec.eval_spec, "blind_compare", effective_model
+            spec.eval_spec,
+            "blind_compare",
+            effective_model,
+            provider_override=provider_override,
         )
-        provider = _resolve_fixture_provider(
-            spec.eval_spec, effective_model
+        resolved_provider = _resolve_fixture_provider(
+            spec.eval_spec,
+            effective_model,
+            provider_override=provider_override,
         )
         return asyncio.run(
             blind_compare_from_spec(
@@ -731,7 +757,7 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
                 output_a,
                 output_b,
                 model=effective_model,
-                provider=provider,
+                provider=resolved_provider,
             )
         )
 

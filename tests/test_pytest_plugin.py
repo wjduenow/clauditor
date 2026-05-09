@@ -543,6 +543,7 @@ def _blind_compare_factory(tmp_path: Path, *, cli_model: str | None = None):
             "--clauditor-claude-bin": "claude",
             "--clauditor-model": cli_model,
             "--clauditor-no-api-key": False,
+            "--clauditor-grading-provider": None,
         }[opt]
     )
     spec_factory = clauditor_spec.__wrapped__(request, tmp_path)
@@ -2691,3 +2692,232 @@ class TestClauditorGraderFactoryKwargs:
             _dispatch_fixture_auth_guard(
                 eval_spec, "grader", provider_override="openai"
             )
+
+
+class TestClauditorBlindCompareFactoryKwargs:
+    """US-004 of #155: ``clauditor_blind_compare`` factory accepts
+    ``provider=`` kwarg (and verifies the existing ``model=`` kwarg's
+    precedence chain) — operator-intent precedence (kwarg > pytest CLI
+    option > env > spec).
+
+    Traces to DEC-007 of ``plans/super/155-pytest-fixtures-parametrize.md``.
+    """
+
+    def _request_with_options(
+        self,
+        *,
+        model: str | None = None,
+        grading_provider: str | None = None,
+    ):
+        request = MagicMock()
+        request.config.getoption.side_effect = lambda opt: {
+            "--clauditor-model": model,
+            "--clauditor-grading-provider": grading_provider,
+        }.get(opt)
+        return request
+
+    def test_blind_compare_factory_kwarg_provider_wins(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec has ``grading_provider="anthropic"``; pass
+        ``provider="openai"`` factory kwarg; assert OpenAI auth is
+        dispatched (raises ``OpenAIAuthMissingError`` when OPENAI key
+        is missing, proving the kwarg won over the spec).
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        request = self._request_with_options()
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "anthropic"
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_blind_compare.__wrapped__(
+            request, fake_clauditor_spec
+        )
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(
+                tmp_path / "skill.md",
+                "output A",
+                "output B",
+                provider="openai",
+            )
+
+    def test_blind_compare_pytest_option_provider_used_when_no_kwarg(
+        self, tmp_path, monkeypatch
+    ):
+        """``pytest --clauditor-grading-provider=openai`` honored when
+        no factory kwarg is passed.
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        # pytest CLI option set, but no factory kwarg.
+        request = self._request_with_options(grading_provider="openai")
+        eval_spec = MagicMock()
+        # Default spec — no grading_provider preference.
+        eval_spec.grading_provider = None
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_blind_compare.__wrapped__(
+            request, fake_clauditor_spec
+        )
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(tmp_path / "skill.md", "output A", "output B")
+
+    def test_blind_compare_env_used_when_no_kwarg_no_option(
+        self, tmp_path, monkeypatch
+    ):
+        """``CLAUDITOR_GRADING_PROVIDER=openai`` honored when neither
+        kwarg nor pytest option is set.
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "openai")
+
+        request = self._request_with_options()
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = None
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_blind_compare.__wrapped__(
+            request, fake_clauditor_spec
+        )
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(tmp_path / "skill.md", "output A", "output B")
+
+    def test_blind_compare_factory_kwarg_model_wins(
+        self, tmp_path, monkeypatch
+    ):
+        """Factory ``model="gpt-5.4"`` overrides ``--clauditor-model``;
+        threads through to ``blind_compare_from_spec(model=...)``.
+        Verifies the precedence chain explicitly.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+
+        # pytest option set to a different value — kwarg should win.
+        request = self._request_with_options(model="claude-sonnet-4-6")
+        eval_spec = MagicMock()
+        # OpenAI spec so the model goes to OpenAI.
+        eval_spec.grading_provider = "openai"
+        eval_spec.grading_model = "gpt-4-turbo"  # spec value distinct.
+
+        mock_spec = MagicMock()
+        mock_spec.eval_spec = eval_spec
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            return mock_spec
+
+        canned = MagicMock()
+        with patch(
+            "clauditor.quality_grader.blind_compare_from_spec",
+            new=AsyncMock(return_value=canned),
+        ) as mock_blind:
+            factory = clauditor_blind_compare.__wrapped__(
+                request, fake_clauditor_spec
+            )
+            factory(
+                tmp_path / "skill.md",
+                "output A",
+                "output B",
+                model="gpt-5.4",
+            )
+
+        call = mock_blind.await_args
+        assert call.kwargs["model"] == "gpt-5.4"
+
+    def test_blind_compare_provider_kwarg_overrides_pytest_option(
+        self, tmp_path, monkeypatch
+    ):
+        """Both kwarg and pytest option set; kwarg wins."""
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        # pytest option says anthropic; kwarg says openai.
+        request = self._request_with_options(grading_provider="anthropic")
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = None
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_blind_compare.__wrapped__(
+            request, fake_clauditor_spec
+        )
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(
+                tmp_path / "skill.md",
+                "output A",
+                "output B",
+                provider="openai",
+            )
+
+    def test_blind_compare_provider_kwarg_threads_to_blind_compare_from_spec(
+        self, tmp_path, monkeypatch
+    ):
+        """``provider=`` kwarg threads through to
+        ``blind_compare_from_spec(provider=...)``, so the resulting
+        ``BlindReport.provider_source`` reflects the resolved provider.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+
+        request = self._request_with_options()
+        eval_spec = MagicMock()
+        # Spec defaults to anthropic — kwarg should override.
+        eval_spec.grading_provider = "anthropic"
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        mock_spec = MagicMock()
+        mock_spec.eval_spec = eval_spec
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            return mock_spec
+
+        canned = MagicMock()
+        with patch(
+            "clauditor.quality_grader.blind_compare_from_spec",
+            new=AsyncMock(return_value=canned),
+        ) as mock_blind:
+            factory = clauditor_blind_compare.__wrapped__(
+                request, fake_clauditor_spec
+            )
+            factory(
+                tmp_path / "skill.md",
+                "output A",
+                "output B",
+                provider="openai",
+            )
+
+        call = mock_blind.await_args
+        assert call.kwargs["provider"] == "openai"
