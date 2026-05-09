@@ -21,6 +21,7 @@ from clauditor._providers import (
 )
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.benchmark import Benchmark, compute_benchmark
+from clauditor.context import IterationContext
 from clauditor.paths import resolve_clauditor_dir
 from clauditor.runner import (
     SkillResult,
@@ -786,6 +787,21 @@ def _write_workspace_sidecars(
         primary_report.to_json(), encoding="utf-8"
     )
 
+    # #154 US-004 / DEC-007 / DEC-008: write the per-iteration
+    # comparability sidecar inside the staging block. Skip in
+    # captured-text mode (``--output`` without variance/baseline)
+    # where ``harness_name`` is ``None`` and there is no real
+    # ``SkillResult`` to read ``harness_metadata`` from.
+    primary_skill_result = skill_results[0] if skill_results else None
+    if harness_name is not None and primary_skill_result is not None:
+        _write_context_sidecar(
+            skill_dir=skill_dir,
+            harness_name=harness_name,
+            provider=provider,
+            primary_skill_result=primary_skill_result,
+            model_grader=primary_report.model,
+        )
+
     _write_assertions_sidecar(
         args=args,
         spec=spec,
@@ -843,6 +859,48 @@ def _write_workspace_sidecars(
         )
 
     return None
+
+
+def _write_context_sidecar(
+    *,
+    skill_dir: Path,
+    harness_name: str,
+    provider: str,
+    primary_skill_result: SkillResult,
+    model_grader: str | None,
+) -> None:
+    """Write per-iteration comparability metadata as ``context.json``.
+
+    #154 US-004. Reads the runner-side fields from the primary
+    :class:`SkillResult`'s ``harness_metadata`` per the harness contract
+    (DEC-007, DEC-008): ``model`` and ``system_prompt_source`` are
+    UNGUARDED subscripts — a missing key surfaces a contract violation
+    immediately. ``sandbox_mode`` IS optional (only Codex populates it)
+    so it uses ``.get(...)``.
+
+    ``cost_usd`` and ``reasoning_tokens`` ship as ``None`` per DEC-001 /
+    DEC-002 (placeholders for #169 / #170).
+
+    Runs inside the workspace staging block per
+    ``.claude/rules/sidecar-during-staging.md``; the caller's
+    ``try/except → workspace.abort()`` envelope ensures a failed write
+    never publishes a partial iteration.
+    """
+    context = IterationContext(
+        harness=harness_name,
+        provider=provider,
+        model_runner=primary_skill_result.harness_metadata["model"],
+        model_grader=model_grader,
+        system_prompt_source=primary_skill_result.harness_metadata[
+            "system_prompt_source"
+        ],
+        sandbox_mode=primary_skill_result.harness_metadata.get("sandbox_mode"),
+        cost_usd=None,
+        reasoning_tokens=None,
+    )
+    (skill_dir / "context.json").write_text(
+        context.to_json(), encoding="utf-8"
+    )
 
 
 def _write_run_dirs_or_scrub(

@@ -191,6 +191,10 @@ class TestGradeVerboseInvocation:
             args="",
             duration_seconds=0.5,
             stream_events=[_assistant_event("assistant ctx line")],
+            harness_metadata={
+                "model": "claude-sonnet-4-6",
+                "system_prompt_source": "skill_md",
+            },
         )
 
     def _grading_report(self):
@@ -347,6 +351,15 @@ class TestValidateVerboseInvocation:
         fake_skill_result.duration_seconds = 0.1
         fake_skill_result.input_tokens = 0
         fake_skill_result.output_tokens = 0
+        # #154 US-004: ``cmd_validate`` writes ``context.json`` from
+        # ``skill_result.harness_metadata`` (DEC-007 / DEC-008 unguarded
+        # subscripts). MagicMock would return a chained MagicMock that
+        # leaks into JSON serialization; pin to the harness contract's
+        # required keys.
+        fake_skill_result.harness_metadata = {
+            "model": "claude-sonnet-4-6",
+            "system_prompt_source": "skill_md",
+        }
 
         args = MagicMock()
         args.skill = str(skill_path)
@@ -447,6 +460,11 @@ class TestValidateVerboseInvocation:
         fake_skill_result.duration_seconds = 0.0
         fake_skill_result.input_tokens = 0
         fake_skill_result.output_tokens = 0
+        # #154 US-004: see analogous pin above.
+        fake_skill_result.harness_metadata = {
+            "model": "claude-sonnet-4-6",
+            "system_prompt_source": "skill_md",
+        }
 
         args = MagicMock()
         args.skill = "demo.md"

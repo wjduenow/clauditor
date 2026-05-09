@@ -968,12 +968,25 @@ def make_skill_result(
     output_tokens: int = 0,
     error: str | None = None,
     stream_events: list[dict] | None = None,
+    harness_metadata: dict | None = None,
 ) -> SkillResult:
     """Build a real SkillResult with sensible defaults.
 
     Prefer this over MagicMock for tests that only need a value object;
     keeping it a real dataclass means attribute typos fail loudly.
+
+    ``harness_metadata`` defaults to a dict pre-populated with the
+    ``model`` and ``system_prompt_source`` keys per the harness contract
+    (#154 DEC-007 / DEC-008): every real harness invocation populates
+    these keys, so the test factory mirrors that contract by default.
+    Tests exercising the missing-key contract-violation path can pass
+    ``harness_metadata={}`` explicitly.
     """
+    if harness_metadata is None:
+        harness_metadata = {
+            "model": "claude-sonnet-4-6",
+            "system_prompt_source": "skill_md",
+        }
     return SkillResult(
         output=output,
         exit_code=exit_code,
@@ -984,6 +997,7 @@ def make_skill_result(
         output_tokens=output_tokens,
         error=error,
         stream_events=stream_events if stream_events is not None else [],
+        harness_metadata=harness_metadata,
     )
 
 
