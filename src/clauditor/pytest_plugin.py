@@ -25,6 +25,7 @@ import pytest
 
 from clauditor._harnesses._claude_code import env_without_api_key
 from clauditor.asserters import SkillAsserter
+from clauditor.cli import _harness_choice, _provider_choice
 from clauditor.runner import SkillResult, SkillRunner
 from clauditor.spec import SkillSpec
 
@@ -85,6 +86,30 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "--clauditor-model",
         default=None,
         help="Override grading model for Layer 3 tests (default: claude-sonnet-4-6)",
+    )
+    group.addoption(
+        "--clauditor-harness",
+        type=_harness_choice,
+        default=None,
+        help=(
+            "Override the harness used by clauditor fixtures "
+            "({claude-code, codex, auto}). Operator-intent precedence: "
+            "factory kwarg > pytest CLI > CLAUDITOR_HARNESS env > "
+            "EvalSpec.harness > default 'auto'. See DEC-008 of "
+            "plans/super/155-pytest-fixtures-parametrize.md."
+        ),
+    )
+    group.addoption(
+        "--clauditor-grading-provider",
+        type=_provider_choice,
+        default=None,
+        help=(
+            "Override the grading provider used by clauditor fixtures "
+            "({anthropic, openai, auto}). Operator-intent precedence: "
+            "factory kwarg > pytest CLI > CLAUDITOR_GRADING_PROVIDER "
+            "env > EvalSpec.grading_provider > default 'auto'. See "
+            "DEC-008 of plans/super/155-pytest-fixtures-parametrize.md."
+        ),
     )
 
 
