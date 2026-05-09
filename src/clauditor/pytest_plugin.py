@@ -278,6 +278,24 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
 
     def _factory(skill_path: str | Path, eval_path: str | Path | None = None):
         spec = SkillSpec.from_file(skill_path, eval_path=eval_path, runner=runner)
+        # DEC-005 (#155 US-006): when the spec author declares
+        # ``eval_spec.harness == "codex"``, eagerly fire the
+        # :func:`check_codex_auth` guard BEFORE returning the wrapped
+        # spec. Mirrors the runner-side guard in ``clauditor_runner``
+        # (US-002) so any test that uses either fixture sees the same
+        # crisp ``CodexAuthMissingError`` (a sibling of ``Exception``,
+        # NOT ``pytest.skip``) instead of a deep subprocess error
+        # later. The fixture does not auto-resolve harness from PATH —
+        # ``"auto"`` (and unset) leaves the guard unfired so the
+        # CLI/resolver layer remains the single seam for auto
+        # resolution.
+        if (
+            spec.eval_spec is not None
+            and spec.eval_spec.harness == "codex"
+        ):
+            from clauditor._providers import check_codex_auth
+
+            check_codex_auth("spec")
         has_input_files = (
             spec.eval_spec is not None and bool(spec.eval_spec.input_files)
         )
