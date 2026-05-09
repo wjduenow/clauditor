@@ -740,20 +740,46 @@ def clauditor_blind_compare(request: pytest.FixtureRequest, clauditor_spec):
 
 @pytest.fixture
 def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
-    """Fixture factory for trigger precision testing."""
+    """Fixture factory for trigger precision testing.
+
+    Factory kwargs (US-005 of #155):
+
+    - ``provider``: override the grading provider for this call.
+      Sits at the top of the operator-intent precedence stack
+      (kwarg > ``--clauditor-grading-provider`` > env > spec) per
+      DEC-007 of ``plans/super/155-pytest-fixtures-parametrize.md``.
+    - ``model``: override the grading model for this call. Wins over
+      ``--clauditor-model`` pytest option.
+    """
     import asyncio
 
     from clauditor.triggers import test_triggers as run_triggers
 
-    model_override = request.config.getoption("--clauditor-model")
+    pytest_model_option = request.config.getoption("--clauditor-model")
+    pytest_provider_option = request.config.getoption(
+        "--clauditor-grading-provider"
+    )
 
     def _factory(
-        skill_path: str | Path, eval_path: str | Path | None = None
+        skill_path: str | Path,
+        eval_path: str | Path | None = None,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
     ):
         # DEC-006 (#146 US-007) + #162 US-001: load spec first so the
         # dispatch can read ``eval_spec.grading_provider`` /
         # ``grading_model``. See :func:`clauditor_grader` for rationale.
         # The guard still fires before any SDK call.
+        #
+        # US-005 of #155 (DEC-007): operator-intent precedence —
+        # factory kwarg > pytest CLI option. The kwarg wins at the
+        # call site; either feeds into ``provider_override`` /
+        # ``model_override`` below, which then thread through the
+        # helpers as ``cli_override`` to the pure resolver.
+        provider_override = provider or pytest_provider_option
+        model_override = model or pytest_model_option
+
         spec = clauditor_spec(skill_path, eval_path)
         # Validate spec shape BEFORE the auth dispatch (CodeRabbit
         # finding on PR #163): a missing/invalid auth key would
@@ -763,18 +789,27 @@ def clauditor_triggers(request: pytest.FixtureRequest, clauditor_spec):
         if spec.eval_spec is None:
             raise ValueError(f"No eval spec found for {skill_path}")
         _dispatch_fixture_auth_guard(
-            spec.eval_spec, "triggers", model_override
+            spec.eval_spec,
+            "triggers",
+            model_override,
+            provider_override=provider_override,
         )
-        provider = _resolve_fixture_provider(
-            spec.eval_spec, model_override
+        resolved_provider = _resolve_fixture_provider(
+            spec.eval_spec,
+            model_override,
+            provider_override=provider_override,
         )
         # Provider-aware model defaulting (QG pass 1).
         from clauditor._providers import resolve_grading_model
-        model = (
+        resolved_model = (
             model_override
             or spec.eval_spec.grading_model
-            or resolve_grading_model(spec.eval_spec, provider)
+            or resolve_grading_model(spec.eval_spec, resolved_provider)
         )
-        return asyncio.run(run_triggers(spec.eval_spec, model, provider=provider))
+        return asyncio.run(
+            run_triggers(
+                spec.eval_spec, resolved_model, provider=resolved_provider
+            )
+        )
 
     return _factory
