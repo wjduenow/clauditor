@@ -2168,7 +2168,7 @@ class TestFixtureHonorsHarness:
         )
         return request
 
-    def test_codex_spec_threads_harness_override(self, tmp_path):
+    def test_codex_spec_threads_harness_override(self, tmp_path, monkeypatch):
         """``eval_spec.harness == "codex"`` threads
         ``harness_name_override="codex"`` into ``original_run``.
 
@@ -2176,6 +2176,12 @@ class TestFixtureHonorsHarness:
         automatically when ``spec.run()`` is called from the fixture.
         """
         from clauditor.spec import SkillSpec
+
+        # #155 US-006: spec factory eagerly fires ``check_codex_auth``
+        # for ``eval_spec.harness == "codex"``. Set a Codex env var so
+        # the strict-OR guard passes and the test exercises the
+        # harness-override threading rather than the auth-missing path.
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
 
         request = self._request()
         factory = clauditor_spec.__wrapped__(request, tmp_path)
@@ -2230,12 +2236,20 @@ class TestFixtureHonorsHarness:
         # other reasons (no input_files, no --clauditor-no-api-key).
         assert result.run is original_run
 
-    def test_caller_harness_override_wins_over_spec(self, tmp_path):
+    def test_caller_harness_override_wins_over_spec(
+        self, tmp_path, monkeypatch
+    ):
         """Caller-provided ``harness_name_override=`` (operator intent)
         wins over ``eval_spec.harness`` (author intent), mirroring the
         ``env_override`` / ``timeout_override`` precedence shape.
         """
         from clauditor.spec import SkillSpec
+
+        # #155 US-006: ``eval_spec.harness == "codex"`` triggers the
+        # eager Codex auth guard inside the spec factory. Set
+        # ``CODEX_API_KEY`` so the strict-OR check passes and the test
+        # exercises the operator-intent precedence.
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
 
         request = self._request()
         factory = clauditor_spec.__wrapped__(request, tmp_path)
@@ -2691,3 +2705,142 @@ class TestClauditorGraderFactoryKwargs:
             _dispatch_fixture_auth_guard(
                 eval_spec, "grader", provider_override="openai"
             )
+
+
+class TestClauditorSpecCodexGuard:
+    """Tests for the eager Codex auth guard in ``clauditor_spec`` (#155 US-006).
+
+    Per DEC-005 of ``plans/super/155-pytest-fixtures-parametrize.md``,
+    when the loaded spec has ``eval_spec.harness == "codex"``, the
+    factory eagerly calls
+    :func:`clauditor._providers.check_codex_auth` BEFORE returning
+    the wrapped :class:`SkillSpec` so missing Codex auth surfaces as
+    :class:`CodexAuthMissingError` (a sibling of :class:`Exception`)
+    at fixture-setup time rather than as a deep subprocess error
+    later. Mirrors the runner-side guard from US-002.
+    """
+
+    def _request(self):
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": 300,
+                "--clauditor-claude-bin": "claude",
+                "--clauditor-no-api-key": False,
+            }[opt]
+        )
+        return request
+
+    def test_spec_factory_codex_auth_missing(self, tmp_path, monkeypatch):
+        """``eval_spec.harness == "codex"`` with no Codex env vars
+        raises :class:`CodexAuthMissingError`.
+
+        DEC-005: eager guard at the spec seam (NOT ``pytest.skip``).
+        """
+        from clauditor._providers import CodexAuthMissingError
+        from clauditor.spec import SkillSpec
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        request = self._request()
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_eval_spec.harness = "codex"
+        mock_spec.eval_spec = mock_eval_spec
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            with pytest.raises(CodexAuthMissingError):
+                factory("some/skill.md")
+
+    def test_spec_factory_claude_code_no_guard(self, tmp_path, monkeypatch):
+        """``eval_spec.harness == "claude-code"`` does NOT fire the
+        Codex guard — missing OpenAI/Codex keys are irrelevant.
+
+        Acceptance criterion: zero behavior change for the
+        ``claude-code`` path.
+        """
+        from clauditor.spec import SkillSpec
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        request = self._request()
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_eval_spec.harness = "claude-code"
+        mock_spec.eval_spec = mock_eval_spec
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            # No raise — Codex guard does not fire on claude-code.
+            result = factory("some/skill.md")
+        assert result is mock_spec
+
+    def test_spec_factory_codex_with_key_no_raise(
+        self, tmp_path, monkeypatch
+    ):
+        """``eval_spec.harness == "codex"`` with ``CODEX_API_KEY``
+        set passes the strict-OR guard — no raise.
+        """
+        from clauditor.spec import SkillSpec
+
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        request = self._request()
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_eval_spec.harness = "codex"
+        mock_spec.eval_spec = mock_eval_spec
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+        assert result is mock_spec
+
+    def test_spec_factory_codex_with_openai_key_no_raise(
+        self, tmp_path, monkeypatch
+    ):
+        """``eval_spec.harness == "codex"`` with ``OPENAI_API_KEY``
+        set (instead of ``CODEX_API_KEY``) also passes — Codex's
+        strict-OR auth accepts either env var per
+        :func:`clauditor._providers.check_codex_auth`.
+        """
+        from clauditor.spec import SkillSpec
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+
+        request = self._request()
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_eval_spec.harness = "codex"
+        mock_spec.eval_spec = mock_eval_spec
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+        assert result is mock_spec
