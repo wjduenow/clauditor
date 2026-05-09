@@ -6,7 +6,7 @@
 - **Branch:** `feature/155-pytest-fixtures-parametrize`
 - **Worktree:** `worktrees/clauditor/155-pytest-fixtures-parametrize` (relative)
 - **PR:** https://github.com/wjduenow/clauditor/pull/172
-- **Phase:** published
+- **Phase:** approved
 - **Sessions:** 1 (2026-05-09)
 - **Total decisions:** 12 (DEC-001 through DEC-012)
 - **Stories:** 7 implementation + Quality Gate + Patterns & Memory = 9
