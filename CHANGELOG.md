@@ -15,8 +15,71 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`clauditor_runner` is now a factory fixture (#155).** Pytest fixtures
+  cannot accept call-site kwargs; only factory fixtures can. To support
+  the new `harness=` operator-intent kwarg, `clauditor_runner` was
+  converted from a value fixture to a factory.
+
+  **Migration:**
+
+  ```python
+  # Before
+  def test_my_skill(clauditor_runner):
+      runner = clauditor_runner          # value fixture
+      result = runner.run("my-skill")
+
+  # After
+  def test_my_skill(clauditor_runner):
+      runner = clauditor_runner()        # factory — call it
+      result = runner.run("my-skill")
+  ```
+
+  No deprecation shim ships — pre-1.0 accepts the hard break (same
+  precedent as the `SkillResult.assert_*` → `SkillAsserter` migration in
+  v0.1.0). See [`docs/pytest-plugin.md#parametrizing-harness--provider`](docs/pytest-plugin.md#parametrizing-harness--provider).
+
 ### Added
 
+- **Pytest fixtures: `harness` × `provider` parametrization (#155).** The
+  pytest plugin gained two new CLI options and four new factory kwargs so
+  a single test can sweep across `{claude-code, codex} × {anthropic, openai}`
+  without changing skill or eval-spec files.
+  - **New pytest CLI options:**
+    - `--clauditor-harness {claude-code, codex, auto}` — overrides the
+      harness used by `clauditor_runner` and `clauditor_spec` session-wide.
+    - `--clauditor-grading-provider {anthropic, openai, auto}` — overrides
+      the grading provider used by `clauditor_grader`,
+      `clauditor_blind_compare`, and `clauditor_triggers` session-wide.
+  - **New factory kwargs (operator-intent, top of precedence stack):**
+    - `clauditor_runner(harness=...)` — pin harness for this runner.
+    - `clauditor_grader(skill, eval_path, output, *, provider=..., model=...)`
+      — `provider=` is new; `model=` already existed.
+    - `clauditor_blind_compare(skill, output_a, output_b, eval_path, *, provider=..., model=...)`
+      — both new.
+    - `clauditor_triggers(skill, eval_path, *, provider=..., model=...)`
+      — both new.
+  - **Operator-intent precedence (highest → lowest):** factory kwarg >
+    pytest CLI option > env var (`CLAUDITOR_HARNESS`,
+    `CLAUDITOR_GRADING_PROVIDER`) > spec field (`EvalSpec.harness`,
+    `EvalSpec.grading_provider`) > default `"auto"`. Mirrors the CLI seam
+    exactly per `.claude/rules/spec-cli-precedence.md`.
+  - **Eager `check_codex_auth` from `clauditor_runner` and `clauditor_spec`.**
+    When the resolved harness is `"codex"`, both factories fire
+    `check_codex_auth` before returning the runner / wrapped spec; missing
+    auth raises `CodexAuthMissingError` (a sibling of `Exception`, NOT a
+    subclass of `AnthropicAuthMissingError` / `OpenAIAuthMissingError`)
+    so callers route on a structural `except` ladder rather than
+    substring-matching error text.
+  - **Asymmetry note.** There is intentionally no
+    `CLAUDITOR_FIXTURE_ALLOW_OPENAI` env var (DEC-001 of #155). The
+    existing `CLAUDITOR_FIXTURE_ALLOW_CLI=1` opts into a *relaxed*
+    Anthropic guard (accepts subscription auth via the `claude` CLI on
+    PATH); OpenAI has no CLI-fallback / subscription analog (per #145
+    DEC-002), so there is nothing to opt into. See
+    [`docs/pytest-plugin.md`](docs/pytest-plugin.md) for the full
+    documentation including a `pytest.mark.parametrize` worked example.
 - **`EvalSpec.system_prompt: str | None = None` field (#150).** Mirrors
   `user_prompt`'s shape and validation: optional at load time, when set
   must be a non-empty, non-whitespace string (`EvalSpec.from_file`
