@@ -140,13 +140,94 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
 
 
 @pytest.fixture
-def clauditor_runner(request: pytest.FixtureRequest) -> SkillRunner:
-    """Fixture providing a SkillRunner configured from pytest options."""
-    return SkillRunner(
-        project_dir=request.config.getoption("--clauditor-project-dir"),
-        timeout=request.config.getoption("--clauditor-timeout"),
-        claude_bin=request.config.getoption("--clauditor-claude-bin"),
-    )
+def clauditor_runner(request: pytest.FixtureRequest):
+    """Factory fixture returning a configured ``SkillRunner``.
+
+    DEC-002 / DEC-003 / DEC-004 / DEC-005 / DEC-007 of
+    ``plans/super/155-pytest-fixtures-parametrize.md``. The pre-#155
+    value-fixture form (``def test(clauditor_runner): runner.run(...)``)
+    is replaced by a factory; callers MUST invoke ``clauditor_runner()``
+    to get the runner. This is a hard break — see CHANGELOG (US-007)
+    for migration notes.
+
+    Harness resolution composes three of the four CLI precedence layers
+    (the fourth, ``EvalSpec.harness``, is meaningless at the runner
+    seam since no spec is loaded here):
+
+    1. Factory ``harness=`` kwarg (operator intent at the call site).
+    2. ``--clauditor-harness`` pytest option (operator intent at
+       session start).
+    3. ``CLAUDITOR_HARNESS`` env var.
+    4. Default ``"auto"`` — PATH lookup picks ``claude`` then
+       ``codex`` per
+       :func:`clauditor._providers.resolve_harness`.
+
+    When the resolved harness is ``"codex"`` an eager
+    :func:`clauditor._providers.check_codex_auth` fires (DEC-005);
+    missing auth raises :class:`CodexAuthMissingError` (a sibling of
+    :class:`Exception`, NOT a subclass of
+    :class:`AnthropicAuthMissingError`) which propagates as a pytest
+    setup failure rather than a silent ``pytest.skip`` so a CI
+    misconfig surfaces loudly.
+
+    Usage::
+
+        def test_my_skill(clauditor_runner, clauditor_asserter):
+            runner = clauditor_runner()           # default harness
+            # or:
+            runner = clauditor_runner(harness="codex")  # pin to codex
+            result = runner.run("my-skill")
+    """
+    import os
+
+    from clauditor._harnesses import construct_harness
+    from clauditor._providers import check_codex_auth, resolve_harness
+
+    def _factory(harness: str | None = None) -> SkillRunner:
+        # Precedence: factory kwarg > pytest option > env > default.
+        cli_override = harness
+        if cli_override is None:
+            cli_override = request.config.getoption("--clauditor-harness")
+        env_value = os.environ.get("CLAUDITOR_HARNESS")
+        if env_value is not None and env_value.strip() == "":
+            env_value = None
+
+        # No EvalSpec at the runner seam — pass spec_value=None.
+        name, _auto_resolved_to = resolve_harness(
+            cli_override, env_value, None
+        )
+
+        # DEC-005: eager codex auth guard. Surfaces as
+        # CodexAuthMissingError (sibling of Exception per DEC-008) so
+        # callers route on a structural ``except`` ladder.
+        if name == "codex":
+            check_codex_auth("runner")
+
+        project_dir = request.config.getoption("--clauditor-project-dir")
+        timeout = request.config.getoption("--clauditor-timeout")
+        claude_bin = request.config.getoption("--clauditor-claude-bin")
+
+        # When the resolved harness is ``"claude-code"`` (the default
+        # SkillRunner shape), do NOT pass an explicit ``harness=`` —
+        # SkillRunner's __init__ constructs a ClaudeCodeHarness using
+        # the configured ``--clauditor-claude-bin``. Passing a
+        # construct_harness("claude-code") instance here would lose
+        # that custom binary path (CodeRabbit-style same-harness skip
+        # mirroring the clauditor_spec wrapper logic).
+        if name == "claude-code":
+            return SkillRunner(
+                project_dir=project_dir,
+                timeout=timeout,
+                claude_bin=claude_bin,
+            )
+        return SkillRunner(
+            project_dir=project_dir,
+            timeout=timeout,
+            claude_bin=claude_bin,
+            harness=construct_harness(name),
+        )
+
+    return _factory
 
 
 @pytest.fixture

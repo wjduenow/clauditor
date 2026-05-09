@@ -60,19 +60,21 @@ class TestPytestPlugin:
         result.assert_outcomes(passed=1)
 
     def test_runner_fixture_available(self, pytester):
-        """The clauditor_runner fixture is available and non-None."""
+        """The clauditor_runner factory is available and callable."""
         pytester.makepyfile("""
             def test_runner(clauditor_runner):
-                assert clauditor_runner is not None
+                runner = clauditor_runner()
+                assert runner is not None
         """)
         result = pytester.runpytest_inprocess()
         result.assert_outcomes(passed=1)
 
     def test_cli_options_passed(self, pytester):
-        """CLI options are forwarded to fixture-created objects."""
+        """CLI options are forwarded to factory-created objects."""
         pytester.makepyfile("""
             def test_timeout(clauditor_runner):
-                assert clauditor_runner.timeout == 42
+                runner = clauditor_runner()
+                assert runner.timeout == 42
         """)
         result = pytester.runpytest_inprocess("--clauditor-timeout=42")
         result.assert_outcomes(passed=1)
@@ -263,16 +265,18 @@ class TestPluginFunctionsDirect:
         item.add_marker.assert_not_called()
 
     def test_runner_fixture_returns_skill_runner(self):
-        """clauditor_runner fixture returns a configured SkillRunner."""
+        """clauditor_runner factory returns a configured SkillRunner."""
         request = MagicMock()
         request.config.getoption.side_effect = (
             lambda opt: {
                 "--clauditor-project-dir": None,
                 "--clauditor-timeout": 60,
                 "--clauditor-claude-bin": "claude",
+                "--clauditor-harness": None,
             }[opt]
         )
-        runner = clauditor_runner.__wrapped__(request)
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory()
         assert runner.timeout == 60
         # ``claude_bin`` moved from ``SkillRunner`` to the harness in
         # US-004 of issue #148; the default ``ClaudeCodeHarness``
@@ -1149,9 +1153,11 @@ class TestClauditorNoApiKeyOption:
                 "--clauditor-timeout": 99,
                 "--clauditor-claude-bin": "claude",
                 "--clauditor-no-api-key": False,
+                "--clauditor-harness": None,
             }[opt]
         )
-        runner = clauditor_runner.__wrapped__(request)
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory()
         assert runner.timeout == 99
         # And clauditor_spec must not wrap spec.run when the option is
         # off AND input_files is empty (pre-US-007 behavior preserved).
@@ -2289,3 +2295,132 @@ class TestFixtureHonorsHarness:
         # current harness AND there are no other reasons for wrapping
         # (no input_files, no --clauditor-no-api-key).
         assert result.run is original_run
+
+
+class TestClauditorRunnerFactory:
+    """Tests for the ``clauditor_runner`` factory shape (#155 US-002).
+
+    Per DEC-002 / DEC-003 / DEC-004 / DEC-005 / DEC-007 / DEC-008 of
+    ``plans/super/155-pytest-fixtures-parametrize.md``, the
+    pre-#155 value-fixture form was replaced by a factory accepting an
+    optional ``harness=`` kwarg with three-layer precedence (factory
+    kwarg > pytest option > env var > default ``"auto"`` PATH lookup).
+    """
+
+    def _request(self, *, harness_option=None, timeout=300, claude_bin="claude"):
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": timeout,
+                "--clauditor-claude-bin": claude_bin,
+                "--clauditor-harness": harness_option,
+            }[opt]
+        )
+        return request
+
+    def test_factory_kwarg_wins_over_pytest_option(self, monkeypatch):
+        """Factory ``harness="codex"`` overrides ``--clauditor-harness=claude-code``.
+
+        DEC-007 precedence: factory kwarg is the highest layer; the
+        pytest CLI option is second.
+        """
+        monkeypatch.setenv("CODEX_API_KEY", "x")
+        request = self._request(harness_option="claude-code")
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory(harness="codex")
+        assert runner.harness.name == "codex"
+
+    def test_pytest_option_used_when_no_kwarg(self, monkeypatch):
+        """``--clauditor-harness=codex`` resolves to codex when factory kwarg unset.
+
+        DEC-007 precedence: with no factory kwarg, the pytest CLI
+        option wins over env / default.
+        """
+        monkeypatch.setenv("CODEX_API_KEY", "x")
+        # Override the autouse env pin so the pytest option layer
+        # is the active source.
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+        request = self._request(harness_option="codex")
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory()
+        assert runner.harness.name == "codex"
+
+    def test_env_var_used_when_no_kwarg_no_option(self, monkeypatch):
+        """``CLAUDITOR_HARNESS=codex`` resolves to codex when other layers unset."""
+        monkeypatch.setenv("CODEX_API_KEY", "x")
+        monkeypatch.setenv("CLAUDITOR_HARNESS", "codex")
+        request = self._request(harness_option=None)
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory()
+        assert runner.harness.name == "codex"
+
+    def test_codex_auth_missing_raises(self, monkeypatch):
+        """Resolved codex with no Codex env vars raises ``CodexAuthMissingError``.
+
+        DEC-005: eager auth guard at the runner seam (NOT
+        ``pytest.skip`` — silent skips hide CI misconfig).
+        """
+        from clauditor._providers import CodexAuthMissingError
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        request = self._request(harness_option=None)
+        factory = clauditor_runner.__wrapped__(request)
+        with pytest.raises(CodexAuthMissingError):
+            factory(harness="codex")
+
+    def test_class_identity_codex_auth_missing(self):
+        """``CodexAuthMissingError`` is a sibling of ``Exception``.
+
+        DEC-008: must NOT be a subclass of
+        :class:`AnthropicAuthMissingError` or any helper-error class —
+        a shared ancestor would defeat the structural-routing
+        invariant per
+        ``.claude/rules/multi-provider-dispatch.md``.
+        """
+        from clauditor._providers import (
+            AnthropicAuthMissingError,
+            CodexAuthMissingError,
+            OpenAIAuthMissingError,
+        )
+
+        assert CodexAuthMissingError is not AnthropicAuthMissingError
+        assert CodexAuthMissingError is not OpenAIAuthMissingError
+        assert not issubclass(
+            CodexAuthMissingError, AnthropicAuthMissingError
+        )
+        assert not issubclass(CodexAuthMissingError, OpenAIAuthMissingError)
+        # Direct subclass of ``Exception`` (not a deeper type tree).
+        assert CodexAuthMissingError.__bases__ == (Exception,)
+
+    def test_auto_resolution_path_lookup(self, monkeypatch):
+        """The auto branch consults ``shutil.which`` for PATH discovery.
+
+        Per ``.claude/rules/test-infra-shutil-which-coupling.md``: the
+        autouse fixture pins ``CLAUDITOR_HARNESS=claude-code`` and
+        patches ``_anthropic.shutil.which → None``. To exercise the
+        auto branch we delete the env pin AND patch ``shutil.which``
+        on the module the resolver actually consults
+        (``clauditor._providers``) so the auto branch finds ``claude``.
+        """
+        import shutil as _shutil_mod
+
+        from clauditor import _providers as _providers_mod
+
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+        # Pin the resolver's ``shutil.which`` to find ``claude`` so
+        # the auto branch resolves to ``"claude-code"`` deterministically.
+        monkeypatch.setattr(
+            _providers_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/claude" if name == "claude" else None,
+        )
+        # Sanity: also pin the stdlib lookup the same way (defensive).
+        assert _providers_mod.shutil.which("claude") == "/usr/bin/claude"
+        assert _shutil_mod is not None  # keep the import live
+
+        request = self._request(harness_option=None)
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory()
+        assert runner.harness.name == "claude-code"
