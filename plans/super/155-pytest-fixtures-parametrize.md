@@ -6,7 +6,8 @@
 - **Branch:** `feature/155-pytest-fixtures-parametrize`
 - **Worktree:** `worktrees/clauditor/155-pytest-fixtures-parametrize` (relative)
 - **PR:** https://github.com/wjduenow/clauditor/pull/172
-- **Phase:** approved
+- **Phase:** devolved
+- **Epic:** clauditor-6fy
 - **Sessions:** 1 (2026-05-09)
 - **Total decisions:** 12 (DEC-001 through DEC-012)
 - **Stories:** 7 implementation + Quality Gate + Patterns & Memory = 9
@@ -739,7 +740,24 @@ the auto-memory `feedback`/`project` schema.
 
 ## Beads Manifest
 
-_(pending devolve)_
+- **Epic:** `clauditor-6fy`
+- **Worktree:** `worktrees/clauditor/155-pytest-fixtures-parametrize`
+- **Branch:** `feature/155-pytest-fixtures-parametrize`
+- **PR:** https://github.com/wjduenow/clauditor/pull/172
+
+| Story | Bead | Depends on |
+|---|---|---|
+| US-001 — pytest options | `clauditor-6fy.1` | (ready) |
+| US-002 — runner factory + codex guard | `clauditor-6fy.2` | US-001 |
+| US-003 — grader provider/model kwargs | `clauditor-6fy.3` | US-001 |
+| US-004 — blind_compare provider kwarg | `clauditor-6fy.4` | US-003 |
+| US-005 — triggers provider/model kwargs | `clauditor-6fy.5` | US-003 |
+| US-006 — spec-side codex guard | `clauditor-6fy.6` | US-002 |
+| US-007 — docs + CHANGELOG | `clauditor-6fy.7` | US-002, US-003, US-004, US-005, US-006 |
+| US-008 — Quality Gate | `clauditor-6fy.8` | US-007 |
+| US-009 — Patterns & Memory | `clauditor-6fy.9` | US-008 |
+
+Ready set on devolve: `clauditor-6fy.1` (US-001).
 
 ---
 
