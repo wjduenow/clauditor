@@ -112,6 +112,25 @@ def _provider_concrete_choice(value: str) -> str:
     return value
 
 
+def _harness_concrete_choice(value: str) -> str:
+    """argparse type: accept ``"claude-code"`` or ``"codex"`` only.
+
+    DEC-006 of ``plans/super/153-cross-axis-comparability.md``. Sibling
+    to :func:`_harness_choice` but rejects ``"auto"`` because the
+    consuming command (``clauditor trend``) has no model/spec
+    context to resolve ``"auto"`` against — trend reads history
+    records that already carry a concrete harness value. Mirrors
+    :func:`_provider_concrete_choice` shape. argparse maps the
+    ``ArgumentTypeError`` to a clean exit 2 at parse time per
+    ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    """
+    if value not in ("claude-code", "codex"):
+        raise argparse.ArgumentTypeError(
+            f"must be one of 'claude-code', 'codex', got {value!r}"
+        )
+    return value
+
+
 def _resolve_harness(args: argparse.Namespace, eval_spec=None) -> str:
     """Resolve harness using four-layer precedence.
 
@@ -336,6 +355,7 @@ def _append_validate_history(
     skill_result: SkillResult | None,
     iteration: int | None,
     workspace_path: str | None,
+    harness_name: str | None = None,
 ) -> None:
     """Append a ``command="validate"`` row to ``history.jsonl``.
 
@@ -343,6 +363,12 @@ def _append_validate_history(
     so failed live validates stay visible to trend/audit tooling. On the
     failure path ``iteration`` / ``workspace_path`` are ``None`` (the
     workspace was aborted) and ``pass_rate`` is ``0.0``.
+
+    ``harness_name`` is the resolved skill harness (``"claude-code"`` or
+    ``"codex"``) per #152 DEC-005. When ``None``, falls back to
+    ``skill_result.harness`` (US-001) and finally to ``"claude-code"``
+    so non-live-run paths still produce a record with a concrete
+    harness value.
     """
     from clauditor.metrics import TokenUsage, build_metrics
 
@@ -355,6 +381,12 @@ def _append_validate_history(
         skill=skill_tokens,
         duration_seconds=skill_duration,
     )
+    if harness_name is None:
+        harness_name = (
+            getattr(skill_result, "harness", "claude-code")
+            if skill_result is not None
+            else "claude-code"
+        )
     try:
         history.append_record(
             skill=skill_name,
@@ -368,6 +400,7 @@ def _append_validate_history(
             # placeholder per #147 DEC-002 / DEC-012 so history records
             # carry a valid value downstream consumers can group on.
             provider="anthropic",
+            harness=harness_name,
             iteration=iteration,
             workspace_path=workspace_path,
         )

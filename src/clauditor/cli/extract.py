@@ -234,6 +234,23 @@ def cmd_extract(args: argparse.Namespace) -> int:
         duration_seconds=skill_duration,
         grader=grader_tokens,
     )
+    # #152 US-007: ``harness`` is a mandatory keyword on
+    # ``append_record``. When the skill ran live (no ``--output``), read
+    # the harness off the ``SkillResult`` populated by US-001. When the
+    # output was pre-captured, use ``eval_spec.harness`` when it pins a
+    # concrete harness (not ``"auto"``), otherwise fall back to
+    # ``"claude-code"`` (the default). The spec field is the best
+    # available signal for pre-captured output; the captured file itself
+    # carries no harness provenance.
+    if skill_result is not None:
+        harness_name = getattr(skill_result, "harness", "claude-code")
+    elif (
+        spec.eval_spec is not None
+        and spec.eval_spec.harness not in ("auto", None)
+    ):
+        harness_name = spec.eval_spec.harness
+    else:
+        harness_name = "claude-code"
     try:
         history.append_record(
             skill=spec.skill_name,
@@ -242,6 +259,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
             metrics=metrics_dict,
             command="extract",
             provider=provider,
+            harness=harness_name,
         )
     except Exception as e:  # pragma: no cover - defensive
         print(f"WARNING: failed to append history: {e}", file=sys.stderr)

@@ -455,22 +455,24 @@ Diff two iterations or two captured outputs. Three modes:
 | `--blind` | Run a blind A/B LLM judge over the two outputs and print a preference verdict. Requires `--spec` and `EvalSpec.user_prompt`. |
 | `--transport {api,cli,auto}` | Backend selector; only used with `--blind`. |
 | `--grading-provider {anthropic,openai,auto}` | Select the provider's SDK for the blind A/B judge; only used with `--blind`. Precedence: this flag > `CLAUDITOR_GRADING_PROVIDER` env > `EvalSpec.grading_provider` > default `auto` (infers from model prefix). |
+| `--cross-harness` | Allow comparing across mixed harnesses (`claude-code` vs `codex`). Delta mode only — `compare --blind` is unaffected. When the two compared inputs are both loadable as `GradingReport` (positional `.grade.json` paths or `--skill --from --to` iteration directories) and their `harness` metadata differs, `clauditor compare` refuses with exit `2` unless this flag is passed. With the flag, a single-line `WARNING: comparing across harnesses ...` prints to stderr and the diff proceeds. The cross-axis check is skipped when both inputs are `.txt` captures (raw captures carry no harness metadata); mixed `.txt`/`.grade.json` inputs are rejected upstream as a kind mismatch. |
+| `--cross-provider` | Allow comparing across mixed providers (`anthropic` vs `openai`). Same shape as `--cross-harness` for the provider axis. The two flags are strictly orthogonal: when both axes are mismatched and only one `--cross-*` is passed, `compare` refuses with exit `2` and names the still-uncovered axis. |
 
-Exits 1 when a regression is detected (assertion that previously passed now fails, or grading score drops below threshold).
+Exits 1 when a regression is detected (assertion that previously passed now fails, or grading score drops below threshold). Exits 2 when a cross-axis mismatch is detected without the corresponding `--cross-*` opt-in (delta mode only; `--blind` is unaffected).
 
 ### `audit`
 
-Aggregate per-assertion pass rates across the most recent N iteration workspaces. Surfaces assertions that are flaky, never fire, or fail to discriminate between the with-skill and baseline arms. Aggregates are grouped by `(provider, layer, id)` so mixed-provider history (Anthropic and OpenAI grading runs under the same skill) renders as separate rows rather than averaging across providers.
+Aggregate per-assertion pass rates across the most recent N iteration workspaces. Surfaces assertions that are flaky, never fire, or fail to discriminate between the with-skill and baseline arms. Aggregates are grouped by `(harness, provider, layer, id)` so mixed-harness or mixed-provider history (e.g. Claude Code and Codex runs, or Anthropic and OpenAI grading runs, under the same skill) renders as separate rows rather than averaging across harnesses or providers.
 
 | Flag | Purpose |
 | ---- | ------- |
 | `--last N` | Consider the last `N` iteration directories (default 20). |
 | `--min-fail-rate FLOAT` | Flag assertions whose fail rate is at least this value (0.0–1.0). |
 | `--min-discrimination FLOAT` | Flag assertions whose with-vs-baseline pass-rate delta is below this value. |
-| `--json` | Emit a machine-readable JSON report instead of the table. The JSON output is `schema_version: 2` (per #147), with each `assertions[]` entry carrying a `provider` field and a top-level `providers_seen: [...]` array sorted alphabetically — JSON consumers can detect mixed history without iterating the entries. |
+| `--json` | Emit a machine-readable JSON report instead of the table. The JSON output is `schema_version: 3` (per #152), with each `assertions[]` entry carrying `harness` and `provider` fields and top-level `harnesses_seen: [...]` and `providers_seen: [...]` arrays sorted alphabetically — JSON consumers can detect mixed history without iterating the entries. |
 | `--output-dir PATH` | Directory to write audit reports. |
 
-The default text and Markdown renderers add a leftmost `PROVIDER` column (~11 chars wide) and sort by `(provider, layer, id)`. L1 assertions carry a placeholder `"anthropic"` provider — L1 has no LLM call to attribute, and the honest harness-axis bump for `assertions.json` lives in #152.
+The default text and Markdown renderers add leftmost `HARNESS` and `PROVIDER` columns and sort by `(harness, provider, layer, id)`. L1 audit rows now show a real HARNESS value (sourced from `assertions.json` v2) alongside the existing PROVIDER column, which renders as `—` (em-dash) for L1 rows since L1 makes no LLM call. Audit JSON output bumped to `schema_version: 3` with a new top-level `harnesses_seen[]` array and per-entry `harness` field; for JSON-output honesty the L1 `provider` field still emits `"anthropic"` (the #147 placeholder) so downstream consumers see a fixed-shape value rather than an em-dash glyph.
 
 ### `trend`
 
@@ -481,8 +483,13 @@ Print a tab-separated history of a metric across iterations, with an ASCII spark
 | `--metric PATH` | Metric to trend: `pass_rate`, `mean_score`, or a dotted path into `metrics` (e.g. `total.total`, `grader.input_tokens`). Required unless `--list-metrics` is used. |
 | `--list-metrics` | List every available metric path in history for the skill. |
 | `--command {grade,extract,validate,all}` | Filter records by subcommand (default `grade`). |
-| `--provider {anthropic,openai}` | Render history for a single grading provider only. When the (post-`--command`-filter) history contains records from more than one provider, `clauditor trend` refuses to render and exits `2` with a stderr message naming the providers seen — pass `--provider anthropic` or `--provider openai` to disambiguate. Computed from the full filtered set BEFORE the `--last` window slice, so a user with mixed history cannot silently slip past the refusal by narrowing `--last`. Filtering to a provider with zero records exits `1` with a "no records for provider X" message. Pre-#147 history (no `provider` field) is treated as `anthropic`. Validator rejects `auto` (and any other value) at argparse time, distinct from the four-layer-precedence `--grading-provider` flag on the LLM-mediated commands. |
+| `--provider {anthropic,openai}` | Render history for a single grading provider only. When the (post-`--command`-filter) history contains records from more than one provider, `clauditor trend` refuses to render and exits `2` with a stderr message naming the providers seen — pass `--provider anthropic` (or `--provider openai`) to disambiguate, or `--cross-provider` to allow averaging anyway. Computed from the full filtered set BEFORE the `--last` window slice, so a user with mixed history cannot silently slip past the refusal by narrowing `--last`. Filtering to a provider with zero records exits `1` with a "no records for provider X" message. Pre-#147 history (no `provider` field) is treated as `anthropic`. Validator rejects `auto` (and any other value) at argparse time, distinct from the four-layer-precedence `--grading-provider` flag on the LLM-mediated commands. Mutually exclusive with `--cross-provider`. |
+| `--cross-provider` | Allow averaging across mixed grading providers (results may not be comparable). When set on a mixed-provider history, `clauditor trend` proceeds with the full filtered set and emits a single-line stderr `WARNING: averaging across providers (...) — results may not be comparable.` Mutually exclusive with `--provider`. |
+| `--harness {claude-code,codex}` | Render history for a single harness only. Mirror of `--provider` for the harness axis: when history contains more than one harness, `clauditor trend` refuses with exit `2` and a stderr message naming the harnesses seen — pass `--harness claude-code` (or `--harness codex`) to filter, or `--cross-harness` to allow averaging anyway. Empty filter results exit `1`. Mutually exclusive with `--cross-harness`. |
+| `--cross-harness` | Allow averaging across mixed harnesses (results may not be comparable). Emits a single-line stderr `WARNING: averaging across harnesses (...) — results may not be comparable.` Mutually exclusive with `--harness`. |
 | `--last N` | Show the last `N` records (default 20, must be ≥ 1). |
+
+The provider and harness axes are independent: `--harness X --cross-provider` is valid (filter the harness axis, allow mixed provider). When history is mixed on BOTH axes and only one `--cross-*` flag is passed, the un-opted-in axis still refuses with exit `2` so the user fixes the command in one round-trip.
 
 ### `setup`
 
@@ -591,7 +598,7 @@ Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "command": "grade",
   "ts": "2026-04-13T15:00:00+00:00",
   "skill": "find-restaurants",
@@ -599,6 +606,8 @@ Every `clauditor grade`, `extract`, and `validate` run appends a JSON line to `.
   "workspace_path": ".clauditor/iteration-4/find-restaurants",
   "pass_rate": 0.83,
   "mean_score": 0.75,
+  "provider": "anthropic",
+  "harness": "claude-code",
   "metrics": {
     "skill":   {"input_tokens": 1200, "output_tokens": 800},
     "quality": {"input_tokens": 900,  "output_tokens": 350},

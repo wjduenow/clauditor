@@ -354,10 +354,10 @@ class TestGradingReportTransport:
         report = self._report()
         assert report.transport_source == "api"
 
-    def test_to_json_schema_version_bumped_to_3(self):
+    def test_to_json_schema_version_bumped_to_4(self):
         report = self._report(transport_source="cli")
         data = json.loads(report.to_json())
-        assert data["schema_version"] == 3
+        assert data["schema_version"] == 4
 
     def test_schema_version_is_first_key(self):
         """Per ``.claude/rules/json-schema-version.md``, schema_version
@@ -399,9 +399,9 @@ class TestGradingReportTransport:
         original = self._report(transport_source="cli")
         restored = GradingReport.from_json(original.to_json())
         assert restored.transport_source == "cli"
-        # v3 round-trip still emits v3 (post-#147).
+        # v4 round-trip still emits v4 (post-#152).
         data = json.loads(restored.to_json())
-        assert data["schema_version"] == 3
+        assert data["schema_version"] == 4
 
 
 class TestBlindReportSchema:
@@ -474,13 +474,13 @@ class TestGradingReportProviderSource:
         assert report.provider_source == "anthropic"
 
     def test_grading_report_to_json_v3_emits_provider_source(self):
-        """v3 to_json emits ``schema_version: 3`` first key,
+        """to_json emits ``schema_version: 4`` first key (post-#152),
         ``provider_source`` field present."""
         report = self._report(provider_source="openai")
         raw = report.to_json()
         data = json.loads(raw)
         assert next(iter(data)) == "schema_version"
-        assert data["schema_version"] == 3
+        assert data["schema_version"] == 4
         assert data["provider_source"] == "openai"
 
     def test_grading_report_from_json_v3_round_trips(self):
@@ -525,6 +525,95 @@ class TestGradingReportProviderSource:
         report = self._report()  # default provider_source="anthropic"
         data = json.loads(report.to_json())
         assert data["provider_source"] == "anthropic"
+
+
+class TestGradingReportHarness:
+    """#152 US-004: GradingReport persists a ``harness`` field on disk
+    at ``schema_version: 4``. The field defaults to ``"claude-code"``
+    and reads through from :class:`SkillResult.harness`. Legacy
+    v1/v2/v3 sidecars (no ``harness``) load with
+    ``harness="claude-code"`` defaulted."""
+
+    def _report(self, **overrides) -> GradingReport:
+        defaults = dict(
+            skill_name="harness-test",
+            results=_make_results([True]),
+            model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
+        )
+        defaults.update(overrides)
+        return GradingReport(**defaults)
+
+    def test_harness_defaults_to_claude_code(self):
+        report = self._report()
+        assert report.harness == "claude-code"
+
+    def test_to_json_emits_v4_with_harness(self):
+        """v4 to_json emits ``schema_version: 4`` first key,
+        ``harness`` field present after ``provider_source``."""
+        report = self._report(harness="codex")
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert next(iter(data)) == "schema_version"
+        assert data["schema_version"] == 4
+        assert data["harness"] == "codex"
+
+    def test_from_json_v4_round_trip(self):
+        """v4 from_json round-trips ``harness`` faithfully."""
+        original = self._report(harness="codex")
+        restored = GradingReport.from_json(original.to_json())
+        assert restored.harness == "codex"
+
+    def test_from_json_v3_defaults_harness_to_claude_code(self):
+        """v3 sidecars (no ``harness``) default to ``"claude-code"``
+        so pre-#152 history loads cleanly."""
+        v3_payload = json.dumps({
+            "schema_version": 3,
+            "skill_name": "legacy-v3",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "cli",
+            "provider_source": "openai",
+            "results": [],
+        })
+        restored = GradingReport.from_json(v3_payload)
+        assert restored.harness == "claude-code"
+        assert restored.provider_source == "openai"
+        assert restored.transport_source == "cli"
+
+    def test_from_json_v1_v2_legacy_still_load(self):
+        """v1 and v2 sidecars still load, with ``harness`` defaulted
+        to ``"claude-code"`` alongside the existing v1/v2 defaults."""
+        v1_payload = json.dumps({
+            "schema_version": 1,
+            "skill_name": "legacy-v1",
+            "model": "claude-sonnet-4-6",
+            "results": [],
+        })
+        restored_v1 = GradingReport.from_json(v1_payload)
+        assert restored_v1.harness == "claude-code"
+        assert restored_v1.provider_source == "anthropic"
+        assert restored_v1.transport_source == "api"
+
+        v2_payload = json.dumps({
+            "schema_version": 2,
+            "skill_name": "legacy-v2",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "cli",
+            "results": [],
+        })
+        restored_v2 = GradingReport.from_json(v2_payload)
+        assert restored_v2.harness == "claude-code"
+        assert restored_v2.provider_source == "anthropic"
+        assert restored_v2.transport_source == "cli"
+
+    def test_harness_claude_code_emitted_explicitly_on_disk(self):
+        """v4 always emits ``harness`` on disk, even for the default
+        ``"claude-code"`` value, so the field is explicit and
+        round-trip is byte-stable."""
+        report = self._report()  # default harness="claude-code"
+        data = json.loads(report.to_json())
+        assert data["harness"] == "claude-code"
 
 
 class TestBlindReportProviderSource:

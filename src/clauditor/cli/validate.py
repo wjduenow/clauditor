@@ -249,6 +249,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
                     skill_result=skill_result,
                     iteration=None,
                     workspace_path=None,
+                    harness_name=harness_name,
                 )
                 return 1
             output = skill_result.output
@@ -287,8 +288,16 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
                 shutil.rmtree(skill_dir / "run-0", ignore_errors=True)
 
+            # #152 US-002 / B1: assertions.json carries the resolved
+            # harness identity from ``skill_result.harness`` (US-001's
+            # runtime field). This branch is the live-run path
+            # (``args.output`` is False), so ``skill_result`` is
+            # always set by the ``spec.run`` call above; ``--output``
+            # mode reaches a separate branch that does NOT write a
+            # workspace sidecar.
             assertions_payload = {
-                "schema_version": 1,
+                "schema_version": 2,
+                "harness": skill_result.harness,
                 "skill": spec.skill_name,
                 "iteration": workspace.iteration,
                 "runs": [{"run": 0, **results.to_json()}],
@@ -339,6 +348,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         skill_result=skill_result,
         iteration=iteration_index,
         workspace_path=workspace_rel,
+        harness_name=harness_name,
     )
 
     if args.json:

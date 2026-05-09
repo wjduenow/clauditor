@@ -360,6 +360,10 @@ class TestValidateVerboseInvocation:
             "model": "claude-sonnet-4-6",
             "system_prompt_source": "skill_md",
         }
+        # #152 US-001: SkillResult.harness is JSON-serialized into the
+        # assertions.json sidecar; MagicMock's auto-attr would not be
+        # serializable.
+        fake_skill_result.harness = "claude-code"
 
         args = MagicMock()
         args.skill = str(skill_path)
@@ -465,6 +469,10 @@ class TestValidateVerboseInvocation:
             "model": "claude-sonnet-4-6",
             "system_prompt_source": "skill_md",
         }
+        # #152 US-001: SkillResult.harness is JSON-serialized into the
+        # assertions.json sidecar; pin so MagicMock auto-attr does not
+        # propagate.
+        fake_skill_result.harness = "claude-code"
 
         args = MagicMock()
         args.skill = "demo.md"
