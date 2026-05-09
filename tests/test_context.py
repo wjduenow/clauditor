@@ -223,6 +223,34 @@ class TestIterationContextValidation:
         ctx = IterationContext.from_dict(payload)
         assert ctx.sandbox_mode == mode
 
+    def test_from_dict_accepts_null_model_runner(self) -> None:
+        # ClaudeCodeHarness legitimately stamps None when no override
+        # was pinned (claude CLI's stream-json result message carries
+        # no model field; we cannot recover it after the fact). Per
+        # DEC-007 the sidecar honestly records None.
+        payload = _full_payload()
+        payload["model_runner"] = None
+        ctx = IterationContext.from_dict(payload)
+        assert ctx.model_runner is None
+
+    def test_from_dict_rejects_non_string_model_runner(self) -> None:
+        payload = _full_payload()
+        payload["model_runner"] = 42
+        with pytest.raises(ValueError) as exc:
+            IterationContext.from_dict(payload)
+        msg = str(exc.value)
+        assert "'model_runner'" in msg
+        assert "str or None" in msg
+
+    def test_from_dict_rejects_non_string_model_grader(self) -> None:
+        payload = _full_payload()
+        payload["model_grader"] = ["claude-sonnet-4-6"]
+        with pytest.raises(ValueError) as exc:
+            IterationContext.from_dict(payload)
+        msg = str(exc.value)
+        assert "'model_grader'" in msg
+        assert "str or None" in msg
+
     def test_from_dict_accepts_known_literals(self) -> None:
         # Combined sweep — explicit acceptance of every literal-set
         # member at once on the same payload, mirroring the per-axis

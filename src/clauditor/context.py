@@ -21,9 +21,16 @@ Decisions traced:
 - **DEC-002** — ``reasoning_tokens`` ships as an ``int | None``
   placeholder with default ``None``; per-provider reasoning capture
   lives in #170.
-- **DEC-007** — ``model_runner: str`` is non-nullable; the harness
-  contract (every harness populates ``harness_metadata["model"]``)
-  is enforced upstream at the sidecar writer.
+- **DEC-007** — ``model_runner: str | None`` is nullable. The harness
+  contract is "every harness populates ``harness_metadata["model"]``"
+  (loud ``KeyError`` if the key is missing — surfaces a contract
+  violation at the sidecar writer). But ``ClaudeCodeHarness``
+  legitimately stamps the value as ``None`` when neither the
+  constructor nor the per-call override pinned a model: the
+  ``claude`` CLI's stream-json ``result`` message carries no model
+  field, so we cannot recover the actually-used model after the
+  fact. ``None`` is the honest signal in that case; recording a
+  fabricated default would be worse.
 - **DEC-008** — ``system_prompt_source`` is a closed-set literal
   validated here; the writer reads it verbatim from
   ``harness_metadata["system_prompt_source"]``.
@@ -61,7 +68,7 @@ class IterationContext:
 
     harness: str
     provider: str | None
-    model_runner: str
+    model_runner: str | None
     model_grader: str | None
     system_prompt_source: str
     sandbox_mode: str | None
@@ -149,11 +156,27 @@ class IterationContext:
                 )
             cost_usd = float(cost_usd)
 
+        model_runner = data.get("model_runner")
+        if model_runner is not None and not isinstance(model_runner, str):
+            raise ValueError(
+                f"IterationContext.from_dict: 'model_runner' must be "
+                f"str or None, got {type(model_runner).__name__} "
+                f"{model_runner!r}"
+            )
+
+        model_grader = data.get("model_grader")
+        if model_grader is not None and not isinstance(model_grader, str):
+            raise ValueError(
+                f"IterationContext.from_dict: 'model_grader' must be "
+                f"str or None, got {type(model_grader).__name__} "
+                f"{model_grader!r}"
+            )
+
         return cls(
             harness=harness,
             provider=provider,
-            model_runner=data["model_runner"],
-            model_grader=data.get("model_grader"),
+            model_runner=model_runner,
+            model_grader=model_grader,
             system_prompt_source=system_prompt_source,
             sandbox_mode=sandbox_mode,
             reasoning_tokens=reasoning_tokens,

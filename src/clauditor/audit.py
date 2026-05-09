@@ -735,7 +735,7 @@ def _providers_seen(verdicts: list[AuditVerdict]) -> list[str]:
 
 
 def _context_field_lines(ctx: IterationContext) -> list[tuple[str, str]]:
-    """Return ``[(label, value_str)]`` for the seven captured context fields.
+    """Return ``[(label, value_str)]`` for the eight captured context fields.
 
     Pure helper consumed by the verbose stdout/markdown renderers per
     #154 DEC-005. Field order matches the dataclass declaration so the
@@ -770,7 +770,7 @@ def render_stdout_table(
 
     #154 US-005 / DEC-005: when ``verbose=True`` and
     ``iteration_contexts`` is provided, append a per-iteration
-    ``Context for iteration N`` block listing the seven captured
+    ``Context for iteration N`` block listing the eight captured
     fields. Pre-#154 iterations whose ``context.json`` is absent are
     skipped (no block emitted) so the verbose output stays readable.
     """

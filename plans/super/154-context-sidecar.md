@@ -117,7 +117,7 @@ Codex stamps `harness_metadata["model"]` already (`_codex.py:747`). ClaudeCodeHa
 
 The ticket says "Audit verbose mode shows a context block per iteration." Two render shapes:
 
-- **A.** Per-iteration block in `render_markdown` and `render_stdout_table` — one collapsible/dedicated section per iteration listing the seven captured fields. `render_json` adds a top-level `iterations[*].context` key.
+- **A.** Per-iteration block in `render_markdown` and `render_stdout_table` — one collapsible/dedicated section per iteration listing the eight captured fields. `render_json` adds a top-level `iterations[*].context` key.
 - **B.** Tabular columns in `render_stdout_table` (one extra row group) + an annotation footer in markdown listing only the dimensions where iterations differ from each other ("only show what's interesting"). More work, less noise.
 - **C.** JSON-only for now (just expose `context` in `render_json`); markdown/stdout get a single-line summary. Defer rich rendering to a follow-up.
 
@@ -125,7 +125,7 @@ The ticket says "Audit verbose mode shows a context block per iteration." Two re
 
 Per `dual-version-external-schema-embed.md`, context surfaces in the sibling `<skill>.clauditor.json` (NOT the shields.io payload). Two design choices:
 
-- **A.** Add `extension.context: {...}` (the same seven fields) AND bump `ClauditorExtension.schema_version` 1 → 2. Loader defaults missing `context` to `null` for v1.
+- **A.** Add `extension.context: {...}` (the same eight fields) AND bump `ClauditorExtension.schema_version` 1 → 2. Loader defaults missing `context` to `null` for v1.
 - **B.** Add `extension.context: {...}` as a strictly-additive optional field; do NOT bump schema_version (loaders today already tolerate unknown keys for forward-compat). Simpler, but breaks the discipline of bumping when shape changes.
 - **C.** Skip badge integration for this PR; ship audit `--verbose` only. Badge integration becomes a follow-up.
 
@@ -210,11 +210,11 @@ User answered scoping Q1–Q6 in order: B (with follow-up ticket), A (with follo
 #### DEC-005: `audit --verbose` per-iteration block in all three render formats
 
 **Decision:** When `--verbose` is passed to `clauditor audit`, every iteration's `context.json` (when present) is loaded and rendered. Three formats:
-- `render_stdout_table`: a per-iteration "Context" sub-section under each iteration's row group, listing the seven captured fields as `key: value` lines.
+- `render_stdout_table`: a per-iteration "Context" sub-section under each iteration's row group, listing the eight captured fields as `key: value` lines.
 - `render_markdown`: a "### Context" subsection per iteration with a small `key | value` table.
 - `render_json`: a top-level `iterations[*].context: {...}` key on each iteration record. Always present (verbose or not — JSON consumers shouldn't need a flag to opt in to a stable field).
 
-**Rationale:** The user picked A for breadth — show all seven fields per iteration. Option B ("only show what differs") is appealing UX but requires a cross-iteration diff in the renderer, doubles the tests, and the user explicitly chose against it. Option C (JSON-only) defers user-facing value too long. The per-iteration block is bounded (seven small fields) so even a 50-iteration audit stays readable.
+**Rationale:** The user picked A for breadth — show all eight fields per iteration. Option B ("only show what differs") is appealing UX but requires a cross-iteration diff in the renderer, doubles the tests, and the user explicitly chose against it. Option C (JSON-only) defers user-facing value too long. The per-iteration block is bounded (eight small fields) so even a 50-iteration audit stays readable.
 
 **Validation criteria embedded:** `render_json` always includes `context` (even pre-#154 iterations get `context: null`); `render_markdown` and `render_stdout_table` only render the block under `--verbose`. Audit loader uses `_records_from_context` (or equivalent helper) and gates on schema_version per `json-schema-version.md`.
 
