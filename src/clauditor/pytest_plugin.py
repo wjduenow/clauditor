@@ -24,6 +24,7 @@ from pathlib import Path
 import pytest
 
 from clauditor._harnesses._claude_code import env_without_api_key
+from clauditor._providers import check_codex_auth
 from clauditor.asserters import SkillAsserter
 from clauditor.cli import _harness_choice, _provider_choice
 from clauditor.runner import SkillResult, SkillRunner
@@ -178,10 +179,8 @@ def clauditor_runner(request: pytest.FixtureRequest):
             runner = clauditor_runner(harness="codex")  # pin to codex
             result = runner.run("my-skill")
     """
-    import os
-
     from clauditor._harnesses import construct_harness
-    from clauditor._providers import check_codex_auth, resolve_harness
+    from clauditor._providers import resolve_harness
 
     def _factory(harness: str | None = None) -> SkillRunner:
         # Precedence: factory kwarg > pytest option > env > default.
@@ -220,10 +219,13 @@ def clauditor_runner(request: pytest.FixtureRequest):
                 timeout=timeout,
                 claude_bin=claude_bin,
             )
+        # Non-claude-code harnesses ignore ``claude_bin``; passing it
+        # would trigger ``SkillRunner.__init__``'s DeprecationWarning
+        # about claude_bin alongside an explicit harness=. Construct
+        # the harness via :func:`construct_harness` and omit the kwarg.
         return SkillRunner(
             project_dir=project_dir,
             timeout=timeout,
-            claude_bin=claude_bin,
             harness=construct_harness(name),
         )
 
@@ -268,13 +270,15 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
         timeout=request.config.getoption("--clauditor-timeout"),
         claude_bin=request.config.getoption("--clauditor-claude-bin"),
     )
-    # DEC-006 (US-007): when ``--clauditor-no-api-key`` is set, compute
-    # the env dict once per fixture call and thread it as
-    # ``env_override`` through ``SkillSpec.run``. ``None`` otherwise —
-    # the spec's ``env_override`` kwarg default preserves today's
-    # behavior.
+    # DEC-006 (US-007): when ``--clauditor-no-api-key`` is set, the
+    # subprocess env scrub is computed **per-call** inside
+    # ``_run_with_overrides`` (below) so we can pass the resolved
+    # harness name to :func:`env_without_api_key`. Pre-computing it
+    # here would default to claude-code semantics (strips
+    # ``OPENAI_API_KEY``), which would launch a codex subprocess
+    # without usable auth even though :func:`check_codex_auth`
+    # accepted the key from ``os.environ`` — see B1 of #155 QG pass 4.
     no_api_key = request.config.getoption("--clauditor-no-api-key")
-    fixture_env_override = env_without_api_key() if no_api_key else None
 
     def _factory(skill_path: str | Path, eval_path: str | Path | None = None):
         spec = SkillSpec.from_file(skill_path, eval_path=eval_path, runner=runner)
@@ -293,8 +297,6 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
             spec.eval_spec is not None
             and spec.eval_spec.harness == "codex"
         ):
-            from clauditor._providers import check_codex_auth
-
             check_codex_auth("spec")
         has_input_files = (
             spec.eval_spec is not None and bool(spec.eval_spec.input_files)
@@ -331,7 +333,7 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
                 spec_harness_override = spec.eval_spec.harness
         if (
             has_input_files
-            or fixture_env_override is not None
+            or no_api_key
             or spec_harness_override is not None
         ):
             original_run = spec.run
@@ -349,17 +351,6 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
                 if has_input_files and effective_run_dir is None:
                     default_run_dir.mkdir(parents=True, exist_ok=True)
                     effective_run_dir = default_run_dir
-                # Caller-provided overrides win over the fixture-level
-                # default computed from ``--clauditor-no-api-key``;
-                # otherwise the fixture value is used. Keeping the
-                # pre-US-007 call shape means existing tests that don't
-                # pass either override see ``original_run(args,
-                # run_dir=effective_run_dir)`` verbatim.
-                effective_env = (
-                    env_override
-                    if env_override is not None
-                    else fixture_env_override
-                )
                 # US-007 (#151) / DEC-005: caller-provided
                 # ``harness_name_override=`` (operator intent) wins over
                 # the spec-field default (author intent), mirroring the
@@ -369,6 +360,23 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
                     if harness_name_override is not None
                     else spec_harness_override
                 )
+                # Caller-provided ``env_override`` wins. Otherwise, when
+                # ``--clauditor-no-api-key`` is set, compute the scrub
+                # using the harness that will actually run the skill so
+                # ``env_without_api_key`` keeps ``OPENAI_API_KEY`` for
+                # the codex path (per its ``harness_name="codex"``
+                # branch) — fixes B1 of #155 QG pass 4.
+                if env_override is not None:
+                    effective_env = env_override
+                elif no_api_key:
+                    resolved_harness_for_env = (
+                        effective_harness or "claude-code"
+                    )
+                    effective_env = env_without_api_key(
+                        harness_name=resolved_harness_for_env
+                    )
+                else:
+                    effective_env = None
                 if (
                     effective_env is not None
                     or timeout_override is not None
@@ -423,8 +431,6 @@ def _resolve_fixture_provider(
     or CLI override surfaces as a pytest test-setup error instead of
     silently routing through the wrong provider.
     """
-    import os
-
     from clauditor._providers import resolve_grading_provider
 
     if eval_spec is None:
@@ -484,8 +490,6 @@ def _dispatch_fixture_auth_guard(
     structural ``except`` ladder rather than substring-matching on
     error text.
     """
-    import os
-
     from clauditor._providers import (
         check_any_auth_available,
         check_api_key_only,

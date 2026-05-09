@@ -48,7 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without changing skill or eval-spec files.
   - **New pytest CLI options:**
     - `--clauditor-harness {claude-code, codex, auto}` — overrides the
-      harness used by `clauditor_runner` and `clauditor_spec` session-wide.
+      harness used by `clauditor_runner` session-wide. (Note:
+      `clauditor_spec` honors only `EvalSpec.harness` — set `harness:`
+      in `eval.json` for per-skill author preference.)
     - `--clauditor-grading-provider {anthropic, openai, auto}` — overrides
       the grading provider used by `clauditor_grader`,
       `clauditor_blind_compare`, and `clauditor_triggers` session-wide.

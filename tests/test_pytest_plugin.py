@@ -2341,6 +2341,13 @@ class TestClauditorRunnerFactory:
         pytest CLI option is second.
         """
         monkeypatch.setenv("CODEX_API_KEY", "x")
+        # Strip the autouse env pin so the only env-layer signal is the
+        # factory kwarg. Without this, kwarg=codex agreeing with env=
+        # would not isolate the kwarg-vs-pytest-option claim (the env
+        # layer could be doing the work). Per
+        # ``.claude/rules/test-infra-shutil-which-coupling.md``, tests
+        # that exercise a non-env precedence layer must delenv first.
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
         request = self._request(harness_option="claude-code")
         factory = clauditor_runner.__wrapped__(request)
         runner = factory(harness="codex")
@@ -2900,8 +2907,10 @@ class TestClauditorBlindCompareFactoryKwargs:
         self, tmp_path, monkeypatch
     ):
         """``provider=`` kwarg threads through to
-        ``blind_compare_from_spec(provider=...)``, so the resulting
-        ``BlindReport.provider_source`` reflects the resolved provider.
+        ``blind_compare_from_spec(provider=...)``. Asserts on the call
+        kwargs only — the ``BlindReport.provider_source`` propagation
+        is owned by ``blind_compare_from_spec`` and verified in its
+        own test suite (``tests/test_quality_grader.py``).
         """
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
@@ -3213,3 +3222,101 @@ class TestClauditorSpecCodexGuard:
         ):
             result = factory("some/skill.md")
         assert result is mock_spec
+
+
+class TestClauditorSpecNoApiKeyHarnessAwareness:
+    """B1 of #155 QG pass 4: ``--clauditor-no-api-key`` + codex harness
+    must preserve ``OPENAI_API_KEY`` in the subprocess env.
+
+    Pre-fix, ``clauditor_spec`` precomputed ``fixture_env_override =
+    env_without_api_key()`` once at fixture setup, defaulting to
+    claude-code semantics that strip ``OPENAI_API_KEY``. When the spec
+    declared ``harness="codex"``, the codex subprocess received an env
+    without ``OPENAI_API_KEY`` even though ``check_codex_auth`` had
+    accepted it from ``os.environ`` moments earlier — launching codex
+    without usable auth.
+
+    Fix: defer the ``env_without_api_key`` call until inside
+    ``_run_with_overrides`` so ``harness_name=`` reflects the resolved
+    harness for this particular ``spec.run`` call.
+    """
+
+    def _request_with_options(
+        self, *, no_api_key: bool, project_dir: Path | None = None
+    ):
+        request = MagicMock()
+        request.config.getoption.side_effect = lambda opt: {
+            "--clauditor-project-dir": project_dir,
+            "--clauditor-timeout": 300,
+            "--clauditor-claude-bin": "claude",
+            "--clauditor-no-api-key": no_api_key,
+        }.get(opt)
+        return request
+
+    def test_no_api_key_codex_preserves_openai_key(
+        self, tmp_path, monkeypatch
+    ):
+        """When ``no_api_key=True`` AND ``eval_spec.harness="codex"``,
+        the env passed to ``spec.run`` retains ``OPENAI_API_KEY``."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+
+        request = self._request_with_options(no_api_key=True)
+
+        mock_spec = MagicMock()
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.harness = "codex"
+        mock_eval_spec.input_files = []
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = MagicMock()
+        mock_spec.run = original_run
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            factory = clauditor_spec.__wrapped__(request, tmp_path)
+            spec = factory("some/skill.md")
+
+        # spec.run was wrapped — invoke it and inspect the env_override
+        # that propagates to original_run.
+        spec.run("some args")
+        env_passed = original_run.call_args.kwargs["env_override"]
+        assert env_passed is not None
+        assert "OPENAI_API_KEY" in env_passed
+        assert env_passed["OPENAI_API_KEY"] == "sk-openai-test"
+        # Anthropic keys still stripped (codex doesn't need them).
+        assert "ANTHROPIC_API_KEY" not in env_passed
+        assert "ANTHROPIC_AUTH_TOKEN" not in env_passed
+
+    def test_no_api_key_claude_code_strips_openai_key(
+        self, tmp_path, monkeypatch
+    ):
+        """Default (claude-code) path retains today's behavior: strip
+        ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        request = self._request_with_options(no_api_key=True)
+
+        mock_spec = MagicMock()
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.harness = "claude-code"
+        mock_eval_spec.input_files = []
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = MagicMock()
+        mock_spec.run = original_run
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            factory = clauditor_spec.__wrapped__(request, tmp_path)
+            spec = factory("some/skill.md")
+
+        spec.run("some args")
+        env_passed = original_run.call_args.kwargs["env_override"]
+        assert env_passed is not None
+        assert "OPENAI_API_KEY" not in env_passed
+        assert "ANTHROPIC_API_KEY" not in env_passed

@@ -53,7 +53,7 @@ pytest --clauditor-grading-provider openai      # Override grading provider ({an
 
 `--clauditor-no-api-key` is the plugin-option counterpart to `--no-api-key` on the CLI: strips both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the `claude -p` subprocess environment so the child falls back to whatever auth is cached in `~/.claude/` (typically a Pro/Max subscription). Scoped to the `clauditor_spec` fixture's `env_override` wiring; the bare `clauditor_runner` fixture is unaffected (its `SkillRunner` is constructed without the env scrub). For per-test overrides, `spec.run(env_override=..., timeout_override=...)` accepts both kwargs directly — the fixture wrapper forwards caller-provided values over the fixture-level default.
 
-`--clauditor-harness` (#155) overrides the harness used by `clauditor_runner` and `clauditor_spec` for the entire pytest session. Operator-intent precedence: factory `harness=` kwarg > `--clauditor-harness` > `CLAUDITOR_HARNESS` env > `EvalSpec.harness` > default `"auto"`. Auto-resolution mirrors the CLI: `shutil.which("claude")` first, then `shutil.which("codex")`, with a one-time stderr announcement when auto picks codex.
+`--clauditor-harness` (#155) overrides the harness used by `clauditor_runner` for the entire pytest session. Operator-intent precedence on `clauditor_runner`: factory `harness=` kwarg > `--clauditor-harness` > `CLAUDITOR_HARNESS` env > default `"auto"`. Auto-resolution mirrors the CLI: `shutil.which("claude")` first, then `shutil.which("codex")`, with a one-time stderr announcement when auto picks codex. **Scope note:** the option does NOT override `clauditor_spec`'s harness selection — that fixture honors only `EvalSpec.harness` (author intent). Set `harness:` in `eval.json` for per-skill author preference; use `clauditor_runner(harness=...)` or this CLI option for operator-intent selection of the bare runner.
 
 `--clauditor-grading-provider` (#155) overrides the grading provider used by `clauditor_grader`, `clauditor_blind_compare`, and `clauditor_triggers` for the entire pytest session. Operator-intent precedence: factory `provider=` kwarg > `--clauditor-grading-provider` > `CLAUDITOR_GRADING_PROVIDER` env > `EvalSpec.grading_provider` > default `"auto"` (auto-inferred from `--clauditor-model` / `EvalSpec.grading_model` per `claude-*` → anthropic, `gpt-*` / `o[0-9]+*` → openai).
 
@@ -65,13 +65,24 @@ clauditor exposes harness (skill runtime) and grading-provider (judge runtime) a
 
 ### Operator-intent precedence (highest → lowest)
 
-For both `harness` and `provider`:
+The two axes have slightly different chains because the harness axis on `clauditor_runner` has no spec layer (the runner factory does not load an `EvalSpec`).
 
-1. **Factory kwarg** at the call site — e.g. `clauditor_runner(harness="codex")`, `clauditor_grader(skill, output, provider="openai")`. Wins over everything below.
-2. **Pytest CLI option** — `--clauditor-harness=codex`, `--clauditor-grading-provider=openai`. Session-wide.
-3. **Env var** — `CLAUDITOR_HARNESS=codex`, `CLAUDITOR_GRADING_PROVIDER=openai`.
-4. **Spec field** — `EvalSpec.harness`, `EvalSpec.grading_provider`. Author-intent.
-5. **Default** — `"auto"` for both axes (PATH lookup for harness, model-prefix inference for provider).
+**Provider axis** (`clauditor_grader`, `clauditor_blind_compare`, `clauditor_triggers`):
+
+1. **Factory kwarg** — e.g. `clauditor_grader(skill, output=..., provider="openai")`.
+2. **Pytest CLI option** — `--clauditor-grading-provider=openai`.
+3. **Env var** — `CLAUDITOR_GRADING_PROVIDER=openai`.
+4. **Spec field** — `EvalSpec.grading_provider`.
+5. **Default** — `"auto"` (model-prefix inference).
+
+**Harness axis** (`clauditor_runner` factory only):
+
+1. **Factory kwarg** — `clauditor_runner(harness="codex")`.
+2. **Pytest CLI option** — `--clauditor-harness=codex`.
+3. **Env var** — `CLAUDITOR_HARNESS=codex`.
+4. **Default** — `"auto"` (PATH lookup: `claude` first, then `codex`).
+
+`clauditor_spec` honors only `EvalSpec.harness` (author intent) and applies it via `harness_name_override` when wrapping `spec.run`; the operator-intent layers (CLI flag, env, factory kwarg) do not affect `clauditor_spec`'s harness selection. To pin a session-wide harness for skills loaded via `clauditor_spec`, set the `harness:` field in each skill's `eval.json`.
 
 Each layer falls through to the next when `None` (or `"auto"`, for the auto-resolved fields). Mirrors the CLI seam exactly per `.claude/rules/spec-cli-precedence.md`.
 
@@ -99,10 +110,10 @@ def test_my_skill_across_stacks(
     result = runner.run("my-skill")
     report = clauditor_grader(
         "skills/my-skill/SKILL.md",
-        result.output,
+        output=result.output,
         provider=provider,
     )
-    assert report.score >= 0.8
+    assert report.pass_rate >= 0.8
 ```
 
 The same matrix can be driven from the command line with no test changes — the pytest CLI options sit one precedence layer below the factory kwargs, so leaving the kwargs off lets the session-wide flags take over:
