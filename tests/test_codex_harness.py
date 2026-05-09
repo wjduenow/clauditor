@@ -61,12 +61,15 @@ from clauditor._harnesses._codex import (  # noqa: E402
     _PRESERVED_ENV_VARS_DOC,
     _RATE_LIMIT_PATTERNS,
     _RESULT_TEXT_MAX_CHARS,
+    _SANDBOX_MODE,
+    _SANDBOX_MODES,
     _STRIP_ENV_VARS,
     CodexHarness,
     _classify_codex_failure,
     _detect_codex_dropped_events,
     _detect_codex_truncated_output,
     _filter_stderr,
+    _validate_sandbox_mode,
 )
 from clauditor.runner import (  # noqa: E402
     _CODEX_DEPRECATION_WARNING_PREFIX,
@@ -156,6 +159,74 @@ class TestRunnerWarningPrefixes:
 
     def test_last_message_empty_prefix(self) -> None:
         assert _LAST_MESSAGE_EMPTY_WARNING_PREFIX == "last-message-empty:"
+
+
+# ---------------------------------------------------------------------------
+# Sandbox-mode closed-set + defense-in-depth validator (US-002 of #154)
+# ---------------------------------------------------------------------------
+
+
+class TestCodexHarnessSandboxModes:
+    """US-002 of #154: ``_SANDBOX_MODES`` is the closed set of values
+    Codex's ``-s`` flag accepts; ``_validate_sandbox_mode`` is the
+    defense-in-depth guard every ``harness_metadata["sandbox_mode"]``
+    stamp must route through.
+
+    Today the active value is hardcoded to ``"workspace-write"``, so
+    the validator never raises in production. The tests pin both the
+    closed set and the raise-on-unknown branch so a future regression
+    (a typo in the constant, a hostile dynamic value flowing in from
+    config, a new Codex sandbox value not yet in the set) fails loudly
+    at the seam rather than producing a silently-malformed sidecar.
+    Traces to the security CONCERN in the architecture review of #154.
+    """
+
+    def test_sandbox_modes_constant_matches_known_values(self) -> None:
+        """The frozenset's contents are byte-pinned to the three Codex
+        sandbox values documented at the time of #154."""
+        assert _SANDBOX_MODES == frozenset(
+            {"read-only", "workspace-write", "danger-full-access"}
+        )
+
+    def test_active_sandbox_mode_is_a_member(self) -> None:
+        """Drift-guard: the ``_SANDBOX_MODE`` active value MUST be a
+        member of the closed set. A future bump of the active value
+        without updating the set (or a typo in either) breaks here."""
+        assert _SANDBOX_MODE in _SANDBOX_MODES
+
+    def test_validator_returns_value_unchanged_on_known_mode(self) -> None:
+        """``_validate_sandbox_mode("workspace-write")`` returns the
+        value unchanged so callers can use the inline pattern
+        ``metadata["sandbox_mode"] = _validate_sandbox_mode(...)``."""
+        assert _validate_sandbox_mode("workspace-write") == "workspace-write"
+        assert _validate_sandbox_mode("read-only") == "read-only"
+        assert _validate_sandbox_mode("danger-full-access") == (
+            "danger-full-access"
+        )
+
+    def test_invalid_sandbox_mode_raises(self) -> None:
+        """``_validate_sandbox_mode("bogus")`` raises ``ValueError``
+        with the offending value AND the known set in the message —
+        operator-actionable feedback per the security CONCERN."""
+        with pytest.raises(ValueError, match="sandbox_mode='bogus'"):
+            _validate_sandbox_mode("bogus")
+
+    def test_invalid_sandbox_mode_message_lists_known_set(self) -> None:
+        """The raise message names every known mode so an operator
+        debugging a future regression knows the legal set without
+        having to grep the source."""
+        with pytest.raises(ValueError) as exc_info:
+            _validate_sandbox_mode("not-a-mode")
+        msg = str(exc_info.value)
+        assert "read-only" in msg
+        assert "workspace-write" in msg
+        assert "danger-full-access" in msg
+
+    def test_empty_string_rejected(self) -> None:
+        """Empty string is not in the closed set; defense-in-depth
+        catches a stamp site that fed in an unset value."""
+        with pytest.raises(ValueError):
+            _validate_sandbox_mode("")
 
 
 # ---------------------------------------------------------------------------

@@ -364,6 +364,98 @@ class TestInvokeResultHarnessMetadata:
         assert "k" not in r2.harness_metadata
 
 
+class TestClaudeCodeHarnessHarnessMetadata:
+    """US-002 of #154: ``ClaudeCodeHarness.invoke`` populates
+    ``result.harness_metadata["model"]`` so the iteration-context
+    sidecar reader (US-004) can read the effective model uniformly
+    across harnesses via ``skill_result.harness_metadata.get("model")``
+    — mirrors :class:`CodexHarness`'s metadata population per DEC-008
+    of #149.
+
+    Per DEC-004 of :file:`plans/super/154-context-sidecar.md` the read
+    path is harness-agnostic, so the write-side parity is the load-
+    bearing invariant.
+    """
+
+    def test_invoke_populates_model_default(self):
+        """``ClaudeCodeHarness(model="claude-sonnet-4-6").invoke(...)``
+        — the constructor-pinned model lands on
+        ``harness_metadata["model"]``."""
+        harness = ClaudeCodeHarness(model="claude-sonnet-4-6")
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=make_fake_skill_stream("hello"),
+        ):
+            result = harness.invoke(
+                "/test",
+                cwd=None,
+                env=None,
+                timeout=180,
+            )
+        assert result.harness_metadata["model"] == "claude-sonnet-4-6"
+
+    def test_invoke_populates_model_override(self):
+        """``invoke(..., model="claude-opus-4-7")`` overrides the
+        constructor default; the per-call value lands on
+        ``harness_metadata["model"]``. Mirrors :class:`CodexHarness`'s
+        same-shaped override (per DEC-006 of #148)."""
+        harness = ClaudeCodeHarness(model="claude-sonnet-4-6")
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=make_fake_skill_stream("hello"),
+        ):
+            result = harness.invoke(
+                "/test",
+                cwd=None,
+                env=None,
+                timeout=180,
+                model="claude-opus-4-7",
+            )
+        assert result.harness_metadata["model"] == "claude-opus-4-7"
+
+    def test_invoke_populates_model_none_when_unset(self):
+        """When neither the constructor nor the per-call kwarg pin a
+        model, the effective value is ``None`` and that is what lands
+        on the metadata dict — the honest "no model recorded" signal
+        for the sidecar reader (which uses ``.get("model")`` and
+        treats ``None`` identically to a missing key)."""
+        harness = ClaudeCodeHarness()
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=make_fake_skill_stream("hello"),
+        ):
+            result = harness.invoke(
+                "/test",
+                cwd=None,
+                env=None,
+                timeout=180,
+            )
+        assert "model" in result.harness_metadata
+        assert result.harness_metadata["model"] is None
+
+    def test_invoke_populates_model_on_missing_binary(self):
+        """The FileNotFoundError early-return path also stamps the
+        metadata dict — uniform contract across success and pre-spawn
+        failure paths so the sidecar writer never has to branch on
+        outcome to read ``model``."""
+        harness = ClaudeCodeHarness(
+            claude_bin="nonexistent-binary",
+            model="claude-sonnet-4-6",
+        )
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            side_effect=FileNotFoundError,
+        ):
+            result = harness.invoke(
+                "/test",
+                cwd=None,
+                env=None,
+                timeout=180,
+            )
+        assert result.exit_code == -1
+        assert result.harness_metadata["model"] == "claude-sonnet-4-6"
+
+
 # ---------------------------------------------------------------------------
 # SkillAsserter — Layer 1 test-helper wrapper (US-006)
 # ---------------------------------------------------------------------------

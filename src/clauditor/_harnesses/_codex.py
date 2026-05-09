@@ -237,9 +237,48 @@ _REDACTED_LINE_SENTINEL = "<line redacted: matched auth-leak pattern>"
 _NO_DETAIL_SENTINEL = "API error (no detail)"
 
 
-# DEC-001: hardcoded sandbox mode for v1. Configurability deferred to
-# #151 (the ``EvalSpec.harness`` flag ticket).
+# DEC-001 of #149: hardcoded sandbox mode for v1. Configurability
+# deferred to #151 (the ``EvalSpec.harness`` flag ticket).
+#
+# US-002 of #154 promotes the single string to a closed-set frozenset
+# of the three Codex-supported sandbox values (the surface documented
+# by ``codex exec --help``). The active value is referenced via
+# :data:`_SANDBOX_MODE`; defense-in-depth validator
+# :func:`_validate_sandbox_mode` enforces membership before any code
+# path stamps ``harness_metadata["sandbox_mode"]`` so a future
+# regression that pins an unknown value (typo, a new mode added to
+# Codex without a corresponding clauditor update, a hostile dynamic
+# value flowing in from config) fails loudly at the seam rather than
+# silently writing a non-conformant sidecar.
+_SANDBOX_MODES: frozenset[str] = frozenset(
+    {"read-only", "workspace-write", "danger-full-access"}
+)
 _SANDBOX_MODE = "workspace-write"
+
+
+def _validate_sandbox_mode(mode: str) -> str:
+    """Defense-in-depth: assert ``mode`` is a known Codex sandbox value.
+
+    Per the security CONCERN raised in the architecture review of #154,
+    the sandbox mode is an authorization-relevant value that downstream
+    sidecar consumers (audit, badge, trend) treat as authoritative.
+    Any code path stamping ``harness_metadata["sandbox_mode"]`` MUST
+    route the value through this validator first, even when the value
+    is sourced from a module-level constant — the validator catches a
+    future regression where the constant gains a typo or a dynamic
+    value bypasses the constant.
+
+    Returns the validated ``mode`` so callers can write
+    ``harness_metadata["sandbox_mode"] = _validate_sandbox_mode(value)``
+    inline. Raises :class:`ValueError` on any value not in
+    :data:`_SANDBOX_MODES`.
+    """
+    if mode not in _SANDBOX_MODES:
+        raise ValueError(
+            f"sandbox_mode={mode!r} not in known set "
+            f"{sorted(_SANDBOX_MODES)!r}"
+        )
+    return mode
 
 
 # Default Codex model used when neither the constructor nor the
@@ -740,7 +779,14 @@ class CodexHarness:
                         error=f"Codex CLI not found: {self.codex_bin}",
                         error_category=None,
                         harness_metadata={
-                            "sandbox_mode": _SANDBOX_MODE,
+                            # US-002 of #154: route through the
+                            # closed-set validator so a future
+                            # regression that pins an unknown
+                            # value fails here, not in a silently-
+                            # malformed sidecar.
+                            "sandbox_mode": _validate_sandbox_mode(
+                                _SANDBOX_MODE
+                            ),
                             "auth_source": auth_source,
                             "last_message_path": "",
                             "turn_count": 0,
@@ -1060,7 +1106,11 @@ class CodexHarness:
                 # ``last_message_path``, ``turn_count``) land
                 # unconditionally.
                 metadata: dict[str, Any] = {
-                    "sandbox_mode": _SANDBOX_MODE,
+                    # US-002 of #154: route through the closed-set
+                    # validator (defense-in-depth) before stamping
+                    # — see :func:`_validate_sandbox_mode` for the
+                    # security rationale.
+                    "sandbox_mode": _validate_sandbox_mode(_SANDBOX_MODE),
                     "auth_source": auth_source,
                     "last_message_path": last_message_path,
                     "turn_count": turn_count,
