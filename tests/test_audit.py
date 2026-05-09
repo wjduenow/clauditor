@@ -20,6 +20,7 @@ from clauditor.audit import (
     render_stdout_table,
 )
 from clauditor.cli import main as cli_main
+from clauditor.context import IterationContext
 
 # --------------------------------------------------------------------------- #
 # Fixture helper                                                               #
@@ -165,7 +166,7 @@ class TestLoadIterations:
                 for i in range(1, 6)
             },
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "skillX", last=3, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -182,7 +183,7 @@ class TestLoadIterations:
                 3: {"l1": [{"id": "a", "passed": False}]},
             },
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=10, clauditor_dir=clauditor_dir
         )
         assert skipped == 1
@@ -200,7 +201,7 @@ class TestLoadIterations:
                 },
             },
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=10, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -209,7 +210,7 @@ class TestLoadIterations:
         assert records[0].id == "a"
 
     def test_returns_empty_when_no_data(self, tmp_path: Path) -> None:
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=10, clauditor_dir=tmp_path / ".clauditor"
         )
         assert records == []
@@ -228,7 +229,7 @@ class TestLoadIterations:
                 },
             },
         )
-        records, _ = load_iterations(
+        records, _, _ = load_iterations(
             "s", last=10, clauditor_dir=clauditor_dir
         )
         with_skill = [r for r in records if r.with_skill]
@@ -248,7 +249,7 @@ class TestLoadIterations:
                 },
             },
         )
-        records, _ = load_iterations(
+        records, _, _ = load_iterations(
             "s", last=10, clauditor_dir=clauditor_dir
         )
         layers = {r.layer for r in records}
@@ -283,7 +284,7 @@ class TestLoadIterations:
         (skill_dir / "extraction.json").write_text(
             json.dumps(extraction, indent=2) + "\n"
         )
-        records, _ = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
+        records, _, _ = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
         l2 = [r for r in records if r.layer == "L2"]
         assert len(l2) == 1
         assert l2[0].passed is True
@@ -546,6 +547,7 @@ class TestRenderers:
             timestamp="20260101T000000Z",
         )
         # US-004 (#147): bumped to schema_version 2 + ``providers_seen``.
+        # #154 US-005 / DEC-005: always emits ``iteration_contexts`` array.
         assert set(payload.keys()) == {
             "schema_version",
             "skill",
@@ -554,6 +556,7 @@ class TestRenderers:
             "thresholds",
             "providers_seen",
             "assertions",
+            "iteration_contexts",
         }
         assert payload["schema_version"] == 2
         assert isinstance(payload["assertions"], list)
@@ -892,7 +895,7 @@ class TestAuditLegacyCompat:
         self._write_grading_sidecar(
             skill_dir, version=1, transport_source=None
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -911,7 +914,7 @@ class TestAuditLegacyCompat:
         self._write_extraction_sidecar(
             skill_dir, version=1, transport_source=None
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -930,7 +933,7 @@ class TestAuditLegacyCompat:
         self._write_grading_sidecar(
             skill_dir, version=2, transport_source="cli"
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -948,7 +951,7 @@ class TestAuditLegacyCompat:
         self._write_extraction_sidecar(
             skill_dir, version=2, transport_source="cli"
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -965,7 +968,7 @@ class TestAuditLegacyCompat:
         self._write_grading_sidecar(
             skill_dir, version=2, transport_source="api"
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -982,7 +985,7 @@ class TestAuditLegacyCompat:
         self._write_grading_sidecar(
             skill_dir, version=3, transport_source="api"
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -999,7 +1002,7 @@ class TestAuditLegacyCompat:
         self._write_extraction_sidecar(
             skill_dir, version=3, transport_source="api"
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -1018,7 +1021,7 @@ class TestAuditLegacyCompat:
         self._write_grading_sidecar(
             skill_dir, version=4, transport_source="api"
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert records == []
@@ -1037,7 +1040,7 @@ class TestAuditLegacyCompat:
         self._write_extraction_sidecar(
             skill_dir, version=4, transport_source="api"
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert records == []
@@ -1069,7 +1072,7 @@ class TestAuditLegacyCompat:
         (skill_dir / "baseline_grading.json").write_text(
             json.dumps(payload)
         )
-        records, _ = load_iterations(
+        records, _, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert records == []
@@ -1147,7 +1150,7 @@ class TestAuditL3StableId:
         data["results"][0]["criterion"] = "Totally different wording"
         gj.write_text(json.dumps(data))
 
-        records, _ = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
+        records, _, _ = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
         l3 = [r for r in records if r.layer == "L3"]
         assert len(l3) == 2
         assert {r.id for r in l3} == {"quality"}
@@ -1185,7 +1188,7 @@ class TestAuditL3StableId:
                 }
             )
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert records == []
@@ -1204,7 +1207,7 @@ class TestAuditL3StableId:
         skill_dir = clauditor_dir / "iteration-1" / "s"
         skill_dir.mkdir(parents=True)
         (skill_dir / "assertions.json").write_text("{not valid json")
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert records == []
@@ -1231,7 +1234,7 @@ class TestAuditL3StableId:
                 }
             )
         )
-        records, _ = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
+        records, _, _ = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
         assert [r for r in records if r.layer == "L3"] == []
 
 
@@ -1433,7 +1436,7 @@ class TestProviderDimension:
             passed=True,
             provider_source="openai",
         )
-        records, skipped = load_iterations(
+        records, skipped, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -1456,7 +1459,7 @@ class TestProviderDimension:
             passed=True,
             provider_source=None,
         )
-        records, _ = load_iterations(
+        records, _, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert len(records) == 1
@@ -1473,7 +1476,7 @@ class TestProviderDimension:
             passed=True,
             provider_source="openai",
         )
-        records, _ = load_iterations(
+        records, _, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert len(records) == 1
@@ -1493,7 +1496,7 @@ class TestProviderDimension:
                 1: {"l1": [{"id": "has_header", "passed": True}]},
             },
         )
-        records, _ = load_iterations(
+        records, _, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         l1 = [r for r in records if r.layer == "L1"]
@@ -1621,7 +1624,7 @@ class TestProviderDimension:
             passed=True,
             provider_source="openai",
         )
-        records, _ = load_iterations(
+        records, _, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         agg = aggregate(records)
@@ -1656,7 +1659,7 @@ class TestProviderDimension:
             ],
         }
         (skill_dir / "grading.json").write_text(json.dumps(payload))
-        records, _ = load_iterations(
+        records, _, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert len(records) == 1
@@ -1734,7 +1737,7 @@ class TestProviderOrDefault:
             ],
         }
         (skill_dir / "grading.json").write_text(json.dumps(payload))
-        records, _ = load_iterations(
+        records, _, _ = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert len(records) == 1
@@ -2046,3 +2049,525 @@ class TestRenderProviderColumn:
         assert body.startswith("a" * 11)
         # And there is whitespace after — the column is bounded.
         assert body[11] == " "
+
+
+# --------------------------------------------------------------------------- #
+# #154 US-005 — context.json sidecar reading + verbose render                  #
+# --------------------------------------------------------------------------- #
+
+
+def _write_context_sidecar(
+    skill_dir: Path,
+    *,
+    schema_version: int = 1,
+    harness: str = "claude-code",
+    provider: str | None = "anthropic",
+    model_runner: str = "claude-sonnet-4-6",
+    model_grader: str | None = "claude-sonnet-4-6",
+    system_prompt_source: str = "explicit",
+    sandbox_mode: str | None = "workspace-write",
+    reasoning_tokens: int | None = None,
+    cost_usd: float | None = None,
+) -> None:
+    """Write a synthetic ``context.json`` sidecar under ``skill_dir``.
+
+    Helper for #154 US-005 tests; mirrors the ``_write_grading_v3`` /
+    ``_write_extraction_v3`` shape above.
+    """
+    payload: dict = {
+        "schema_version": schema_version,
+        "harness": harness,
+        "provider": provider,
+        "model_runner": model_runner,
+        "model_grader": model_grader,
+        "system_prompt_source": system_prompt_source,
+        "sandbox_mode": sandbox_mode,
+        "reasoning_tokens": reasoning_tokens,
+        "cost_usd": cost_usd,
+    }
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "context.json").write_text(
+        json.dumps(payload, indent=2) + "\n"
+    )
+
+
+class TestMaxSchemaVersion:
+    """#154 US-005 / DEC-010: ``context.json`` registered at v1 in the
+    canonical ``MAX_SCHEMA_VERSION`` map."""
+
+    def test_context_json_registered_at_v1(self) -> None:
+        from clauditor.audit import MAX_SCHEMA_VERSION, _is_accepted_version
+
+        assert MAX_SCHEMA_VERSION["context.json"] == 1
+        assert _is_accepted_version("context.json", 1) is True
+
+    def test_context_json_v999_rejected(self) -> None:
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("context.json", 999) is False
+        assert _is_accepted_version("context.json", 2) is False
+
+
+class TestReadContext:
+    """#154 US-005 / DEC-011: pure helper that reads + schema-validates
+    ``context.json``. Returns ``IterationContext`` on success, ``None``
+    on every failure mode (missing file silently; schema/validation
+    errors with stderr warning)."""
+
+    def test_returns_iteration_context_for_valid_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        from clauditor.audit import _read_context
+
+        skill_dir = tmp_path / "skill"
+        _write_context_sidecar(
+            skill_dir,
+            harness="codex",
+            provider="openai",
+            model_runner="gpt-5.4",
+            model_grader=None,
+            system_prompt_source="agents_md",
+            sandbox_mode="read-only",
+            reasoning_tokens=42,
+            cost_usd=0.0123,
+        )
+        ctx = _read_context(skill_dir)
+        assert ctx is not None
+        assert ctx.harness == "codex"
+        assert ctx.provider == "openai"
+        assert ctx.model_runner == "gpt-5.4"
+        assert ctx.model_grader is None
+        assert ctx.system_prompt_source == "agents_md"
+        assert ctx.sandbox_mode == "read-only"
+        assert ctx.reasoning_tokens == 42
+        assert ctx.cost_usd == pytest.approx(0.0123)
+
+    def test_returns_none_on_missing_file_silent(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        from clauditor.audit import _read_context
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        # No context.json written.
+        assert _read_context(skill_dir) is None
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
+
+    def test_returns_none_with_stderr_warning_on_schema_mismatch(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        from clauditor.audit import _read_context
+
+        skill_dir = tmp_path / "skill"
+        _write_context_sidecar(skill_dir, schema_version=999)
+        result = _read_context(skill_dir)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "context.json" in captured.err
+        assert "999" in captured.err
+
+    def test_returns_none_on_malformed_json(self, tmp_path: Path) -> None:
+        from clauditor.audit import _read_context
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        (skill_dir / "context.json").write_text("{ this is not json")
+        assert _read_context(skill_dir) is None
+
+    def test_returns_none_on_hard_validator_failure(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """``IterationContext.from_dict`` raises ``ValueError`` for an
+        unknown ``harness`` literal (per US-001 hard-validators).
+        ``_read_context`` translates that to ``None`` plus a stderr
+        warning rather than propagating."""
+        from clauditor.audit import _read_context
+
+        skill_dir = tmp_path / "skill"
+        _write_context_sidecar(skill_dir, harness="not-a-real-harness")
+        assert _read_context(skill_dir) is None
+        captured = capsys.readouterr()
+        assert "context.json" in captured.err
+        assert "malformed payload" in captured.err
+
+    def test_returns_none_when_top_level_is_not_dict(
+        self, tmp_path: Path
+    ) -> None:
+        """A JSON file containing a list/scalar at the top level is
+        rejected without raising — defensive read posture per
+        ``stream-json-schema.md``."""
+        from clauditor.audit import _read_context
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        (skill_dir / "context.json").write_text("[1, 2, 3]")
+        assert _read_context(skill_dir) is None
+
+
+class TestRenderJsonContext:
+    """#154 US-005 / DEC-005: ``render_json`` always emits
+    ``iteration_contexts`` (no ``--verbose`` gate on JSON output)."""
+
+    def _verdicts(self) -> list[AuditVerdict]:
+        agg = AuditAggregate(
+            layer="L1",
+            id="a",
+            total_with_runs=2,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+        )
+        return [AuditVerdict(layer="L1", id="a", verdict=Verdict.KEEP, aggregate=agg)]
+
+    def test_always_includes_iteration_contexts_key(self) -> None:
+        payload = render_json(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=0,
+            thresholds={"last": 20},
+            timestamp="t",
+        )
+        assert "iteration_contexts" in payload
+        assert payload["iteration_contexts"] == []
+
+    def test_legacy_iteration_emits_null_context(self) -> None:
+        contexts: dict[int, IterationContext | None] = {3: None}
+        payload = render_json(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=1,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts=contexts,
+        )
+        assert payload["iteration_contexts"] == [
+            {"iteration": 3, "context": None}
+        ]
+
+    def test_populated_context_serializes_full_field_set(
+        self, tmp_path: Path
+    ) -> None:
+        skill_dir = tmp_path / "skill"
+        _write_context_sidecar(
+            skill_dir,
+            harness="codex",
+            provider="openai",
+            model_runner="gpt-5.4",
+            model_grader="gpt-5.4",
+            system_prompt_source="explicit",
+            sandbox_mode="workspace-write",
+            reasoning_tokens=100,
+            cost_usd=0.5,
+        )
+        from clauditor.audit import _read_context
+
+        ctx = _read_context(skill_dir)
+        payload = render_json(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=1,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts={5: ctx},
+        )
+        assert payload["iteration_contexts"] == [
+            {
+                "iteration": 5,
+                "context": {
+                    "harness": "codex",
+                    "provider": "openai",
+                    "model_runner": "gpt-5.4",
+                    "model_grader": "gpt-5.4",
+                    "system_prompt_source": "explicit",
+                    "sandbox_mode": "workspace-write",
+                    "reasoning_tokens": 100,
+                    "cost_usd": 0.5,
+                },
+            }
+        ]
+
+    def test_iteration_contexts_sorted_descending(
+        self, tmp_path: Path
+    ) -> None:
+        contexts: dict[int, IterationContext | None] = {1: None, 5: None, 3: None}
+        payload = render_json(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=3,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts=contexts,
+        )
+        nums = [entry["iteration"] for entry in payload["iteration_contexts"]]
+        assert nums == [5, 3, 1]
+
+
+class TestRenderMarkdownVerbose:
+    """#154 US-005 / DEC-005: ``render_markdown`` emits a
+    per-iteration ``## Per-iteration context`` section ONLY under
+    ``verbose=True``."""
+
+    def _verdicts(self) -> list[AuditVerdict]:
+        agg = AuditAggregate(
+            layer="L1",
+            id="a",
+            total_with_runs=1,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+        )
+        return [AuditVerdict(layer="L1", id="a", verdict=Verdict.KEEP, aggregate=agg)]
+
+    def _make_ctx(self) -> IterationContext:
+        return IterationContext(
+            harness="codex",
+            provider="openai",
+            model_runner="gpt-5.4",
+            model_grader="gpt-5.4",
+            system_prompt_source="agents_md",
+            sandbox_mode="read-only",
+            reasoning_tokens=42,
+            cost_usd=0.01,
+        )
+
+    def test_per_iteration_block_under_verbose(self) -> None:
+        markdown = render_markdown(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=1,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts={7: self._make_ctx()},
+            verbose=True,
+        )
+        assert "## Per-iteration context" in markdown
+        assert "### Iteration 7" in markdown
+        assert "harness" in markdown
+        assert "codex" in markdown
+        assert "gpt-5.4" in markdown
+        assert "agents_md" in markdown
+
+    def test_no_block_without_verbose(self) -> None:
+        markdown = render_markdown(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=1,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts={7: self._make_ctx()},
+            verbose=False,
+        )
+        assert "Per-iteration context" not in markdown
+        assert "Iteration 7" not in markdown
+
+    def test_no_block_when_contexts_dict_is_none(self) -> None:
+        markdown = render_markdown(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=1,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts=None,
+            verbose=True,
+        )
+        assert "Per-iteration context" not in markdown
+
+    def test_legacy_only_iterations_skipped_under_verbose(self) -> None:
+        """Iterations with ``context = None`` (pre-#154) do NOT
+        produce an ``### Iteration N`` block — verbose markdown stays
+        readable."""
+        markdown = render_markdown(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=1,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts={3: None},
+            verbose=True,
+        )
+        assert "Per-iteration context" not in markdown
+        assert "Iteration 3" not in markdown
+
+
+class TestRenderStdoutTableVerbose:
+    """#154 US-005 / DEC-005: ``render_stdout_table`` emits a per-
+    iteration ``Context for iteration N:`` block ONLY under
+    ``verbose=True``."""
+
+    def _verdicts(self) -> list[AuditVerdict]:
+        agg = AuditAggregate(
+            layer="L1",
+            id="a",
+            total_with_runs=1,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+        )
+        return [AuditVerdict(layer="L1", id="a", verdict=Verdict.KEEP, aggregate=agg)]
+
+    def _make_ctx(self) -> IterationContext:
+        return IterationContext(
+            harness="claude-code",
+            provider="anthropic",
+            model_runner="claude-sonnet-4-6",
+            model_grader="claude-sonnet-4-6",
+            system_prompt_source="explicit",
+            sandbox_mode="workspace-write",
+        )
+
+    def test_per_iteration_block_under_verbose(self) -> None:
+        out = render_stdout_table(
+            self._verdicts(),
+            iteration_contexts={3: self._make_ctx()},
+            verbose=True,
+        )
+        assert "Context for iteration 3:" in out
+        assert "harness: claude-code" in out
+        assert "provider: anthropic" in out
+        assert "system_prompt_source: explicit" in out
+
+    def test_no_block_without_verbose(self) -> None:
+        out = render_stdout_table(
+            self._verdicts(),
+            iteration_contexts={3: self._make_ctx()},
+            verbose=False,
+        )
+        assert "Context for iteration" not in out
+
+    def test_legacy_only_iterations_skipped_under_verbose(self) -> None:
+        out = render_stdout_table(
+            self._verdicts(),
+            iteration_contexts={3: None, 1: None},
+            verbose=True,
+        )
+        assert "Context for iteration" not in out
+
+
+class TestAggregateUnchanged:
+    """#154 DEC-011 regression guard: ``IterationRecord`` does NOT carry
+    a ``context`` field. Context lives parallel to records, attached at
+    render time only."""
+
+    def test_iteration_record_has_no_context_field(self) -> None:
+        import dataclasses
+
+        names = {f.name for f in dataclasses.fields(IterationRecord)}
+        assert "context" not in names
+        # Sanity check that we still own the existing fields so the
+        # test does not become vacuous if the dataclass is renamed.
+        assert {"iteration", "layer", "id", "passed"}.issubset(names)
+
+
+class TestLoadIterationsContextDict:
+    """#154 US-005 / DEC-011: ``load_iterations`` returns a
+    ``dict[int, IterationContext | None]`` parallel to the records."""
+
+    def test_returns_context_for_iteration_with_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        clauditor_dir = _make_iteration_fixture(
+            tmp_path,
+            "s",
+            {1: {"l1": [{"id": "a", "passed": True}]}},
+        )
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_context_sidecar(
+            skill_dir,
+            harness="codex",
+            provider="openai",
+            model_runner="gpt-5.4",
+            model_grader=None,
+            system_prompt_source="agents_md",
+            sandbox_mode="read-only",
+        )
+        records, _, contexts = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert 1 in contexts
+        ctx = contexts[1]
+        assert ctx is not None
+        assert ctx.harness == "codex"
+
+    def test_returns_none_for_iteration_without_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        """Pre-#154 iterations (no ``context.json`` on disk) map to
+        ``None`` in the contexts dict so renderers can emit a uniform
+        shape."""
+        clauditor_dir = _make_iteration_fixture(
+            tmp_path,
+            "s",
+            {1: {"l1": [{"id": "a", "passed": True}]}},
+        )
+        _, _, contexts = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert contexts == {1: None}
+
+
+class TestCmdAuditVerboseFlag:
+    """#154 US-005 argparse smoke test: ``--verbose`` is a valid flag
+    on ``clauditor audit``."""
+
+    def test_verbose_flag_accepted(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".git").mkdir()
+        clauditor_dir = _make_iteration_fixture(
+            project,
+            "my_skill",
+            {1: {"l1": [{"id": "a", "passed": True}]}},
+        )
+        skill_dir = clauditor_dir / "iteration-1" / "my_skill"
+        _write_context_sidecar(skill_dir)
+        monkeypatch.chdir(project)
+        rc = cli_main(["audit", "my_skill", "--verbose"])
+        # --verbose is accepted; ``always_pass`` flagging still drives
+        # the exit code.
+        assert rc in (0, 1)
+        out = capsys.readouterr().out
+        assert "Context for iteration 1:" in out
+
+    def test_verbose_emits_per_iteration_block_in_json(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """JSON output emits ``iteration_contexts`` regardless of the
+        ``--verbose`` flag (per DEC-005 — JSON consumers should not
+        need a flag for a stable field)."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".git").mkdir()
+        clauditor_dir = _make_iteration_fixture(
+            project,
+            "my_skill",
+            {1: {"l1": [{"id": "a", "passed": True}]}},
+        )
+        skill_dir = clauditor_dir / "iteration-1" / "my_skill"
+        _write_context_sidecar(skill_dir)
+        monkeypatch.chdir(project)
+        rc = cli_main(["audit", "my_skill", "--json"])
+        assert rc in (0, 1)
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        assert "iteration_contexts" in payload
+        assert any(
+            entry["iteration"] == 1 and entry["context"] is not None
+            for entry in payload["iteration_contexts"]
+        )
