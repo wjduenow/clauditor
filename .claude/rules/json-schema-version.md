@@ -149,6 +149,83 @@ Writers and readers (post-#147):
 - `src/clauditor/history.py::append_record` (keyword-only `provider=`) /
   `read_records` (defaults missing `provider` to `"anthropic"`).
 
+### New sidecar family — `context.json` (#154)
+
+`#154` introduced `context.json` — a new per-iteration sidecar family
+written once per `iteration-N/<skill>/` alongside `assertions.json`,
+`extraction.json`, and `grading.json`. It carries the comparability
+metadata that lets `clauditor audit` / `clauditor trend` group runs
+honestly across the harness, provider, model, and sandbox axes
+(rather than bumping every existing per-call sidecar with
+correlated fields). The file ships at `schema_version: 1` and is
+**designed to stay at v1** — see the always-v1 contract below.
+
+The dataclass `src/clauditor/context.py::IterationContext` is the
+single source of truth for the v1 shape:
+
+| Field                  | Type           | Nullability                                    |
+| ---------------------- | -------------- | ---------------------------------------------- |
+| `schema_version`       | `int = 1`      | always non-null (first key per the invariant)  |
+| `harness`              | `str`          | always non-null — `{"claude-code", "codex"}`   |
+| `provider`             | `str \| None`  | null when no LLM grading happened — `{"anthropic", "openai"}` when set |
+| `model_runner`         | `str`          | always non-null — model the harness used to run the skill |
+| `model_grader`         | `str \| None`  | null iff `provider` is null                    |
+| `system_prompt_source` | `str`          | always non-null — `{"explicit", "agents_md", "skill_md"}` |
+| `sandbox_mode`         | `str \| None`  | null when `harness != "codex"` — `{"read-only", "workspace-write", "danger-full-access"}` when set |
+| `reasoning_tokens`     | `int \| None`  | always null in this PR — populated by #170     |
+| `cost_usd`             | `float \| None`| always null in this PR — populated by #169     |
+
+Registered in the audit loader's per-filename version map as
+`MAX_SCHEMA_VERSION["context.json"] = 1` in
+`src/clauditor/audit.py::MAX_SCHEMA_VERSION`, sharing the same
+`_is_accepted_version` / `_check_schema_version` plumbing every
+other sidecar family uses (DEC-008's "version-and-up" check).
+
+**Always-v1 contract — forward-compat-by-design.** Unlike
+`grading.json` / `extraction.json` (which bumped at #86 and #147
+to add new non-null fields), `context.json` is engineered so the
+two anticipated follow-ups can populate fields **without bumping
+the schema version**. The trick: `reasoning_tokens` and `cost_usd`
+ship as nullable from day one, even though no production writer
+populates them yet. A null field is an absent value, not a
+structural change — so when #169 wires up the pricing module to
+fill `cost_usd: float` and #170 wires up per-provider reasoning
+capture to fill `reasoning_tokens: int`, the on-disk shape stays
+v1 and every existing reader keeps working unchanged. Bumps cost
+audit / trend / badge integration churn (default-on-read defaults,
+loader branches, regression tests for legacy iterations); avoiding
+them by pre-declaring the fields as nullable is the cheaper shape
+when the future fields are known up-front. This is the key teaching
+this subsection codifies: **a new sidecar family that anticipates
+follow-up additions should pre-declare them as nullable in v1
+rather than ship a minimal v1 and bump on every addition.**
+
+Writers (both write the same `IterationContext.to_json()` payload
+into `skill_dir / "context.json"` during workspace staging per
+`.claude/rules/sidecar-during-staging.md`):
+
+- `src/clauditor/cli/grade.py::_write_workspace_sidecars` — the
+  `grade` command's per-iteration write site.
+- `src/clauditor/cli/validate.py::cmd_validate` — the `validate`
+  command's per-iteration write site.
+
+Readers:
+
+- `src/clauditor/audit.py::_read_context` — audit-side reader,
+  invoked from `load_iterations` parallel to the per-record
+  loaders. Iterations whose `context.json` is absent (pre-#154
+  history) map to `None` so renderers can emit a nullable column.
+- `src/clauditor/badge.py::load_iteration_context` — badge-side
+  reader that surfaces the parsed `IterationContext` into
+  `ClauditorExtension.context` (the optional carrier field on the
+  badge sidecar's clauditor-extension payload, omitted entirely
+  when `None` per the layer-omission shape — see
+  `.claude/rules/dual-version-external-schema-embed.md`).
+
+Follow-up tickets that will populate the nullable placeholders
+WITHOUT bumping the schema: #169 (`cost_usd` pricing module) and
+#170 (`reasoning_tokens` per-provider capture).
+
 ## When this rule applies
 
 Any new persisted JSON file whose shape may evolve. Internal-only debug
