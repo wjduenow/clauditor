@@ -13,6 +13,7 @@ from clauditor._providers import (
     check_codex_auth,
 )
 from clauditor.assertions import run_assertions
+from clauditor.context import IterationContext
 from clauditor.paths import resolve_clauditor_dir
 from clauditor.runner import SkillResult
 from clauditor.workspace import (
@@ -304,6 +305,30 @@ def cmd_validate(args: argparse.Namespace) -> int:
             (skill_dir / "assertions.json").write_text(
                 json.dumps(assertions_payload, indent=2) + "\n",
                 encoding="utf-8",
+            )
+
+            # #154 US-004 / DEC-007 / DEC-008: write the per-iteration
+            # comparability sidecar inside the staging block. Validate
+            # has no Layer 3 grading, so ``provider`` and ``model_grader``
+            # stay ``None``; ``cost_usd`` and ``reasoning_tokens`` are
+            # ``None`` per DEC-001 / DEC-002 (placeholders for #169 /
+            # #170). ``model``/``system_prompt_source`` are unguarded
+            # subscripts per the harness contract; ``sandbox_mode`` IS
+            # optional (Codex-only).
+            context = IterationContext(
+                harness=harness_name,
+                provider=None,
+                model_runner=skill_result.harness_metadata["model"],
+                model_grader=None,
+                system_prompt_source=skill_result.harness_metadata[
+                    "system_prompt_source"
+                ],
+                sandbox_mode=skill_result.harness_metadata.get("sandbox_mode"),
+                cost_usd=None,
+                reasoning_tokens=None,
+            )
+            (skill_dir / "context.json").write_text(
+                context.to_json(), encoding="utf-8"
             )
 
             workspace.finalize()

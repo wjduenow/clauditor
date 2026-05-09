@@ -1217,6 +1217,106 @@ class TestSystemPromptResolution:
         assert isinstance(exc_info.value.__cause__, ValueError)
 
 
+class TestSkillSpecRunSystemPromptSource:
+    """US-003 of #154 (DEC-003 / DEC-008 / DEC-009): ``SkillSpec.run``
+    resolves the system prompt across three tiers and stamps the
+    resolved label into ``SkillResult.harness_metadata
+    ["system_prompt_source"]``.
+
+    Order:
+      1. Explicit ``EvalSpec.system_prompt`` set → ``"explicit"``.
+      2. AGENTS.md found via :func:`resolve_agents_md` (skill-dir then
+         project-root) → ``"agents_md"``.
+      3. Auto-derive from SKILL.md body (post-frontmatter) →
+         ``"skill_md"``.
+
+    Uses :class:`MockHarness` to drive a real :class:`SkillRunner` so
+    we observe both the system-prompt thread-through AND the
+    harness_metadata stamp on the returned result.
+    """
+
+    @staticmethod
+    def _build_runner_with_mock_harness(project_dir):
+        from clauditor._harnesses._mock import MockHarness
+        from clauditor.runner import SkillRunner
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir=project_dir, harness=mock)
+        return runner, mock
+
+    def test_explicit_eval_spec_wins_over_agents_md(self, tmp_skill_file):
+        """Both ``EvalSpec.system_prompt`` AND an AGENTS.md present →
+        explicit content wins, source stamped ``"explicit"``."""
+        content = "---\nname: prompt-skill\n---\nBODY"
+        eval_data = {
+            "skill_name": "prompt-skill",
+            "test_args": "",
+            "assertions": [],
+            "system_prompt": "EXPLICIT",
+        }
+        skill_path, _ = tmp_skill_file(
+            "prompt-skill", content=content, eval_data=eval_data
+        )
+        # AGENTS.md sits next to the legacy-layout skill file.
+        (skill_path.parent / "AGENTS.md").write_text("# agents")
+        runner, mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        result = spec.run()
+
+        assert mock.build_prompt_calls[-1]["system_prompt"] == "EXPLICIT"
+        assert result.harness_metadata["system_prompt_source"] == "explicit"
+
+    def test_agents_md_wins_over_skill_md_body(self, tmp_skill_file):
+        """No explicit, AGENTS.md present (skill-dir tier) → AGENTS.md
+        content used as system prompt, source stamped ``"agents_md"``."""
+        body = "# Skill\n\nBody content.\n"
+        content = "---\nname: prompt-skill\n---\n" + body
+        skill_path = tmp_skill_file("prompt-skill", content=content)
+        agents_text = "# AGENTS\n\nProject-level agent instructions.\n"
+        (skill_path.parent / "AGENTS.md").write_text(agents_text)
+        runner, mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        result = spec.run()
+
+        assert mock.build_prompt_calls[-1]["system_prompt"] == agents_text
+        assert result.harness_metadata["system_prompt_source"] == "agents_md"
+
+    def test_falls_through_to_skill_md_when_agents_md_absent(
+        self, tmp_skill_file
+    ):
+        """No explicit, no AGENTS.md → auto-derive from SKILL.md body,
+        source stamped ``"skill_md"``."""
+        body = "# Skill\n\nThis is the body.\n"
+        content = "---\nname: prompt-skill\n---\n" + body
+        skill_path = tmp_skill_file("prompt-skill", content=content)
+        runner, mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        result = spec.run()
+
+        assert mock.build_prompt_calls[-1]["system_prompt"] == body
+        assert result.harness_metadata["system_prompt_source"] == "skill_md"
+
+    def test_harness_metadata_carries_source_label(self, tmp_skill_file):
+        """Every successful run stamps a non-empty source label into
+        ``harness_metadata["system_prompt_source"]``."""
+        content = "---\nname: prompt-skill\n---\nBODY"
+        skill_path = tmp_skill_file("prompt-skill", content=content)
+        runner, _mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        result = spec.run()
+
+        assert "system_prompt_source" in result.harness_metadata
+        assert result.harness_metadata["system_prompt_source"] in {
+            "explicit",
+            "agents_md",
+            "skill_md",
+        }
+
+
 class TestSkillSpecRunHarnessOverride:
     """US-006 / DEC-004 of #151: ``SkillSpec.run`` accepts a
     keyword-only ``harness_name_override: str | None``. When non-

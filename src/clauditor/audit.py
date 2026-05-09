@@ -31,6 +31,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Literal
 
+from clauditor.context import IterationContext
 from clauditor.paths import resolve_clauditor_dir
 
 # US-002 / #147 / DEC-008: per-sidecar maximum accepted schema version.
@@ -54,6 +55,11 @@ MAX_SCHEMA_VERSION: dict[str, int] = {
     "assertions.json": 2,
     "extraction.json": 4,
     "grading.json": 4,
+    # #154 US-005 / DEC-010: context.json is a new sidecar family;
+    # always-v1 (the v1 dataclass already ships nullable fields for the
+    # observability surface, so future ``reasoning_tokens`` /
+    # ``cost_usd`` work needs no schema bump).
+    "context.json": 1,
 }
 
 
@@ -302,6 +308,47 @@ def _read_json(path: Path) -> dict | None:
         return None
 
 
+def _read_context(skill_dir: Path) -> IterationContext | None:
+    """Read ``context.json`` from ``skill_dir`` and return the parsed
+    :class:`IterationContext`, or ``None`` for any failure mode.
+
+    #154 US-005 / DEC-011: context is read parallel to records and
+    attached to render output only — does NOT participate in
+    :class:`IterationRecord` or :func:`aggregate`. Failure modes:
+
+    - Missing file → ``None`` silently (per the existing ``_read_json``
+      convention; defensive read posture per
+      ``.claude/rules/stream-json-schema.md``).
+    - Malformed JSON → ``None`` silently.
+    - Wrong/missing ``schema_version`` → ``None`` PLUS a stderr warning
+      via :func:`_check_schema_version` (the canonical seam owning
+      sidecar-version stderr emission).
+    - Hard-validator ``ValueError`` from
+      :meth:`IterationContext.from_dict` (e.g. unknown ``harness``
+      literal) → ``None`` PLUS a stderr warning. Do not propagate;
+      audit must keep moving across iterations.
+    """
+    path = skill_dir / "context.json"
+    data = _read_json(path)
+    if data is None:
+        return None
+    if not isinstance(data, dict):
+        return None
+    if not _check_schema_version(
+        data, iteration_dir=str(skill_dir), filename="context.json"
+    ):
+        return None
+    try:
+        return IterationContext.from_dict(data)
+    except (ValueError, KeyError, TypeError) as exc:
+        print(
+            f"clauditor.audit: skipping {skill_dir}/context.json — "
+            f"malformed payload: {exc}",
+            file=sys.stderr,
+        )
+        return None
+
+
 def _records_from_assertions(
     data: dict,
     *,
@@ -432,12 +479,16 @@ def load_iterations(
     skill: str,
     last: int,
     clauditor_dir: Path | None = None,
-) -> tuple[list[IterationRecord], int]:
+) -> tuple[list[IterationRecord], int, dict[int, IterationContext | None]]:
     """Load per-iteration assertion records for ``skill``.
 
     Walks ``.clauditor/iteration-*/<skill>/`` newest-first, loads the
     L1/L2/L3 sidecars (primary and baseline variants), and flattens
-    them into :class:`IterationRecord` entries.
+    them into :class:`IterationRecord` entries. Reads ``context.json``
+    in parallel and returns a ``dict[iteration_num, IterationContext |
+    None]`` for renderers to consume — context is comparability
+    metadata only, NOT score data, so it does NOT participate in
+    :func:`aggregate` per #154 DEC-011.
 
     Args:
         skill: Skill name (subdirectory under each iteration dir).
@@ -447,9 +498,17 @@ def load_iterations(
             Defaults to :func:`resolve_clauditor_dir`.
 
     Returns:
-        Tuple of ``(records, skipped_count)`` where ``skipped_count``
-        is the number of iteration dirs that had no primary and no
-        baseline sidecar for this skill (per DEC-002).
+        Tuple of ``(records, skipped_count, contexts)``:
+
+        - ``records`` — flat list of :class:`IterationRecord`.
+        - ``skipped_count`` — iteration dirs that had no primary and no
+          baseline sidecar for this skill (per DEC-002).
+        - ``contexts`` — ``{iteration_num: IterationContext | None}``
+          for every iteration dir that was visited (selected before the
+          skill-dir-missing skip). Iterations whose ``context.json``
+          is absent / malformed / wrong-schema map to ``None`` so
+          renderers can emit ``context: null`` for legacy iterations
+          (per #154 DEC-005).
     """
     if clauditor_dir is None:
         clauditor_dir = resolve_clauditor_dir()
@@ -459,6 +518,7 @@ def load_iterations(
 
     records: list[IterationRecord] = []
     skipped = 0
+    contexts: dict[int, IterationContext | None] = {}
 
     for iteration_num, iteration_dir in selected:
         skill_dir = iteration_dir / skill
@@ -504,12 +564,19 @@ def load_iterations(
                     )
                 )
 
+        # #154 DEC-011: read context.json parallel to records; do NOT
+        # attach to ``IterationRecord`` (would force every aggregate
+        # call site to branch on presence). Legacy iterations with no
+        # ``context.json`` map to ``None`` so renderers can emit a
+        # uniform shape.
+        contexts[iteration_num] = _read_context(skill_dir)
+
         # Count as skipped if no records were produced for this iteration —
         # sidecars may exist but be empty / schema-mismatched / unparseable.
         if len(records) == records_before:
             skipped += 1
 
-    return records, skipped
+    return records, skipped, contexts
 
 
 # --------------------------------------------------------------------------- #
@@ -781,7 +848,34 @@ def _harnesses_seen(verdicts: list[AuditVerdict]) -> list[str]:
 _L1_PROVIDER_DISPLAY = "—"
 
 
-def render_stdout_table(verdicts: list[AuditVerdict]) -> str:
+def _context_field_lines(ctx: IterationContext) -> list[tuple[str, str]]:
+    """Return ``[(label, value_str)]`` for the eight captured context fields.
+
+    Pure helper consumed by the verbose stdout/markdown renderers per
+    #154 DEC-005. Field order matches the dataclass declaration so the
+    on-screen layout stays predictable across renderers.
+    """
+    def _fmt(v: object) -> str:
+        return "-" if v is None else str(v)
+
+    return [
+        ("harness", _fmt(ctx.harness)),
+        ("provider", _fmt(ctx.provider)),
+        ("model_runner", _fmt(ctx.model_runner)),
+        ("model_grader", _fmt(ctx.model_grader)),
+        ("system_prompt_source", _fmt(ctx.system_prompt_source)),
+        ("sandbox_mode", _fmt(ctx.sandbox_mode)),
+        ("reasoning_tokens", _fmt(ctx.reasoning_tokens)),
+        ("cost_usd", _fmt(ctx.cost_usd)),
+    ]
+
+
+def render_stdout_table(
+    verdicts: list[AuditVerdict],
+    *,
+    iteration_contexts: dict[int, IterationContext | None] | None = None,
+    verbose: bool = False,
+) -> str:
     """Compact table: harness, provider, layer, id, with%, verdict.
 
     DEC-009 (#152): leftmost ``HARNESS`` column (~11 chars wide), then
@@ -792,6 +886,12 @@ def render_stdout_table(verdicts: list[AuditVerdict]) -> str:
     DEC-008 (#152): L1 rows render the PROVIDER cell as ``"—"``
     (em-dash, U+2014) since L1 makes no LLM call. L2/L3 rows render
     the real provider value.
+
+    #154 US-005 / DEC-005: when ``verbose=True`` and
+    ``iteration_contexts`` is provided, append a per-iteration
+    ``Context for iteration N`` block listing the eight captured
+    fields. Pre-#154 iterations whose ``context.json`` is absent are
+    skipped (no block emitted) so the verbose output stays readable.
     """
     header = (
         f"{'HARNESS':<11} {'PROVIDER':<11} {'LAYER':<6} {'ID':<40} "
@@ -811,6 +911,19 @@ def render_stdout_table(verdicts: list[AuditVerdict]) -> str:
             f"{v.layer:<6} {v.id[:40]:<40} "
             f"{with_pct:>8} {v.verdict.value:<24}"
         )
+
+    if verbose and iteration_contexts:
+        # Sort iterations descending (newest-first) to match the
+        # iteration-dir scan order in :func:`load_iterations`.
+        for iteration_num in sorted(iteration_contexts.keys(), reverse=True):
+            ctx = iteration_contexts[iteration_num]
+            if ctx is None:
+                continue
+            lines.append("")
+            lines.append(f"Context for iteration {iteration_num}:")
+            for label, value in _context_field_lines(ctx):
+                lines.append(f"  {label}: {value}")
+
     return "\n".join(lines)
 
 
@@ -821,8 +934,18 @@ def render_markdown(
     iterations_analyzed: int,
     thresholds: dict[str, float | int],
     timestamp: str,
+    iteration_contexts: dict[int, IterationContext | None] | None = None,
+    verbose: bool = False,
 ) -> str:
-    """Render the audit report as markdown."""
+    """Render the audit report as markdown.
+
+    #154 US-005 / DEC-005: when ``verbose=True`` and
+    ``iteration_contexts`` is provided, append a ``## Per-iteration
+    context`` section with one ``### Iteration N`` subsection per
+    iteration that has a populated ``context.json``. Pre-#154
+    iterations whose context is ``None`` are skipped so the verbose
+    output stays readable.
+    """
     flagged = [v for v in verdicts if v.is_flagged]
     kept = [v for v in verdicts if not v.is_flagged]
 
@@ -912,6 +1035,33 @@ def render_markdown(
             )
         lines.append("")
 
+    if verbose and iteration_contexts:
+        # #154 DEC-005: emit per-iteration context block under
+        # ``--verbose``. Iterations with no ``context.json`` (legacy
+        # pre-#154 runs) are skipped so the section stays readable.
+        populated = sorted(
+            (
+                (n, c)
+                for n, c in iteration_contexts.items()
+                if c is not None
+            ),
+            key=lambda pair: pair[0],
+            reverse=True,
+        )
+        if populated:
+            lines.append("## Per-iteration context")
+            lines.append("")
+            for iteration_num, ctx in populated:
+                lines.append(f"### Iteration {iteration_num}")
+                lines.append("")
+                lines.append("| field | value |")
+                lines.append("|-------|-------|")
+                for label, value in _context_field_lines(ctx):
+                    lines.append(
+                        f"| `{_md_escape(label)}` | `{_md_escape(value)}` |"
+                    )
+                lines.append("")
+
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -922,6 +1072,7 @@ def render_json(
     iterations_analyzed: int,
     thresholds: dict[str, float | int],
     timestamp: str,
+    iteration_contexts: dict[int, IterationContext | None] | None = None,
 ) -> dict:
     """Return a JSON-serializable audit payload.
 
@@ -937,10 +1088,30 @@ def render_json(
     Sort order across ``assertions`` matches the stdout/markdown
     renderers: ``(harness, provider, layer, id)``.
 
+    #154 US-005 / DEC-005: ``schema_version`` bumped from 3 to 4 to
+    signal the new top-level ``iteration_contexts`` array — a shape
+    change that adds a new sibling key to the audit-output payload.
+    JSON consumers that branch on ``schema_version`` need a stable
+    signal to detect the shape change (per
+    ``.claude/rules/json-schema-version.md``: "when a future bump
+    ships, writers emit ``schema_version: <next>``"). v3 readers
+    should expect the field to be absent; v4 readers can treat
+    ``iteration_contexts == []`` as "no contexts available" (the
+    legacy-iterations case).
+
     DEC-008 (#152): L1 entries keep ``"provider": "anthropic"``
     placeholder in the JSON output (the em-dash is stdout/markdown
     only) — keeps mixed-layer JSON aggregation semantically honest for
     downstream consumers.
+
+    #154 US-005 / DEC-005: always emits a top-level
+    ``iteration_contexts`` array — one record per iteration that was
+    visited by :func:`load_iterations`, sorted by iteration number
+    descending (newest first). Each record carries ``iteration: <int>``
+    and ``context: {...} | null`` (legacy iterations with no
+    ``context.json`` get ``null``). Unconditional emission per DEC-005
+    — JSON consumers should not need a ``--verbose`` flag to opt into
+    a stable field.
     """
     sorted_verdicts = _sorted_verdicts(verdicts)
     assertions_list: list[dict] = []
@@ -963,8 +1134,33 @@ def render_json(
                 "reasons": list(v.reasons),
             }
         )
+
+    # #154 DEC-005: always emit ``iteration_contexts`` (list of
+    # ``{iteration, context}`` records). Legacy iterations and missing
+    # data emit ``context: null``.
+    contexts_list: list[dict] = []
+    if iteration_contexts:
+        for iteration_num in sorted(iteration_contexts.keys(), reverse=True):
+            ctx = iteration_contexts[iteration_num]
+            if ctx is None:
+                payload: dict | None = None
+            else:
+                payload = {
+                    "harness": ctx.harness,
+                    "provider": ctx.provider,
+                    "model_runner": ctx.model_runner,
+                    "model_grader": ctx.model_grader,
+                    "system_prompt_source": ctx.system_prompt_source,
+                    "sandbox_mode": ctx.sandbox_mode,
+                    "reasoning_tokens": ctx.reasoning_tokens,
+                    "cost_usd": ctx.cost_usd,
+                }
+            contexts_list.append(
+                {"iteration": iteration_num, "context": payload}
+            )
+
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "skill": skill,
         "timestamp": timestamp,
         "iterations": iterations_analyzed,
@@ -972,4 +1168,5 @@ def render_json(
         "providers_seen": _providers_seen(verdicts),
         "harnesses_seen": _harnesses_seen(verdicts),
         "assertions": assertions_list,
+        "iteration_contexts": contexts_list,
     }

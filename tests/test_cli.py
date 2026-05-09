@@ -10132,3 +10132,275 @@ class TestCmdRunHarness:
         assert env_override.get("OPENAI_API_KEY") == "sk-openai"
         # Anthropic auth IS still stripped (Codex doesn't need it).
         assert "ANTHROPIC_API_KEY" not in env_override
+
+
+class TestCmdGradeWritesContextJson:
+    """#154 US-004: ``cmd_grade`` writes a per-iteration ``context.json``
+    sidecar inside the staging block (DEC-001, DEC-002, DEC-005, DEC-007,
+    DEC-008)."""
+
+    def _make_grading_report(self, model="claude-sonnet-4-6"):
+        return make_grading_report(passed=True, score=0.9, model=model)
+
+    def _spec_with_live_run(self, eval_spec=None, *, harness_metadata=None):
+        """Build a spec whose ``run()`` returns a real :class:`SkillResult`
+        carrying a populated ``harness_metadata`` (the harness contract
+        from #154 DEC-007 / DEC-008)."""
+        if eval_spec is None:
+            eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        if harness_metadata is None:
+            harness_metadata = {
+                "model": "claude-sonnet-4-6",
+                "system_prompt_source": "skill_md",
+            }
+        spec.run.return_value = make_skill_result(
+            output="primary output containing hello",
+            stream_events=[
+                {"type": "assistant", "text": "primary output containing hello"}
+            ],
+            input_tokens=10,
+            output_tokens=5,
+            duration_seconds=0.5,
+            harness_metadata=harness_metadata,
+        )
+        return spec
+
+    def test_anthropic_default_path(self, tmp_path, monkeypatch):
+        """Live grade run writes ``context.json`` populated with the
+        resolved harness, provider, and model fields."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = self._make_grading_report(model="claude-sonnet-4-6")
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        assert payload["harness"] == "claude-code"
+        assert payload["provider"] == "anthropic"
+        assert payload["model_runner"] == "claude-sonnet-4-6"
+        assert payload["model_grader"] == "claude-sonnet-4-6"
+        assert payload["system_prompt_source"] == "skill_md"
+        assert payload["sandbox_mode"] is None
+        # DEC-001 / DEC-002: placeholder None values.
+        assert payload["cost_usd"] is None
+        assert payload["reasoning_tokens"] is None
+
+    def test_openai_provider_path(self, tmp_path, monkeypatch):
+        """``--grading-provider openai --model gpt-5.4`` stamps
+        ``provider="openai"`` and ``model_grader="gpt-5.4"`` on the
+        sidecar, while the runner-side fields stay rooted in
+        ``harness_metadata`` (which describes the skill subprocess,
+        not the grader call)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec_with_live_run()
+        report = self._make_grading_report(model="gpt-5.4")
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--grading-provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                ]
+            )
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        assert payload["provider"] == "openai"
+        assert payload["model_grader"] == "gpt-5.4"
+        # Runner-side fields come from harness_metadata, untouched by
+        # the grader provider axis.
+        assert payload["harness"] == "claude-code"
+        assert payload["model_runner"] == "claude-sonnet-4-6"
+        assert payload["system_prompt_source"] == "skill_md"
+
+    def test_first_key_is_schema_version(self, tmp_path, monkeypatch):
+        """Per ``.claude/rules/json-schema-version.md`` the first
+        top-level key on disk is ``schema_version``."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = self._make_grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        payload = json.loads(context_path.read_text())
+        assert next(iter(payload.keys())) == "schema_version"
+        assert payload["schema_version"] == 1
+
+    def test_captured_output_mode_skips_context_sidecar(
+        self, tmp_path, monkeypatch
+    ):
+        """``--output`` mode (no subprocess, no real harness) skips
+        the ``context.json`` write because there is no
+        ``harness_metadata`` to populate the runner-side fields from."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("captured text")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        # Captured-text mode has no real run; context sidecar is not
+        # written (the runner-side fields cannot be populated).
+        assert not context_path.exists()
+
+
+class TestCmdValidateWritesContextJson:
+    """#154 US-004: ``cmd_validate`` writes a per-iteration
+    ``context.json`` sidecar with grader fields stamped ``None``
+    (validate has no Layer 3)."""
+
+    def _live_spec(self, *, harness_metadata=None):
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        if harness_metadata is None:
+            harness_metadata = {
+                "model": "claude-sonnet-4-6",
+                "system_prompt_source": "skill_md",
+            }
+        spec.run.return_value = make_skill_result(
+            output="hello world output",
+            duration_seconds=1.5,
+            input_tokens=100,
+            output_tokens=50,
+            stream_events=[
+                {"type": "system", "session_id": "abc"},
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "hi"}]},
+                },
+            ],
+            harness_metadata=harness_metadata,
+        )
+        return spec
+
+    def test_default_path(self, tmp_path, monkeypatch):
+        """``cmd_validate`` writes ``context.json`` with grader fields
+        ``None`` (no Layer 3) and runner fields populated from
+        ``harness_metadata``."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._live_spec()
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        # Validate has no Layer 3 grading; provider/model_grader/cost
+        # are all None.
+        assert payload["provider"] is None
+        assert payload["model_grader"] is None
+        assert payload["cost_usd"] is None
+        assert payload["reasoning_tokens"] is None
+        # Runner-side fields populated from harness_metadata.
+        assert payload["harness"] == "claude-code"
+        assert payload["model_runner"] == "claude-sonnet-4-6"
+        assert payload["system_prompt_source"] == "skill_md"
+        assert payload["sandbox_mode"] is None
+
+    def test_first_key_is_schema_version(self, tmp_path, monkeypatch):
+        """Per ``.claude/rules/json-schema-version.md`` the first
+        top-level key on disk is ``schema_version``."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._live_spec()
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        payload = json.loads(context_path.read_text())
+        assert next(iter(payload.keys())) == "schema_version"
+        assert payload["schema_version"] == 1
+
+    def test_codex_harness_carries_sandbox_mode(self, tmp_path, monkeypatch):
+        """Under a Codex harness, ``sandbox_mode`` lands on disk."""
+        monkeypatch.chdir(tmp_path)
+        # Pin codex auth + harness selection. The autouse fixture
+        # stubs ``shutil.which`` to None so the auto-resolver would
+        # otherwise refuse to pick codex; pin the env-var layer
+        # explicitly to override the autouse default.
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex")
+        monkeypatch.setenv("CLAUDITOR_HARNESS", "codex")
+
+        spec = self._live_spec(
+            harness_metadata={
+                "model": "gpt-5-codex",
+                "system_prompt_source": "agents_md",
+                "sandbox_mode": "workspace-write",
+            }
+        )
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        payload = json.loads(context_path.read_text())
+        assert payload["harness"] == "codex"
+        assert payload["model_runner"] == "gpt-5-codex"
+        assert payload["system_prompt_source"] == "agents_md"
+        assert payload["sandbox_mode"] == "workspace-write"

@@ -906,10 +906,16 @@ def tmp_skill_file(tmp_path):
 
 
 @pytest.fixture
-def mock_runner():
+def mock_runner(tmp_path):
     """Factory fixture returning a MagicMock SkillRunner.
 
     The mock's .run() returns a configurable SkillResult.
+
+    The mock's ``project_dir`` defaults to a fresh ``tmp_path`` so that
+    helpers walking the project root (e.g. ``resolve_agents_md`` from
+    US-003 of #154) do not accidentally pick up files in the real
+    repo-root cwd. Tests that need a specific project_dir can override
+    via ``project_dir=`` kwarg.
 
     Usage:
         def test_something(mock_runner):
@@ -925,9 +931,10 @@ def mock_runner():
         args: str = "",
         duration_seconds: float = 1.0,
         error: str | None = None,
+        project_dir: Path | None = None,
     ) -> MagicMock:
         mock = MagicMock(spec=SkillRunner)
-        mock.project_dir = Path.cwd()
+        mock.project_dir = project_dir if project_dir is not None else tmp_path
         result = SkillResult(
             output=output,
             exit_code=exit_code,
@@ -961,12 +968,25 @@ def make_skill_result(
     output_tokens: int = 0,
     error: str | None = None,
     stream_events: list[dict] | None = None,
+    harness_metadata: dict | None = None,
 ) -> SkillResult:
     """Build a real SkillResult with sensible defaults.
 
     Prefer this over MagicMock for tests that only need a value object;
     keeping it a real dataclass means attribute typos fail loudly.
+
+    ``harness_metadata`` defaults to a dict pre-populated with the
+    ``model`` and ``system_prompt_source`` keys per the harness contract
+    (#154 DEC-007 / DEC-008): every real harness invocation populates
+    these keys, so the test factory mirrors that contract by default.
+    Tests exercising the missing-key contract-violation path can pass
+    ``harness_metadata={}`` explicitly.
     """
+    if harness_metadata is None:
+        harness_metadata = {
+            "model": "claude-sonnet-4-6",
+            "system_prompt_source": "skill_md",
+        }
     return SkillResult(
         output=output,
         exit_code=exit_code,
@@ -977,6 +997,7 @@ def make_skill_result(
         output_tokens=output_tokens,
         error=error,
         stream_events=stream_events if stream_events is not None else [],
+        harness_metadata=harness_metadata,
     )
 
 

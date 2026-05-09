@@ -29,8 +29,10 @@ from clauditor.badge import (
     build_markdown_image,
     compute_badge,
     discover_iteration,
+    load_iteration_context,
     load_iteration_sidecars,
 )
+from clauditor.context import IterationContext
 from clauditor.quality_grader import GradingReport, GradingResult
 from clauditor.schemas import GradeThresholds
 
@@ -536,7 +538,11 @@ class TestBadgeSerialization:
         assert "schema_version" not in result
 
     def test_clauditor_extension_schema_version_is_first_key(self):
-        """DEC-027 + json-schema-version.md: extension file's first key."""
+        """DEC-027 + json-schema-version.md: extension file's first key.
+
+        Bumped to 2 in #154 US-006 (DEC-006) when the optional
+        ``context`` field landed.
+        """
         badge = compute_badge(
             _make_assertions_dict(passed=8, total=8),
             None,
@@ -548,7 +554,7 @@ class TestBadgeSerialization:
         ext = badge.to_clauditor_extension_json()
         inner_keys = list(ext.keys())
         assert inner_keys[0] == "schema_version"
-        assert ext["schema_version"] == 1
+        assert ext["schema_version"] == 2
 
     def test_clauditor_extension_key_order(self):
         """Extension file layout: schema_version, skill_name,
@@ -746,10 +752,12 @@ class TestDataclassShapes:
             generated_at=_GEN_AT,
             iteration=1,
         )
-        assert ext.schema_version == 1
+        # Bumped 1 → 2 in #154 US-006 (DEC-006).
+        assert ext.schema_version == 2
         assert ext.l1 is None
         assert ext.l3 is None
         assert ext.variance is None
+        assert ext.context is None
 
     def test_badge_defaults(self):
         ext = ClauditorExtension(skill_name="demo", generated_at=_GEN_AT, iteration=1)
@@ -1241,3 +1249,343 @@ class TestDiscoverIterationSkipsIterationZero:
         assert result is not None
         n, _path = result
         assert n == 1
+
+
+# ---------------------------------------------------------------------------
+# US-006 — ClauditorExtension v1 → v2 bump with optional ``context`` field.
+#
+# Traces to DEC-006 of ``plans/super/154-context-sidecar.md``.
+# ---------------------------------------------------------------------------
+
+
+def _make_context() -> IterationContext:
+    """Build a fully-populated :class:`IterationContext` for tests."""
+    return IterationContext(
+        harness="claude-code",
+        provider="anthropic",
+        model_runner="claude-sonnet-4-6",
+        model_grader="claude-sonnet-4-6",
+        system_prompt_source="agents_md",
+        sandbox_mode="workspace-write",
+        reasoning_tokens=None,
+        cost_usd=None,
+    )
+
+
+class TestClauditorExtensionSchemaBump:
+    """DEC-006: ``_CLAUDITOR_EXTENSION_SCHEMA_VERSION`` bumps 1 → 2."""
+
+    def test_schema_version_is_2(self):
+        """Top-level constant + dataclass default both equal 2."""
+        from clauditor.badge import _CLAUDITOR_EXTENSION_SCHEMA_VERSION
+
+        assert _CLAUDITOR_EXTENSION_SCHEMA_VERSION == 2
+        ext = ClauditorExtension(
+            skill_name="demo", generated_at=_GEN_AT, iteration=1
+        )
+        assert ext.schema_version == 2
+
+    def test_serialized_schema_version_is_2(self):
+        """The on-disk extension JSON carries ``schema_version: 2``."""
+        badge = compute_badge(
+            _make_assertions_dict(passed=8, total=8),
+            None,
+            None,
+            skill_name="demo",
+            iteration=1,
+            generated_at=_GEN_AT,
+        )
+        ext = badge.to_clauditor_extension_json()
+        assert ext["schema_version"] == 2
+
+
+class TestClauditorExtensionContextOmission:
+    """DEC-006: ``_extension_to_dict`` omits ``context`` when ``None``.
+
+    Mirrors the existing l1 / l3 / variance optional-block pattern.
+    """
+
+    def test_extension_dict_omits_context_when_none(self):
+        """``context=None`` → no ``context`` key in the serialized dict."""
+        badge = compute_badge(
+            _make_assertions_dict(passed=8, total=8),
+            None,
+            None,
+            skill_name="demo",
+            iteration=1,
+            generated_at=_GEN_AT,
+            context=None,
+        )
+        ext = badge.to_clauditor_extension_json()
+        assert "context" not in ext
+
+    def test_extension_dict_emits_context_when_present(self):
+        """``context=<populated>`` → ``context`` key present, full shape."""
+        ctx = _make_context()
+        badge = compute_badge(
+            _make_assertions_dict(passed=8, total=8),
+            None,
+            None,
+            skill_name="demo",
+            iteration=1,
+            generated_at=_GEN_AT,
+            context=ctx,
+        )
+        ext = badge.to_clauditor_extension_json()
+        assert "context" in ext
+        assert ext["context"]["harness"] == "claude-code"
+        assert ext["context"]["provider"] == "anthropic"
+        assert ext["context"]["model_runner"] == "claude-sonnet-4-6"
+        assert ext["context"]["system_prompt_source"] == "agents_md"
+        assert ext["context"]["sandbox_mode"] == "workspace-write"
+        # Schema version of the embedded context preserves the
+        # ``IterationContext`` sidecar's own version (currently 1).
+        assert ext["context"]["schema_version"] == 1
+
+    def test_default_compute_badge_call_omits_context(self):
+        """``compute_badge`` without ``context=`` defaults to None → omitted."""
+        badge = compute_badge(
+            _make_assertions_dict(passed=8, total=8),
+            None,
+            None,
+            skill_name="demo",
+            iteration=1,
+            generated_at=_GEN_AT,
+        )
+        # No ``context=`` kwarg passed; extension carries no context.
+        assert badge.clauditor.context is None
+        ext = badge.to_clauditor_extension_json()
+        assert "context" not in ext
+
+
+class TestClauditorExtensionV2RoundTrip:
+    """DEC-006: v2 extension serializes losslessly with the ``context`` block.
+
+    There is no ``ClauditorExtension.from_dict`` / ``from_json`` loader
+    today (badges are write-only — the audit / forensic readers parse
+    the inner ``context`` block via :meth:`IterationContext.from_dict`
+    on the standalone sidecar). This class verifies the writer side
+    of the round-trip — that the serialized shape matches what a
+    future loader would consume.
+    """
+
+    def test_serializes_with_context(self):
+        """Full v2 extension JSON contains the populated context block."""
+        ctx = _make_context()
+        badge = compute_badge(
+            _make_assertions_dict(passed=8, total=8),
+            _make_grading_dict(pass_fractions=(True, True, True)),
+            None,
+            skill_name="demo",
+            iteration=7,
+            generated_at=_GEN_AT,
+            context=ctx,
+        )
+        ext = json.loads(json.dumps(badge.to_clauditor_extension_json()))
+        assert ext["schema_version"] == 2
+        assert ext["context"]["harness"] == "claude-code"
+        # The embedded context dict is parseable as an IterationContext
+        # (round-trip-via-from_dict shape parity).
+        loaded = IterationContext.from_dict(ext["context"])
+        assert loaded.harness == ctx.harness
+        assert loaded.provider == ctx.provider
+        assert loaded.model_runner == ctx.model_runner
+        assert loaded.model_grader == ctx.model_grader
+        assert loaded.system_prompt_source == ctx.system_prompt_source
+        assert loaded.sandbox_mode == ctx.sandbox_mode
+
+    def test_extension_key_order_preserves_context_after_layers(self):
+        """v2 key order: schema_version, skill_name, generated_at,
+        iteration, layers, context."""
+        ctx = _make_context()
+        badge = compute_badge(
+            _make_assertions_dict(passed=8, total=8),
+            None,
+            None,
+            skill_name="demo",
+            iteration=1,
+            generated_at=_GEN_AT,
+            context=ctx,
+        )
+        ext = badge.to_clauditor_extension_json()
+        keys = list(ext.keys())
+        assert keys == [
+            "schema_version",
+            "skill_name",
+            "generated_at",
+            "iteration",
+            "layers",
+            "context",
+        ]
+
+
+class TestShieldsPayloadUnchanged:
+    """DEC-006 + ``.claude/rules/dual-version-external-schema-embed.md``.
+
+    The shields.io ``<skill>.json`` payload MUST stay byte-for-byte
+    identical regardless of whether the extension carries a ``context``
+    block. Shields.io strictly validates its endpoint schema and
+    rejects unknown top-level keys — context belongs in the sibling
+    extension file, not in the shields.io payload.
+    """
+
+    def test_shields_json_byte_identical_for_same_input(self):
+        """Two badges with identical L1/L3/variance inputs but different
+        ``context`` values produce byte-identical shields.io JSON."""
+        ctx = _make_context()
+        common_kwargs = dict(
+            assertions=_make_assertions_dict(passed=8, total=8),
+            grading=_make_grading_dict(pass_fractions=(True, True, True)),
+            variance=None,
+            skill_name="demo",
+            iteration=1,
+            generated_at=_GEN_AT,
+        )
+        badge_no_context = compute_badge(**common_kwargs, context=None)
+        badge_with_context = compute_badge(**common_kwargs, context=ctx)
+
+        shields_no_ctx = json.dumps(badge_no_context.to_endpoint_json())
+        shields_with_ctx = json.dumps(badge_with_context.to_endpoint_json())
+        assert shields_no_ctx == shields_with_ctx
+        # Defense in depth: no ``context`` key in either payload.
+        assert "context" not in badge_no_context.to_endpoint_json()
+        assert "context" not in badge_with_context.to_endpoint_json()
+
+    def test_shields_payload_has_no_clauditor_or_context_key(self):
+        """Shields.io payload remains the minimal four-field shape."""
+        ctx = _make_context()
+        badge = compute_badge(
+            _make_assertions_dict(passed=8, total=8),
+            None,
+            None,
+            skill_name="demo",
+            iteration=1,
+            generated_at=_GEN_AT,
+            context=ctx,
+        )
+        shields = badge.to_endpoint_json()
+        assert set(shields.keys()) == {"schemaVersion", "label", "message", "color"}
+
+
+class TestLoadIterationContext:
+    """:func:`clauditor.badge.load_iteration_context` — defensive read."""
+
+    def test_returns_context_when_file_present(self, tmp_path):
+        """A valid ``context.json`` parses into an IterationContext."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        ctx = _make_context()
+        (skill_dir / "context.json").write_text(ctx.to_json())
+        loaded = load_iteration_context(skill_dir)
+        assert loaded is not None
+        assert loaded.harness == "claude-code"
+        assert loaded.system_prompt_source == "agents_md"
+
+    def test_returns_none_when_file_absent(self, tmp_path):
+        """Missing ``context.json`` → ``None`` silently."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        assert load_iteration_context(skill_dir) is None
+
+    def test_returns_none_when_dir_absent(self, tmp_path):
+        """Missing skill dir → ``None`` silently."""
+        skill_dir = tmp_path / "missing"
+        assert load_iteration_context(skill_dir) is None
+
+    def test_returns_none_for_malformed_json(self, tmp_path):
+        """Invalid JSON in ``context.json`` → ``None`` silently."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        (skill_dir / "context.json").write_text("{not valid json")
+        assert load_iteration_context(skill_dir) is None
+
+    def test_returns_none_when_validation_fails(self, tmp_path):
+        """``IterationContext.from_dict`` rejection → ``None`` silently.
+
+        A ``context.json`` with a closed-set discriminator outside its
+        valid range (e.g. ``harness="bogus"``) must not abort the
+        whole badge command — the badge writer still writes a usable
+        sidecar, just with ``context = None``.
+        """
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        bad = {
+            "schema_version": 1,
+            "harness": "bogus",  # not in {"claude-code", "codex"}
+            "provider": "anthropic",
+            "model_runner": "x",
+            "model_grader": None,
+            "system_prompt_source": "agents_md",
+            "sandbox_mode": None,
+        }
+        (skill_dir / "context.json").write_text(json.dumps(bad))
+        assert load_iteration_context(skill_dir) is None
+
+    def test_returns_none_when_required_key_missing(self, tmp_path):
+        """Missing required key (e.g. ``harness``) → ``None`` silently."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        # Missing 'harness' → KeyError inside from_dict.
+        bad = {
+            "schema_version": 1,
+            "provider": "anthropic",
+            "model_runner": "x",
+            "system_prompt_source": "agents_md",
+        }
+        (skill_dir / "context.json").write_text(json.dumps(bad))
+        assert load_iteration_context(skill_dir) is None
+
+    def test_returns_none_for_unsupported_schema_version(self, tmp_path, capsys):
+        """Out-of-range ``schema_version`` (e.g. ``999``) → ``None`` PLUS
+        a stderr warning via :func:`audit._check_schema_version`.
+
+        Mirrors the audit-side reader: badge generation must NOT silently
+        embed a future, unsupported ``context.json`` revision when
+        :func:`clauditor.audit._read_context` would deliberately skip it.
+        Without this gate the two readers would diverge on which
+        sidecars are accepted.
+        """
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        bad = {
+            "schema_version": 999,
+            "harness": "claude-code",
+            "provider": "anthropic",
+            "model_runner": "x",
+            "model_grader": None,
+            "system_prompt_source": "agents_md",
+            "sandbox_mode": None,
+        }
+        (skill_dir / "context.json").write_text(json.dumps(bad))
+        assert load_iteration_context(skill_dir) is None
+        captured = capsys.readouterr()
+        # Stderr names the file + the expected accepted range so an
+        # operator can immediately diagnose the version mismatch.
+        assert "context.json" in captured.err
+        assert "999" in captured.err
+
+    def test_returns_none_when_schema_version_missing(self, tmp_path, capsys):
+        """A ``context.json`` payload without ``schema_version`` →
+        ``None`` (the version guard treats missing as out-of-range)."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        bad = {
+            "harness": "claude-code",
+            "provider": "anthropic",
+            "model_runner": "x",
+            "model_grader": None,
+            "system_prompt_source": "agents_md",
+            "sandbox_mode": None,
+        }
+        (skill_dir / "context.json").write_text(json.dumps(bad))
+        assert load_iteration_context(skill_dir) is None
+        captured = capsys.readouterr()
+        assert "context.json" in captured.err
+
+    def test_returns_none_when_top_level_not_dict(self, tmp_path):
+        """A ``context.json`` whose top level is not a dict (e.g. a
+        scalar JSON value) → ``None`` silently."""
+        skill_dir = tmp_path / "demo"
+        skill_dir.mkdir()
+        (skill_dir / "context.json").write_text("42")
+        assert load_iteration_context(skill_dir) is None

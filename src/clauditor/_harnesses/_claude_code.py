@@ -546,10 +546,17 @@ class ClaudeCodeHarness:
                     env=env,
                 )
             except FileNotFoundError:
+                # DEC-004 of #154: stamp ``harness_metadata["model"]``
+                # uniformly across all return paths (parity with
+                # ``CodexHarness``). The sidecar reader at #154 US-004
+                # uses ``skill_result.harness_metadata.get("model")``
+                # so a missing-binary failure still surfaces the
+                # intended model on the iteration-context sidecar.
                 result = InvokeResult(
                     output="",
                     exit_code=-1,
                     error=f"Claude CLI not found: {claude_bin}",
+                    harness_metadata={"model": effective_model},
                 )
                 return result
 
@@ -736,6 +743,7 @@ class ClaudeCodeHarness:
                     stream_events=stream_events,
                     warnings=list(warnings),
                     api_key_source=api_key_source,
+                    harness_metadata={"model": effective_model},
                 )
                 # Early return is load-bearing: a post-timeout
                 # stream-json is_error:true must not clobber the
@@ -848,6 +856,15 @@ class ClaudeCodeHarness:
                 final_error = stderr_text if returncode != 0 and stderr_text else None
                 final_category = None
 
+            # DEC-004 of #154: stamp ``harness_metadata["model"]`` so a
+            # downstream sidecar writer can read the effective model
+            # uniformly (``skill_result.harness_metadata.get("model")``)
+            # regardless of which harness produced the result. Mirrors
+            # ``CodexHarness.invoke``'s metadata population at
+            # :file:`_codex.py` (DEC-008 of #149). May be ``None`` when
+            # neither the constructor nor the per-call override pinned
+            # a value — that is the honest "no model recorded" signal
+            # for the sidecar reader.
             result = InvokeResult(
                 output=final_text,
                 exit_code=returncode,
@@ -859,6 +876,7 @@ class ClaudeCodeHarness:
                 stream_events=stream_events,
                 warnings=list(warnings),
                 api_key_source=api_key_source,
+                harness_metadata={"model": effective_model},
             )
             return result
         finally:

@@ -47,20 +47,34 @@ Decisions traced (see ``plans/super/77-clauditor-badge.md``):
     * Top-level ``schemaVersion: 1`` — shields.io's contract
       (camelCase per their docs), first top-level key of the endpoint
       JSON.
-    * Nested ``clauditor.schema_version: 1`` — our extension
+    * Nested ``clauditor.schema_version: 2`` — our extension
       contract, first key of the ``clauditor`` block per
-      ``.claude/rules/json-schema-version.md``.
+      ``.claude/rules/json-schema-version.md``. Bumped 1 → 2 in
+      #154 US-006 (DEC-006) when the optional ``context`` field
+      landed.
   The two versions bump independently.
+
+- **DEC-006 (#154 US-006)** — ``ClauditorExtension`` gains an
+  optional ``context: IterationContext | None`` field. The extension
+  ``schema_version`` bumps 1 → 2; ``_extension_to_dict`` omits the
+  ``context`` block when ``None`` (mirrors the existing l1 / l3 /
+  variance optional-block pattern). The shields.io ``<skill>.json``
+  payload is UNCHANGED per
+  ``.claude/rules/dual-version-external-schema-embed.md`` — context
+  goes only into the sibling ``<skill>.clauditor.json`` extension
+  file.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from clauditor.audit import _read_json, _scan_iteration_dirs
+from clauditor.audit import _check_schema_version, _read_json, _scan_iteration_dirs
+from clauditor.context import IterationContext
 
 __all__ = [
     "Badge",
@@ -72,6 +86,7 @@ __all__ = [
     "build_markdown_image",
     "compute_badge",
     "discover_iteration",
+    "load_iteration_context",
     "load_iteration_sidecars",
 ]
 
@@ -85,8 +100,13 @@ __all__ = [
 _SHIELDS_SCHEMA_VERSION: int = 1
 
 # The ``clauditor`` extension block's own version — first key of the
-# block per ``.claude/rules/json-schema-version.md``.
-_CLAUDITOR_EXTENSION_SCHEMA_VERSION: int = 1
+# block per ``.claude/rules/json-schema-version.md``. Bumped 1 → 2 in
+# #154 US-006 (DEC-006) when the optional ``context`` field landed
+# (default-on-read for v1 readers per the
+# ``.claude/rules/json-schema-version.md`` precedent set by #86 and
+# #147 — pre-#154 ``<skill>.clauditor.json`` files load with
+# ``context = None``).
+_CLAUDITOR_EXTENSION_SCHEMA_VERSION: int = 2
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +191,13 @@ class ClauditorExtension:
     ``.claude/rules/json-schema-version.md``. ``layers`` is built on
     the fly at serialization time from the (optional) summary fields
     — omit any layer whose summary is ``None``.
+
+    ``context`` (#154 US-006, DEC-006) is the optional per-iteration
+    comparability metadata read from ``iteration-N/<skill>/context.json``
+    by the badge writer. Omitted from the serialized block when
+    ``None`` (mirrors the l1/l3/variance optional-block pattern). Pre-
+    #154 ``<skill>.clauditor.json`` files (v1) had no ``context``
+    field; loading them defaults this attribute to ``None``.
     """
 
     skill_name: str
@@ -179,6 +206,7 @@ class ClauditorExtension:
     l1: L1Summary | None = None
     l3: L3Summary | None = None
     variance: VarianceSummary | None = None
+    context: IterationContext | None = None
     schema_version: int = _CLAUDITOR_EXTENSION_SCHEMA_VERSION
 
 
@@ -233,13 +261,18 @@ class Badge:
 
         Written to a sibling file ``<skill>.clauditor.json`` alongside
         the shields.io badge JSON. Carries the per-layer breakdown,
-        thresholds, iteration number, and ``generated_at`` timestamp
-        for trend-audit / forensic consumers.
+        thresholds, iteration number, ``generated_at`` timestamp, and
+        (when available) the optional ``context`` block for
+        trend-audit / forensic consumers.
 
-        First key is ``schema_version: 1`` per
-        ``.claude/rules/json-schema-version.md``. Shape unchanged
-        from the pre-split ``clauditor`` sub-dict so existing
-        docstrings / tests of the nested shape still apply.
+        First key is ``schema_version: 2`` (the value of
+        :data:`_CLAUDITOR_EXTENSION_SCHEMA_VERSION`) per
+        ``.claude/rules/json-schema-version.md``. Bumped 1 → 2 in
+        #154 US-006 (DEC-006) when the optional ``context`` field
+        landed; v1 readers default ``context`` to ``None``. The
+        ``context`` block is omitted entirely when
+        ``ext.context is None`` per the layer-omission shape — see
+        :func:`_extension_to_dict`.
         """
         return _extension_to_dict(self.clauditor)
 
@@ -250,6 +283,13 @@ def _extension_to_dict(ext: ClauditorExtension) -> dict[str, Any]:
     Layers are omitted entirely when their summary is ``None``
     (DEC-003 for variance; DEC-020 for L1-when-no-data; absent L3
     when grading sidecar is missing).
+
+    The ``context`` block (#154 US-006, DEC-006) is omitted entirely
+    when ``ext.context is None`` — mirrors the layer-omission shape.
+    When present, it embeds the same field set ``IterationContext.to_json``
+    emits to the standalone ``context.json`` sidecar (round-trip via
+    ``json.loads(ctx.to_json())`` so the writer and reader agree on
+    field order and serialization shape without duplication here).
     """
     block: dict[str, Any] = {
         "schema_version": ext.schema_version,
@@ -279,6 +319,12 @@ def _extension_to_dict(ext: ClauditorExtension) -> dict[str, Any]:
             "passed": ext.variance.passed,
         }
     block["layers"] = layers
+    if ext.context is not None:
+        # Round-trip via ``IterationContext.to_json`` so the embedded
+        # shape stays in lockstep with the standalone ``context.json``
+        # sidecar without duplicating the field list. The cost is
+        # one tiny serialize+parse on a flat dict.
+        block["context"] = json.loads(ext.context.to_json())
     return block
 
 
@@ -554,6 +600,7 @@ def compute_badge(
     generated_at: str,
     label: str = "clauditor",
     style_overrides: dict[str, str | int] | None = None,
+    context: IterationContext | None = None,
 ) -> Badge:
     """Aggregate per-iteration sidecars into a :class:`Badge`.
 
@@ -584,6 +631,16 @@ def compute_badge(
     ``style_overrides`` is a dict of shields.io ``--style`` passthrough
     keys (DEC-015); alphabetically serialized between the top-level
     ``color`` and ``clauditor`` keys.
+
+    ``context`` (#154 US-006, DEC-006) is the optional per-iteration
+    comparability metadata loaded from
+    ``iteration-N/<skill>/context.json`` by the CLI layer (see
+    :func:`load_iteration_context`). When ``None``, the extension
+    omits the ``context`` block entirely. When non-``None``, the
+    extension stamps it through verbatim. The shields.io payload is
+    NOT touched — context lives only in the sibling
+    ``<skill>.clauditor.json`` file per
+    ``.claude/rules/dual-version-external-schema-embed.md``.
     """
     l1 = _summarize_l1(assertions)
     l3, l3_parse_failed = _summarize_l3(grading)
@@ -603,6 +660,7 @@ def compute_badge(
             l1=l1,
             l3=l3,
             variance=var,
+            context=context,
         ),
         style_overrides=dict(style_overrides) if style_overrides else {},
     )
@@ -757,6 +815,46 @@ def load_iteration_sidecars(iteration_skill_dir: Path) -> IterationSidecars:
         variance=variance,
         assertions_missing=assertions_missing,
     )
+
+
+def load_iteration_context(iteration_skill_dir: Path) -> IterationContext | None:
+    """Read ``context.json`` from an iteration skill dir.
+
+    Returns the parsed :class:`IterationContext` when the file
+    exists and validates; returns ``None`` for missing file, JSON
+    parse error, out-of-range ``schema_version``, or
+    :class:`IterationContext.from_dict` rejection (closed-set
+    discriminator outside its valid range, bool-for-int, etc.).
+    Defensive read shape mirrors :func:`audit._read_context` —
+    a malformed sidecar must not abort the whole badge command.
+
+    The ``schema_version`` check is delegated to
+    :func:`audit._check_schema_version` so the badge reader and
+    the audit reader behave consistently across the whole sidecar
+    family (per ``.claude/rules/json-schema-version.md`` the same
+    ``MAX_SCHEMA_VERSION["context.json"]`` registry gates both
+    readers — without this check, badge generation could silently
+    embed an unsupported future ``context.json`` version that
+    ``clauditor audit`` would reject).
+
+    Pure from the caller's perspective: best-effort read, never
+    raises on the common error paths, never mutates the input path.
+    """
+    raw = _read_json(iteration_skill_dir / "context.json")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        return None
+    if not _check_schema_version(
+        raw,
+        iteration_dir=str(iteration_skill_dir),
+        filename="context.json",
+    ):
+        return None
+    try:
+        return IterationContext.from_dict(raw)
+    except (ValueError, KeyError, TypeError):
+        return None
 
 
 def build_markdown_image(
