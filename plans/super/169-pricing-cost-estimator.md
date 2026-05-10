@@ -5,7 +5,9 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/169
 - **Branch:** `feature/169-pricing-cost-estimator`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/169-pricing-cost-estimator`
-- **Phase:** published
+- **PR:** https://github.com/wjduenow/clauditor/pull/173
+- **Phase:** devolved
+- **Epic:** clauditor-60x
 - **Sessions:** 1 (2026-05-09)
 - **Depends on:** #154 (CLOSED — `IterationContext.cost_usd: float | None = None` placeholder ships in `context.py`)
 - **Related:** #170 (`reasoning_tokens` capture — sibling follow-up to #154; #169 accepts a `reasoning_tokens` parameter so it composes forward-compat without depending on #170)
@@ -713,4 +715,21 @@ then validate-side regression, then quality gate, then memory.
 ## Refinement Log
 
 - **2026-05-09 session 1.** Discovery + Architecture Review + Detailing in one session. Six DECs locked (DEC-001 through DEC-006). Eight stories scoped (US-001 through US-008). Pre-plan research confirmed neither Anthropic nor OpenAI exposes a programmatic rate card; ticket body updated with research notes before super-planning began.
+- **2026-05-09 devolve.** Plan approved; beads epic + 8 tasks created with dependencies. PR #173 stays draft until implementation completes.
+
+## Beads Manifest
+
+- **Epic:** `clauditor-60x` — #169: cost_usd estimation module for context.json
+- **Tasks** (parent → child IDs):
+  - `clauditor-60x.1` — US-001: pricing module skeleton + `estimate_cost` core
+  - `clauditor-60x.2` — US-002: staleness announcement (>90-day stderr warning) — blocked by `.1`
+  - `clauditor-60x.3` — US-003: unknown-model per-pair stderr warning — blocked by `.1`
+  - `clauditor-60x.4` — US-004: `compute_iteration_cost_usd` composition helper — blocked by `.1`
+  - `clauditor-60x.5` — US-005: wire `compute_iteration_cost_usd` into `_write_context_sidecar` — blocked by `.4`
+  - `clauditor-60x.6` — US-006: `cli/validate.py` regression: `cost_usd=null` preserved — blocked by `.5`
+  - `clauditor-60x.7` — US-007: Quality Gate (code-reviewer x4 + CodeRabbit + lint + coverage) — blocked by `.6`
+  - `clauditor-60x.8` — US-008: Patterns & Memory (rule refreshes) — blocked by `.7`
+- **Ready (unblocked) on devolve:** `clauditor-60x.1`.
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/169-pricing-cost-estimator`.
+- **Branch:** `feature/169-pricing-cost-estimator`.
 
