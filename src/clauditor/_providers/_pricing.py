@@ -47,7 +47,11 @@ from __future__ import annotations
 
 import datetime
 import sys
-from typing import Final, NamedTuple
+from typing import TYPE_CHECKING, Final, NamedTuple
+
+if TYPE_CHECKING:
+    from clauditor.grader import ExtractionReport
+    from clauditor.quality_grader import GradingReport
 
 # Indirection alias per ``.claude/rules/monotonic-time-indirection.md``:
 # tests patch ``clauditor._providers._pricing._today`` to pin the
@@ -294,3 +298,63 @@ def estimate_cost(
         input_tokens * card.input_per_mtok
         + effective_output * card.output_per_mtok
     ) / 1_000_000
+
+
+def compute_iteration_cost_usd(
+    grading_report: GradingReport,
+    extraction_report: ExtractionReport | None,
+    provider: str,
+) -> float | None:
+    """Sum L2 + L3 grader-call cost for one iteration.
+
+    Pure-compute composition helper per
+    ``.claude/rules/pure-compute-vs-io-split.md`` — no I/O, no
+    logging, no module-level state mutation. Routes both layers
+    through :func:`estimate_cost` and sums the results.
+
+    Per DEC-001 of ``plans/super/169-pricing-cost-estimator.md``,
+    scope is grader-only: Layer 2 (extraction) + Layer 3 (grading).
+    Runner-side cost is out of scope. Per DEC-002, the helper is
+    all-or-nothing: when any internal :func:`estimate_cost` lookup
+    misses (returns ``None``), the composition returns ``None``
+    rather than partial cost. A "roughly right" partial estimate is
+    silently wrong for budgeting and trend reads, so null-on-any-
+    miss is the safe default.
+
+    Args:
+        grading_report: Layer 3 :class:`GradingReport`. Always
+            present at the grade write seam.
+        extraction_report: Layer 2 :class:`ExtractionReport` when
+            sections were declared on the eval spec; ``None`` when
+            Layer 2 did not run. ``None`` contributes ``0.0`` to the
+            sum — that is NOT a lookup miss, it is a genuine
+            "no Layer-2 call happened" signal.
+        provider: Provider key (e.g. ``"anthropic"``, ``"openai"``)
+            resolved at the CLI seam per
+            ``.claude/rules/multi-provider-dispatch.md``.
+
+    Returns:
+        Sum of L2 + L3 cost in USD as a ``float``, or ``None`` when
+        any internal lookup misses (unknown provider, unknown
+        grading model, or — when extraction is present — unknown
+        extraction model).
+    """
+    l3_cost = estimate_cost(
+        provider,
+        grading_report.model,
+        grading_report.input_tokens,
+        grading_report.output_tokens,
+    )
+    if l3_cost is None:
+        return None
+    if extraction_report is None:
+        return l3_cost
+    l2_cost = estimate_cost(
+        provider,
+        extraction_report.model,
+        extraction_report.input_tokens,
+        extraction_report.output_tokens,
+    )
+    if l2_cost is None:
+        return None
+    return l2_cost + l3_cost
