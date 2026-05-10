@@ -5,8 +5,9 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/170
 - **Branch:** `feature/170-reasoning-tokens-capture`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/170-reasoning-tokens-capture`
-- **PR:** _(pending)_
-- **Phase:** detailing
+- **PR:** https://github.com/wjduenow/clauditor/pull/174
+- **Phase:** devolved
+- **Epic:** clauditor-o7u
 - **Sessions:** 1 (2026-05-09)
 - **Total decisions:** 8 (DEC-001 through DEC-008)
 - **Depends on:** #154 (CLOSED — `context.json` sidecar with `reasoning_tokens: int | None = None` placeholder)
@@ -342,4 +343,18 @@ Re-sequenced for dependency correctness:
 
 ## Beads Manifest
 
-_(filled in at devolve time)_
+- **Epic:** `clauditor-o7u` — 170: Reasoning tokens — capture separately-billed reasoning tokens in ModelResult
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/170-reasoning-tokens-capture`
+- **Branch:** `feature/170-reasoning-tokens-capture`
+- **PR:** https://github.com/wjduenow/clauditor/pull/174
+
+| Story | Bead ID | Depends on |
+|---|---|---|
+| US-001 — Add reasoning_tokens field to ModelResult | `clauditor-oynv` | (none — ready) |
+| US-002 — OpenAI backend extracts reasoning_tokens | `clauditor-s0vu` | US-001 |
+| US-003 — Anthropic backend documents always-None | `clauditor-3wdi` | US-001 |
+| US-004 — Add field to reports + sum logic | `clauditor-4l6s` | US-002, US-003 |
+| US-005 — `_write_context_sidecar` reads from report | `clauditor-3k5b` | US-004 |
+| US-006 — Audit loader bumps + v4 default-on-read | `clauditor-0mv1` | US-004 |
+| Quality Gate — code review x4 + CodeRabbit | `clauditor-q54i` | US-001..US-006 |
+| Patterns & Memory | `clauditor-rzif` | Quality Gate |
