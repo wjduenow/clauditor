@@ -10447,7 +10447,12 @@ class TestCmdGradeContextCostUsd:
         )
         extraction_report = ExtractionReport(
             skill_name="test-skill",
-            model="claude-haiku-4-5-20251001",
+            # Match the literal _PRICING_TABLE key for the L2 model so
+            # a future maintainer removing the ``estimate_cost`` mock
+            # below (e.g. to exercise the real rate-card lookup) sees
+            # the L2 cost compute correctly rather than silently
+            # nullifying the iteration's ``cost_usd`` per DEC-002.
+            model="claude-haiku-4-5",
             results=[
                 FieldExtractionResult(
                     field_id="venues.primary.venue_name.v1",

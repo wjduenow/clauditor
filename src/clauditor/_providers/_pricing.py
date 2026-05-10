@@ -112,7 +112,6 @@ _PRICING_TABLE: Final[dict[str, dict[str, _PriceCard]]] = {
         # o-series reasoning model — billed at standard input/output
         # rates (reasoning tokens roll into the output rate per the
         # research-note contract).
-        # TODO: confirm rate against the pricing page on next refresh.
         "o4-mini": _PriceCard(1.10, 4.40),
     },
 }
@@ -154,11 +153,13 @@ _announced_pricing_table_stale: bool = False
 # The ``{days}`` placeholder is interpolated at emit time so the
 # message names the actual age, not just "stale".
 _PRICING_TABLE_STALE_ANNOUNCEMENT: Final[str] = (
-    "clauditor: pricing table in src/clauditor/_providers/_pricing.py is "
-    "{days} days old (>90 days threshold); cost_usd values may diverge "
-    "from current provider rates. Refresh against "
+    "clauditor: pricing table v{version} in "
+    "src/clauditor/_providers/_pricing.py is {days} days old "
+    "(>90 days threshold); cost_usd values may diverge from current "
+    "provider rates. Refresh against "
     "https://platform.claude.com/docs/en/about-claude/pricing and "
-    "https://openai.com/api/pricing/ and bump _LAST_VERIFIED."
+    "https://openai.com/api/pricing/ and bump _LAST_VERIFIED "
+    "(plus _PRICING_TABLE_VERSION when the table shape changes)."
 )
 
 
@@ -201,7 +202,9 @@ def announce_pricing_table_stale_if_old() -> None:
         days_old = 9999
     if days_old > 90:
         print(
-            _PRICING_TABLE_STALE_ANNOUNCEMENT.format(days=days_old),
+            _PRICING_TABLE_STALE_ANNOUNCEMENT.format(
+                days=days_old, version=_PRICING_TABLE_VERSION
+            ),
             file=sys.stderr,
         )
         _announced_pricing_table_stale = True

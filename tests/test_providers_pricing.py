@@ -88,6 +88,38 @@ class TestEstimateCost:
         b = estimate_cost("openai", "o4-mini", 100, 50, reasoning_tokens=None)
         assert a == pytest.approx(b)
 
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "CLAUDE-SONNET-4-6",  # uppercase miss
+            "Claude-Sonnet-4-6",  # mixed-case miss
+            " claude-sonnet-4-6 ",  # surrounding whitespace
+            "",  # empty model
+        ],
+    )
+    def test_lookup_is_case_and_whitespace_sensitive(
+        self, model: str
+    ) -> None:
+        # Locks the contract: estimate_cost looks up the literal
+        # ``(provider, model)`` pair against the table without case-
+        # folding or whitespace stripping. A future "helpful"
+        # normalization would silently match models the published
+        # rates do not actually cover. Per DEC-002, the miss path
+        # returns ``None`` cleanly.
+        assert estimate_cost("anthropic", model, 100, 50) is None
+
+    @pytest.mark.parametrize(
+        "provider", ["ANTHROPIC", "Anthropic", " anthropic ", ""]
+    )
+    def test_provider_lookup_is_case_and_whitespace_sensitive(
+        self, provider: str
+    ) -> None:
+        # Mirror of the model-side test: the provider key is also
+        # exact-match (the auth dispatcher accepts only the literal
+        # set ``{"anthropic", "openai"}`` so a case-folded match
+        # would diverge from the auth seam).
+        assert estimate_cost(provider, "claude-sonnet-4-6", 100, 50) is None
+
 
 class TestEstimateCostInputValidation:
     @pytest.mark.parametrize(
@@ -253,6 +285,13 @@ class TestStaleAnnouncement:
             "platform.claude.com" in captured.err
             or "openai.com/api/pricing" in captured.err
         )
+        # Lock the {version} interpolation: production message names
+        # the table version so a future maintainer sees "v1" (or v2,
+        # etc.) and can reason about whether the table shape changed
+        # since their tooling last understood it. Pinning via the
+        # constant — not the literal "v1" — auto-tracks future bumps
+        # without churning this assertion.
+        assert f"v{_PRICING_TABLE_VERSION}" in captured.err
 
     def test_warning_fires_only_once_per_process(
         self,
