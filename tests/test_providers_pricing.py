@@ -24,6 +24,7 @@ from clauditor._providers._pricing import (
     _PRICING_TABLE,
     _PRICING_TABLE_VERSION,
     announce_pricing_table_stale_if_old,
+    announce_unknown_model,
     compute_iteration_cost_usd,
     estimate_cost,
 )
@@ -424,3 +425,132 @@ class TestComputeIterationCostUsd:
         l3 = estimate_cost("anthropic", "claude-sonnet-4-6", 1000, 500)
         assert l3 is not None
         assert result == pytest.approx(l3)
+
+
+class TestUnknownModelAnnouncement:
+    """One-shot stderr warning per (provider, model) pair when the
+    provider is recognized but the model is not in the rate table.
+
+    DEC-006 of ``plans/super/169-pricing-cost-estimator.md`` (US-003).
+    Mirror shape to :class:`TestStaleAnnouncement` but keyed on a
+    ``set[tuple[str, str]]`` of pairs already announced rather than a
+    single boolean. Distinct unknown models each warn once; the same
+    pair on a repeat call is silent. Unknown providers do NOT trigger
+    this warning per DEC-006 (different code path).
+
+    Each test pins ``_today`` close to ``_LAST_VERIFIED`` to suppress
+    the unrelated staleness warning from US-002, AND resets the
+    ``_announced_unknown_models`` set per the announcement-family
+    canonical reset pattern.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_announcement_state(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reset per-pair set + suppress US-002 stale warning noise."""
+        # Fresh empty set per test so prior-test pairs do not bleed.
+        monkeypatch.setattr(
+            "clauditor._providers._pricing._announced_unknown_models",
+            set(),
+        )
+        # Also flip the staleness flag so the US-002 warning never
+        # fires from the top of estimate_cost during these tests; this
+        # keeps capsys.err containing only the unknown-model notice.
+        monkeypatch.setattr(
+            "clauditor._providers._pricing._announced_pricing_table_stale",
+            True,
+        )
+
+    def test_unknown_model_emits_warning_first_call(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Known provider, unknown model → returns None and emits the
+        # warning to stderr. All four durable substrings must appear:
+        # "pricing:", "not in rate table", the literal model, and the
+        # literal provider.
+        result = estimate_cost("anthropic", "claude-fake-1", 100, 50)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "pricing:" in captured.err
+        assert "not in rate table" in captured.err
+        assert "claude-fake-1" in captured.err
+        assert "anthropic" in captured.err
+
+    def test_unknown_model_silent_on_repeated_call(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Same (provider, model) twice — the announcement fires only on
+        # the first call. Count occurrences of the literal model name
+        # in captured stderr; expect exactly one even though
+        # estimate_cost was called twice.
+        estimate_cost("anthropic", "claude-fake-1", 100, 50)
+        estimate_cost("anthropic", "claude-fake-1", 200, 100)
+        captured = capsys.readouterr()
+        # The load-bearing assertion: the announcement fired exactly
+        # once across both calls. Counting "not in rate table" (a phrase
+        # unique to this announcement) avoids false positives from
+        # unrelated stderr and is robust to template changes that move
+        # the {model!r} interpolation around.
+        assert captured.err.count("not in rate table") == 1
+
+    def test_different_unknown_models_each_warn(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Two distinct unknown models — each gets its own first-call
+        # warning. Different from the staleness flag (single bool); the
+        # set-keyed contract means distinct pairs do not mute each other.
+        estimate_cost("anthropic", "claude-fake-1", 100, 50)
+        estimate_cost("anthropic", "claude-fake-2", 100, 50)
+        captured = capsys.readouterr()
+        assert "claude-fake-1" in captured.err
+        assert "claude-fake-2" in captured.err
+        # Two distinct first-call announcements landed.
+        assert captured.err.count("not in rate table") == 2
+
+    def test_known_provider_known_model_no_warning(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Happy path: known (provider, model) pair returns a positive
+        # float and emits NO unknown-model warning. The staleness flag
+        # is pinned to True via the autouse fixture so the US-002
+        # warning also stays silent.
+        result = estimate_cost("anthropic", "claude-sonnet-4-6", 100, 50)
+        assert result is not None and result > 0.0
+        captured = capsys.readouterr()
+        assert "not in rate table" not in captured.err
+
+    def test_unknown_provider_no_unknown_model_warning(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Per DEC-006: unknown provider is a DIFFERENT code path that
+        # silently returns None — the unknown-model warning is NOT
+        # triggered. A typo'd provider must not flood stderr with
+        # every model the caller subsequently tries.
+        result = estimate_cost("vertex", "anything-model", 100, 50)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "not in rate table" not in captured.err
+
+    def test_announce_helper_directly(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # Standalone-helper invocation must behave the same as the
+        # estimate_cost-routed path. First call per pair emits;
+        # second call with the same pair is silent; third call with a
+        # distinct pair emits its own first-call warning.
+        announce_unknown_model("openai", "gpt-fake")
+        first = capsys.readouterr().err
+        assert "gpt-fake" in first
+        assert "not in rate table" in first
+
+        # Same pair → silent.
+        announce_unknown_model("openai", "gpt-fake")
+        second = capsys.readouterr().err
+        assert second == ""
+
+        # Different pair → emits.
+        announce_unknown_model("openai", "gpt-other")
+        third = capsys.readouterr().err
+        assert "gpt-other" in third
+        assert "not in rate table" in third
