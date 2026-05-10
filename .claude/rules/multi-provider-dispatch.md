@@ -235,6 +235,44 @@ exit-code routing the distinct exception classes preserve), and
 `.claude/rules/spec-cli-precedence.md` (the future four-layer
 precedence resolver for `grading_provider` lands in #146).
 
+### Provider-dispatch shape extends to non-auth lookups (#169)
+
+The auth-guard dispatcher above is the load-bearing example of
+this rule, but the same shape generalizes to any per-provider
+lookup that wants graceful fallback on unknown values rather than
+hard-failing the caller. The pricing-table lookup in `#169`
+(`src/clauditor/_providers/_pricing.py::estimate_cost`) is the
+first non-auth instantiation:
+
+- `estimate_cost(provider, model, ...)` accepts a `provider: str`
+  and looks up `_PRICING_TABLE.get(provider)`.
+- **Unknown provider** → returns `None` (graceful fallback per
+  this rule's "graceful fallback on unknown values" pattern);
+  never raises. A future provider that has not yet earned a
+  rate-card entry produces `cost_usd: null` on disk rather than
+  blocking the grading run.
+- **Known provider + unknown model** → returns `None` AND emits
+  a one-shot per-`(provider, model)` stderr warning via
+  `announce_unknown_model(provider, model)` (DEC-006 of #169 —
+  see `.claude/rules/centralized-sdk-call.md` "Implicit-coupling
+  announcements — an emerging family" for the announcement
+  contract). The warning fires only when the provider IS known;
+  unknown providers stay silent so a typo'd provider does not
+  flood stderr with every subsequent model.
+- **Bad input types** (non-`str` provider/model, bool /
+  non-`int` / negative tokens) → raises `ValueError` per
+  `.claude/rules/pre-llm-contract-hard-validate.md`'s input-side
+  contract. Programmer errors fail loudly; lookup misses do not
+  crash a production grading run.
+
+The structural-routing invariant the auth dispatcher preserves
+(distinct exception classes per provider routed to distinct
+`except` branches) re-shapes here as a two-category split:
+**lookup-miss → `None`** vs **contract-violation → `ValueError`**.
+Two distinct categories, structurally distinguishable at the
+caller; no substring-matching on error messages. File anchor:
+`src/clauditor/_providers/_pricing.py::estimate_cost`.
+
 ## When this rule applies
 
 Any future LLM-mediated CLI command that constructs a
