@@ -24,8 +24,12 @@ from clauditor._providers._pricing import (
     _PRICING_TABLE,
     _PRICING_TABLE_VERSION,
     announce_pricing_table_stale_if_old,
+    compute_iteration_cost_usd,
     estimate_cost,
 )
+from clauditor.grader import ExtractionReport
+from clauditor.quality_grader import GradingReport
+from clauditor.schemas import GradeThresholds
 
 _ANTHROPIC_MODELS = ["claude-sonnet-4-6", "claude-opus-4-7", "claude-haiku-4-5"]
 _OPENAI_MODELS = ["gpt-5.4", "gpt-5.4-mini", "o4-mini"]
@@ -312,3 +316,111 @@ class TestStaleAnnouncement:
         captured = capsys.readouterr()
         assert "90 days" in captured.err
         assert "pricing" in captured.err.lower()
+
+
+def _make_grading_report(
+    *,
+    model: str = "claude-sonnet-4-6",
+    input_tokens: int = 1000,
+    output_tokens: int = 500,
+) -> GradingReport:
+    """Minimal :class:`GradingReport` fixture for cost-composition tests."""
+    return GradingReport(
+        skill_name="test",
+        results=[],
+        model=model,
+        thresholds=GradeThresholds(),
+        metrics={},
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+
+
+def _make_extraction_report(
+    *,
+    model: str = "claude-haiku-4-5",
+    input_tokens: int = 200,
+    output_tokens: int = 100,
+) -> ExtractionReport:
+    """Minimal :class:`ExtractionReport` fixture for cost-composition tests."""
+    return ExtractionReport(
+        skill_name="test",
+        model=model,
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+    )
+
+
+class TestComputeIterationCostUsd:
+    def test_grading_report_only_returns_cost(self) -> None:
+        # Per DEC-001: grader-only scope. With extraction_report=None,
+        # the L2 contribution is 0.0 (Layer 2 didn't run) and the
+        # composition equals the L3 cost alone.
+        grading = _make_grading_report(input_tokens=1000, output_tokens=500)
+        result = compute_iteration_cost_usd(grading, None, "anthropic")
+        expected = estimate_cost("anthropic", "claude-sonnet-4-6", 1000, 500)
+        assert result == expected
+        assert result is not None and result > 0.0
+
+    def test_with_extraction_report_sums_costs(self) -> None:
+        # L2 + L3 sum: when both reports are present, the composition
+        # routes each through estimate_cost and returns the sum.
+        grading = _make_grading_report(
+            model="claude-sonnet-4-6", input_tokens=1000, output_tokens=500
+        )
+        extraction = _make_extraction_report(
+            model="claude-haiku-4-5", input_tokens=200, output_tokens=100
+        )
+        result = compute_iteration_cost_usd(grading, extraction, "anthropic")
+        l3 = estimate_cost("anthropic", "claude-sonnet-4-6", 1000, 500)
+        l2 = estimate_cost("anthropic", "claude-haiku-4-5", 200, 100)
+        assert l2 is not None and l3 is not None
+        assert result == pytest.approx(l2 + l3)
+
+    def test_unknown_grading_model_returns_none_no_extraction(self) -> None:
+        # Per DEC-002: any internal estimate_cost None → composition
+        # None. Unknown grading model with no extraction is the
+        # simplest miss path.
+        grading = _make_grading_report(model="claude-3-5-sonnet-old")
+        result = compute_iteration_cost_usd(grading, None, "anthropic")
+        assert result is None
+
+    def test_unknown_grading_model_returns_none_with_extraction(self) -> None:
+        # Per DEC-002 / all-or-nothing: an unknown grading model
+        # short-circuits to None even when the extraction lookup
+        # would succeed.
+        grading = _make_grading_report(model="claude-3-5-sonnet-old")
+        extraction = _make_extraction_report(model="claude-haiku-4-5")
+        result = compute_iteration_cost_usd(grading, extraction, "anthropic")
+        assert result is None
+
+    def test_unknown_extraction_model_returns_none(self) -> None:
+        # Per DEC-002 / all-or-nothing: an unknown extraction model
+        # produces None even when the grading lookup succeeds.
+        grading = _make_grading_report(model="claude-sonnet-4-6")
+        extraction = _make_extraction_report(model="claude-haiku-2-old")
+        result = compute_iteration_cost_usd(grading, extraction, "anthropic")
+        assert result is None
+
+    def test_unknown_provider_returns_none(self) -> None:
+        # An unknown provider misses for both layers (estimate_cost
+        # short-circuits on the first lookup); composition returns
+        # None per DEC-002.
+        grading = _make_grading_report()
+        result = compute_iteration_cost_usd(grading, None, "vertex")
+        assert result is None
+
+    def test_extraction_report_with_zero_tokens(self) -> None:
+        # An ExtractionReport with zero tokens contributes 0.0 to the
+        # sum (a valid lookup, not a miss); total equals L3 cost.
+        # Distinct from extraction_report=None which means "Layer 2
+        # didn't run" — both shapes are legal but reach the same
+        # numeric outcome here.
+        grading = _make_grading_report(input_tokens=1000, output_tokens=500)
+        extraction = _make_extraction_report(
+            model="claude-haiku-4-5", input_tokens=0, output_tokens=0
+        )
+        result = compute_iteration_cost_usd(grading, extraction, "anthropic")
+        l3 = estimate_cost("anthropic", "claude-sonnet-4-6", 1000, 500)
+        assert l3 is not None
+        assert result == pytest.approx(l3)
