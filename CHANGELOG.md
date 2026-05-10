@@ -57,7 +57,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **New factory kwargs (operator-intent, top of precedence stack):**
     - `clauditor_runner(harness=...)` — pin harness for this runner.
     - `clauditor_grader(skill, eval_path, output, *, provider=..., model=...)`
-      — `provider=` is new; `model=` already existed.
+      — both new factory kwargs. (Pre-#155 the fixture only consulted
+      the `--clauditor-model` pytest option; the kwarg layer is new.)
     - `clauditor_blind_compare(skill, output_a, output_b, eval_path, *, provider=..., model=...)`
       — both new.
     - `clauditor_triggers(skill, eval_path, *, provider=..., model=...)`

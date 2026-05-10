@@ -93,11 +93,14 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         type=_harness_choice,
         default=None,
         help=(
-            "Override the harness used by clauditor fixtures "
-            "({claude-code, codex, auto}). Operator-intent precedence: "
-            "factory kwarg > pytest CLI > CLAUDITOR_HARNESS env > "
-            "EvalSpec.harness > default 'auto'. See DEC-008 of "
-            "plans/super/155-pytest-fixtures-parametrize.md."
+            "Override the harness used by clauditor_runner "
+            "({claude-code, codex, auto}). Only consulted by the "
+            "clauditor_runner fixture (no spec layer). "
+            "Operator-intent precedence: factory kwarg > pytest CLI "
+            "> CLAUDITOR_HARNESS env > default 'auto'. See DEC-007 "
+            "of plans/super/155-pytest-fixtures-parametrize.md. "
+            "clauditor_spec honors EvalSpec.harness only — set the "
+            "harness field in eval.json for per-skill author intent."
         ),
     )
     group.addoption(
@@ -109,7 +112,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             "({anthropic, openai, auto}). Operator-intent precedence: "
             "factory kwarg > pytest CLI > CLAUDITOR_GRADING_PROVIDER "
             "env > EvalSpec.grading_provider > default 'auto'. See "
-            "DEC-008 of plans/super/155-pytest-fixtures-parametrize.md."
+            "DEC-007 of plans/super/155-pytest-fixtures-parametrize.md."
         ),
     )
 
@@ -151,9 +154,11 @@ def clauditor_runner(request: pytest.FixtureRequest):
     to get the runner. This is a hard break — see CHANGELOG (US-007)
     for migration notes.
 
-    Harness resolution composes three of the four CLI precedence layers
-    (the fourth, ``EvalSpec.harness``, is meaningless at the runner
-    seam since no spec is loaded here):
+    Harness resolution stacks four operator-intent + default layers
+    (``EvalSpec.harness`` is intentionally omitted — no spec is loaded
+    at this seam, so the spec-author layer is structurally absent
+    rather than silently skipped; see Shape A of
+    ``.claude/rules/spec-cli-precedence.md``):
 
     1. Factory ``harness=`` kwarg (operator intent at the call site).
     2. ``--clauditor-harness`` pytest option (operator intent at
@@ -181,6 +186,7 @@ def clauditor_runner(request: pytest.FixtureRequest):
     """
     from clauditor._harnesses import construct_harness
     from clauditor._providers import resolve_harness
+    from clauditor._providers._auth import announce_auto_codex_harness
 
     def _factory(harness: str | None = None) -> SkillRunner:
         # Precedence: factory kwarg > pytest option > env > default.
@@ -192,9 +198,16 @@ def clauditor_runner(request: pytest.FixtureRequest):
             env_value = None
 
         # No EvalSpec at the runner seam — pass spec_value=None.
-        name, _auto_resolved_to = resolve_harness(
+        name, auto_resolved_to = resolve_harness(
             cli_override, env_value, None
         )
+
+        # Mirror the CLI seam's one-time stderr notice when auto
+        # resolution picks codex (per `centralized-sdk-call.md`
+        # implicit-coupling announcement family). Fires once per
+        # process via the print-and-flip flag inside the helper.
+        if auto_resolved_to == "codex":
+            announce_auto_codex_harness()
 
         # DEC-005: eager codex auth guard. Surfaces as
         # CodexAuthMissingError (sibling of Exception per DEC-008) so
@@ -360,6 +373,18 @@ def clauditor_spec(request: pytest.FixtureRequest, tmp_path: Path):
                     if harness_name_override is not None
                     else spec_harness_override
                 )
+                # Mirror the fixture-construction-time codex guard for
+                # caller-selected runs (CodeRabbit finding on PR #172).
+                # Without this, ``spec.run(harness_name_override="codex")``
+                # bypasses the eager guard and falls through to a deeper
+                # subprocess/SDK failure instead of the promised
+                # ``CodexAuthMissingError``. Idempotent: when the spec
+                # author also declared ``harness="codex"``, the
+                # construction-time guard already fired and the env
+                # state has not changed since — re-running the env-var
+                # check is cheap and never raises spuriously.
+                if effective_harness == "codex":
+                    check_codex_auth("spec")
                 # Caller-provided ``env_override`` wins. Otherwise, when
                 # ``--clauditor-no-api-key`` is set, compute the scrub
                 # using the harness that will actually run the skill so

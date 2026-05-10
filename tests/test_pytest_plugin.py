@@ -2100,6 +2100,29 @@ class TestFixtureModelOverrideThreading:
         # Should not raise — key is set so check_any_auth_available passes.
         _dispatch_fixture_auth_guard(None, "grader")
 
+    def test_dispatch_fixture_auth_guard_none_eval_spec_provider_override_openai(
+        self, monkeypatch
+    ):
+        """``eval_spec=None`` + ``provider_override="openai"`` routes
+        to the OpenAI auth guard.
+
+        DEC-007 of #155: operator-intent ``provider_override`` is the
+        highest-precedence layer and must be honored even when there is
+        no eval spec to read. Covers the openai short-circuit branch
+        in the eval_spec-is-None arm.
+        """
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+
+        # Should not raise — OPENAI_API_KEY is set; check_openai_auth
+        # passes; the early-return after ``return`` covers the
+        # previously-missing line.
+        _dispatch_fixture_auth_guard(
+            None, "grader", provider_override="openai"
+        )
+
     def test_dispatch_fixture_auth_guard_normalizes_whitespace_env(
         self, monkeypatch
     ):
@@ -2318,7 +2341,7 @@ class TestClauditorRunnerFactory:
     Per DEC-002 / DEC-003 / DEC-004 / DEC-005 / DEC-007 / DEC-008 of
     ``plans/super/155-pytest-fixtures-parametrize.md``, the
     pre-#155 value-fixture form was replaced by a factory accepting an
-    optional ``harness=`` kwarg with three-layer precedence (factory
+    optional ``harness=`` kwarg with four-layer precedence (factory
     kwarg > pytest option > env var > default ``"auto"`` PATH lookup).
     """
 
@@ -2446,6 +2469,68 @@ class TestClauditorRunnerFactory:
         factory = clauditor_runner.__wrapped__(request)
         runner = factory()
         assert runner.harness.name == "claude-code"
+
+    def test_whitespace_only_env_var_normalizes_to_none(self, monkeypatch):
+        """Whitespace-only ``CLAUDITOR_HARNESS`` env var is treated as unset.
+
+        Defensive normalization — a stray ``export CLAUDITOR_HARNESS=" "``
+        in a shell rc must not override every layer below it. The
+        fixture strips the value before passing to ``resolve_harness``,
+        falling through to the next precedence layer.
+        """
+        import shutil as _shutil_mod
+
+        from clauditor import _providers as _providers_mod
+
+        monkeypatch.setenv("CLAUDITOR_HARNESS", "   ")
+        # Pin PATH so the auto branch resolves to ``"claude-code"``
+        # deterministically — proves the env layer was stripped (else
+        # ``resolve_harness`` would raise on a whitespace-only value).
+        monkeypatch.setattr(
+            _providers_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/claude" if name == "claude" else None,
+        )
+        assert _shutil_mod is not None
+        request = self._request(harness_option=None)
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory()
+        assert runner.harness.name == "claude-code"
+
+    def test_auto_resolution_to_codex_fires_announcement(self, monkeypatch):
+        """When auto picks codex, fire the one-time stderr announcement.
+
+        Mirrors the CLI seam's ``announce_auto_codex_harness`` notice
+        (per ``centralized-sdk-call.md`` implicit-coupling
+        announcement family). Resetting the module-level flag in the
+        helper's home module is the canonical reset shape.
+        """
+        from clauditor import _providers as _providers_mod
+        from clauditor._providers import _auth as _auth_mod
+
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+        # Provide codex auth so the eager guard does not raise.
+        monkeypatch.setenv("CODEX_API_KEY", "x")
+        # Pin PATH to skip claude and find codex.
+        monkeypatch.setattr(
+            _providers_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        # Reset the print-and-flip flag so the announcement fires.
+        monkeypatch.setattr(
+            _auth_mod, "_announced_auto_codex_harness", False
+        )
+        # Patch the helper to verify the call rather than capturing
+        # stderr — the helper itself is unit-tested elsewhere.
+        with patch.object(
+            _auth_mod, "announce_auto_codex_harness"
+        ) as mock_announce:
+            request = self._request(harness_option=None)
+            factory = clauditor_runner.__wrapped__(request)
+            runner = factory()
+        assert runner.harness.name == "codex"
+        mock_announce.assert_called_once()
 
 
 class TestClauditorGraderFactoryKwargs:

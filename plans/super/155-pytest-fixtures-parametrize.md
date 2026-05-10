@@ -34,10 +34,12 @@ Adds:
    - `--clauditor-harness {claude-code,codex,auto}`
    - `--clauditor-grading-provider {anthropic,openai,auto}`
    - (`--clauditor-grading-model` already exists as `--clauditor-model`.)
-4. Per-harness/provider auth-guard env vars:
-   - `CLAUDITOR_FIXTURE_ALLOW_OPENAI=1` (mirrors existing
-     `CLAUDITOR_FIXTURE_ALLOW_CLI=1`) — semantics TBD in scoping
-     (see Q1 below).
+4. Per-harness/provider auth-guard env vars: ~~`CLAUDITOR_FIXTURE_ALLOW_OPENAI=1`
+   was considered (mirroring existing `CLAUDITOR_FIXTURE_ALLOW_CLI=1`)
+   but **rejected by DEC-001** — OpenAI has no CLI-fallback /
+   subscription analog (per #145 DEC-002), so there is no
+   relaxed-mode to opt into. The asymmetry with the Anthropic side is
+   deliberate.~~
 5. Fixture-level **hard error** when required auth missing for
    selected provider/harness, per
    `.claude/rules/precall-env-validation.md` — never `pytest.skip`.
@@ -193,8 +195,12 @@ seam structurally; that mirror is exactly what
 
 ### Phase status
 
-`discovery` — awaiting answers to scoping questions before moving
-to architecture review.
+`devolved` — discovery, architecture review, decisions, and
+implementation are complete. All 12 decisions and 9 user stories
+shipped. The summary above is preserved as the original Discovery
+ticket-summary; refer to the Decisions section below and the
+implemented code (`src/clauditor/pytest_plugin.py`) for the final
+state. DEC-001 explicitly rejected `CLAUDITOR_FIXTURE_ALLOW_OPENAI=1`.
 
 ---
 

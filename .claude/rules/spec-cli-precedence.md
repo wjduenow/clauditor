@@ -706,7 +706,7 @@ the seam's available context:
 
 **Shape A — `clauditor_runner` (harness axis, no spec layer).**
 The runner-factory fixture does not load an `EvalSpec`, so only
-the operator-intent and default layers apply. Three layers:
+the operator-intent and default layers apply. Four layers:
 
 1. Factory `harness=` kwarg — operator intent at the call site.
 2. `--clauditor-harness` pytest option — operator intent at
@@ -839,7 +839,7 @@ canonical implementation defers the call inside
 
 Canonical implementation paths:
 
-- Factory fixture (Shape A — operator-only, three layers):
+- Factory fixture (Shape A — operator-only, four layers):
   `src/clauditor/pytest_plugin.py::clauditor_runner` — closes over
   `request.config.getoption("--clauditor-harness")`, env via
   `os.environ.get("CLAUDITOR_HARNESS")`, and the factory `harness=`

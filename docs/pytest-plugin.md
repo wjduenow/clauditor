@@ -44,14 +44,14 @@ Options:
 pytest --clauditor-project-dir /path/to/project
 pytest --clauditor-timeout 300
 pytest --clauditor-claude-bin /usr/local/bin/claude
-pytest --clauditor-no-api-key                   # Strip ANTHROPIC_{API_KEY,AUTH_TOKEN}
+pytest --clauditor-no-api-key                   # Strip ANTHROPIC_{API_KEY,AUTH_TOKEN} + OPENAI_API_KEY (codex preserves OPENAI_API_KEY)
 pytest --clauditor-grade                        # Enable Layer 3 tests (costs money)
 pytest --clauditor-model claude-sonnet-4-6      # Override grading model
 pytest --clauditor-harness codex                # Override harness for this session ({claude-code,codex,auto})
 pytest --clauditor-grading-provider openai      # Override grading provider ({anthropic,openai,auto})
 ```
 
-`--clauditor-no-api-key` is the plugin-option counterpart to `--no-api-key` on the CLI: strips both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the `claude -p` subprocess environment so the child falls back to whatever auth is cached in `~/.claude/` (typically a Pro/Max subscription). Scoped to the `clauditor_spec` fixture's `env_override` wiring; the bare `clauditor_runner` fixture is unaffected (its `SkillRunner` is constructed without the env scrub). For per-test overrides, `spec.run(env_override=..., timeout_override=...)` accepts both kwargs directly — the fixture wrapper forwards caller-provided values over the fixture-level default.
+`--clauditor-no-api-key` is the plugin-option counterpart to `--no-api-key` on the CLI: strips `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, **and `OPENAI_API_KEY`** (the default `env_without_api_key()` strip set) from the skill subprocess environment so the child falls back to whatever auth is cached in `~/.claude/` (typically a Pro/Max subscription). The codex harness branch preserves `OPENAI_API_KEY` so the codex subprocess can still authenticate — `clauditor_spec` computes the scrub per-call with the resolved harness name so codex callers retain their key. Scoped to the `clauditor_spec` fixture's `env_override` wiring; the bare `clauditor_runner` fixture is unaffected (its `SkillRunner` is constructed without the env scrub). For per-test overrides, `spec.run(env_override=..., timeout_override=...)` accepts both kwargs directly — the fixture wrapper forwards caller-provided values over the fixture-level default.
 
 `--clauditor-harness` (#155) overrides the harness used by `clauditor_runner` for the entire pytest session. Operator-intent precedence on `clauditor_runner`: factory `harness=` kwarg > `--clauditor-harness` > `CLAUDITOR_HARNESS` env > default `"auto"`. Auto-resolution mirrors the CLI: `shutil.which("claude")` first, then `shutil.which("codex")`, with a one-time stderr announcement when auto picks codex. **Scope note:** the option does NOT override `clauditor_spec`'s harness selection — that fixture honors only `EvalSpec.harness` (author intent). Set `harness:` in `eval.json` for per-skill author preference; use `clauditor_runner(harness=...)` or this CLI option for operator-intent selection of the bare runner.
 
