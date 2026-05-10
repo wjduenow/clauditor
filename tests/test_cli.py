@@ -10601,3 +10601,95 @@ class TestCmdValidateWritesContextJson:
         assert payload["model_runner"] == "gpt-5-codex"
         assert payload["system_prompt_source"] == "agents_md"
         assert payload["sandbox_mode"] == "workspace-write"
+
+
+class TestCmdValidateContextCostUsd:
+    """#169 US-006: ``cmd_validate`` writes ``cost_usd: null`` in
+    ``context.json`` regardless of ``grading_provider`` /
+    ``grading_model`` declared in the spec.
+
+    Validate runs L1 assertions only — it never invokes the grader,
+    so there is no per-pair cost to record. Per DEC-001 (#169 grader-
+    only scope), this is a regression-only story: production code in
+    ``src/clauditor/cli/validate.py`` is unchanged. These tests pin
+    that ``cost_usd`` stays ``None`` even when grader fields are set
+    in the spec.
+    """
+
+    def _live_spec(self, *, eval_spec=None, harness_metadata=None):
+        if eval_spec is None:
+            eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        if harness_metadata is None:
+            harness_metadata = {
+                "model": "claude-sonnet-4-6",
+                "system_prompt_source": "skill_md",
+            }
+        spec.run.return_value = make_skill_result(
+            output="hello world output",
+            duration_seconds=1.5,
+            input_tokens=100,
+            output_tokens=50,
+            stream_events=[
+                {"type": "system", "session_id": "abc"},
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "hi"}]},
+                },
+            ],
+            harness_metadata=harness_metadata,
+        )
+        return spec
+
+    def test_validate_writes_null_cost_usd(self, tmp_path, monkeypatch):
+        """Default validate flow: ``cost_usd`` is ``None`` because the
+        grader never runs."""
+        monkeypatch.chdir(tmp_path)
+        # Build an eval spec with NO grading_provider set; grading_model
+        # has the conftest default but is irrelevant to validate.
+        spec = self._live_spec(eval_spec=_make_eval_spec())
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        # Validate runs L1 only — no grader, so cost is None.
+        assert payload["cost_usd"] is None
+        # Sibling grader fields also None for the same reason.
+        assert payload["provider"] is None
+        assert payload["model_grader"] is None
+
+    def test_validate_writes_null_cost_usd_even_for_known_provider_in_spec(
+        self, tmp_path, monkeypatch
+    ):
+        """Even when the spec declares ``grading_provider`` and
+        ``grading_model`` (a known-pair that has pricing in #169),
+        validate still writes ``cost_usd: null`` because no grader call
+        happens during validate."""
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec(
+            grading_provider="anthropic",
+            grading_model="claude-sonnet-4-6",
+        )
+        spec = self._live_spec(eval_spec=eval_spec)
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        # Even with grader fields declared in the spec, validate does
+        # not call the grader — cost stays None.
+        assert payload["cost_usd"] is None
+        # Provider/model_grader stay None too (no Layer 3 in validate).
+        assert payload["provider"] is None
+        assert payload["model_grader"] is None
