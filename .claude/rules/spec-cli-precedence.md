@@ -688,6 +688,222 @@ deferred per-call imports inside `construct_harness` that keep
 test patches on `clauditor._harnesses._claude_code.ClaudeCodeHarness`
 / `clauditor._harnesses._codex.CodexHarness` working).
 
+### Pytest fixture mirror — operator-intent precedence in fixture-land (#155)
+
+The CLI seams (`grade`, `extract`, `triggers`, `compare --blind`,
+`propose-eval`, `suggest`, `validate`, `capture`, `run`) and the
+pytest fixture seams now mirror each other on every multi-axis
+precedence resolver above (`harness`, `grading_provider`,
+`grading_model`). The fixture seam is a **factory-fixture mirror**:
+each fixture exposes a `_factory(...)` callable whose kwargs are
+the operator-intent layer at the call site, and the factory closes
+over the pytest CLI options + env vars + spec fields to compose the
+same operator > author > default direction the CLI honors.
+
+The mirror is intentionally asymmetric across the four fixtures —
+**three distinct precedence shapes** ship in #155, each tuned to
+the seam's available context:
+
+**Shape A — `clauditor_runner` (harness axis, no spec layer).**
+The runner-factory fixture does not load an `EvalSpec`, so only
+the operator-intent and default layers apply. Four layers:
+
+1. Factory `harness=` kwarg — operator intent at the call site.
+2. `--clauditor-harness` pytest option — operator intent at
+   session start.
+3. `CLAUDITOR_HARNESS` env var — operator intent in the shell.
+4. Default `"auto"` — `resolve_harness(..., spec_value=None)`
+   delegates to PATH lookup (`claude` first, then `codex`).
+
+The author layer (`EvalSpec.harness`) is structurally absent, NOT
+silently skipped. A test that wants spec-author intent honored must
+use `clauditor_spec` (Shape B) instead. This trim is intentional
+per DEC-006 (cross-axis isolation): `clauditor_runner` is the
+operator-only seam; mixing in spec-author intent at the runner
+factory would re-introduce the "harness ≠ provider" axis confusion
+DEC-010 of #151 explicitly rejected. When the resolved harness is
+`"codex"`, an eager `check_codex_auth("runner")` fires per DEC-005
+so a missing-key surfaces as a `CodexAuthMissingError` (sibling of
+`Exception`) at fixture setup rather than a deep subprocess error
+later.
+
+**Shape B — `clauditor_spec` (harness axis, spec layer only).**
+The spec-loading fixture honors `EvalSpec.harness` (when set to a
+concrete value, not `"auto"`) and threads it as
+`harness_name_override` to `SkillSpec.run`. Operator-intent layers
+do NOT apply at this fixture — there is no `harness=` factory
+kwarg, no pytest CLI option consulted, no env var consulted. The
+operator-intent layers live on `clauditor_runner`'s factory; the
+spec-author layer lives here. Two seams, one axis, no overlap.
+When the spec author declared `harness="codex"`, the fixture also
+fires an eager `check_codex_auth("spec")` per DEC-005 — mirroring
+the runner-side guard so any test using either fixture sees the
+same crisp `CodexAuthMissingError`.
+
+**Shape C — `clauditor_grader` / `clauditor_blind_compare` /
+`clauditor_triggers` (provider + model axes, full mirror).** The
+three grading fixtures expose a five-layer precedence on each axis,
+mirroring the CLI seam's `_resolve_grading_provider` /
+`resolve_grading_model` chain:
+
+1. Factory `provider=` / `model=` kwarg — operator intent at the
+   call site (highest precedence per DEC-007).
+2. `--clauditor-grading-provider` / `--clauditor-model` pytest
+   option — operator intent at session start.
+3. `CLAUDITOR_GRADING_PROVIDER` env var (provider only — no
+   `CLAUDITOR_MODEL` env var ships in #155 per DEC-010).
+4. `EvalSpec.grading_provider` / `EvalSpec.grading_model` — author
+   intent.
+5. Default — `"auto"` (provider, with auto-inference from model)
+   or per-provider model default (`"claude-sonnet-4-6"` /
+   `_providers._openai.DEFAULT_MODEL_L3`).
+
+Both axes flow through the same pure resolver chain
+(`resolve_grading_provider` + `resolve_grading_model`) the CLI
+uses, so a fixture caller and an operator running `clauditor
+grade` get the same provider+model resolution from the same
+`EvalSpec`. The auth dispatch fires per-provider via
+`_dispatch_fixture_auth_guard`, which mirrors the CLI's
+`check_provider_auth` ladder with distinct exception classes
+(`AnthropicAuthMissingError` / `OpenAIAuthMissingError`) so
+fixture callers route on a structural `except` ladder per
+`.claude/rules/multi-provider-dispatch.md`. The Anthropic branch
+retains the `CLAUDITOR_FIXTURE_ALLOW_CLI` opt-in toggle (relaxed
+`check_any_auth_available` vs strict `check_api_key_only`) per #86
+DEC-009; the OpenAI branch is always strict (no CLI-fallback /
+subscription analogue per #145 DEC-002).
+
+**Shape A vs Shape B — why the asymmetry is load-bearing.**
+`clauditor_runner` is operator-only because it has no spec to
+read; `clauditor_spec` is author-only because it is the spec-load
+seam itself, and mixing operator-intent layers at the spec-load
+boundary would let a `--clauditor-harness` flag silently override
+a skill author's explicit `EvalSpec.harness` even for tests that
+deliberately probe author intent. The five grading fixtures (Shape
+C) compose both layers because they wrap a spec-load AND a grader
+call, so they have BOTH author intent (in the loaded spec) AND
+operator intent (factory kwargs + pytest options + env). Per DEC-007
+of #155, the operator-intent factory kwarg always wins at the call
+site, mirroring the CLI's CLI-flag-wins-over-spec direction.
+
+**Eager `check_codex_auth` at TWO seams, not one (DEC-005).**
+Both `clauditor_runner` (when its resolved harness is `"codex"`)
+AND `clauditor_spec` (when `eval_spec.harness == "codex"`) fire
+the codex auth guard eagerly, before returning to the test body.
+The double-guard mirrors the CLI's `cli/grade.py::cmd_grade` shape
+(`_resolve_harness` resolves the harness; `check_codex_auth`
+dispatches the guard) and ensures any test using either fixture
+sees the same `CodexAuthMissingError` shape at setup time. The
+two seams are independent: `clauditor_runner` does not load a
+spec, so its guard fires on the resolved-from-PATH-or-env-or-CLI
+harness; `clauditor_spec` does load a spec, so its guard fires on
+the spec-author preference. A test using both fixtures sees both
+guards fire (when applicable); a test using only one sees only
+that seam's guard.
+
+**Hard break, not back-compat shim.** Per DEC-002 / DEC-009 of
+#155, the pre-#155 value-fixture form
+(`def test(clauditor_runner): clauditor_runner.run("foo")`) is a
+hard break — `clauditor_runner` is now a factory and callers must
+invoke `clauditor_runner()` to get the runner. There is no
+back-compat shim because the value-fixture shape conflicts
+structurally with the per-call `harness=` kwarg the factory needs;
+keeping a shim would defeat the whole point of the conversion.
+Migration is mechanical (search for `clauditor_runner.run(` →
+`clauditor_runner().run(`) and the CHANGELOG documents the
+recipe. Companion discipline:
+`.claude/rules/back-compat-shim-discipline.md` codifies the
+class-identity invariants (Pattern 2) shims must preserve when
+they ARE shipped — this case ships none, but the discipline
+informed the decision to break loudly rather than degrade
+silently.
+
+**B1 / non-mutating per-call env scrub.** A subtle pitfall
+discovered in #155 QG pass 4: `clauditor_spec`'s factory tempts
+the implementer to pre-compute `env_without_api_key()` outside
+the per-call `_run_with_overrides` closure (since the
+`--clauditor-no-api-key` option is session-scoped). Doing so
+defaults the scrub to claude-code semantics (strips
+`OPENAI_API_KEY`), which silently breaks codex callers when the
+resolved harness is codex — the eager `check_codex_auth` accepts
+the key from `os.environ`, but the subprocess inherits a stripped
+env and fails with no auth. The fix is to defer the
+`env_without_api_key(harness_name=...)` call until inside the
+per-call wrapper, after the effective harness is resolved. This
+is the inverse failure mode of
+`.claude/rules/test-infra-shutil-which-coupling.md`, where
+pre-computed `shutil.which` patches couple unrelated resolvers; here
+the pre-computed scrub couples unrelated harness backends. The
+canonical implementation defers the call inside
+`_run_with_overrides` per DEC-006 / US-007.
+
+Canonical implementation paths:
+
+- Factory fixture (Shape A — operator-only, four layers):
+  `src/clauditor/pytest_plugin.py::clauditor_runner` — closes over
+  `request.config.getoption("--clauditor-harness")`, env via
+  `os.environ.get("CLAUDITOR_HARNESS")`, and the factory `harness=`
+  kwarg. Calls `clauditor._providers.resolve_harness(cli, env, None)`
+  (note `spec_value=None` — no spec at this seam) then
+  `check_codex_auth("runner")` when name == `"codex"`. Materializes
+  a fresh `SkillRunner` via `construct_harness(name)` for non-default
+  harnesses; preserves the `--clauditor-claude-bin` plumbing for the
+  default `"claude-code"` path.
+- Spec fixture (Shape B — author-only, one layer):
+  `src/clauditor/pytest_plugin.py::clauditor_spec` — reads
+  `spec.eval_spec.harness` (when set to a concrete value) and threads
+  it as `harness_name_override=` to `SkillSpec.run`. Eager
+  `check_codex_auth("spec")` fires when the spec author declared
+  `harness="codex"`. Same-harness skip layer (defense-in-depth)
+  avoids reconstructing a runner with the same harness class but
+  losing the fixture's `--clauditor-claude-bin` configuration.
+- Grading fixtures (Shape C — full five-layer mirror):
+  `src/clauditor/pytest_plugin.py::clauditor_grader`,
+  `clauditor_blind_compare`, `clauditor_triggers`. Each closes over
+  `--clauditor-grading-provider` / `--clauditor-model` pytest
+  options, accepts `provider=` / `model=` factory kwargs (operator
+  intent, kwarg > pytest option), loads the spec, dispatches
+  `_dispatch_fixture_auth_guard` and `_resolve_fixture_provider`,
+  then invokes the grader orchestrator with the resolved values.
+- Pure helpers (no I/O, mirror the CLI seam):
+  `src/clauditor/pytest_plugin.py::_resolve_fixture_provider` —
+  pure resolver mirroring the CLI's
+  `_resolve_grading_provider`. Threads `provider_override` (factory
+  kwarg or pytest option, kwarg wins at call site) as
+  `cli_override` to `clauditor._providers.resolve_grading_provider`,
+  honoring the same env > spec > auto chain. Does NOT swallow
+  `ValueError` (CodeRabbit finding on PR #164) — fail-fast on
+  misconfigured spec / CLI override at test setup.
+- Auth dispatcher (mirror of `check_provider_auth`):
+  `src/clauditor/pytest_plugin.py::_dispatch_fixture_auth_guard` —
+  routes by resolved provider (anthropic strict/relaxed via
+  `CLAUDITOR_FIXTURE_ALLOW_CLI`; openai always strict). Distinct
+  exception classes per `.claude/rules/multi-provider-dispatch.md`.
+
+Test-infra coupling: the autouse `shutil.which` pin in
+`tests/conftest.py:754` (originally from #86 to force `transport=
+"auto"` to API) needs a parallel `monkeypatch.setenv("CLAUDITOR_HARNESS",
+"claude-code")` line so the new harness resolver short-circuits at
+the env layer rather than landing on the `which → None` path and
+hard-failing every test in the suite. Pattern documented in
+`.claude/rules/test-infra-shutil-which-coupling.md` (the autouse
+clobbering hazard); #155 DEC-011 inherits the recipe.
+
+Traces to DEC-001 through DEC-012 of
+`plans/super/155-pytest-fixtures-parametrize.md`. Companion rules:
+`.claude/rules/multi-provider-dispatch.md` (the structural-routing
+invariant the distinct fixture-side exception classes preserve),
+`.claude/rules/precall-env-validation.md` (the eager auth-guard
+pattern at the fixture seam, mirroring the CLI's
+`check_provider_auth` shape and `CodexAuthMissingError`-as-sibling-
+of-`Exception` discipline), `.claude/rules/back-compat-shim-discipline.md`
+(the value→factory hard break — Pattern 2 ≠ here, but the
+discipline's "don't ship a shim that silently degrades" posture
+informs the decision),
+`.claude/rules/test-infra-shutil-which-coupling.md` (the autouse-
+PATH-pin coupling the new harness resolver inherits at fixture
+collection time).
+
 ### Implicit coupling at the operator-intent layers
 
 An adjacent pattern to the precedence rule: when a CLI flag (or its

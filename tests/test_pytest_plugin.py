@@ -60,19 +60,21 @@ class TestPytestPlugin:
         result.assert_outcomes(passed=1)
 
     def test_runner_fixture_available(self, pytester):
-        """The clauditor_runner fixture is available and non-None."""
+        """The clauditor_runner factory is available and callable."""
         pytester.makepyfile("""
             def test_runner(clauditor_runner):
-                assert clauditor_runner is not None
+                runner = clauditor_runner()
+                assert runner is not None
         """)
         result = pytester.runpytest_inprocess()
         result.assert_outcomes(passed=1)
 
     def test_cli_options_passed(self, pytester):
-        """CLI options are forwarded to fixture-created objects."""
+        """CLI options are forwarded to factory-created objects."""
         pytester.makepyfile("""
             def test_timeout(clauditor_runner):
-                assert clauditor_runner.timeout == 42
+                runner = clauditor_runner()
+                assert runner.timeout == 42
         """)
         result = pytester.runpytest_inprocess("--clauditor-timeout=42")
         result.assert_outcomes(passed=1)
@@ -85,6 +87,108 @@ class TestPytestPlugin:
         """)
         result = pytester.runpytest_inprocess()
         result.assert_outcomes(passed=1)
+
+    def test_clauditor_harness_option_accepts_codex(self, pytester):
+        """--clauditor-harness=codex parses cleanly."""
+        pytester.makepyfile("""
+            def test_harness_option(request):
+                assert request.config.getoption("--clauditor-harness") == "codex"
+        """)
+        result = pytester.runpytest_inprocess("--clauditor-harness=codex")
+        result.assert_outcomes(passed=1)
+
+    def test_clauditor_harness_option_accepts_claude_code(self, pytester):
+        """--clauditor-harness=claude-code parses cleanly."""
+        pytester.makepyfile("""
+            def test_harness_option(request):
+                assert (
+                    request.config.getoption("--clauditor-harness") == "claude-code"
+                )
+        """)
+        result = pytester.runpytest_inprocess("--clauditor-harness=claude-code")
+        result.assert_outcomes(passed=1)
+
+    def test_clauditor_harness_option_accepts_auto(self, pytester):
+        """--clauditor-harness=auto parses cleanly."""
+        pytester.makepyfile("""
+            def test_harness_option(request):
+                assert request.config.getoption("--clauditor-harness") == "auto"
+        """)
+        result = pytester.runpytest_inprocess("--clauditor-harness=auto")
+        result.assert_outcomes(passed=1)
+
+    def test_clauditor_harness_option_rejects_invalid(self, pytester):
+        """--clauditor-harness=invalid is rejected by argparse."""
+        pytester.makepyfile("""
+            def test_noop():
+                pass
+        """)
+        result = pytester.runpytest_inprocess("--clauditor-harness=invalid")
+        # argparse error → pytest exits with usage error code (4)
+        assert result.ret != 0
+
+    def test_clauditor_grading_provider_accepts_openai(self, pytester):
+        """--clauditor-grading-provider=openai parses cleanly."""
+        pytester.makepyfile("""
+            def test_provider_option(request):
+                assert (
+                    request.config.getoption("--clauditor-grading-provider")
+                    == "openai"
+                )
+        """)
+        result = pytester.runpytest_inprocess(
+            "--clauditor-grading-provider=openai"
+        )
+        result.assert_outcomes(passed=1)
+
+    def test_clauditor_grading_provider_accepts_anthropic(self, pytester):
+        """--clauditor-grading-provider=anthropic parses cleanly."""
+        pytester.makepyfile("""
+            def test_provider_option(request):
+                assert (
+                    request.config.getoption("--clauditor-grading-provider")
+                    == "anthropic"
+                )
+        """)
+        result = pytester.runpytest_inprocess(
+            "--clauditor-grading-provider=anthropic"
+        )
+        result.assert_outcomes(passed=1)
+
+    def test_clauditor_grading_provider_accepts_auto(self, pytester):
+        """--clauditor-grading-provider=auto parses cleanly."""
+        pytester.makepyfile("""
+            def test_provider_option(request):
+                assert (
+                    request.config.getoption("--clauditor-grading-provider")
+                    == "auto"
+                )
+        """)
+        result = pytester.runpytest_inprocess(
+            "--clauditor-grading-provider=auto"
+        )
+        result.assert_outcomes(passed=1)
+
+    def test_clauditor_grading_provider_rejects_invalid(self, pytester):
+        """--clauditor-grading-provider=invalid is rejected by argparse."""
+        pytester.makepyfile("""
+            def test_noop():
+                pass
+        """)
+        result = pytester.runpytest_inprocess(
+            "--clauditor-grading-provider=invalid"
+        )
+        assert result.ret != 0
+
+    def test_clauditor_harness_appears_in_help(self, pytester):
+        """--clauditor-harness shows up in pytest --help output."""
+        result = pytester.runpytest_inprocess("--help")
+        result.stdout.fnmatch_lines(["*--clauditor-harness*"])
+
+    def test_clauditor_grading_provider_appears_in_help(self, pytester):
+        """--clauditor-grading-provider shows up in pytest --help output."""
+        result = pytester.runpytest_inprocess("--help")
+        result.stdout.fnmatch_lines(["*--clauditor-grading-provider*"])
 
 
 class TestPluginFunctionsDirect:
@@ -99,7 +203,7 @@ class TestPluginFunctionsDirect:
         parser.getgroup.assert_called_once_with(
             "clauditor", "Claude Code skill testing"
         )
-        assert group.addoption.call_count == 6
+        assert group.addoption.call_count == 8
         # Verify option names
         option_names = [call.args[0] for call in group.addoption.call_args_list]
         assert "--clauditor-project-dir" in option_names
@@ -108,6 +212,8 @@ class TestPluginFunctionsDirect:
         assert "--clauditor-grade" in option_names
         assert "--clauditor-model" in option_names
         assert "--clauditor-no-api-key" in option_names
+        assert "--clauditor-harness" in option_names
+        assert "--clauditor-grading-provider" in option_names
 
     def test_pytest_configure_adds_marker(self):
         """pytest_configure registers the clauditor_grade, network, and slow markers."""
@@ -159,16 +265,18 @@ class TestPluginFunctionsDirect:
         item.add_marker.assert_not_called()
 
     def test_runner_fixture_returns_skill_runner(self):
-        """clauditor_runner fixture returns a configured SkillRunner."""
+        """clauditor_runner factory returns a configured SkillRunner."""
         request = MagicMock()
         request.config.getoption.side_effect = (
             lambda opt: {
                 "--clauditor-project-dir": None,
                 "--clauditor-timeout": 60,
                 "--clauditor-claude-bin": "claude",
+                "--clauditor-harness": None,
             }[opt]
         )
-        runner = clauditor_runner.__wrapped__(request)
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory()
         assert runner.timeout == 60
         # ``claude_bin`` moved from ``SkillRunner`` to the harness in
         # US-004 of issue #148; the default ``ClaudeCodeHarness``
@@ -435,6 +543,7 @@ def _blind_compare_factory(tmp_path: Path, *, cli_model: str | None = None):
             "--clauditor-claude-bin": "claude",
             "--clauditor-model": cli_model,
             "--clauditor-no-api-key": False,
+            "--clauditor-grading-provider": None,
         }[opt]
     )
     spec_factory = clauditor_spec.__wrapped__(request, tmp_path)
@@ -1045,9 +1154,11 @@ class TestClauditorNoApiKeyOption:
                 "--clauditor-timeout": 99,
                 "--clauditor-claude-bin": "claude",
                 "--clauditor-no-api-key": False,
+                "--clauditor-harness": None,
             }[opt]
         )
-        runner = clauditor_runner.__wrapped__(request)
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory()
         assert runner.timeout == 99
         # And clauditor_spec must not wrap spec.run when the option is
         # off AND input_files is empty (pre-US-007 behavior preserved).
@@ -1989,6 +2100,29 @@ class TestFixtureModelOverrideThreading:
         # Should not raise — key is set so check_any_auth_available passes.
         _dispatch_fixture_auth_guard(None, "grader")
 
+    def test_dispatch_fixture_auth_guard_none_eval_spec_provider_override_openai(
+        self, monkeypatch
+    ):
+        """``eval_spec=None`` + ``provider_override="openai"`` routes
+        to the OpenAI auth guard.
+
+        DEC-007 of #155: operator-intent ``provider_override`` is the
+        highest-precedence layer and must be honored even when there is
+        no eval spec to read. Covers the openai short-circuit branch
+        in the eval_spec-is-None arm.
+        """
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+
+        # Should not raise — OPENAI_API_KEY is set; check_openai_auth
+        # passes; the early-return after ``return`` covers the
+        # previously-missing line.
+        _dispatch_fixture_auth_guard(
+            None, "grader", provider_override="openai"
+        )
+
     def test_dispatch_fixture_auth_guard_normalizes_whitespace_env(
         self, monkeypatch
     ):
@@ -2058,7 +2192,7 @@ class TestFixtureHonorsHarness:
         )
         return request
 
-    def test_codex_spec_threads_harness_override(self, tmp_path):
+    def test_codex_spec_threads_harness_override(self, tmp_path, monkeypatch):
         """``eval_spec.harness == "codex"`` threads
         ``harness_name_override="codex"`` into ``original_run``.
 
@@ -2066,6 +2200,12 @@ class TestFixtureHonorsHarness:
         automatically when ``spec.run()`` is called from the fixture.
         """
         from clauditor.spec import SkillSpec
+
+        # #155 US-006: spec factory eagerly fires ``check_codex_auth``
+        # for ``eval_spec.harness == "codex"``. Set a Codex env var so
+        # the strict-OR guard passes and the test exercises the
+        # harness-override threading rather than the auth-missing path.
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
 
         request = self._request()
         factory = clauditor_spec.__wrapped__(request, tmp_path)
@@ -2120,12 +2260,20 @@ class TestFixtureHonorsHarness:
         # other reasons (no input_files, no --clauditor-no-api-key).
         assert result.run is original_run
 
-    def test_caller_harness_override_wins_over_spec(self, tmp_path):
+    def test_caller_harness_override_wins_over_spec(
+        self, tmp_path, monkeypatch
+    ):
         """Caller-provided ``harness_name_override=`` (operator intent)
         wins over ``eval_spec.harness`` (author intent), mirroring the
         ``env_override`` / ``timeout_override`` precedence shape.
         """
         from clauditor.spec import SkillSpec
+
+        # #155 US-006: ``eval_spec.harness == "codex"`` triggers the
+        # eager Codex auth guard inside the spec factory. Set
+        # ``CODEX_API_KEY`` so the strict-OR check passes and the test
+        # exercises the operator-intent precedence.
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
 
         request = self._request()
         factory = clauditor_spec.__wrapped__(request, tmp_path)
@@ -2185,3 +2333,1075 @@ class TestFixtureHonorsHarness:
         # current harness AND there are no other reasons for wrapping
         # (no input_files, no --clauditor-no-api-key).
         assert result.run is original_run
+
+
+class TestClauditorRunnerFactory:
+    """Tests for the ``clauditor_runner`` factory shape (#155 US-002).
+
+    Per DEC-002 / DEC-003 / DEC-004 / DEC-005 / DEC-007 / DEC-008 of
+    ``plans/super/155-pytest-fixtures-parametrize.md``, the
+    pre-#155 value-fixture form was replaced by a factory accepting an
+    optional ``harness=`` kwarg with four-layer precedence (factory
+    kwarg > pytest option > env var > default ``"auto"`` PATH lookup).
+    """
+
+    def _request(self, *, harness_option=None, timeout=300, claude_bin="claude"):
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": timeout,
+                "--clauditor-claude-bin": claude_bin,
+                "--clauditor-harness": harness_option,
+            }[opt]
+        )
+        return request
+
+    def test_factory_kwarg_wins_over_pytest_option(self, monkeypatch):
+        """Factory ``harness="codex"`` overrides ``--clauditor-harness=claude-code``.
+
+        DEC-007 precedence: factory kwarg is the highest layer; the
+        pytest CLI option is second.
+        """
+        monkeypatch.setenv("CODEX_API_KEY", "x")
+        # Strip the autouse env pin so the only env-layer signal is the
+        # factory kwarg. Without this, kwarg=codex agreeing with env=
+        # would not isolate the kwarg-vs-pytest-option claim (the env
+        # layer could be doing the work). Per
+        # ``.claude/rules/test-infra-shutil-which-coupling.md``, tests
+        # that exercise a non-env precedence layer must delenv first.
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+        request = self._request(harness_option="claude-code")
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory(harness="codex")
+        assert runner.harness.name == "codex"
+
+    def test_pytest_option_used_when_no_kwarg(self, monkeypatch):
+        """``--clauditor-harness=codex`` resolves to codex when factory kwarg unset.
+
+        DEC-007 precedence: with no factory kwarg, the pytest CLI
+        option wins over env / default.
+        """
+        monkeypatch.setenv("CODEX_API_KEY", "x")
+        # Override the autouse env pin so the pytest option layer
+        # is the active source.
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+        request = self._request(harness_option="codex")
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory()
+        assert runner.harness.name == "codex"
+
+    def test_env_var_used_when_no_kwarg_no_option(self, monkeypatch):
+        """``CLAUDITOR_HARNESS=codex`` resolves to codex when other layers unset."""
+        monkeypatch.setenv("CODEX_API_KEY", "x")
+        monkeypatch.setenv("CLAUDITOR_HARNESS", "codex")
+        request = self._request(harness_option=None)
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory()
+        assert runner.harness.name == "codex"
+
+    def test_codex_auth_missing_raises(self, monkeypatch):
+        """Resolved codex with no Codex env vars raises ``CodexAuthMissingError``.
+
+        DEC-005: eager auth guard at the runner seam (NOT
+        ``pytest.skip`` — silent skips hide CI misconfig).
+        """
+        from clauditor._providers import CodexAuthMissingError
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        request = self._request(harness_option=None)
+        factory = clauditor_runner.__wrapped__(request)
+        with pytest.raises(CodexAuthMissingError):
+            factory(harness="codex")
+
+    def test_class_identity_codex_auth_missing(self):
+        """``CodexAuthMissingError`` is a sibling of ``Exception``.
+
+        DEC-008: must NOT be a subclass of
+        :class:`AnthropicAuthMissingError` or any helper-error class —
+        a shared ancestor would defeat the structural-routing
+        invariant per
+        ``.claude/rules/multi-provider-dispatch.md``.
+        """
+        from clauditor._providers import (
+            AnthropicAuthMissingError,
+            CodexAuthMissingError,
+            OpenAIAuthMissingError,
+        )
+
+        assert CodexAuthMissingError is not AnthropicAuthMissingError
+        assert CodexAuthMissingError is not OpenAIAuthMissingError
+        assert not issubclass(
+            CodexAuthMissingError, AnthropicAuthMissingError
+        )
+        assert not issubclass(CodexAuthMissingError, OpenAIAuthMissingError)
+        # Direct subclass of ``Exception`` (not a deeper type tree).
+        assert CodexAuthMissingError.__bases__ == (Exception,)
+
+    def test_auto_resolution_path_lookup(self, monkeypatch):
+        """The auto branch consults ``shutil.which`` for PATH discovery.
+
+        Per ``.claude/rules/test-infra-shutil-which-coupling.md``: the
+        autouse fixture pins ``CLAUDITOR_HARNESS=claude-code`` and
+        patches ``_anthropic.shutil.which → None``. To exercise the
+        auto branch we delete the env pin AND patch ``shutil.which``
+        on the module the resolver actually consults
+        (``clauditor._providers``) so the auto branch finds ``claude``.
+        """
+        import shutil as _shutil_mod
+
+        from clauditor import _providers as _providers_mod
+
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+        # Pin the resolver's ``shutil.which`` to find ``claude`` so
+        # the auto branch resolves to ``"claude-code"`` deterministically.
+        monkeypatch.setattr(
+            _providers_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/claude" if name == "claude" else None,
+        )
+        # Sanity: also pin the stdlib lookup the same way (defensive).
+        assert _providers_mod.shutil.which("claude") == "/usr/bin/claude"
+        assert _shutil_mod is not None  # keep the import live
+
+        request = self._request(harness_option=None)
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory()
+        assert runner.harness.name == "claude-code"
+
+    def test_whitespace_only_env_var_normalizes_to_none(self, monkeypatch):
+        """Whitespace-only ``CLAUDITOR_HARNESS`` env var is treated as unset.
+
+        Defensive normalization — a stray ``export CLAUDITOR_HARNESS=" "``
+        in a shell rc must not override every layer below it. The
+        fixture strips the value before passing to ``resolve_harness``,
+        falling through to the next precedence layer.
+        """
+        import shutil as _shutil_mod
+
+        from clauditor import _providers as _providers_mod
+
+        monkeypatch.setenv("CLAUDITOR_HARNESS", "   ")
+        # Pin PATH so the auto branch resolves to ``"claude-code"``
+        # deterministically — proves the env layer was stripped (else
+        # ``resolve_harness`` would raise on a whitespace-only value).
+        monkeypatch.setattr(
+            _providers_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/claude" if name == "claude" else None,
+        )
+        assert _shutil_mod is not None
+        request = self._request(harness_option=None)
+        factory = clauditor_runner.__wrapped__(request)
+        runner = factory()
+        assert runner.harness.name == "claude-code"
+
+    def test_auto_resolution_to_codex_fires_announcement(self, monkeypatch):
+        """When auto picks codex, fire the one-time stderr announcement.
+
+        Mirrors the CLI seam's ``announce_auto_codex_harness`` notice
+        (per ``centralized-sdk-call.md`` implicit-coupling
+        announcement family). Resetting the module-level flag in the
+        helper's home module is the canonical reset shape.
+        """
+        from clauditor import _providers as _providers_mod
+        from clauditor._providers import _auth as _auth_mod
+
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+        # Provide codex auth so the eager guard does not raise.
+        monkeypatch.setenv("CODEX_API_KEY", "x")
+        # Pin PATH to skip claude and find codex.
+        monkeypatch.setattr(
+            _providers_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        # Reset the print-and-flip flag so the announcement fires.
+        monkeypatch.setattr(
+            _auth_mod, "_announced_auto_codex_harness", False
+        )
+        # Patch the helper to verify the call rather than capturing
+        # stderr — the helper itself is unit-tested elsewhere.
+        with patch.object(
+            _auth_mod, "announce_auto_codex_harness"
+        ) as mock_announce:
+            request = self._request(harness_option=None)
+            factory = clauditor_runner.__wrapped__(request)
+            runner = factory()
+        assert runner.harness.name == "codex"
+        mock_announce.assert_called_once()
+
+
+class TestClauditorGraderFactoryKwargs:
+    """US-003 of #155: ``clauditor_grader`` factory accepts ``provider=``
+    and ``model=`` kwargs that sit at the top of the operator-intent
+    precedence stack (kwarg > pytest CLI option > env > spec).
+
+    Traces to DEC-007 of ``plans/super/155-pytest-fixtures-parametrize.md``.
+    """
+
+    def _request_with_options(
+        self,
+        *,
+        model: str | None = None,
+        grading_provider: str | None = None,
+    ):
+        request = MagicMock()
+        request.config.getoption.side_effect = lambda opt: {
+            "--clauditor-model": model,
+            "--clauditor-grading-provider": grading_provider,
+        }.get(opt)
+        return request
+
+    def test_grader_factory_kwarg_provider_wins(self, tmp_path, monkeypatch):
+        """Spec has ``grading_provider="anthropic"``; pass
+        ``provider="openai"`` factory kwarg; assert OpenAI auth is
+        dispatched (raises ``OpenAIAuthMissingError`` when OPENAI key
+        is missing, proving the kwarg won over the spec).
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        request = self._request_with_options()
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "anthropic"
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(tmp_path / "skill.md", provider="openai")
+
+    def test_grader_pytest_option_provider_used_when_no_kwarg(
+        self, tmp_path, monkeypatch
+    ):
+        """``pytest --clauditor-grading-provider=openai`` honored when
+        no factory kwarg is passed.
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        # pytest CLI option set, but no factory kwarg.
+        request = self._request_with_options(grading_provider="openai")
+        eval_spec = MagicMock()
+        # Default spec — no grading_provider preference.
+        eval_spec.grading_provider = None
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(tmp_path / "skill.md")
+
+    def test_grader_env_used_when_no_kwarg_no_option(
+        self, tmp_path, monkeypatch
+    ):
+        """``CLAUDITOR_GRADING_PROVIDER=openai`` honored when neither
+        kwarg nor pytest option is set.
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "openai")
+
+        request = self._request_with_options()
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = None
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(tmp_path / "skill.md")
+
+    def test_grader_factory_kwarg_model_wins(self, tmp_path, monkeypatch):
+        """Factory ``model="gpt-5.4"`` overrides ``--clauditor-model``;
+        threads through to ``grade_quality(model=...)``.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+
+        # pytest option set to a different value — kwarg should win.
+        request = self._request_with_options(model="claude-sonnet-4-6")
+        eval_spec = MagicMock()
+        # OpenAI spec so the model goes to OpenAI.
+        eval_spec.grading_provider = "openai"
+        eval_spec.grading_model = "gpt-4-turbo"  # spec value distinct again.
+
+        mock_spec = MagicMock()
+        mock_spec.eval_spec = eval_spec
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            return mock_spec
+
+        canned = MagicMock()
+        with patch(
+            "clauditor.quality_grader.grade_quality",
+            new=AsyncMock(return_value=canned),
+        ) as mock_grade:
+            factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+            # Pass output= to skip spec.run().
+            factory(
+                tmp_path / "skill.md",
+                output="canned output",
+                model="gpt-5.4",
+            )
+
+        call = mock_grade.await_args
+        # The third positional arg to grade_quality is the resolved model.
+        # grade_quality(output, eval_spec, model, provider=..., harness=...)
+        assert call.args[2] == "gpt-5.4"
+
+    def test_grader_provider_kwarg_overrides_pytest_option(
+        self, tmp_path, monkeypatch
+    ):
+        """Both kwarg and pytest option set; kwarg wins."""
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        # pytest option says anthropic; kwarg says openai.
+        request = self._request_with_options(grading_provider="anthropic")
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = None
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_grader.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(tmp_path / "skill.md", provider="openai")
+
+    def test_resolve_fixture_provider_accepts_provider_override(
+        self, monkeypatch
+    ):
+        """``_resolve_fixture_provider`` accepts ``provider_override``
+        kwarg and threads it as ``cli_override`` to the pure resolver.
+        """
+        from clauditor.pytest_plugin import _resolve_fixture_provider
+
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "anthropic"
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        # Without override, resolves to anthropic.
+        assert _resolve_fixture_provider(eval_spec) == "anthropic"
+        # With override, openai wins.
+        assert (
+            _resolve_fixture_provider(eval_spec, provider_override="openai")
+            == "openai"
+        )
+
+    def test_resolve_fixture_provider_with_none_spec_and_override(
+        self, monkeypatch
+    ):
+        """``provider_override`` honored even when ``eval_spec is None``
+        (operator intent wins over the default-anthropic fallback).
+        """
+        from clauditor.pytest_plugin import _resolve_fixture_provider
+
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        # Without override, falls through to anthropic.
+        assert _resolve_fixture_provider(None) == "anthropic"
+        # With override, openai wins.
+        assert (
+            _resolve_fixture_provider(None, provider_override="openai")
+            == "openai"
+        )
+
+    def test_dispatch_fixture_auth_guard_with_none_spec_and_openai_override(
+        self, monkeypatch
+    ):
+        """``provider_override="openai"`` with ``eval_spec=None`` routes
+        to OpenAI auth (raises ``OpenAIAuthMissingError`` when key
+        is missing).
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+
+        with pytest.raises(OpenAIAuthMissingError):
+            _dispatch_fixture_auth_guard(
+                None, "grader", provider_override="openai"
+            )
+
+    def test_dispatch_fixture_auth_guard_with_none_spec_and_anthropic_override(
+        self, monkeypatch
+    ):
+        """``provider_override="anthropic"`` with ``eval_spec=None``
+        falls through to the existing Anthropic strict-vs-relaxed split.
+        """
+        from clauditor._providers import AnthropicAuthMissingError
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_FIXTURE_ALLOW_CLI", raising=False)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+
+        with pytest.raises(AnthropicAuthMissingError):
+            _dispatch_fixture_auth_guard(
+                None, "grader", provider_override="anthropic"
+            )
+
+    def test_dispatch_fixture_auth_guard_accepts_provider_override(
+        self, monkeypatch
+    ):
+        """``_dispatch_fixture_auth_guard`` accepts ``provider_override``
+        kwarg; routes auth check through that provider.
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+        from clauditor.pytest_plugin import _dispatch_fixture_auth_guard
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "anthropic"
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        # Without override, uses spec's anthropic — no raise.
+        _dispatch_fixture_auth_guard(eval_spec, "grader")
+
+        # With override, routes to OpenAI auth — raises.
+        with pytest.raises(OpenAIAuthMissingError):
+            _dispatch_fixture_auth_guard(
+                eval_spec, "grader", provider_override="openai"
+            )
+
+
+class TestClauditorBlindCompareFactoryKwargs:
+    """US-004 of #155: ``clauditor_blind_compare`` factory accepts
+    ``provider=`` kwarg (and verifies the existing ``model=`` kwarg's
+    precedence chain) — operator-intent precedence (kwarg > pytest CLI
+    option > env > spec).
+
+    Traces to DEC-007 of ``plans/super/155-pytest-fixtures-parametrize.md``.
+    """
+
+    def _request_with_options(
+        self,
+        *,
+        model: str | None = None,
+        grading_provider: str | None = None,
+    ):
+        request = MagicMock()
+        request.config.getoption.side_effect = lambda opt: {
+            "--clauditor-model": model,
+            "--clauditor-grading-provider": grading_provider,
+        }.get(opt)
+        return request
+
+    def test_blind_compare_factory_kwarg_provider_wins(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec has ``grading_provider="anthropic"``; pass
+        ``provider="openai"`` factory kwarg; assert OpenAI auth is
+        dispatched (raises ``OpenAIAuthMissingError`` when OPENAI key
+        is missing, proving the kwarg won over the spec).
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        request = self._request_with_options()
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "anthropic"
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_blind_compare.__wrapped__(
+            request, fake_clauditor_spec
+        )
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(
+                tmp_path / "skill.md",
+                "output A",
+                "output B",
+                provider="openai",
+            )
+
+    def test_blind_compare_pytest_option_provider_used_when_no_kwarg(
+        self, tmp_path, monkeypatch
+    ):
+        """``pytest --clauditor-grading-provider=openai`` honored when
+        no factory kwarg is passed.
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        # pytest CLI option set, but no factory kwarg.
+        request = self._request_with_options(grading_provider="openai")
+        eval_spec = MagicMock()
+        # Default spec — no grading_provider preference.
+        eval_spec.grading_provider = None
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_blind_compare.__wrapped__(
+            request, fake_clauditor_spec
+        )
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(tmp_path / "skill.md", "output A", "output B")
+
+    def test_blind_compare_env_used_when_no_kwarg_no_option(
+        self, tmp_path, monkeypatch
+    ):
+        """``CLAUDITOR_GRADING_PROVIDER=openai`` honored when neither
+        kwarg nor pytest option is set.
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "openai")
+
+        request = self._request_with_options()
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = None
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_blind_compare.__wrapped__(
+            request, fake_clauditor_spec
+        )
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(tmp_path / "skill.md", "output A", "output B")
+
+    def test_blind_compare_factory_kwarg_model_wins(
+        self, tmp_path, monkeypatch
+    ):
+        """Factory ``model="gpt-5.4"`` overrides ``--clauditor-model``;
+        threads through to ``blind_compare_from_spec(model=...)``.
+        Verifies the precedence chain explicitly.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+
+        # pytest option set to a different value — kwarg should win.
+        request = self._request_with_options(model="claude-sonnet-4-6")
+        eval_spec = MagicMock()
+        # OpenAI spec so the model goes to OpenAI.
+        eval_spec.grading_provider = "openai"
+        eval_spec.grading_model = "gpt-4-turbo"  # spec value distinct.
+
+        mock_spec = MagicMock()
+        mock_spec.eval_spec = eval_spec
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            return mock_spec
+
+        canned = MagicMock()
+        with patch(
+            "clauditor.quality_grader.blind_compare_from_spec",
+            new=AsyncMock(return_value=canned),
+        ) as mock_blind:
+            factory = clauditor_blind_compare.__wrapped__(
+                request, fake_clauditor_spec
+            )
+            factory(
+                tmp_path / "skill.md",
+                "output A",
+                "output B",
+                model="gpt-5.4",
+            )
+
+        call = mock_blind.await_args
+        assert call.kwargs["model"] == "gpt-5.4"
+
+    def test_blind_compare_provider_kwarg_overrides_pytest_option(
+        self, tmp_path, monkeypatch
+    ):
+        """Both kwarg and pytest option set; kwarg wins."""
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        # pytest option says anthropic; kwarg says openai.
+        request = self._request_with_options(grading_provider="anthropic")
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = None
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_blind_compare.__wrapped__(
+            request, fake_clauditor_spec
+        )
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(
+                tmp_path / "skill.md",
+                "output A",
+                "output B",
+                provider="openai",
+            )
+
+    def test_blind_compare_provider_kwarg_threads_to_blind_compare_from_spec(
+        self, tmp_path, monkeypatch
+    ):
+        """``provider=`` kwarg threads through to
+        ``blind_compare_from_spec(provider=...)``. Asserts on the call
+        kwargs only — the ``BlindReport.provider_source`` propagation
+        is owned by ``blind_compare_from_spec`` and verified in its
+        own test suite (``tests/test_quality_grader.py``).
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+
+        request = self._request_with_options()
+        eval_spec = MagicMock()
+        # Spec defaults to anthropic — kwarg should override.
+        eval_spec.grading_provider = "anthropic"
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        mock_spec = MagicMock()
+        mock_spec.eval_spec = eval_spec
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            return mock_spec
+
+        canned = MagicMock()
+        with patch(
+            "clauditor.quality_grader.blind_compare_from_spec",
+            new=AsyncMock(return_value=canned),
+        ) as mock_blind:
+            factory = clauditor_blind_compare.__wrapped__(
+                request, fake_clauditor_spec
+            )
+            factory(
+                tmp_path / "skill.md",
+                "output A",
+                "output B",
+                provider="openai",
+            )
+
+        call = mock_blind.await_args
+        assert call.kwargs["provider"] == "openai"
+
+
+class TestClauditorTriggersFactoryKwargs:
+    """US-005 of #155: ``clauditor_triggers`` factory accepts ``provider=``
+    and ``model=`` kwargs that sit at the top of the operator-intent
+    precedence stack (kwarg > pytest CLI option > env > spec).
+
+    Mirrors the US-003 ``TestClauditorGraderFactoryKwargs`` shape, applied
+    to the triggers fixture. Traces to DEC-007 of
+    ``plans/super/155-pytest-fixtures-parametrize.md``.
+    """
+
+    def _request_with_options(
+        self,
+        *,
+        model: str | None = None,
+        grading_provider: str | None = None,
+    ):
+        request = MagicMock()
+        request.config.getoption.side_effect = lambda opt: {
+            "--clauditor-model": model,
+            "--clauditor-grading-provider": grading_provider,
+        }.get(opt)
+        return request
+
+    def test_triggers_factory_kwarg_provider_wins(self, tmp_path, monkeypatch):
+        """Spec has ``grading_provider="anthropic"``; pass
+        ``provider="openai"`` factory kwarg; assert OpenAI auth is
+        dispatched (raises ``OpenAIAuthMissingError`` when OPENAI key
+        is missing, proving the kwarg won over the spec).
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        request = self._request_with_options()
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = "anthropic"
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_triggers.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(tmp_path / "skill.md", provider="openai")
+
+    def test_triggers_pytest_option_provider_used_when_no_kwarg(
+        self, tmp_path, monkeypatch
+    ):
+        """``pytest --clauditor-grading-provider=openai`` honored when
+        no factory kwarg is passed.
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        # pytest CLI option set, but no factory kwarg.
+        request = self._request_with_options(grading_provider="openai")
+        eval_spec = MagicMock()
+        # Default spec — no grading_provider preference.
+        eval_spec.grading_provider = None
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_triggers.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(tmp_path / "skill.md")
+
+    def test_triggers_env_used_when_no_kwarg_no_option(
+        self, tmp_path, monkeypatch
+    ):
+        """``CLAUDITOR_GRADING_PROVIDER=openai`` honored when neither
+        kwarg nor pytest option is set.
+        """
+        from clauditor._providers import OpenAIAuthMissingError
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "openai")
+
+        request = self._request_with_options()
+        eval_spec = MagicMock()
+        eval_spec.grading_provider = None
+        eval_spec.grading_model = "claude-sonnet-4-6"
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            spec = MagicMock()
+            spec.eval_spec = eval_spec
+            return spec
+
+        factory = clauditor_triggers.__wrapped__(request, fake_clauditor_spec)
+        with pytest.raises(OpenAIAuthMissingError):
+            factory(tmp_path / "skill.md")
+
+    def test_triggers_factory_kwarg_model_wins(self, tmp_path, monkeypatch):
+        """Factory ``model="gpt-5.4"`` overrides ``--clauditor-model``;
+        threads through to ``run_triggers(model=...)``.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+
+        # pytest option set to a different value — kwarg should win.
+        request = self._request_with_options(model="claude-sonnet-4-6")
+        eval_spec = MagicMock()
+        # OpenAI spec so the model goes to OpenAI.
+        eval_spec.grading_provider = "openai"
+        eval_spec.grading_model = "gpt-4-turbo"  # spec value distinct again.
+
+        mock_spec = MagicMock()
+        mock_spec.eval_spec = eval_spec
+
+        def fake_clauditor_spec(skill_path, eval_path=None):
+            return mock_spec
+
+        canned = MagicMock()
+        with patch(
+            "clauditor.triggers.test_triggers",
+            new=AsyncMock(return_value=canned),
+        ) as mock_run_triggers:
+            factory = clauditor_triggers.__wrapped__(
+                request, fake_clauditor_spec
+            )
+            factory(tmp_path / "skill.md", model="gpt-5.4")
+
+        call = mock_run_triggers.await_args
+        # run_triggers(eval_spec, model, provider=...). Second positional
+        # arg is the resolved model.
+        assert call.args[1] == "gpt-5.4"
+
+
+class TestClauditorSpecCodexGuard:
+    """Tests for the eager Codex auth guard in ``clauditor_spec`` (#155 US-006).
+
+    Per DEC-005 of ``plans/super/155-pytest-fixtures-parametrize.md``,
+    when the loaded spec has ``eval_spec.harness == "codex"``, the
+    factory eagerly calls
+    :func:`clauditor._providers.check_codex_auth` BEFORE returning
+    the wrapped :class:`SkillSpec` so missing Codex auth surfaces as
+    :class:`CodexAuthMissingError` (a sibling of :class:`Exception`)
+    at fixture-setup time rather than as a deep subprocess error
+    later. Mirrors the runner-side guard from US-002.
+    """
+
+    def _request(self):
+        request = MagicMock()
+        request.config.getoption.side_effect = (
+            lambda opt: {
+                "--clauditor-project-dir": None,
+                "--clauditor-timeout": 300,
+                "--clauditor-claude-bin": "claude",
+                "--clauditor-no-api-key": False,
+            }[opt]
+        )
+        return request
+
+    def test_spec_factory_codex_auth_missing(self, tmp_path, monkeypatch):
+        """``eval_spec.harness == "codex"`` with no Codex env vars
+        raises :class:`CodexAuthMissingError`.
+
+        DEC-005: eager guard at the spec seam (NOT ``pytest.skip``).
+        """
+        from clauditor._providers import CodexAuthMissingError
+        from clauditor.spec import SkillSpec
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        request = self._request()
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_eval_spec.harness = "codex"
+        mock_spec.eval_spec = mock_eval_spec
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            with pytest.raises(CodexAuthMissingError):
+                factory("some/skill.md")
+
+    def test_spec_factory_claude_code_no_guard(self, tmp_path, monkeypatch):
+        """``eval_spec.harness == "claude-code"`` does NOT fire the
+        Codex guard — missing OpenAI/Codex keys are irrelevant.
+
+        Acceptance criterion: zero behavior change for the
+        ``claude-code`` path.
+        """
+        from clauditor.spec import SkillSpec
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        request = self._request()
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_eval_spec.harness = "claude-code"
+        mock_spec.eval_spec = mock_eval_spec
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            # No raise — Codex guard does not fire on claude-code.
+            result = factory("some/skill.md")
+        assert result is mock_spec
+
+    def test_spec_factory_codex_with_key_no_raise(
+        self, tmp_path, monkeypatch
+    ):
+        """``eval_spec.harness == "codex"`` with ``CODEX_API_KEY``
+        set passes the strict-OR guard — no raise.
+        """
+        from clauditor.spec import SkillSpec
+
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        request = self._request()
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_eval_spec.harness = "codex"
+        mock_spec.eval_spec = mock_eval_spec
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+        assert result is mock_spec
+
+    def test_spec_factory_codex_with_openai_key_no_raise(
+        self, tmp_path, monkeypatch
+    ):
+        """``eval_spec.harness == "codex"`` with ``OPENAI_API_KEY``
+        set (instead of ``CODEX_API_KEY``) also passes — Codex's
+        strict-OR auth accepts either env var per
+        :func:`clauditor._providers.check_codex_auth`.
+        """
+        from clauditor.spec import SkillSpec
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+
+        request = self._request()
+        factory = clauditor_spec.__wrapped__(request, tmp_path)
+
+        mock_spec = MagicMock(spec=SkillSpec)
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.input_files = []
+        mock_eval_spec.harness = "codex"
+        mock_spec.eval_spec = mock_eval_spec
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            result = factory("some/skill.md")
+        assert result is mock_spec
+
+
+class TestClauditorSpecNoApiKeyHarnessAwareness:
+    """B1 of #155 QG pass 4: ``--clauditor-no-api-key`` + codex harness
+    must preserve ``OPENAI_API_KEY`` in the subprocess env.
+
+    Pre-fix, ``clauditor_spec`` precomputed ``fixture_env_override =
+    env_without_api_key()`` once at fixture setup, defaulting to
+    claude-code semantics that strip ``OPENAI_API_KEY``. When the spec
+    declared ``harness="codex"``, the codex subprocess received an env
+    without ``OPENAI_API_KEY`` even though ``check_codex_auth`` had
+    accepted it from ``os.environ`` moments earlier — launching codex
+    without usable auth.
+
+    Fix: defer the ``env_without_api_key`` call until inside
+    ``_run_with_overrides`` so ``harness_name=`` reflects the resolved
+    harness for this particular ``spec.run`` call.
+    """
+
+    def _request_with_options(
+        self, *, no_api_key: bool, project_dir: Path | None = None
+    ):
+        request = MagicMock()
+        request.config.getoption.side_effect = lambda opt: {
+            "--clauditor-project-dir": project_dir,
+            "--clauditor-timeout": 300,
+            "--clauditor-claude-bin": "claude",
+            "--clauditor-no-api-key": no_api_key,
+        }.get(opt)
+        return request
+
+    def test_no_api_key_codex_preserves_openai_key(
+        self, tmp_path, monkeypatch
+    ):
+        """When ``no_api_key=True`` AND ``eval_spec.harness="codex"``,
+        the env passed to ``spec.run`` retains ``OPENAI_API_KEY``."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+
+        request = self._request_with_options(no_api_key=True)
+
+        mock_spec = MagicMock()
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.harness = "codex"
+        mock_eval_spec.input_files = []
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = MagicMock()
+        mock_spec.run = original_run
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            factory = clauditor_spec.__wrapped__(request, tmp_path)
+            spec = factory("some/skill.md")
+
+        # spec.run was wrapped — invoke it and inspect the env_override
+        # that propagates to original_run.
+        spec.run("some args")
+        env_passed = original_run.call_args.kwargs["env_override"]
+        assert env_passed is not None
+        assert "OPENAI_API_KEY" in env_passed
+        assert env_passed["OPENAI_API_KEY"] == "sk-openai-test"
+        # Anthropic keys still stripped (codex doesn't need them).
+        assert "ANTHROPIC_API_KEY" not in env_passed
+        assert "ANTHROPIC_AUTH_TOKEN" not in env_passed
+
+    def test_no_api_key_claude_code_strips_openai_key(
+        self, tmp_path, monkeypatch
+    ):
+        """Default (claude-code) path retains today's behavior: strip
+        ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+
+        request = self._request_with_options(no_api_key=True)
+
+        mock_spec = MagicMock()
+        mock_eval_spec = MagicMock()
+        mock_eval_spec.harness = "claude-code"
+        mock_eval_spec.input_files = []
+        mock_spec.eval_spec = mock_eval_spec
+        original_run = MagicMock()
+        mock_spec.run = original_run
+
+        with patch(
+            "clauditor.pytest_plugin.SkillSpec.from_file",
+            return_value=mock_spec,
+        ):
+            factory = clauditor_spec.__wrapped__(request, tmp_path)
+            spec = factory("some/skill.md")
+
+        spec.run("some args")
+        env_passed = original_run.call_args.kwargs["env_override"]
+        assert env_passed is not None
+        assert "OPENAI_API_KEY" not in env_passed
+        assert "ANTHROPIC_API_KEY" not in env_passed
