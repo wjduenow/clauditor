@@ -19,6 +19,7 @@ from clauditor._providers import (
     check_codex_auth,
     check_provider_auth,
 )
+from clauditor._providers._pricing import compute_iteration_cost_usd
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.benchmark import Benchmark, compute_benchmark
 from clauditor.context import IterationContext
@@ -36,6 +37,7 @@ from clauditor.workspace import (
 )
 
 if TYPE_CHECKING:
+    from clauditor.grader import ExtractionReport
     from clauditor.quality_grader import GradingReport, VarianceReport
 
 
@@ -787,6 +789,35 @@ def _write_workspace_sidecars(
         primary_report.to_json(), encoding="utf-8"
     )
 
+    # #169 US-005: run Layer 2 extraction (when sections declared)
+    # BEFORE writing context.json so ``compute_iteration_cost_usd``
+    # can sum L2 + L3 grader-call cost. Extraction was previously
+    # written after context.json; reordering preserves the
+    # sidecar-during-staging contract — both writes still land
+    # before ``workspace.finalize()``.
+    extraction_report: ExtractionReport | None = None
+    if spec.eval_spec.sections:
+        # #152 US-003: pass the harness that produced the underlying
+        # skill output so the sidecar honestly records which harness
+        # produced the text being extracted. Falls back to
+        # ``"claude-code"`` (the ``ExtractionReport.harness`` default)
+        # for ``--output`` mode where every entry of
+        # ``skill_results`` is ``None``.
+        harness_for_extraction = "claude-code"
+        for sr in skill_results:
+            if sr is not None:
+                harness_for_extraction = sr.harness
+                break
+        extraction_report = _write_extraction_sidecar(
+            skill_dir,
+            primary_text,
+            spec,
+            model,
+            transport=transport,
+            provider=provider,
+            harness=harness_for_extraction,
+        )
+
     # #154 US-004 / DEC-007 / DEC-008: write the per-iteration
     # comparability sidecar inside the staging block. Skip in
     # captured-text mode (``--output`` without variance/baseline)
@@ -800,6 +831,8 @@ def _write_workspace_sidecars(
             provider=provider,
             primary_skill_result=primary_skill_result,
             model_grader=primary_report.model,
+            primary_report=primary_report,
+            extraction_report=extraction_report,
         )
 
     # #152 US-002: stamp the harness on assertions.json. Single harness
@@ -822,28 +855,6 @@ def _write_workspace_sidecars(
         no_transcript=no_transcript,
         harness=assertions_harness,
     )
-
-    if spec.eval_spec.sections:
-        # #152 US-003: pass the harness that produced the underlying
-        # skill output so the sidecar honestly records which harness
-        # produced the text being extracted. Falls back to
-        # ``"claude-code"`` (the ``ExtractionReport.harness`` default)
-        # for ``--output`` mode where every entry of
-        # ``skill_results`` is ``None``.
-        harness_for_extraction = "claude-code"
-        for sr in skill_results:
-            if sr is not None:
-                harness_for_extraction = sr.harness
-                break
-        _write_extraction_sidecar(
-            skill_dir,
-            primary_text,
-            spec,
-            model,
-            transport=transport,
-            provider=provider,
-            harness=harness_for_extraction,
-        )
 
     if getattr(args, "baseline", False):
         # Mirror the primary arm's env/timeout wiring so --no-api-key
@@ -891,6 +902,8 @@ def _write_context_sidecar(
     provider: str,
     primary_skill_result: SkillResult,
     model_grader: str | None,
+    primary_report: GradingReport,
+    extraction_report: ExtractionReport | None,
 ) -> None:
     """Write per-iteration comparability metadata as ``context.json``.
 
@@ -901,8 +914,14 @@ def _write_context_sidecar(
     immediately. ``sandbox_mode`` IS optional (only Codex populates it)
     so it uses ``.get(...)``.
 
-    ``cost_usd`` and ``reasoning_tokens`` ship as ``None`` per DEC-001 /
-    DEC-002 (placeholders for #169 / #170).
+    #169 US-005: ``cost_usd`` is computed via
+    :func:`compute_iteration_cost_usd`, which sums L2 + L3 grader-call
+    cost via per-provider rate-card lookups. Returns ``None`` (writing
+    ``cost_usd: null``) when any internal lookup misses, per DEC-002
+    all-or-nothing semantics.
+
+    ``reasoning_tokens`` still ships as ``None`` per DEC-001 (placeholder
+    for #170).
 
     Runs inside the workspace staging block per
     ``.claude/rules/sidecar-during-staging.md``; the caller's
@@ -918,7 +937,11 @@ def _write_context_sidecar(
             "system_prompt_source"
         ],
         sandbox_mode=primary_skill_result.harness_metadata.get("sandbox_mode"),
-        cost_usd=None,
+        cost_usd=compute_iteration_cost_usd(
+            primary_report,
+            extraction_report,
+            provider,
+        ),
         reasoning_tokens=None,
     )
     (skill_dir / "context.json").write_text(
@@ -1044,8 +1067,12 @@ def _write_extraction_sidecar(
     *,
     provider: str = "anthropic",
     harness: str = "claude-code",
-) -> None:
+) -> ExtractionReport:
     """Run Layer 2 schema extraction and persist ``extraction.json``.
+
+    Returns the :class:`ExtractionReport` so downstream sidecars
+    (``context.json``'s ``cost_usd`` field per #169 US-005) can read
+    the same Layer 2 token counts without re-running extraction.
 
     ``model`` is the resolved grading model the caller computed for
     the surrounding ``cmd_grade`` invocation. Passed through verbatim
@@ -1075,6 +1102,7 @@ def _write_extraction_sidecar(
     (skill_dir / "extraction.json").write_text(
         extraction_report.to_json(), encoding="utf-8"
     )
+    return extraction_report
 
 
 def _write_baseline_and_benchmark(
