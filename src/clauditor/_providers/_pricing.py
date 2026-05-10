@@ -319,10 +319,29 @@ def estimate_cost(
 ) -> float | None:
     """Return the USD cost estimate for one grader call, or ``None``.
 
-    Pure helper per ``.claude/rules/pure-compute-vs-io-split.md`` —
-    no I/O, no logging, no module-level state mutation. Returns
-    ``None`` on a graceful lookup miss (unknown provider, unknown
-    model, or unknown ``(provider, model)`` pair). Raises
+    Pure-compute helper per
+    ``.claude/rules/pure-compute-vs-io-split.md``: the **returned
+    value** is a deterministic function of the inputs (no network
+    I/O, no file I/O, no subprocess, no logging library). The two
+    documented side-effects are one-shot stderr announcements from
+    the announcement family per
+    ``.claude/rules/centralized-sdk-call.md``:
+
+    - :func:`announce_pricing_table_stale_if_old` fires once per
+      process when ``_LAST_VERIFIED`` is older than 90 days. Mutates
+      the module-level ``_announced_pricing_table_stale`` flag.
+    - :func:`announce_unknown_model` fires once per
+      ``(provider, model)`` pair when the provider IS known but the
+      model is missing from its sub-table. Mutates the module-level
+      ``_announced_unknown_models`` set.
+
+    Both announcements are idempotent (subsequent calls are no-ops)
+    and never affect the returned cost value. Tests reset the
+    module-level flags via autouse fixtures so the pure-compute
+    return value is observable in isolation.
+
+    Returns ``None`` on a graceful lookup miss (unknown provider,
+    unknown model, or unknown ``(provider, model)`` pair). Raises
     ``ValueError`` on a contract violation: non-string
     ``provider`` / ``model``, or token args that are bool, non-int,
     or negative. The two-category split mirrors DEC-005 of #169 —
@@ -395,9 +414,15 @@ def compute_iteration_cost_usd(
     """Sum L2 + L3 grader-call cost for one iteration.
 
     Pure-compute composition helper per
-    ``.claude/rules/pure-compute-vs-io-split.md`` — no I/O, no
-    logging, no module-level state mutation. Routes both layers
-    through :func:`estimate_cost` and sums the results.
+    ``.claude/rules/pure-compute-vs-io-split.md``: the **returned
+    value** is a deterministic function of the input reports. The
+    helper itself performs no I/O, no logging, and no module-level
+    state mutation; it routes both layers through
+    :func:`estimate_cost` and sums the results. Note that
+    :func:`estimate_cost` may transitively fire the one-shot stderr
+    announcements documented on its own docstring (stale pricing
+    table, unknown ``(provider, model)`` pair) — those announcements
+    do not affect the cost value returned here.
 
     Per DEC-001 of ``plans/super/169-pricing-cost-estimator.md``,
     scope is grader-only: Layer 2 (extraction) + Layer 3 (grading).

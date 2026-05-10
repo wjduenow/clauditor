@@ -535,9 +535,9 @@ auth-helper call chain). Reset mechanism for tests is the
 `tests/test_providers_auth.py::TestAnnounceImplicitNoApiKey`,
 `tests/test_providers_auth.py::TestCallAnthropicDeprecationAnnouncement`,
 and
-`tests/test_providers_pricing.py::TestAnnouncePricingTableStaleIfOld`
-/ `tests/test_providers_pricing.py::TestAnnounceUnknownModel` for
-the shape.
+`tests/test_providers_pricing.py::TestStaleAnnouncement`
+/ `tests/test_providers_pricing.py::TestUnknownModelAnnouncement`
+for the shape.
 
 ## When this rule applies
 

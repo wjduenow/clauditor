@@ -513,17 +513,21 @@ without being a `call_model` consumer. Two helpers, both pure:
   contributes `0.0` to the sum (that is NOT a lookup miss — it
   is a genuine "no Layer-2 call happened" signal).
 
-Both helpers are pure: no I/O, no subprocess, no HTTP. The only
-side effect inside `estimate_cost` is the announcement-family
-`print(..., file=sys.stderr)` calls
-(`announce_pricing_table_stale_if_old`,
-`announce_unknown_model`), which are themselves one-shot per
-process and idempotent — see
-`.claude/rules/centralized-sdk-call.md` "Implicit-coupling
-announcements — an emerging family" for the contract. Tests
-exercise the pure-compute paths without those announcements
-firing (autouse fixtures reset the module flags), so the
-purity-of-return-value contract is observable in isolation.
+Both helpers satisfy the rule's pure-compute contract at the
+**return-value layer**: their returned cost is a deterministic
+function of the inputs, with no network I/O, no file I/O, and no
+subprocess. The one documented exception is the announcement
+family — `estimate_cost` may emit one-shot
+`print(..., file=sys.stderr)` notices via
+`announce_pricing_table_stale_if_old` and `announce_unknown_model`,
+each of which mutates a module-level flag/set on first fire and
+no-ops on subsequent calls. The notices belong to the
+"implicit-coupling announcements" family documented in
+`.claude/rules/centralized-sdk-call.md` and never affect the
+returned cost. Tests reset the module-level flags via autouse
+fixtures, so the deterministic-return-value contract is observable
+in isolation while the announcement side-effects are exercised by
+their own dedicated test classes.
 
 Two callers today:
 
@@ -544,13 +548,16 @@ Two callers today:
 Why the split mattered specifically here:
 
 - **Two helpers, one pure module**:
-  `compute_iteration_cost_usd` is genuinely two callers worth of
-  resolution logic — Layer 2 dispatch, Layer 3 dispatch, lookup-
-  miss propagation, all-or-nothing aggregation. Inlining at the
-  call site (`_write_context_sidecar`) would have spread the
-  per-layer dispatch + the all-or-nothing rule across the I/O
-  layer, where future refactors are likely to drift them. The
-  pure helper concentrates the policy in one testable seam.
+  `compute_iteration_cost_usd` concentrates Layer 2 + Layer 3
+  dispatch and all-or-nothing aggregation logic in one testable
+  seam — per-layer cost dispatch, lookup-miss propagation, and
+  the null-on-any-miss rule that defends `cost_usd`'s sidecar
+  contract. Inlining at the call site
+  (`_write_context_sidecar`) would have spread the per-layer
+  dispatch + the all-or-nothing rule across the I/O layer, where
+  future refactors are likely to drift them. The pure helper
+  keeps the policy in one place even though there is only one
+  production caller today.
 - **Sidecar-shape contract**: `cost_usd` is a persisted field on
   `context.json` whose shape is part of the always-v1 contract
   (see `.claude/rules/json-schema-version.md` "New sidecar
