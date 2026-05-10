@@ -207,6 +207,82 @@ def announce_pricing_table_stale_if_old() -> None:
         _announced_pricing_table_stale = True
 
 
+# DEC-006 (#169 US-003): one-shot stderr warning per (provider, model)
+# pair when ``estimate_cost`` is called with a recognized provider but
+# an unknown model. Different shape from the staleness flag above:
+# keyed on a ``set[tuple[str, str]]`` of pairs already announced, so
+# multiple distinct unknown models each warn once rather than the
+# first miss muting all subsequent ones. Sibling to the announcement-
+# family flags in ``clauditor._providers._auth`` per
+# ``.claude/rules/centralized-sdk-call.md`` "Implicit-coupling
+# announcements — an emerging family". Tests reset via
+# ``monkeypatch.setattr(..., set())`` autouse fixture, targeting the
+# canonical location at
+# ``clauditor._providers._pricing._announced_unknown_models``.
+_announced_unknown_models: set[tuple[str, str]] = set()
+
+
+# DEC-006 (#169 US-003): the unknown-model notice emitted on the first
+# ``estimate_cost`` call per (provider, model) pair when the provider
+# is recognized but the model is absent from the rate table. Four
+# durable substrings are test-asserted:
+#   1. ``"pricing:"`` — anchors the topic so users searching their
+#      stderr for "pricing" find the notice.
+#   2. ``"not in rate table"`` — names the specific failure mode
+#      (vs the staleness warning's "X days old" framing).
+#   3. The literal ``{provider}`` value — so the message names the
+#      provider-axis context.
+#   4. The literal ``{model}`` value — so the maintainer can grep
+#      for the missing model name in the rate table.
+# The hint points at ``src/clauditor/_providers/_pricing.py`` so the
+# maintainer knows where to add the missing rate card.
+_UNKNOWN_MODEL_ANNOUNCEMENT_TEMPLATE: Final[str] = (
+    "clauditor: pricing: model {model!r} (provider {provider!r}) is "
+    "not in rate table; cost_usd will be null for this call.\n"
+    "Add a rate card for {model!r} to _PRICING_TABLE in "
+    "src/clauditor/_providers/_pricing.py to enable cost estimation."
+)
+
+
+def announce_unknown_model(provider: str, model: str) -> None:
+    """Emit the unknown-model notice to stderr once per (provider, model) pair.
+
+    DEC-006 of ``plans/super/169-pricing-cost-estimator.md`` (US-003).
+    Called from :func:`estimate_cost` at the known-provider/unknown-
+    model branch so the warning fires on the first cost-estimation
+    call per process per ``(provider, model)`` pair. The one-shot
+    module set :data:`_announced_unknown_models` ensures a single
+    announcement per pair regardless of how many subsequent
+    ``estimate_cost`` calls land for the same pair; distinct
+    ``(provider, model)`` pairs each emit once.
+
+    Different from :func:`announce_pricing_table_stale_if_old` (US-002):
+    keyed on a ``set`` of pairs rather than a single boolean flag, so
+    multiple unknown models each get their own first-call warning.
+    Otherwise the announcement-family contract is identical — same
+    shape, same one-shot semantics, same
+    ``monkeypatch.setattr(..., set())`` test-reset pattern per
+    ``.claude/rules/centralized-sdk-call.md`` "Implicit-coupling
+    announcements — an emerging family".
+
+    Per DEC-006: the warning fires ONLY when the provider is known
+    but the model is unknown. An unknown provider does NOT trigger
+    this warning (different code path; the unknown-provider case
+    stays silent so a typo'd provider does not flood stderr with
+    every model the caller subsequently tries).
+    """
+    key = (provider, model)
+    if key in _announced_unknown_models:
+        return
+    print(
+        _UNKNOWN_MODEL_ANNOUNCEMENT_TEMPLATE.format(
+            provider=provider, model=model
+        ),
+        file=sys.stderr,
+    )
+    _announced_unknown_models.add(key)
+
+
 def _validate_token_arg(name: str, value: object) -> None:
     """Reject bool / non-int / negative values for a token-count arg.
 
@@ -289,8 +365,16 @@ def estimate_cost(
     if reasoning_tokens is not None:
         _validate_token_arg("reasoning_tokens", reasoning_tokens)
 
-    card = _PRICING_TABLE.get(provider, {}).get(model)
+    # DEC-006 (#169 US-003): the unknown-model warning fires only when
+    # the provider IS known but the model is missing from its sub-table.
+    # Unknown providers stay silent (different code path) so a typo'd
+    # provider does not flood stderr with every subsequent model.
+    provider_table = _PRICING_TABLE.get(provider)
+    if provider_table is None:
+        return None
+    card = provider_table.get(model)
     if card is None:
+        announce_unknown_model(provider, model)
         return None
 
     effective_output = output_tokens + (reasoning_tokens or 0)
