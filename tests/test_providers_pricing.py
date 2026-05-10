@@ -1,14 +1,16 @@
 """Tests for the pricing helpers in ``clauditor._providers._pricing``.
 
 US-001 of ``plans/super/169-pricing-cost-estimator.md``: covers the
-core ``estimate_cost`` helper plus the price-table metadata. The
-announcement helpers (staleness, unknown-model) land in US-002 and
-US-003 and have their own dedicated test classes there.
+core ``estimate_cost`` helper plus the price-table metadata. US-002
+adds :class:`TestStaleAnnouncement` covering the one-shot stderr
+warning that fires when the rate table is older than 90 days. The
+unknown-model announcement lands in US-003 with its own class.
 
 Mirror shape: ``tests/test_providers_retry.py`` — pure-compute
 sibling with no SDK or I/O concerns. Every test calls the public
 helper or reads a module-level constant; no patches needed beyond
-the bool-vs-int validation cases.
+the bool-vs-int validation cases (and the per-test
+flag/date-pin patches in :class:`TestStaleAnnouncement`).
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from clauditor._providers._pricing import (
     _LAST_VERIFIED,
     _PRICING_TABLE,
     _PRICING_TABLE_VERSION,
+    announce_pricing_table_stale_if_old,
     estimate_cost,
 )
 
@@ -178,3 +181,134 @@ class TestPricingTableMetadata:
             assert model in _PRICING_TABLE["openai"], (
                 f"missing OpenAI model {model!r}"
             )
+
+
+class TestStaleAnnouncement:
+    """DEC-003 (#169 US-002): one-shot stderr warning when the pricing
+    rate table is older than 90 days at ``estimate_cost`` call time.
+
+    Parallel to
+    ``tests/test_providers_auth.py::TestAnnounceImplicitNoApiKey`` —
+    same autouse-reset pattern; same one-shot-per-process contract.
+    The :data:`_today` indirection alias is patched per-test to pin
+    the wall-clock date deterministically per
+    ``.claude/rules/monotonic-time-indirection.md``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_announcement_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every test starts with the one-shot flag set to ``False``."""
+        monkeypatch.setattr(
+            "clauditor._providers._pricing._announced_pricing_table_stale",
+            False,
+        )
+
+    def test_no_warning_when_within_90_days(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # _LAST_VERIFIED == "2026-05-09"; pin today to the day after so
+        # days_old == 1 (well under the 90-day threshold) and the
+        # announcement does NOT fire.
+        monkeypatch.setattr(
+            "clauditor._providers._pricing._today",
+            lambda: datetime.date(2026, 5, 10),
+        )
+        result = estimate_cost("anthropic", "claude-sonnet-4-6", 100, 50)
+        assert result is not None
+        captured = capsys.readouterr()
+        # Anchor on the durable substring rather than full-message
+        # equality: the announcement is absent, not just shaped
+        # differently.
+        assert "pricing" not in captured.err.lower()
+        assert "90 days" not in captured.err
+
+    def test_warning_fires_when_over_90_days(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # _LAST_VERIFIED == "2026-05-09"; pin today to ~7 months later
+        # so days_old > 90 and the warning fires. Pin the durable
+        # substrings per the docstring contract on
+        # _PRICING_TABLE_STALE_ANNOUNCEMENT.
+        monkeypatch.setattr(
+            "clauditor._providers._pricing._today",
+            lambda: datetime.date(2027, 1, 1),
+        )
+        result = estimate_cost("anthropic", "claude-sonnet-4-6", 100, 50)
+        assert result is not None
+        captured = capsys.readouterr()
+        assert "90 days" in captured.err
+        assert "pricing" in captured.err.lower()
+        assert (
+            "platform.claude.com" in captured.err
+            or "openai.com/api/pricing" in captured.err
+        )
+
+    def test_warning_fires_only_once_per_process(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Stale-date pin; two calls; the warning text appears exactly
+        # once across both calls' combined stderr.
+        monkeypatch.setattr(
+            "clauditor._providers._pricing._today",
+            lambda: datetime.date(2027, 1, 1),
+        )
+        estimate_cost("anthropic", "claude-sonnet-4-6", 100, 50)
+        estimate_cost("anthropic", "claude-sonnet-4-6", 100, 50)
+        captured = capsys.readouterr()
+        # Count occurrences of a narrow durable substring — using a
+        # phrase distinctive to this announcement so unrelated stderr
+        # could not match.
+        assert captured.err.count("pricing table") == 1
+
+    def test_malformed_last_verified_treats_as_stale(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # A typo in _LAST_VERIFIED ("2026-05-9" — single-digit day, not
+        # ISO-8601) must NOT crash the production grading run; the
+        # defensive fallback in announce_pricing_table_stale_if_old
+        # treats parse failure as "stale" so the maintainer sees a
+        # warning that points them at the file to fix.
+        monkeypatch.setattr(
+            "clauditor._providers._pricing._LAST_VERIFIED", "2026-05-9"
+        )
+        # Pin today to a known date so the test does not depend on
+        # the wall-clock; the code path under test does not consult
+        # _today() in the parse-failure branch (days_old hardcoded to
+        # 9999), but pinning keeps the test deterministic.
+        monkeypatch.setattr(
+            "clauditor._providers._pricing._today",
+            lambda: datetime.date(2026, 5, 10),
+        )
+        result = estimate_cost("anthropic", "claude-sonnet-4-6", 100, 50)
+        assert result is not None
+        captured = capsys.readouterr()
+        assert "pricing" in captured.err.lower()
+        assert "90 days" in captured.err
+
+    def test_announce_helper_directly(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Standalone-helper invocation must behave the same as the
+        # estimate_cost-routed path: stale-date pin produces the
+        # warning. Confirms the helper is independently testable per
+        # the announcement-family canonical shape (#95 US-002 et al.).
+        monkeypatch.setattr(
+            "clauditor._providers._pricing._today",
+            lambda: datetime.date(2027, 1, 1),
+        )
+        announce_pricing_table_stale_if_old()
+        captured = capsys.readouterr()
+        assert "90 days" in captured.err
+        assert "pricing" in captured.err.lower()

@@ -35,15 +35,25 @@ prices every input token at the base input rate.
 - https://openai.com/api/pricing/
 
 The :data:`_LAST_VERIFIED` constant records the date the table was
-last cross-checked against these pages. US-002 of #169 adds a
-one-shot stderr warning that fires when the table is older than 90
-days; this module ships only the constants and the lookup core, and
-the staleness announcement helpers land in the next bead.
+last cross-checked against these pages. :func:`announce_pricing_table_stale_if_old`
+(US-002 of #169) emits a one-shot stderr warning on the first
+:func:`estimate_cost` call per process when ``today - _LAST_VERIFIED``
+exceeds 90 days. The :data:`_today` indirection alias lets tests
+pin the wall-clock date deterministically per
+``.claude/rules/monotonic-time-indirection.md``.
 """
 
 from __future__ import annotations
 
+import datetime
+import sys
 from typing import Final, NamedTuple
+
+# Indirection alias per ``.claude/rules/monotonic-time-indirection.md``:
+# tests patch ``clauditor._providers._pricing._today`` to pin the
+# wall-clock date deterministically without clobbering ``datetime.date.today``
+# on the stdlib module (which other code may consult).
+_today = datetime.date.today
 
 
 class _PriceCard(NamedTuple):
@@ -113,6 +123,86 @@ so null-on-unknown is the safe default per DEC-002.
 """
 
 
+# DEC-003 (#169 US-002): one-shot stderr warning when the rate table
+# is older than 90 days. Flipped to ``True`` after the first emission
+# per Python process. Sibling to the announcement-family flags in
+# ``clauditor._providers._auth`` (``_announced_implicit_no_api_key``,
+# ``_announced_call_anthropic_deprecation``, ``_announced_auto_codex_harness``)
+# per ``.claude/rules/centralized-sdk-call.md`` "Implicit-coupling
+# announcements — an emerging family". Tests reset via the
+# ``monkeypatch.setattr(..., False)`` autouse fixture pattern,
+# targeting the canonical flag location at
+# ``clauditor._providers._pricing._announced_pricing_table_stale``.
+_announced_pricing_table_stale: bool = False
+
+
+# DEC-003 (#169 US-002): the staleness notice emitted on the first
+# ``estimate_cost`` call per Python process when
+# ``today - _LAST_VERIFIED > 90 days``. Three durable substrings are
+# test-asserted:
+#   1. ``"90 days"`` — the threshold the warning trips on, so
+#      maintainers know the budget the table is operating against.
+#   2. ``"pricing"`` — anchors the topic so users searching their
+#      stderr for "pricing" find the notice.
+#   3. At least one of ``"platform.claude.com"`` /
+#      ``"openai.com/api/pricing"`` — the source-of-truth URLs a
+#      maintainer must consult when refreshing the table.
+# The ``{days}`` placeholder is interpolated at emit time so the
+# message names the actual age, not just "stale".
+_PRICING_TABLE_STALE_ANNOUNCEMENT: Final[str] = (
+    "clauditor: pricing table in src/clauditor/_providers/_pricing.py is "
+    "{days} days old (>90 days threshold); cost_usd values may diverge "
+    "from current provider rates. Refresh against "
+    "https://platform.claude.com/docs/en/about-claude/pricing and "
+    "https://openai.com/api/pricing/ and bump _LAST_VERIFIED."
+)
+
+
+def announce_pricing_table_stale_if_old() -> None:
+    """Emit the pricing-table-stale notice to stderr once per process.
+
+    DEC-003 of ``plans/super/169-pricing-cost-estimator.md`` (US-002).
+    Called from the top of :func:`estimate_cost` so the warning fires
+    on the first cost-estimation call per Python process when the
+    rate table is older than 90 days. The one-shot module flag
+    :data:`_announced_pricing_table_stale` ensures a single
+    announcement per process regardless of how many subsequent
+    ``estimate_cost`` calls land.
+
+    Parallel to the announcement-family helpers in
+    ``clauditor._providers._auth`` (:func:`announce_implicit_no_api_key`,
+    :func:`announce_call_anthropic_deprecation`,
+    :func:`announce_auto_codex_harness`) — same shape, same one-shot-
+    per-process contract, same ``monkeypatch.setattr(..., False)``
+    test-reset pattern per
+    ``.claude/rules/centralized-sdk-call.md`` "Implicit-coupling
+    announcements — an emerging family".
+
+    Defensive: a typo or otherwise unparseable :data:`_LAST_VERIFIED`
+    treats the table as stale (``days_old = 9999``) so a maintainer's
+    typo in the constant cannot crash a production grading run. The
+    fallback is loud-but-safe: a stale warning is preferable to a
+    silent skip, and the message itself guides the maintainer to the
+    canonical refresh location.
+    """
+    global _announced_pricing_table_stale
+    if _announced_pricing_table_stale:
+        return
+    try:
+        last_verified = datetime.date.fromisoformat(_LAST_VERIFIED)
+        days_old = (_today() - last_verified).days
+    except ValueError:
+        # Defensive: a typo in _LAST_VERIFIED treats the table as
+        # stale rather than crashing the production grading run.
+        days_old = 9999
+    if days_old > 90:
+        print(
+            _PRICING_TABLE_STALE_ANNOUNCEMENT.format(days=days_old),
+            file=sys.stderr,
+        )
+        _announced_pricing_table_stale = True
+
+
 def _validate_token_arg(name: str, value: object) -> None:
     """Reject bool / non-int / negative values for a token-count arg.
 
@@ -174,6 +264,12 @@ def estimate_cost(
         The cost in USD as a ``float``, or ``None`` when the
         ``(provider, model)`` pair is not in :data:`_PRICING_TABLE`.
     """
+    # DEC-003 (#169 US-002): one-shot stderr warning if the rate
+    # table is older than 90 days. Fires before validation so a
+    # caller that hits a contract violation still gets the staleness
+    # cue on the same run; subsequent calls are no-ops per the
+    # announcement-family contract.
+    announce_pricing_table_stale_if_old()
     if not isinstance(provider, str):
         raise ValueError(
             f"estimate_cost: 'provider' must be str, got "
