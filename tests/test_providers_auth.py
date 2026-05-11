@@ -1549,3 +1549,57 @@ class TestCodexAuthMissingTemplateAcceptsPathBranch:
         assert "platform.openai.com" in _CODEX_AUTH_MISSING_TEMPLATE
         # Command-name interpolation preserved.
         assert "{cmd_name}" in _CODEX_AUTH_MISSING_TEMPLATE
+
+
+class TestCodexAuthChatGPTModeTemplate:
+    """The :data:`_CODEX_AUTH_CHATGPT_MODE_TEMPLATE` carries the refusal
+    message for the ChatGPT-mode auth-conflict branch of
+    :func:`check_codex_auth` (DEC-002 / DEC-006 / DEC-010 of
+    ``plans/super/177-codex-auth-mode-conflict.md``). The template is
+    wired into the guard in US-003; US-002 only defines the constant
+    and pins the four durable substrings tests assert on plus the
+    ``{cmd_name}`` interpolation contract."""
+
+    def test_template_mentions_chatgpt(self) -> None:
+        """Durable substring: ``ChatGPT`` — names the auth-mode that
+        clauditor refuses so users immediately recognize what their
+        credentials file currently declares."""
+        from clauditor._providers import _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+        assert "ChatGPT" in _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+    def test_template_mentions_auth_json_path(self) -> None:
+        """Durable substring: ``~/.codex/auth.json`` — the canonical
+        credentials file location the codex CLI reads, named in the
+        refusal so users know where to inspect / fix the auth_mode."""
+        from clauditor._providers import _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+        assert "~/.codex/auth.json" in _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+    def test_template_mentions_remediation_command(self) -> None:
+        """Durable substring: ``codex login --with-api-key`` — the
+        one-line remediation that re-materializes the credentials
+        file in API-key mode."""
+        from clauditor._providers import _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+        assert "codex login --with-api-key" in _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+    def test_template_carries_cmd_name_placeholder(self) -> None:
+        """Durable substring: ``{cmd_name}`` — the interpolation anchor
+        that ``check_codex_auth`` fills with the subcommand label."""
+        from clauditor._providers import _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+        assert "{cmd_name}" in _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+    def test_template_format_interpolates_cmd_name(self) -> None:
+        """``.format(cmd_name=...)`` must work and produce a message
+        containing the interpolated label. Mirrors the contract every
+        other ``_*_AUTH_MISSING_TEMPLATE`` honors so the guard body
+        can route the template through the same ``.format`` call."""
+        from clauditor._providers import _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+        rendered = _CODEX_AUTH_CHATGPT_MODE_TEMPLATE.format(cmd_name="grade")
+        assert "clauditor grade" in rendered
+        # The placeholder must be consumed by the format call — no
+        # stray ``{cmd_name}`` left in the rendered output.
+        assert "{cmd_name}" not in rendered

@@ -538,12 +538,13 @@ def announce_codex_cli_on_path() -> None:
     _announced_codex_cli_on_path = True
 
 
-# DEC-003 / DEC-010 (#151 US-003): message template for
-# :func:`check_codex_auth`, the strict-OR pre-flight guard for the
-# Codex harness. Mirrors :data:`_OPENAI_AUTH_MISSING_TEMPLATE` in shape
-# — single ``{cmd_name}`` interpolation, naming the env-var names
-# users must export, and listing the commands that don't require auth
-# so users see the escape hatch.
+# DEC-003 / DEC-010 (#151 US-003) + DEC-002 / DEC-006 / DEC-010 (#177
+# US-002): message template for :func:`check_codex_auth`, the strict-OR
+# pre-flight guard for the Codex harness. Mirrors
+# :data:`_OPENAI_AUTH_MISSING_TEMPLATE` in shape — single
+# ``{cmd_name}`` interpolation, naming the env-var names users must
+# export, and listing the commands that don't require auth so users
+# see the escape hatch.
 #
 # Four durable substrings tests pin: ``CODEX_API_KEY`` and
 # ``OPENAI_API_KEY`` (the two env-var names Codex accepts) and
@@ -551,17 +552,48 @@ def announce_codex_cli_on_path() -> None:
 # Codex's underlying transport routes to OpenAI). The fourth anchor
 # (DEC-004 of ``plans/super/175-codex-chatgpt-login-auth.md``) is
 # the literal ``"codex CLI"`` — naming the third acceptance route so
-# users who prefer ChatGPT-login authentication learn from the error
-# message that installing the codex CLI on PATH is a supported path.
-_CODEX_AUTH_MISSING_TEMPLATE = (
+# users who prefer the codex-CLI install path learn it from the error
+# message.
+#
+# Post-#177: bullet 3 no longer mentions the ChatGPT-login flow. Per
+# DEC-002 / DEC-006 of ``plans/super/177-codex-auth-mode-conflict.md``,
+# clauditor refuses ChatGPT-mode credentials at pre-flight (the codex
+# subprocess would route via ChatGPT and reject every model). The
+# template's third bullet therefore directs users to the API-key login
+# subcommand (``codex login --with-api-key``) so the resulting
+# ``~/.codex/auth.json`` is in API-key mode.
+_CODEX_AUTH_MISSING_TEMPLATE: Final[str] = (
     "ERROR: No usable Codex authentication found.\n"
     "clauditor {cmd_name} runs the codex harness, which needs one of:\n"
     "  1. CODEX_API_KEY exported (preferred), OR\n"
     "  2. OPENAI_API_KEY exported (get a key at "
     "https://platform.openai.com/api-keys), OR\n"
-    "  3. codex CLI installed on PATH and authenticated via\n"
-    "     ChatGPT login (credentials persisted at ~/.codex/auth.json)\n"
+    "  3. codex CLI installed on PATH and authenticated in API-key mode\n"
+    "     (run: codex login --with-api-key)\n"
     "Commands that don't need a key: lint, init, badge, audit, trend."
+)
+
+
+# DEC-002 / DEC-006 / DEC-010 (#177 US-002): refusal message for the
+# ChatGPT-mode auth-conflict branch of :func:`check_codex_auth`.
+# clauditor runs the codex harness in API-key mode; if the user has
+# logged in via the ChatGPT flow (``~/.codex/auth.json`` declares
+# ``auth_mode="chatgpt"``), the codex subprocess routes via ChatGPT
+# and rejects every model. We refuse at pre-flight rather than
+# letting the subprocess fail opaquely.
+#
+# Four durable substrings tests pin: ``ChatGPT`` (the auth-mode name
+# we're refusing), ``~/.codex/auth.json`` (the canonical credentials
+# file users edit / re-materialize), ``codex login --with-api-key``
+# (the one-line remediation), and ``{cmd_name}`` (the interpolation
+# anchor users see in the message).
+_CODEX_AUTH_CHATGPT_MODE_TEMPLATE: Final[str] = (
+    "ERROR: Codex auth-mode mismatch.\n"
+    "clauditor {cmd_name} runs the codex harness in API-key mode,\n"
+    "but ~/.codex/auth.json declares auth_mode=\"chatgpt\". The\n"
+    "subprocess would route via ChatGPT and reject every model.\n"
+    "Fix: run `codex login --with-api-key` to re-materialize\n"
+    "~/.codex/auth.json in API-key mode."
 )
 
 
