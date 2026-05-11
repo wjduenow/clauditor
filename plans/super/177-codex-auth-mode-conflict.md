@@ -3,8 +3,9 @@
 ## Meta
 
 - **Ticket:** [#177](https://github.com/wjduenow/clauditor/issues/177)
-- **Phase:** published
+- **Phase:** devolved
 - **PR:** https://github.com/wjduenow/clauditor/pull/181
+- **Beads epic:** `clauditor-5y2v`
 - **Branch:** `feature/177-codex-auth-mode-conflict`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/177-codex-auth-mode-conflict`
 - **Sibling tickets:** #175 (clauditor accepting ChatGPT-login as valid auth — merged plan), #143 (multi-provider/multi-harness epic, parent)
@@ -575,4 +576,25 @@ last.
 
 ## Beads Manifest
 
-_TBD — Phase 7 (devolve)._
+- **Epic:** `clauditor-5y2v` — #177: Codex auth-mode conflict (chatgpt-login refusal + subprocess mapping)
+- **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/177-codex-auth-mode-conflict`
+- **Branch:** `feature/177-codex-auth-mode-conflict`
+- **PR:** https://github.com/wjduenow/clauditor/pull/181
+
+### Tasks
+
+| ID | Title | Depends on |
+| --- | --- | --- |
+| `clauditor-5y2v.1` | US-001 Pure helpers for auth.json parse + verdict + path resolution | — |
+| `clauditor-5y2v.2` | US-002 Error templates — rework `_CODEX_AUTH_MISSING_TEMPLATE` + add `_CODEX_AUTH_CHATGPT_MODE_TEMPLATE` | — |
+| `clauditor-5y2v.3` | US-003 Wire pre-flight chatgpt-mode refusal into `check_codex_auth` | `.1`, `.2` |
+| `clauditor-5y2v.4` | US-004 Flip `TestCheckCodexAuthPathBranch` tests + reword `_CODEX_CLI_ON_PATH_ANNOUNCEMENT` | `.3` |
+| `clauditor-5y2v.5` | US-005 Subprocess error mapping — chatgpt rejection → `"auth"` category | — |
+| `clauditor-5y2v.6` | US-006 Quality Gate — code review x4 + CodeRabbit + validation | `.1`, `.2`, `.3`, `.4`, `.5` |
+| `clauditor-5y2v.7` | US-007 Patterns & Memory — refresh `centralized-sdk-call.md` + CHANGELOG | `.6` |
+
+### Ready queue at devolve time
+
+`bd ready` returns three parallel-start tasks: `.1`, `.2`, `.5`. US-003
+unblocks once both `.1` and `.2` close; US-004 unblocks after `.3`; the
+Quality Gate `.6` is the synchronization barrier; `.7` ships last.
