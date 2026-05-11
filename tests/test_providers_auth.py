@@ -1331,3 +1331,221 @@ class TestAnnounceCodexCliOnPath:
         announce_codex_cli_on_path()
         captured = capsys.readouterr()
         assert captured.err != ""
+
+
+class TestCheckCodexAuthPathBranch:
+    """Three-branch strict-OR for :func:`check_codex_auth` (#175 US-002).
+
+    DEC-001 / DEC-002 / DEC-004 / DEC-009 / DEC-010 of
+    ``plans/super/175-codex-chatgpt-login-auth.md``. The pre-flight guard
+    now accepts on any of:
+
+    1. ``CODEX_API_KEY`` set (whitespace-trimmed non-empty) — pass silently.
+    2. ``OPENAI_API_KEY`` set (whitespace-trimmed non-empty) — pass silently.
+    3. ``codex`` binary on PATH (the new branch) — pass + fire the
+       :func:`announce_codex_cli_on_path` one-shot stderr notice.
+
+    Per DEC-009 the announcement fires only when the PATH branch is the
+    load-bearing acceptance signal. Per DEC-010 the env-var branches
+    short-circuit BEFORE the PATH probe so a CI run with ``CODEX_API_KEY``
+    set never sees a noisy "codex CLI on PATH" notice even when the CLI
+    happens to be installed.
+
+    Tests use ``monkeypatch.setattr`` to override the autouse
+    ``shutil.which → None`` pin from ``tests/conftest.py`` per
+    ``.claude/rules/test-infra-shutil-which-coupling.md``. Each test
+    that exercises the PATH branch also resets the
+    :data:`_announced_codex_cli_on_path` flag.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_announcement_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Every test starts with the one-shot flag set to False so
+        announcement assertions are deterministic."""
+        monkeypatch.setattr(
+            "clauditor._providers._auth._announced_codex_cli_on_path",
+            False,
+        )
+
+    def test_codex_on_path_no_env_vars_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """DEC-001 / DEC-002: PATH-only acceptance succeeds AND fires
+        the announcement (DEC-009 — PATH is the load-bearing signal)."""
+        from clauditor._providers import (
+            _CODEX_CLI_ON_PATH_ANNOUNCEMENT,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        assert check_codex_auth("grade") is None
+        captured = capsys.readouterr()
+        assert _CODEX_CLI_ON_PATH_ANNOUNCEMENT in captured.err
+
+    def test_codex_on_path_with_codex_env_silent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """DEC-010: env-var branch short-circuits BEFORE the PATH probe.
+        ``CODEX_API_KEY`` set + codex on PATH must pass silently — no
+        announcement, since the env-var branch is the load-bearing
+        accept signal, not PATH."""
+        from clauditor._providers import _auth as _auth_mod
+        from clauditor._providers import check_codex_auth
+
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        assert check_codex_auth("grade") is None
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_codex_on_path_with_openai_env_silent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """DEC-010 sibling: ``OPENAI_API_KEY`` set + codex on PATH must
+        also pass silently. The env-var short-circuit applies to either
+        env-var branch."""
+        from clauditor._providers import _auth as _auth_mod
+        from clauditor._providers import check_codex_auth
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        assert check_codex_auth("grade") is None
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+    def test_codex_whitespace_env_on_path_passes_with_announcement(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Whitespace-only env vars count as absent (existing helper
+        contract); the PATH branch should fire and announce since it's
+        the load-bearing signal."""
+        from clauditor._providers import (
+            _CODEX_CLI_ON_PATH_ANNOUNCEMENT,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        monkeypatch.setenv("CODEX_API_KEY", "   \t\n")
+        monkeypatch.setenv("OPENAI_API_KEY", "  ")
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        assert check_codex_auth("grade") is None
+        captured = capsys.readouterr()
+        assert _CODEX_CLI_ON_PATH_ANNOUNCEMENT in captured.err
+
+    def test_neither_env_nor_path_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """All three branches fail → raise. Verify the four durable
+        substrings: the three pre-#175 anchors (``CODEX_API_KEY``,
+        ``OPENAI_API_KEY``, ``platform.openai.com``) plus the NEW
+        substring naming the codex CLI install path so users learn
+        about the third acceptance path from the error message."""
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # Override autouse pin defensively; this test asserts the
+        # raise path AND the new substring naming the codex CLI route.
+        monkeypatch.setattr(_auth_mod.shutil, "which", lambda name: None)
+        with pytest.raises(CodexAuthMissingError) as exc_info:
+            check_codex_auth("grade")
+        message = str(exc_info.value)
+        # Three pre-#175 durable substrings — must still hold per DEC-004.
+        assert "CODEX_API_KEY" in message
+        assert "OPENAI_API_KEY" in message
+        assert "platform.openai.com" in message
+        # NEW DEC-004 durable substring: a mention of the codex CLI as
+        # a third acceptance path. The literal ``"codex CLI"`` is the
+        # pin; stylistic copy around it may change.
+        assert "codex CLI" in message
+        # Command-name interpolation still works.
+        assert "clauditor grade" in message
+
+    def test_announcement_one_shot_across_calls(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Repeat PATH-branch acceptance in the same process fires the
+        announcement exactly once (one-shot contract — same shape as
+        :func:`announce_auto_codex_harness`)."""
+        from clauditor._providers import _auth as _auth_mod
+        from clauditor._providers import check_codex_auth
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        check_codex_auth("grade")
+        # Drain first emission.
+        first = capsys.readouterr().err
+        assert first != ""
+        check_codex_auth("validate")
+        # Second call must be silent.
+        second = capsys.readouterr().err
+        assert second == ""
+
+
+class TestCodexAuthMissingTemplateAcceptsPathBranch:
+    """The :data:`_CODEX_AUTH_MISSING_TEMPLATE` must mention the codex
+    CLI install path as a third acceptance route (DEC-004 of
+    ``plans/super/175-codex-chatgpt-login-auth.md``) while preserving
+    the three pre-#175 durable substrings."""
+
+    def test_template_mentions_codex_cli(self) -> None:
+        """New durable substring: ``codex CLI`` — users learn the
+        third acceptance path from the missing-auth error message."""
+        from clauditor._providers import _CODEX_AUTH_MISSING_TEMPLATE
+
+        assert "codex CLI" in _CODEX_AUTH_MISSING_TEMPLATE
+
+    def test_template_preserves_pre_175_substrings(self) -> None:
+        """Three pre-#175 anchors (``CODEX_API_KEY``, ``OPENAI_API_KEY``,
+        ``platform.openai.com``) must still hold so existing CI parsers
+        and the substring-based test in :class:`TestCheckCodexAuth` keep
+        matching."""
+        from clauditor._providers import _CODEX_AUTH_MISSING_TEMPLATE
+
+        assert "CODEX_API_KEY" in _CODEX_AUTH_MISSING_TEMPLATE
+        assert "OPENAI_API_KEY" in _CODEX_AUTH_MISSING_TEMPLATE
+        assert "platform.openai.com" in _CODEX_AUTH_MISSING_TEMPLATE
+        # Command-name interpolation preserved.
+        assert "{cmd_name}" in _CODEX_AUTH_MISSING_TEMPLATE
