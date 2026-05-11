@@ -1315,6 +1315,114 @@ class TestInvokeCodexExec:
         assert result.error_category is None
 
 
+class TestCliRunCodexCachedSourceLabel:
+    """#175 US-003 — end-to-end CLI integration test for the ``cached``
+    source-label production wiring (DEC-005 / DEC-017 of #149).
+
+    Proves the full chain after US-001 (helper) and US-002
+    (acceptance-set widening) landed:
+
+      CLI (``cmd_run`` with ``--harness codex``) →
+      :func:`_resolve_harness` returns ``"codex"`` →
+      :func:`check_codex_auth` accepts via the new PATH branch
+      (no env keys, codex on PATH) →
+      :class:`CodexHarness.invoke` runs →
+      :meth:`CodexHarness._detect_auth_source` returns ``"cached"``
+      (because ``$CODEX_HOME/auth.json`` exists) →
+      stderr emits ``clauditor.runner: codex auth=cached``.
+
+    Pre-#175 the ``"cached"`` value was UNREACHABLE in CLI flow
+    because :func:`check_codex_auth` raised first with no env vars
+    set. This test regression-pins the previously-unreachable
+    label being surfaced.
+    """
+
+    def _patch_popen(self, monkeypatch, fake):
+        """Patch ``subprocess.Popen`` inside the codex harness module."""
+        import clauditor._harnesses._codex as _codex_mod
+
+        def _fake_popen(*args, **kwargs):
+            return fake
+
+        monkeypatch.setattr(_codex_mod.subprocess, "Popen", _fake_popen)
+
+    def test_cli_run_codex_chatgpt_login_emits_cached_source(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """End-to-end CLI run with the ChatGPT-login flow: no env-var
+        keys, ``codex`` on PATH (accepted via the new US-002 branch),
+        and ``$CODEX_HOME/auth.json`` present produces an
+        ``auth=cached`` stderr line. Durable substring:
+        ``"clauditor.runner: codex auth=cached"``.
+        """
+        import argparse
+
+        from clauditor._providers import _auth as _auth_mod
+        from clauditor.cli.run import cmd_run
+
+        # 1. Build the ChatGPT-login env state: CODEX_HOME pointed at a
+        #    tmp dir containing an empty ``auth.json`` (only file
+        #    existence is checked — content is opaque to clauditor).
+        codex_home = tmp_path / ".codex"
+        codex_home.mkdir()
+        (codex_home / "auth.json").write_text("{}")
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+        # 2. Clear env-var auth so the harness's auth-source detector
+        #    falls through to the cached-file branch AND so
+        #    ``check_codex_auth`` exercises its third (PATH) branch.
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # 3. Override the autouse ``shutil.which → None`` pin from
+        #    tests/conftest.py so :func:`_codex_cli_is_available`
+        #    sees codex on PATH (per
+        #    ``.claude/rules/test-infra-shutil-which-coupling.md``).
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        # 4. Reset the one-shot ``codex CLI on PATH`` announcement
+        #    flag (per the announcement-family reset pattern from
+        #    ``.claude/rules/centralized-sdk-call.md``) so the
+        #    accept-via-PATH path runs cleanly even if a prior test
+        #    in the same process flipped it.
+        monkeypatch.setattr(
+            "clauditor._providers._auth._announced_codex_cli_on_path",
+            False,
+        )
+        # 5. Patch ``subprocess.Popen`` for the codex harness body so
+        #    ``CodexHarness.invoke`` does not spawn a real codex
+        #    binary. The fake stream returns a clean ``agent_message``
+        #    so the call returns exit_code=0.
+        fake = make_fake_codex_stream("hello-from-fake-codex")
+        self._patch_popen(monkeypatch, fake)
+
+        # 6. Build the argparse Namespace ``cmd_run`` expects. Pin
+        #    ``--harness codex`` so the four-layer resolver picks
+        #    codex deterministically (without consulting env / auto).
+        ns = argparse.Namespace(
+            skill="some-skill",
+            args=None,
+            project_dir=str(tmp_path),
+            timeout=None,
+            no_api_key=False,
+            sync_tasks=False,
+            harness="codex",
+        )
+
+        exit_code = cmd_run(ns)
+
+        captured = capsys.readouterr()
+        # The full chain produced an ``auth=cached`` stderr line —
+        # the previously-unreachable label is now reachable per
+        # DEC-005 of #175 / DEC-017 of #149.
+        assert "clauditor.runner: codex auth=cached" in captured.err, (
+            f"expected 'auth=cached' in stderr, got: {captured.err!r}"
+        )
+        # The run succeeded end-to-end.
+        assert exit_code == 0
+
+
 class TestInvokeCodexExecErrorPaths:
     """Error-path tests for :meth:`CodexHarness.invoke` (US-004).
 
