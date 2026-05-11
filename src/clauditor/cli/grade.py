@@ -800,6 +800,7 @@ def _write_workspace_sidecars(
             provider=provider,
             primary_skill_result=primary_skill_result,
             model_grader=primary_report.model,
+            reasoning_tokens=primary_report.reasoning_tokens,
         )
 
     # #152 US-002: stamp the harness on assertions.json. Single harness
@@ -891,6 +892,7 @@ def _write_context_sidecar(
     provider: str,
     primary_skill_result: SkillResult,
     model_grader: str | None,
+    reasoning_tokens: int | None,
 ) -> None:
     """Write per-iteration comparability metadata as ``context.json``.
 
@@ -901,8 +903,14 @@ def _write_context_sidecar(
     immediately. ``sandbox_mode`` IS optional (only Codex populates it)
     so it uses ``.get(...)``.
 
-    ``cost_usd`` and ``reasoning_tokens`` ship as ``None`` per DEC-001 /
-    DEC-002 (placeholders for #169 / #170).
+    ``reasoning_tokens`` is threaded from the primary
+    :class:`GradingReport` per #170 US-005 (sum-of-non-None semantics
+    across grader attempts; see DEC-003 of
+    ``plans/super/170-reasoning-tokens-capture.md``). ``None`` means
+    "no provider call surfaced a reasoning-token count" — distinct
+    from ``0``.
+
+    ``cost_usd`` ships as ``None`` per DEC-001 (placeholder for #169).
 
     Runs inside the workspace staging block per
     ``.claude/rules/sidecar-during-staging.md``; the caller's
@@ -919,7 +927,7 @@ def _write_context_sidecar(
         ],
         sandbox_mode=primary_skill_result.harness_metadata.get("sandbox_mode"),
         cost_usd=None,
-        reasoning_tokens=None,
+        reasoning_tokens=reasoning_tokens,
     )
     (skill_dir / "context.json").write_text(
         context.to_json(), encoding="utf-8"

@@ -1044,6 +1044,7 @@ def make_grading_report(
     duration_seconds: float = 1.0,
     thresholds: GradeThresholds | None = None,
     extra_results: list[GradingResult] | None = None,
+    reasoning_tokens: int | None = None,
 ) -> GradingReport:
     """Build a GradingReport with one criterion result (extra_results appended)."""
     actual_score = score if score is not None else (0.9 if passed else 0.3)
@@ -1067,6 +1068,7 @@ def make_grading_report(
         metrics={},
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        reasoning_tokens=reasoning_tokens,
     )
 
 
