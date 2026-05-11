@@ -315,6 +315,18 @@ def _extract_result(response: Any) -> ModelResult:
         output_tokens=output_tokens,
         raw_message=response,
         source="api",
+        # DEC-001 of plans/super/170-reasoning-tokens-capture.md:
+        # ``anthropic.types.Usage`` carries no separately-billed
+        # reasoning-token field. For extended-thinking models
+        # (Opus 4.x, Sonnet 4.x with ``thinking={"type":"enabled",...}``)
+        # the thinking tokens are ALREADY INCLUDED in
+        # ``output_tokens``; there is no separate count to surface.
+        # Honest ``None`` is the only correct representation —
+        # distinct from ``0``, which would falsely assert "the call
+        # ran but used zero reasoning tokens". Do NOT copy-paste a
+        # ``reasoning_tokens=usage.<something>`` shape from the
+        # OpenAI backend here; the SDK simply does not expose one.
+        reasoning_tokens=None,
     )
 
 
@@ -761,6 +773,13 @@ async def _call_via_claude_cli(
                 raw_message=None,
                 source="cli",
                 duration_seconds=duration,
+                # DEC-001 of #170 — see ``_extract_result`` for the
+                # full rationale. Parity with the SDK branch: the
+                # ``claude -p`` subprocess stream-json carries no
+                # separately-billed reasoning-token field either,
+                # and ``InvokeResult.output_tokens`` already includes
+                # any thinking tokens for extended-thinking models.
+                reasoning_tokens=None,
             )
 
         # Decide retry vs raise using the shared ladder.

@@ -171,6 +171,56 @@ class TestExtractResult:
         result = _extract_result(resp)
         assert result.raw_message is resp
 
+    def test_anthropic_reasoning_tokens_always_none(self) -> None:
+        """Drift-guard (#170 US-003 / DEC-001): the Anthropic backend's
+        ``_extract_result`` MUST stamp ``reasoning_tokens=None`` on
+        every successful response, regardless of usage shape.
+
+        ``anthropic.types.Usage`` carries no separately-billed
+        reasoning-token field — for extended-thinking models the
+        thinking tokens are already included in ``output_tokens``.
+        Honest ``None`` is the only correct representation, distinct
+        from ``0`` (which would assert "the call ran but used zero
+        reasoning tokens"). A future contributor copy-pasting the
+        OpenAI-side wiring (``reasoning_tokens=usage.something``)
+        would silently break this contract; this test catches the
+        regression at the construction site."""
+        usage = MagicMock(input_tokens=10, output_tokens=5)
+        resp = _mock_response(usage=usage)
+        result = _extract_result(resp)
+        assert result.reasoning_tokens is None
+        # Defense in depth: confirm the rest of the projection still
+        # works so a regression that nulled every field would not be
+        # mistaken for the reasoning_tokens=None contract holding.
+        assert result.input_tokens == 10
+        assert result.output_tokens == 5
+
+    def test_anthropic_reasoning_tokens_none_for_thinking_style_response(
+        self,
+    ) -> None:
+        """Drift-guard (#170 US-003 / DEC-001): a response that
+        includes a thinking-block-shaped content block (extended-
+        thinking models — Opus 4.x, Sonnet 4.x with
+        ``thinking={"type":"enabled",...}``) MUST still surface
+        ``reasoning_tokens=None``. The Anthropic SDK does not split
+        thinking tokens out of ``output_tokens``; we cannot honestly
+        report a separate count, so the field stays ``None`` even
+        when a thinking block is visibly present in ``content``."""
+        thinking_block = MagicMock(spec=["type"])
+        thinking_block.type = "thinking"
+        text_block = MagicMock(type="text", text="final answer")
+        # ``output_tokens`` here ALREADY INCLUDES the thinking-block
+        # tokens per the Anthropic API contract — there is no
+        # ``thinking_tokens`` key on ``usage`` to subtract or expose.
+        usage = MagicMock(input_tokens=20, output_tokens=150)
+        resp = _mock_response(blocks=[thinking_block, text_block], usage=usage)
+        result = _extract_result(resp)
+        assert result.reasoning_tokens is None
+        # Sanity: the text block still surfaces; the thinking block
+        # is filtered out by the ``type == "text"`` check.
+        assert result.response_text == "final answer"
+        assert result.text_blocks == ["final answer"]
+
 
 class TestBodyExcerpt:
     def test_none_body(self) -> None:
@@ -696,6 +746,24 @@ class TestCallViaClaudeCli:
             result = await call_anthropic("p", model="m", transport="cli")
         assert result.input_tokens == 123
         assert result.output_tokens == 45
+
+    @pytest.mark.asyncio
+    async def test_cli_transport_reasoning_tokens_always_none(self) -> None:
+        """Drift-guard (#170 US-003 / DEC-001): the CLI-transport
+        success path MUST also stamp ``reasoning_tokens=None``. The
+        ``claude -p`` subprocess output stream-json carries no
+        separately-billed reasoning-token field; even if the parent
+        model is an extended-thinking variant, the projected
+        ``InvokeResult.output_tokens`` already includes thinking
+        tokens. Honest ``None`` parity with the SDK branch is the
+        only correct shape."""
+        fake = _make_cli_success_popen("ok", input_tokens=7, output_tokens=11)
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
+            result = await call_anthropic("p", model="m", transport="cli")
+        assert result.reasoning_tokens is None
 
     @pytest.mark.asyncio
     async def test_rate_limit_retries_up_to_three_times(self) -> None:
