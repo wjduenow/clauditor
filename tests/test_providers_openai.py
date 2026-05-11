@@ -739,6 +739,25 @@ class TestExtractReasoningTokens:
 
         assert _extract_reasoning_tokens(Raising()) is None
 
+    def test_inner_attribute_access_raising_yields_none(self) -> None:
+        # Sibling of ``test_attribute_access_raising_yields_none``:
+        # the OUTER ``getattr(usage, "output_tokens_details")``
+        # succeeds, but accessing ``reasoning_tokens`` on the
+        # returned ``details`` object raises. The inner try/except
+        # MUST collapse to ``None`` rather than propagate. Covers
+        # the inner defensive branch (a future SDK shape where the
+        # nested ``output_tokens_details`` is a Pydantic-v2 model
+        # whose ``reasoning_tokens`` is a computed property that
+        # throws on missing-data inputs).
+        class RaisingDetails:
+            @property
+            def reasoning_tokens(self):
+                raise RuntimeError("nope")
+
+        usage = MagicMock()
+        usage.output_tokens_details = RaisingDetails()
+        assert _extract_reasoning_tokens(usage) is None
+
 
 # ---------------------------------------------------------------------------
 # US-004: Retry / error branches in call_openai
