@@ -211,6 +211,29 @@ def _claude_cli_is_available() -> bool:
     return shutil.which("claude") is not None
 
 
+def _codex_cli_is_available() -> bool:
+    """Return True when the ``codex`` binary is on PATH.
+
+    DEC-001 / DEC-002 of ``plans/super/175-codex-chatgpt-login-auth.md``.
+    Presence check only — we do NOT verify the CLI is authenticated or
+    functional. That's deliberate: the goal of the pre-flight guard is
+    to bail out cheaply when *neither* env-var auth path nor the CLI
+    binary is even theoretically available. If the CLI is on PATH but
+    its ``~/.codex/auth.json`` is stale or absent, ``codex exec``
+    itself produces a crisp ``"Please log out and sign in again"``
+    error downstream — pre-flight does NOT try to parse the JSON to
+    second-guess codex (DEC-008: explicit decision to skip
+    ``auth.json`` parsing in favor of trusting the CLI binary).
+
+    Parallel shape to :func:`_claude_cli_is_available`: both helpers
+    pin ``shutil.which`` against their respective harness binary names
+    and return a bool. Tests override the autouse
+    ``shutil.which → None`` pin from ``tests/conftest.py`` via
+    ``monkeypatch.setattr`` targeting this module's ``shutil``.
+    """
+    return shutil.which("codex") is not None
+
+
 def check_any_auth_available(cmd_name: str) -> None:
     """Pre-flight guard: raise only when no auth path is available at all.
 
@@ -445,6 +468,76 @@ def announce_auto_codex_harness() -> None:
     _announced_auto_codex_harness = True
 
 
+# DEC-003 / DEC-009 (#175 US-001): one-shot stderr announcement when
+# :func:`check_codex_auth` accepts the pre-flight via the codex-CLI-on-
+# PATH branch (i.e. neither ``CODEX_API_KEY`` nor ``OPENAI_API_KEY``
+# is set; ``codex`` binary is on PATH; user is authenticated via
+# ChatGPT login persisted in ``~/.codex/auth.json``). Flipped to
+# ``True`` after the first emission per Python process. Fourth member
+# of the implicit-coupling announcement family (co-located with
+# :data:`_announced_implicit_no_api_key`,
+# :data:`_announced_call_anthropic_deprecation`, and
+# :data:`_announced_auto_codex_harness`) per
+# ``.claude/rules/centralized-sdk-call.md`` "Implicit-coupling
+# announcements — an emerging family". Per DEC-009 the announcement
+# fires ONLY when the PATH branch is the load-bearing acceptance
+# signal — env-var-driven acceptance stays silent to keep CI noise
+# down. Tests reset via the standard
+# ``monkeypatch.setattr(..., False)`` autouse fixture pattern,
+# targeting the canonical flag location at
+# ``clauditor._providers._auth._announced_codex_cli_on_path``.
+_announced_codex_cli_on_path: bool = False
+
+
+# DEC-003 / DEC-004 (#175 US-001): the codex-CLI-on-PATH announcement
+# emitted on the first PATH-load-bearing :func:`check_codex_auth`
+# acceptance per Python process. Names env-var names and file paths
+# only (NEVER interpolates values) per the Auth review #7 precedent
+# from #151. Three durable substrings tests pin: ``codex`` (the CLI
+# name), ``PATH`` (the discovery mechanism), and
+# ``~/.codex/auth.json`` (where codex itself looks for credentials,
+# so a user who has codex on PATH but never logged in knows what to
+# do next). The remainder of the message is stylistic copy and may be
+# edited without churning tests.
+_CODEX_CLI_ON_PATH_ANNOUNCEMENT: Final[str] = (
+    "clauditor: accepted codex pre-flight via codex CLI on PATH "
+    "(neither CODEX_API_KEY nor OPENAI_API_KEY is set; codex itself "
+    "will resolve credentials from ~/.codex/auth.json — typically "
+    "the ChatGPT-login flow). If you intended to use an API key, "
+    "export CODEX_API_KEY or OPENAI_API_KEY."
+)
+
+
+def announce_codex_cli_on_path() -> None:
+    """Emit the codex-CLI-on-PATH notice to stderr once per process.
+
+    DEC-003 / DEC-009 (#175 US-001). Called from :func:`check_codex_auth`
+    immediately before returning ``None`` via the PATH-on-disk branch
+    (i.e. neither ``CODEX_API_KEY`` nor ``OPENAI_API_KEY`` was set, but
+    ``shutil.which("codex")`` returned a path). The one-shot module
+    flag :data:`_announced_codex_cli_on_path` ensures a single
+    announcement per Python process regardless of how many subsequent
+    CLI commands resolve under the same conditions.
+
+    Same shape as :func:`announce_implicit_no_api_key` (#95 US-002),
+    :func:`announce_call_anthropic_deprecation` (#144 US-007), and
+    :func:`announce_auto_codex_harness` (#151 US-003): public helper,
+    print-and-flip, one-shot per process. Tests reset via
+    ``monkeypatch.setattr`` on the canonical flag location.
+
+    Per ``.claude/rules/centralized-sdk-call.md`` "Implicit-coupling
+    announcements — an emerging family", the helper lives in
+    ``_providers/_auth.py`` because the notice is auth-coupled (it
+    names ``CODEX_API_KEY`` / ``OPENAI_API_KEY`` and
+    ``~/.codex/auth.json``).
+    """
+    global _announced_codex_cli_on_path
+    if _announced_codex_cli_on_path:
+        return
+    print(_CODEX_CLI_ON_PATH_ANNOUNCEMENT, file=sys.stderr)
+    _announced_codex_cli_on_path = True
+
+
 # DEC-003 / DEC-010 (#151 US-003): message template for
 # :func:`check_codex_auth`, the strict-OR pre-flight guard for the
 # Codex harness. Mirrors :data:`_OPENAI_AUTH_MISSING_TEMPLATE` in shape
@@ -452,16 +545,22 @@ def announce_auto_codex_harness() -> None:
 # users must export, and listing the commands that don't require auth
 # so users see the escape hatch.
 #
-# Three durable substrings tests pin: ``CODEX_API_KEY`` and
-# ``OPENAI_API_KEY`` (the two env-var names Codex accepts), plus
+# Four durable substrings tests pin: ``CODEX_API_KEY`` and
+# ``OPENAI_API_KEY`` (the two env-var names Codex accepts) and
 # ``platform.openai.com`` (the canonical place to obtain a key —
-# Codex's underlying transport routes to OpenAI).
+# Codex's underlying transport routes to OpenAI). The fourth anchor
+# (DEC-004 of ``plans/super/175-codex-chatgpt-login-auth.md``) is
+# the literal ``"codex CLI"`` — naming the third acceptance route so
+# users who prefer ChatGPT-login authentication learn from the error
+# message that installing the codex CLI on PATH is a supported path.
 _CODEX_AUTH_MISSING_TEMPLATE = (
-    "ERROR: Neither CODEX_API_KEY nor OPENAI_API_KEY is set.\n"
-    "clauditor {cmd_name} runs the codex harness, which needs an API\n"
-    "key. Get a key at https://platform.openai.com/api-keys, then\n"
-    "export CODEX_API_KEY=... (preferred) or OPENAI_API_KEY=... and\n"
-    "re-run.\n"
+    "ERROR: No usable Codex authentication found.\n"
+    "clauditor {cmd_name} runs the codex harness, which needs one of:\n"
+    "  1. CODEX_API_KEY exported (preferred), OR\n"
+    "  2. OPENAI_API_KEY exported (get a key at "
+    "https://platform.openai.com/api-keys), OR\n"
+    "  3. codex CLI installed on PATH and authenticated via\n"
+    "     ChatGPT login (credentials persisted at ~/.codex/auth.json)\n"
     "Commands that don't need a key: lint, init, badge, audit, trend."
 )
 
@@ -481,28 +580,51 @@ def _codex_api_key_is_set() -> bool:
 
 
 def check_codex_auth(cmd_name: str) -> None:
-    """Pre-flight guard: raise if neither Codex env var is set.
+    """Pre-flight guard: raise if no Codex auth path is available.
 
-    DEC-003 / DEC-010 of ``plans/super/151-harness-precedence.md``.
-    Pure helper raising :class:`CodexAuthMissingError` when
-    ``CODEX_API_KEY`` AND ``OPENAI_API_KEY`` are both absent, empty,
-    or whitespace-only. Strict-OR semantics: at least one of the two
-    env vars must be set (non-empty after whitespace trimming). There
-    is no CLI-fallback branch — Codex has no documented "subscription
-    only" auth analog like Claude Pro/Max.
+    DEC-001 / DEC-002 / DEC-009 / DEC-010 of
+    ``plans/super/175-codex-chatgpt-login-auth.md`` (extending
+    DEC-003 / DEC-010 of ``plans/super/151-harness-precedence.md``).
+    Three-branch strict-OR: accepts when ANY of
 
-    Codex is a HARNESS axis, not a PROVIDER axis (DEC-010): the
-    :func:`check_provider_auth` dispatcher is unchanged; the CLI seam
-    directly calls :func:`check_codex_auth` when the resolved harness
-    is ``"codex"``.
+    1. ``CODEX_API_KEY`` is set (whitespace-trimmed non-empty), OR
+    2. ``OPENAI_API_KEY`` is set (whitespace-trimmed non-empty), OR
+    3. The ``codex`` binary is on PATH (i.e. the user is logged in
+       via ChatGPT and credentials are persisted at
+       ``~/.codex/auth.json``; the codex CLI itself resolves them
+       downstream).
 
-    Pure function per ``.claude/rules/pure-compute-vs-io-split.md``:
-    reads ``os.environ`` only; does NOT print to stderr, does NOT call
-    ``sys.exit``, does NOT log. The CLI wrapper catches
-    :class:`CodexAuthMissingError` (a direct subclass of
-    :class:`Exception`, NOT :class:`AnthropicAuthMissingError`,
-    :class:`OpenAIAuthMissingError`, or any helper-error class) and
-    maps it to ``return 2`` per
+    Raises :class:`CodexAuthMissingError` only when all three branches
+    fail.
+
+    Per DEC-010 the env-var branches are checked FIRST and
+    short-circuit before the PATH probe — a CI run with
+    ``CODEX_API_KEY`` set never triggers the codex-CLI-on-PATH
+    announcement even when the CLI happens to be installed.
+
+    Per DEC-009 :func:`announce_codex_cli_on_path` fires ONLY when
+    the PATH branch is the load-bearing acceptance signal (no env
+    vars set, but codex on PATH). The announcement is one-shot per
+    Python process, same shape as the other implicit-coupling
+    announcements (see ``.claude/rules/centralized-sdk-call.md``
+    "Implicit-coupling announcements — an emerging family").
+
+    Codex is a HARNESS axis, not a PROVIDER axis (DEC-010 of #151):
+    the :func:`check_provider_auth` dispatcher is unchanged; the CLI
+    seam directly calls :func:`check_codex_auth` when the resolved
+    harness is ``"codex"``.
+
+    Pure function per ``.claude/rules/pure-compute-vs-io-split.md``
+    in the return-value sense: reads ``os.environ`` and probes PATH
+    via ``shutil.which`` only; raises on missing auth. The one
+    documented side-effect is the announcement family member
+    :func:`announce_codex_cli_on_path` (gated by a module-level
+    one-shot flag; resets only via test monkeypatch). The CLI
+    wrapper catches :class:`CodexAuthMissingError` (a direct
+    subclass of :class:`Exception`, NOT
+    :class:`AnthropicAuthMissingError`,
+    :class:`OpenAIAuthMissingError`, or any helper-error class)
+    and maps it to ``return 2`` per
     ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
 
     Args:
@@ -514,12 +636,21 @@ def check_codex_auth(cmd_name: str) -> None:
     Raises:
         CodexAuthMissingError: when neither ``CODEX_API_KEY`` nor
             ``OPENAI_API_KEY`` is set (both checked via whitespace-
-            trimmed non-empty). Message contains the three durable
-            substrings (``CODEX_API_KEY``, ``OPENAI_API_KEY``,
-            ``platform.openai.com``) and the interpolated command
-            name.
+            trimmed non-empty) AND the ``codex`` binary is not on
+            PATH. Message contains the four durable substrings
+            (``CODEX_API_KEY``, ``OPENAI_API_KEY``,
+            ``platform.openai.com``, ``codex CLI``) and the
+            interpolated command name.
     """
+    # DEC-010: env-var branches short-circuit BEFORE the PATH probe so
+    # env-driven acceptance stays silent (no codex-CLI-on-PATH notice).
     if _codex_api_key_is_set() or _openai_api_key_is_set():
+        return None
+    # DEC-001 / DEC-002: third acceptance branch — codex on PATH.
+    # DEC-009: announce only here, where PATH is the load-bearing
+    # acceptance signal. The helper is one-shot per process.
+    if _codex_cli_is_available():
+        announce_codex_cli_on_path()
         return None
     # Local import to avoid a module-load circular hazard analogous to
     # ``AnthropicAuthMissingError`` (defined in ``_providers/__init__``

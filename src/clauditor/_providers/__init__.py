@@ -158,28 +158,36 @@ class CodexAuthMissingError(Exception):
 # trumps style here — DO NOT rearrange these two ``from clauditor.
 # _providers.*`` blocks.
 #
-# The mutable one-shot announcement flag ``_announced_implicit_no_api_key``
-# is intentionally NOT re-exported. ``from X import Y`` creates a fresh
-# binding in this module, and ``announce_implicit_no_api_key()`` rebinds
-# the flag on its source module via ``global`` — a re-exported alias here
-# would frozen-copy the initial ``False`` and silently diverge after the
-# first call. Tests and any future consumer that needs to read or reset
-# the flag must target its canonical location:
-# ``clauditor._providers._auth._announced_implicit_no_api_key``.
+# The mutable one-shot announcement flags
+# (``_announced_implicit_no_api_key``,
+# ``_announced_call_anthropic_deprecation``,
+# ``_announced_auto_codex_harness``,
+# ``_announced_codex_cli_on_path``) are intentionally NOT re-exported
+# here. ``from X import Y`` creates a fresh binding in this module,
+# and each ``announce_*()`` helper rebinds its flag on the defining
+# module via ``global`` — a re-exported alias here would frozen-copy
+# the initial ``False`` and silently diverge after the first call
+# (``.claude/rules/back-compat-shim-discipline.md`` Pattern 1). Tests
+# and any future consumer that needs to read or reset a flag must
+# target its canonical location at
+# ``clauditor._providers._auth._announced_<name>``.
 from clauditor._providers._auth import (  # noqa: E402, I001
     _AUTH_MISSING_TEMPLATE,
     _AUTH_MISSING_TEMPLATE_KEY_ONLY,
     _AUTO_CODEX_ANNOUNCEMENT,
     _CALL_ANTHROPIC_DEPRECATION_NOTICE,
     _CODEX_AUTH_MISSING_TEMPLATE,
+    _CODEX_CLI_ON_PATH_ANNOUNCEMENT,
     _IMPLICIT_NO_API_KEY_ANNOUNCEMENT,
     _OPENAI_AUTH_MISSING_TEMPLATE,
     _api_key_is_set,
     _claude_cli_is_available,
     _codex_api_key_is_set,
+    _codex_cli_is_available,
     _openai_api_key_is_set,
     announce_auto_codex_harness,
     announce_call_anthropic_deprecation,
+    announce_codex_cli_on_path,
     announce_implicit_no_api_key,
     check_any_auth_available,
     check_api_key_only,
@@ -672,6 +680,7 @@ __all__ = [
     "OpenAIHelperError",
     "announce_auto_codex_harness",
     "announce_call_anthropic_deprecation",
+    "announce_codex_cli_on_path",
     "announce_implicit_no_api_key",
     "call_anthropic",
     "call_model",
@@ -694,10 +703,12 @@ __all__ = [
     "_AUTO_CODEX_ANNOUNCEMENT",
     "_CALL_ANTHROPIC_DEPRECATION_NOTICE",
     "_CODEX_AUTH_MISSING_TEMPLATE",
+    "_CODEX_CLI_ON_PATH_ANNOUNCEMENT",
     "_IMPLICIT_NO_API_KEY_ANNOUNCEMENT",
     "_OPENAI_AUTH_MISSING_TEMPLATE",
     "_api_key_is_set",
     "_claude_cli_is_available",
     "_codex_api_key_is_set",
+    "_codex_cli_is_available",
     "_openai_api_key_is_set",
 ]
