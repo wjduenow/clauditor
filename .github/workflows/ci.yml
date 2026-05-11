@@ -51,7 +51,32 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --dev
-      - run: uv run pytest --cov=clauditor --cov-report=xml
+      - name: Run tests under coverage
+        # ``pytest --cov`` starts coverage inside pytest's
+        # ``pytest_load_initial_conftests`` — AFTER entry-point plugins
+        # (``clauditor.pytest_plugin``) have imported their transitive
+        # graph. Modules loaded during that early phase have their
+        # module-level statements (imports, constants, class/def lines)
+        # executed without tracing, producing a ~12pp CI undercount
+        # diagnosed in PR #173 (see CI run 25652367478 for the
+        # before/after).
+        #
+        # ``coverage run -m pytest`` flips the order: coverage tracing
+        # starts when the ``coverage`` script begins, then it execs
+        # ``pytest`` as a module — every subsequent import (including
+        # entry-point plugins) runs with coverage active.
+        #
+        # ``-p no:pytest_cov`` disables the pytest-cov plugin so it
+        # doesn't try to start its own (now-redundant) coverage tracer.
+        # ``-o "addopts=--import-mode=importlib"`` overrides
+        # ``pyproject.toml::addopts`` to drop ``--cov-fail-under=80``
+        # (that flag belongs to pytest-cov which is disabled here);
+        # the fail-under gate is enforced by the ``coverage report``
+        # step below instead.
+        run: |
+          uv run coverage run -m pytest -p no:pytest_cov -o "addopts=--import-mode=importlib"
+          uv run coverage xml
+          uv run coverage report --fail-under=80
       - uses: codecov/codecov-action@v5
         if: matrix.python-version == '3.13'
         with:

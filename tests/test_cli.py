@@ -10195,8 +10195,12 @@ class TestCmdGradeWritesContextJson:
         assert payload["model_grader"] == "claude-sonnet-4-6"
         assert payload["system_prompt_source"] == "skill_md"
         assert payload["sandbox_mode"] is None
-        # DEC-001 / DEC-002: placeholder None values.
-        assert payload["cost_usd"] is None
+        # #169 US-005: ``cost_usd`` is now computed via
+        # ``compute_iteration_cost_usd``. The default
+        # ``make_grading_report`` token counts are 0/0, so the cost
+        # is exactly ``0.0`` for a known model. ``reasoning_tokens``
+        # remains a DEC-001 placeholder (#170 will populate).
+        assert payload["cost_usd"] == 0.0
         assert payload["reasoning_tokens"] is None
 
     def test_openai_provider_path(self, tmp_path, monkeypatch):
@@ -10299,6 +10303,204 @@ class TestCmdGradeWritesContextJson:
         # Captured-text mode has no real run; context sidecar is not
         # written (the runner-side fields cannot be populated).
         assert not context_path.exists()
+
+
+class TestCmdGradeContextCostUsd:
+    """#169 US-005: ``cmd_grade`` writes a non-null ``cost_usd`` on
+    ``context.json`` when every grader-call lookup hits the rate
+    table. Unknown models null the whole iteration per DEC-002
+    all-or-nothing. L2 + L3 cost composition is summed via
+    :func:`compute_iteration_cost_usd`.
+    """
+
+    def _spec_with_live_run(
+        self, eval_spec=None, *, harness_metadata=None
+    ):
+        if eval_spec is None:
+            eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        if harness_metadata is None:
+            harness_metadata = {
+                "model": "claude-sonnet-4-6",
+                "system_prompt_source": "skill_md",
+            }
+        spec.run.return_value = make_skill_result(
+            output="primary output containing hello",
+            stream_events=[
+                {"type": "assistant", "text": "primary output containing hello"}
+            ],
+            input_tokens=10,
+            output_tokens=5,
+            duration_seconds=0.5,
+            harness_metadata=harness_metadata,
+        )
+        return spec
+
+    def test_known_model_writes_non_null_cost_usd(self, tmp_path, monkeypatch):
+        """Known (provider, model) lookup → non-null ``cost_usd`` equal
+        to ``estimate_cost`` of the same token counts."""
+        from clauditor._providers._pricing import estimate_cost
+
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = make_grading_report(
+            passed=True,
+            score=0.9,
+            model="claude-sonnet-4-6",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        payload = json.loads(context_path.read_text())
+        expected_cost = estimate_cost(
+            "anthropic", "claude-sonnet-4-6", 1000, 500
+        )
+        assert expected_cost is not None
+        assert payload["cost_usd"] == expected_cost
+
+    def test_unknown_model_writes_null_cost_usd(self, tmp_path, monkeypatch):
+        """Unknown model lookup → ``cost_usd: null`` per DEC-002
+        all-or-nothing semantics."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = make_grading_report(
+            passed=True,
+            score=0.9,
+            model="claude-fake-1",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        payload = json.loads(context_path.read_text())
+        assert payload["cost_usd"] is None
+
+    def test_l2_l3_composition_uses_side_effect_mock(
+        self, tmp_path, monkeypatch
+    ):
+        """L2 + L3 cost composition: when sections are declared, both
+        the extraction and grading reports contribute to ``cost_usd``.
+
+        Per ``.claude/rules/mock-side-effect-for-distinct-calls.md``,
+        use ``side_effect=[v_l2, v_l3]`` so the two ``estimate_cost``
+        calls return DISTINCT values. A shared ``return_value`` would
+        silently zero out the addition under test (one call's value
+        canceling against itself).
+        """
+        from clauditor.grader import ExtractionReport, FieldExtractionResult
+
+        monkeypatch.chdir(tmp_path)
+        sectioned_spec = _make_eval_spec(
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            min_entries=0,
+                            fields=[
+                                FieldRequirement(
+                                    name="venue_name",
+                                    required=True,
+                                    id="venues.primary.venue_name.v1",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        spec = self._spec_with_live_run(eval_spec=sectioned_spec)
+        grading_report = make_grading_report(
+            passed=True,
+            score=0.9,
+            model="claude-sonnet-4-6",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+        extraction_report = ExtractionReport(
+            skill_name="test-skill",
+            # Match the literal _PRICING_TABLE key for the L2 model so
+            # a future maintainer removing the ``estimate_cost`` mock
+            # below (e.g. to exercise the real rate-card lookup) sees
+            # the L2 cost compute correctly rather than silently
+            # nullifying the iteration's ``cost_usd`` per DEC-002.
+            model="claude-haiku-4-5",
+            results=[
+                FieldExtractionResult(
+                    field_id="venues.primary.venue_name.v1",
+                    field_name="venue_name",
+                    section="Venues",
+                    tier="primary",
+                    entry_index=0,
+                    required=True,
+                    presence_passed=True,
+                    format_passed=None,
+                    evidence="Cafe Foo",
+                ),
+            ],
+            input_tokens=200,
+            output_tokens=100,
+        )
+
+        # CRITICAL: side_effect=[v_l2, v_l3] (NOT return_value=v).
+        # ``compute_iteration_cost_usd`` calls ``estimate_cost`` twice
+        # — once for L3 (grading), then once for L2 (extraction). A
+        # shared return_value would silently zero out the addition
+        # under test.
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+            patch(
+                "clauditor._providers._pricing.estimate_cost",
+                side_effect=[0.0045, 0.0015],
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        payload = json.loads(context_path.read_text())
+        # 0.0045 (L3) + 0.0015 (L2) == 0.0060.
+        assert payload["cost_usd"] == pytest.approx(0.0060)
 
 
 class TestCmdValidateWritesContextJson:
@@ -10404,3 +10606,95 @@ class TestCmdValidateWritesContextJson:
         assert payload["model_runner"] == "gpt-5-codex"
         assert payload["system_prompt_source"] == "agents_md"
         assert payload["sandbox_mode"] == "workspace-write"
+
+
+class TestCmdValidateContextCostUsd:
+    """#169 US-006: ``cmd_validate`` writes ``cost_usd: null`` in
+    ``context.json`` regardless of ``grading_provider`` /
+    ``grading_model`` declared in the spec.
+
+    Validate runs L1 assertions only — it never invokes the grader,
+    so there is no per-pair cost to record. Per DEC-001 (#169 grader-
+    only scope), this is a regression-only story: production code in
+    ``src/clauditor/cli/validate.py`` is unchanged. These tests pin
+    that ``cost_usd`` stays ``None`` even when grader fields are set
+    in the spec.
+    """
+
+    def _live_spec(self, *, eval_spec=None, harness_metadata=None):
+        if eval_spec is None:
+            eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        if harness_metadata is None:
+            harness_metadata = {
+                "model": "claude-sonnet-4-6",
+                "system_prompt_source": "skill_md",
+            }
+        spec.run.return_value = make_skill_result(
+            output="hello world output",
+            duration_seconds=1.5,
+            input_tokens=100,
+            output_tokens=50,
+            stream_events=[
+                {"type": "system", "session_id": "abc"},
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "hi"}]},
+                },
+            ],
+            harness_metadata=harness_metadata,
+        )
+        return spec
+
+    def test_validate_writes_null_cost_usd(self, tmp_path, monkeypatch):
+        """Default validate flow: ``cost_usd`` is ``None`` because the
+        grader never runs."""
+        monkeypatch.chdir(tmp_path)
+        # Build an eval spec with NO grading_provider set; grading_model
+        # has the conftest default but is irrelevant to validate.
+        spec = self._live_spec(eval_spec=_make_eval_spec())
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        # Validate runs L1 only — no grader, so cost is None.
+        assert payload["cost_usd"] is None
+        # Sibling grader fields also None for the same reason.
+        assert payload["provider"] is None
+        assert payload["model_grader"] is None
+
+    def test_validate_writes_null_cost_usd_even_for_known_provider_in_spec(
+        self, tmp_path, monkeypatch
+    ):
+        """Even when the spec declares ``grading_provider`` and
+        ``grading_model`` (a known-pair that has pricing in #169),
+        validate still writes ``cost_usd: null`` because no grader call
+        happens during validate."""
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec(
+            grading_provider="anthropic",
+            grading_model="claude-sonnet-4-6",
+        )
+        spec = self._live_spec(eval_spec=eval_spec)
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        # Even with grader fields declared in the spec, validate does
+        # not call the grader — cost stays None.
+        assert payload["cost_usd"] is None
+        # Provider/model_grader stay None too (no Layer 3 in validate).
+        assert payload["provider"] is None
+        assert payload["model_grader"] is None
