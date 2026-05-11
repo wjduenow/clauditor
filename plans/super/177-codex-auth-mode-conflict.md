@@ -3,7 +3,8 @@
 ## Meta
 
 - **Ticket:** [#177](https://github.com/wjduenow/clauditor/issues/177)
-- **Phase:** detailing
+- **Phase:** published
+- **PR:** https://github.com/wjduenow/clauditor/pull/181
 - **Branch:** `feature/177-codex-auth-mode-conflict`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/177-codex-auth-mode-conflict`
 - **Sibling tickets:** #175 (clauditor accepting ChatGPT-login as valid auth — merged plan), #143 (multi-provider/multi-harness epic, parent)
