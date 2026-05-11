@@ -541,22 +541,36 @@ coupled, pricing-coupled, codex-auth-coupled):
 - `_announced_codex_cli_on_path` (bool flag) +
   `_CODEX_CLI_ON_PATH_ANNOUNCEMENT` (`Final[str]` constant) in
   `src/clauditor/_providers/_auth.py` — from #175 US-001
-  (DEC-003 of `plans/super/175-codex-chatgpt-login-auth.md`).
-  Fires when `check_codex_auth` accepts the pre-flight via the
-  **codex-CLI-on-PATH** branch (i.e. neither `CODEX_API_KEY` nor
-  `OPENAI_API_KEY` is set, but `codex` is on PATH — typically the
-  `~/.codex/auth.json` ChatGPT-login posture). Per DEC-009 the
-  env branches (`_codex_api_key_is_set` /
-  `_openai_api_key_is_set`) short-circuit silently and do NOT
-  fire the announcement — surfacing the *implicit trust the CLI*
-  decision to the operator, not re-announcing what the operator
-  set explicitly via env. Print-and-flip lives in the **public
-  helper** `announce_codex_cli_on_path()`, called from
-  `check_codex_auth` only when the PATH branch is the accepting
-  one. Three durable substrings pinned by tests (DEC-004):
-  `"codex"` (topic anchor), `"PATH"` (the trust mechanism),
-  `"~/.codex/auth.json"` (the canonical credential file the
-  Codex CLI reads under ChatGPT-login). Re-export shape per
+  (DEC-003 of `plans/super/175-codex-chatgpt-login-auth.md`),
+  refined by #177 (DEC-007 of
+  `plans/super/177-codex-auth-mode-conflict.md`). Fires when
+  `check_codex_auth` accepts the pre-flight via the
+  **codex-CLI-on-PATH** branch under the post-#177 narrowed fire
+  condition: neither `CODEX_API_KEY` nor `OPENAI_API_KEY` is set,
+  `codex` is on PATH, AND `~/.codex/auth.json` is absent OR
+  declares `auth_mode != "chatgpt"`. Per #177 DEC-002 / DEC-006,
+  clauditor refuses ChatGPT-mode credentials at pre-flight (the
+  codex subprocess would route via ChatGPT and reject every
+  model) — that refusal raises `CodexAuthMissingError` and does
+  NOT fire the announcement (the exception IS the user signal).
+  The announcement body text was reworded by #177 US-004 to drop
+  the phrase "typically the ChatGPT-login flow"; the post-#177
+  body describes codex resolving credentials from
+  `~/.codex/auth.json` in API-key mode. Per #175 DEC-009 the env
+  branches (`_codex_api_key_is_set` / `_openai_api_key_is_set`)
+  short-circuit silently and do NOT fire the announcement —
+  surfacing the *implicit trust the CLI* decision to the
+  operator, not re-announcing what the operator set explicitly
+  via env. Print-and-flip lives in the **public helper**
+  `announce_codex_cli_on_path()`, called from `check_codex_auth`
+  only when the PATH branch is the accepting one. Three durable
+  substrings pinned by tests (#175 DEC-004, preserved verbatim by
+  #177 DEC-007): `"codex"` (topic anchor), `"PATH"` (the trust
+  mechanism), `"~/.codex/auth.json"` (the credentials file the
+  codex CLI reads; per #177 its presence is examined for
+  `auth_mode` and refusal fires when `auth_mode == "chatgpt"`, so
+  naming the file in the announcement still helps operators
+  locate where codex looks for credentials). Re-export shape per
   `.claude/rules/back-compat-shim-discipline.md` Pattern 1:
   the public helper `announce_codex_cli_on_path` IS re-exported
   from `_providers/__init__.py` (function object — safe), the
