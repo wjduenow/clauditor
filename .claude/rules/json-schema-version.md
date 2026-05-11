@@ -380,16 +380,18 @@ blind-compare's two parallel calls), and threads from
 `IterationContext.reasoning_tokens` placeholder that `#154`
 pre-declared as nullable in v1.
 
-Three schema bumps shipped together in #170 — and **two
-deliberate non-bumps** that demonstrate the always-v1 pattern
-paying off:
+Two schema bumps shipped together in #170 — accompanied by an
+audit-loader range update and **two deliberate non-bumps** that
+demonstrate the always-v1 pattern paying off:
 
 - **`grading.json` v4 → v5** — adds nullable top-level
   `reasoning_tokens` field (placed after `output_tokens` in
   canonical key order). Per DEC-004 of
   `plans/super/170-reasoning-tokens-capture.md`.
 - **`extraction.json` v4 → v5** — same shape (DEC-004).
-- **audit `MAX_SCHEMA_VERSION`** bumped:
+- **audit `MAX_SCHEMA_VERSION` map widened** to accept the new
+  v5 sidecars (not itself a `schema_version` bump — just the
+  reader's accepted-range table tracking the writer-side bumps):
   `{"assertions.json": 2, "extraction.json": 5, "grading.json": 5,
   "context.json": 1}`.
 - **`BlindReport` stays at `schema_version: 1`** per DEC-005.

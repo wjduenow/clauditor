@@ -688,16 +688,17 @@ Why the split mattered specifically here:
   the way back in. Symmetric guards on both sides of the I/O
   boundary keep the discipline structural.
 - **Future nullable-token-style fields plug in trivially**:
-  `#169` (`cost_usd: float | None`) will use the same shape —
+  `#169` (`cost_usd: float | None`) shipped using the same shape —
   per-provider defensive extractor (with a parallel `bool`/`int`
   guard, since Python's `bool` is a subclass of `int` — NOT of
   `float` — and `True`/`False` therefore pass any broad numeric
   check like `isinstance(x, (int, float))` without an explicit
   bool guard ahead of the int/float check), chain-level
   `_sum_optional_cost_usd` aggregator with the same
-  all-None-stays-None semantic. The 9th anchor here documents
-  the recipe so that future ticket inherits it without
-  rediscovering.
+  all-None-stays-None semantic. The Ninth anchor (pricing-table
+  cost estimation) above documents how `#169` applied this
+  recipe; this Tenth anchor codifies the recipe itself so future
+  nullable-token fields inherit it without rediscovering.
 
 Traces to DEC-001, DEC-002, DEC-003, DEC-006 of
 `plans/super/170-reasoning-tokens-capture.md`. Companion rules:

@@ -100,6 +100,7 @@ class ExtractionReport:
           "harness": "claude-code",
           "input_tokens": 0,
           "output_tokens": 0,
+          "reasoning_tokens": null,
           "parse_errors": [],
           "fields": {
             "<field_id>": [
@@ -126,11 +127,16 @@ class ExtractionReport:
     ``harness`` records which skill harness produced the underlying
     skill output that was extracted — ``"claude-code"`` (current
     default) or ``"codex"`` (#149+) (added in v4 per DEC-004 /
-    DEC-006 of ``plans/super/152-sidecar-harness-field.md``). The
-    audit loader accepts ``{1, 2, 3, 4}`` and defaults missing
+    DEC-006 of ``plans/super/152-sidecar-harness-field.md``).
+    ``reasoning_tokens`` records the per-call reasoning / thinking
+    token count summed across grader attempts — ``int`` or
+    ``null`` (added in v5 per DEC-004 of
+    ``plans/super/170-reasoning-tokens-capture.md``). The audit
+    loader accepts ``{1, 2, 3, 4, 5}`` and defaults missing
     ``transport_source`` to ``"api"``, missing ``provider_source``
-    to ``"anthropic"``, and missing ``harness`` to ``"claude-code"``
-    when reading legacy v1/v2/v3 sidecars.
+    to ``"anthropic"``, missing ``harness`` to ``"claude-code"``,
+    and missing ``reasoning_tokens`` to ``None`` when reading
+    legacy v1/v2/v3/v4 sidecars.
     """
 
     skill_name: str
