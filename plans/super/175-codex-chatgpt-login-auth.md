@@ -56,7 +56,7 @@ A new ChatGPT-login announcement would be the fourth family member, same shape: 
 
 Canonical schema from `codex-rs/login/src/auth/storage.rs::AuthDotJson`:
 
-```
+```json
 {
   "auth_mode":      "chatgpt" | "apikey" | "chatgptAuthTokens" | "agentIdentity" | null,
   "OPENAI_API_KEY": str | null,
@@ -410,19 +410,6 @@ Same as DEC-009's resolution order. Beyond the announcement-suppression rational
 - Refinement → 10 decisions captured (DEC-001 through DEC-010). All operator-intent choices confirmed; mechanical decisions baked.
 - Detailing → 3 implementation stories (US-001/US-002/US-003) + Quality Gate (US-004) + Patterns & Memory (US-005). All right-sized for one context window each.
 - Phase advance: discovery → architecture → refinement → detailing. Next: publish PR.
-
----
-
-## Session Notes
-
-### Session 1 — 2026-05-11
-
-- Created worktree at `/home/wesd/dev/worktrees/clauditor/feature/175-codex-chatgpt-login-auth` (plain `git worktree`; bark hit its 9-worktree cap from stale registrations).
-- Ran four parallel research subagents: ticket analyst, codebase scout, convention checker, domain expert (codex `auth.json` schema).
-- Verified live failure mode on this machine: `/home/wesd/.codex/auth.json` has `auth_mode=chatgpt`, `OPENAI_API_KEY: null`, populated `tokens`. Codex itself works; clauditor pre-flight rejects.
-- Key precedent: `CodexHarness._detect_auth_source` already detects file existence for observability/logging (DEC-017 of `#149`). The forward-declared `"cached"` source-name has never fired because the pre-flight blocks first — `#175` is what makes it reachable.
-- Strong precedent for Path B (trust `codex` on PATH): `check_any_auth_available` (#95) did exactly this for the Anthropic side and the symmetry is structurally clean.
-- Phase advance: discovery complete → awaiting scoping answers before architecture.
 
 ### Session 2 — 2026-05-11
 
