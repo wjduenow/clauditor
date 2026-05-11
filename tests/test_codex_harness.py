@@ -334,6 +334,54 @@ class TestClassifyCodexFailure:
         assert category == "rate_limit"
         assert text.endswith("... (truncated)")
 
+    def test_chatgpt_account_mode_mismatch_classifies_as_auth(self) -> None:
+        """#177 US-005 / DEC-003: chatgpt-mode rejection routes to ``auth``.
+
+        The server-side error surfaced when Codex runs under a
+        ChatGPT-account auth posture against a model that the
+        ChatGPT-account plan does not entitle. Primary substring
+        ``"not supported when using Codex with a ChatGPT account"``
+        routes to ``auth`` so the post-hoc classification matches the
+        pre-flight auth-mismatch error surfaced by the resolver
+        (deleted ``auth.json`` mid-run, sandboxed CI, future codex
+        versions).
+        """
+        msg = (
+            "The 'gpt-5-codex' model is not supported when using "
+            "Codex with a ChatGPT account."
+        )
+        text, category = _classify_codex_failure(msg)
+        assert category == "auth"
+        assert text == msg
+
+    def test_chatgpt_account_mode_mismatch_case_insensitive(self) -> None:
+        """#177 US-005: matching is case-insensitive per ``_classify_codex_failure``.
+
+        The classifier lowercases both input and patterns before
+        probing (`p.lower() in lowered`), so a mixed-case variant of
+        the primary substring still routes to ``auth``.
+        """
+        msg = (
+            "The 'gpt-5-codex' model is NOT SUPPORTED When Using "
+            "Codex With a ChatGPT Account."
+        )
+        _, category = _classify_codex_failure(msg)
+        assert category == "auth"
+
+    def test_chatgpt_marketing_text_not_misclassified(self) -> None:
+        """#177 US-005: defensive false-positive guard for benign ChatGPT mentions.
+
+        The primary pattern is the full substring
+        ``"not supported when using Codex with a ChatGPT account"``,
+        not a bare ``"ChatGPT"`` token. Benign marketing/docs text
+        that mentions ChatGPT without the rejection clause must NOT
+        route to ``auth`` — it falls through to the default ``api``
+        catchall.
+        """
+        msg = "For more info, see ChatGPT's account documentation"
+        _, category = _classify_codex_failure(msg)
+        assert category == "api"
+
 
 # ---------------------------------------------------------------------------
 # _detect_codex_dropped_events (DEC-018)
