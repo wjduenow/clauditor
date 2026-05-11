@@ -2012,24 +2012,69 @@ class TestCodexAuthJsonHelpers:
         the bounded ``fh.read(_CODEX_AUTH_JSON_MAX_BYTES + 1)`` is the
         load-bearing security check. This test materializes a file
         whose actual content exceeds the cap and asserts the parser
-        returns ``None`` — proving the bounded read enforces the
-        invariant even if ``stat()`` were ever defeated (FIFOs,
-        ``/proc/*`` virtual files, symlinks to ``/dev/zero``)."""
+        returns ``None`` — exercising the ``stat()`` size-check arm."""
         from clauditor._providers._auth import (
             _CODEX_AUTH_JSON_MAX_BYTES,
             _parse_codex_auth_json,
         )
 
         auth_path = tmp_path / "auth.json"
-        # Real content > cap; stat() will report this correctly so
-        # the size-check arm fires first. The defense-in-depth value
-        # is the same code path defending against the case where
-        # stat() lies (special files); that case is hard to stage
-        # portably in a unit test, but this test pins the bounded
-        # ``read(N)`` behavior so a future refactor that drops the
-        # cap argument breaks loudly here.
         auth_path.write_text("x" * (_CODEX_AUTH_JSON_MAX_BYTES + 100))
 
+        assert _parse_codex_auth_json(auth_path) is None
+
+    def test_parse_bounded_read_defends_when_stat_lies(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Defense-in-depth: the bounded ``fh.read(N+1)`` enforces the
+        cap even when ``stat()`` reports a small size while the file's
+        actual content exceeds ``_CODEX_AUTH_JSON_MAX_BYTES``. This is
+        the security-load-bearing branch defending against symlinks to
+        FIFOs, ``/proc/*`` virtual files, or ``/dev/zero`` (where
+        ``st_size`` is 0 but reads stream unboundedly). Staged here by
+        monkeypatching ``Path.stat`` to return a fake result with
+        ``st_size=0`` while the real file content exceeds the cap."""
+        import os
+
+        from clauditor._providers._auth import (
+            _CODEX_AUTH_JSON_MAX_BYTES,
+            _parse_codex_auth_json,
+        )
+
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text("x" * (_CODEX_AUTH_JSON_MAX_BYTES + 100))
+
+        # Capture the real stat fields so we can rebuild a fake result
+        # that lies only about size. ``os.stat_result`` is constructed
+        # from a 10-tuple matching the canonical stat field order.
+        real = auth_path.stat()
+        fake = os.stat_result(
+            (
+                real.st_mode,
+                real.st_ino,
+                real.st_dev,
+                real.st_nlink,
+                real.st_uid,
+                real.st_gid,
+                0,  # st_size — the lie; symlinks to FIFOs / /proc/* report 0
+                real.st_atime,
+                real.st_mtime,
+                real.st_ctime,
+            )
+        )
+
+        original_stat = type(auth_path).stat
+
+        def _lying_stat(self, *args, **kwargs):
+            if self == auth_path:
+                return fake
+            return original_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(type(auth_path), "stat", _lying_stat)
+
+        # ``stat()`` says size=0, so the early-exit arm at line 342
+        # falls through. The bounded ``fh.read(N+1)`` then materializes
+        # > N chars, and the ``len(text) > N`` post-check returns None.
         assert _parse_codex_auth_json(auth_path) is None
 
     # ----- defense-in-depth: UnicodeDecodeError direct test -----
