@@ -177,6 +177,15 @@ _AUTH_PATTERNS = (
     "unauthorized",
     "OPENAI_API_KEY",
     "invalid api key",
+    # #177 US-005 / DEC-003: chatgpt-account-mode rejection. The
+    # server-side error ``"The 'gpt-5-codex' model is not supported
+    # when using Codex with a ChatGPT account."`` is an auth-posture
+    # mismatch (the ChatGPT-account plan does not entitle the
+    # requested model). Routes to ``auth`` so post-hoc classification
+    # matches the pre-flight resolver's auth-mismatch surfacing for
+    # any case that bypasses the pre-flight (deleted auth.json
+    # mid-run, sandboxed CI, future codex versions).
+    "not supported when using Codex with a ChatGPT account",
 )
 
 
