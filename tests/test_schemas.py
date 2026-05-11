@@ -459,12 +459,39 @@ class TestFromFile:
         assert spec.trigger_tests is None
         assert spec.variance is None
 
-    def test_from_file_empty_dict_defaults_skill_name_to_stem(self, tmp_path):
-        """When skill_name is missing, defaults to the file stem."""
+    def test_from_file_empty_dict_defaults_skill_name_strips_eval_suffix(self, tmp_path):
+        """``<name>.eval.json`` default strips the ``.eval`` suffix (#176)."""
         path = _write_json(tmp_path, {}, name="my-skill.eval.json")
         spec = EvalSpec.from_file(path)
 
-        assert spec.skill_name == "my-skill.eval"
+        assert spec.skill_name == "my-skill"
+
+    def test_from_file_modern_layout_skill_eval_json_uses_parent_dir(self, tmp_path):
+        """``<dir>/SKILL.eval.json`` default resolves to parent dir name (#176)."""
+        skill_dir = tmp_path / "find-restaurants"
+        skill_dir.mkdir()
+        path = skill_dir / "SKILL.eval.json"
+        path.write_text("{}")
+        spec = EvalSpec.from_file(path)
+
+        assert spec.skill_name == "find-restaurants"
+
+    def test_from_file_modern_layout_eval_json_uses_parent_dir(self, tmp_path):
+        """``<dir>/eval.json`` default resolves to parent dir name (#176)."""
+        skill_dir = tmp_path / "find-restaurants"
+        skill_dir.mkdir()
+        path = skill_dir / "eval.json"
+        path.write_text("{}")
+        spec = EvalSpec.from_file(path)
+
+        assert spec.skill_name == "find-restaurants"
+
+    def test_from_file_plain_json_falls_back_to_stem(self, tmp_path):
+        """``<name>.json`` (no ``.eval`` suffix) keeps the stem (back-compat)."""
+        path = _write_json(tmp_path, {}, name="my-skill.json")
+        spec = EvalSpec.from_file(path)
+
+        assert spec.skill_name == "my-skill"
 
     def test_from_file_missing(self, tmp_path):
         """Raises FileNotFoundError for a nonexistent file."""

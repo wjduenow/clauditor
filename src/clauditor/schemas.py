@@ -362,12 +362,16 @@ class EvalSpec:
         path = Path(path)
         with path.open() as f:
             data = json.load(f)
-        # Preserve the prior behavior where a missing ``skill_name`` in the
-        # JSON defaults to the file stem. Injected via a new dict so the
-        # caller's data is not mutated (non-mutating rule applies to the
-        # input they own on disk, but defensive here too).
+        # Default ``skill_name`` when absent from the JSON. Layout-aware
+        # per ``_filesystem_eval_skill_name`` (#176): ``<dir>/SKILL.eval.json``
+        # and ``<dir>/eval.json`` resolve to the parent directory name;
+        # ``<name>.eval.json`` strips the ``.eval`` suffix; other shapes
+        # fall back to ``path.stem`` for back-compat. Injected via a new
+        # dict so the caller's data is not mutated.
         if isinstance(data, dict) and "skill_name" not in data:
-            data = {"skill_name": path.stem, **data}
+            from clauditor.paths import _filesystem_eval_skill_name
+
+            data = {"skill_name": _filesystem_eval_skill_name(path), **data}
         return cls.from_dict(data, spec_dir=path.parent.resolve())
 
     @classmethod
