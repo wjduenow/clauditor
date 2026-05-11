@@ -70,8 +70,23 @@ jobs:
           grep -A 2 "^addopts" pyproject.toml || true
           echo "=== relevant env vars ==="
           env | grep -iE "^(COV|COVERAGE|PYTEST|UV)" | sort
-      - run: uv run pytest --cov=clauditor --cov-report=xml --cov-report=term
-      - name: Show coverage of files reported low by codecov
+      - name: Run tests with coverage (coverage starts at Python startup via COVERAGE_PROCESS_START)
+        # Without ``COVERAGE_PROCESS_START``, pytest-cov starts coverage in
+        # ``pytest_load_initial_conftests`` — AFTER entry-point plugins
+        # (``clauditor.pytest_plugin``) have imported their transitive
+        # graph. Modules loaded during that early phase have their
+        # module-level statements (imports, constants, class/def lines)
+        # executed without tracing, producing the ~12pp CI undercount
+        # documented in codecov.yml and the #169 investigation comment.
+        # Setting ``COVERAGE_PROCESS_START`` triggers the ``a1_coverage.pth``
+        # file (shipped with the ``coverage`` package) which calls
+        # ``coverage.process_startup()`` at interpreter startup, before
+        # any module imports. The ``.coveragerc`` value points at the
+        # existing config (``[run] source = src/clauditor``).
+        env:
+          COVERAGE_PROCESS_START: ${{ github.workspace }}/.coveragerc
+        run: uv run pytest --cov=clauditor --cov-report=xml --cov-report=term
+      - name: Show coverage of files previously reported low by codecov
         if: matrix.python-version == '3.13'
         run: |
           uv run python <<'PY'
