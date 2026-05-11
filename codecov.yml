@@ -1,0 +1,30 @@
+# Codecov configuration.
+#
+# Coverage is collected by ``coverage run -m pytest`` in CI (see
+# ``.github/workflows/ci.yml``). Total project coverage runs at ~99%
+# (the same number ``coverage report`` prints locally on a fresh clone).
+#
+# Status checks:
+#
+# 1. ``project.target: auto`` with a 1% drop threshold so a real
+#    regression still trips the check.
+# 2. ``patch`` uses codecov's default (informational: false / blocking)
+#    so PRs that drop patch coverage below the implicit threshold fail
+#    the check.
+#
+# History — PR #173 originally shipped ``patch.informational: true``
+# while a ~12pp CI vs local coverage gap was undiagnosed. The root
+# cause was pytest-cov starting tracing in
+# ``pytest_load_initial_conftests`` AFTER entry-point plugin
+# (``clauditor.pytest_plugin``) imports had executed their transitive
+# graph — module-level statements went untraced. Switching to
+# ``coverage run -m pytest`` made coverage start before pytest loads,
+# which closed the gap; ``patch.informational`` was flipped back to
+# its default in the same PR.
+
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%

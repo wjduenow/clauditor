@@ -480,7 +480,118 @@ Traces to DEC-010 of `plans/super/153-cross-axis-comparability.md`.
 Companion rule: `.claude/rules/cross-axis-comparability-refusal.md`
 (the per-axis refusal+filter+opt-in shape this helper drives).
 
-### Ninth anchor (defensive SDK extraction + nullable-aware aggregation)
+### Ninth anchor (pricing-table cost estimation)
+
+`src/clauditor/_providers/_pricing.py` — pure-compute module
+introduced in #169 to back the `cost_usd` field on
+`IterationContext`. Sibling shape to `_providers/_retry.py`: a
+small pure-compute module living inside the `_providers` package
+without being a `call_model` consumer. Two helpers, both pure:
+
+- **`estimate_cost(provider, model, input_tokens, output_tokens,
+  reasoning_tokens=None) -> float | None`** — pure dict-lookup
+  + arithmetic. Validates input types up front (raises
+  `ValueError` on contract violation: non-string provider/model,
+  bool / non-`int` / negative tokens), looks up the rate card in
+  `_PRICING_TABLE`, and computes
+  `(input * input_per_mtok + (output + reasoning) * output_per_mtok)
+  / 1_000_000`. Returns `None` cleanly on unknown
+  `(provider, model)` pairs so callers can write `cost_usd: null`
+  without raising. Reasoning tokens are folded into the effective
+  output count and billed at the model's output rate per the
+  provider research notes (see the module docstring's
+  reasoning-tokens contract).
+- **`compute_iteration_cost_usd(grading_report, extraction_report,
+  provider) -> float | None`** — pure composition helper. Sums
+  Layer 2 + Layer 3 grader-call cost from the already-computed
+  report dataclasses (`GradingReport`, `ExtractionReport`). Per
+  DEC-002 of #169 the helper is **all-or-nothing**: any internal
+  `estimate_cost` returning `None` → composition returns `None`
+  rather than partial cost. A "roughly right" partial estimate
+  is silently wrong for budgeting and trend reads, so
+  null-on-any-miss is the safe default. `extraction_report=None`
+  contributes `0.0` to the sum (that is NOT a lookup miss — it
+  is a genuine "no Layer-2 call happened" signal).
+
+Both helpers satisfy the rule's pure-compute contract at the
+**return-value layer**: their returned cost is a deterministic
+function of the inputs, with no network I/O, no file I/O, and no
+subprocess. The one documented exception is the announcement
+family — `estimate_cost` may emit one-shot
+`print(..., file=sys.stderr)` notices via
+`announce_pricing_table_stale_if_old` and `announce_unknown_model`,
+each of which mutates a module-level flag/set on first fire and
+no-ops on subsequent calls. The notices belong to the
+"implicit-coupling announcements" family documented in
+`.claude/rules/centralized-sdk-call.md` and never affect the
+returned cost. Tests reset the module-level flags via autouse
+fixtures, so the deterministic-return-value contract is observable
+in isolation while the announcement side-effects are exercised by
+their own dedicated test classes.
+
+Two callers today:
+
+- `src/clauditor/cli/grade.py::_write_context_sidecar` — the
+  production seam. Uses `compute_iteration_cost_usd` to populate
+  `IterationContext.cost_usd` during workspace staging per
+  `.claude/rules/sidecar-during-staging.md`. The CLI seam owns
+  provider resolution and the surrounding I/O (sidecar
+  serialization, atomic publication); the pure helper just sums.
+- `tests/test_providers_pricing.py` (52 tests) and
+  `tests/test_cli.py::TestCmdGradeContextCostUsd` — exercise
+  both functions directly with plain-dataclass fixtures, no
+  `tmp_path`, no subprocess mocks. Every contract-violation
+  branch (non-string provider, bool token, negative count, both
+  L2 / L3 lookup-miss permutations) is reachable via inline
+  arguments.
+
+Why the split mattered specifically here:
+
+- **Two helpers, one pure module**:
+  `compute_iteration_cost_usd` concentrates Layer 2 + Layer 3
+  dispatch and all-or-nothing aggregation logic in one testable
+  seam — per-layer cost dispatch, lookup-miss propagation, and
+  the null-on-any-miss rule that defends `cost_usd`'s sidecar
+  contract. Inlining at the call site
+  (`_write_context_sidecar`) would have spread the per-layer
+  dispatch + the all-or-nothing rule across the I/O layer, where
+  future refactors are likely to drift them. The pure helper
+  keeps the policy in one place even though there is only one
+  production caller today.
+- **Sidecar-shape contract**: `cost_usd` is a persisted field on
+  `context.json` whose shape is part of the always-v1 contract
+  (see `.claude/rules/json-schema-version.md` "New sidecar
+  family — `context.json` (#154)"). The pure-helper boundary
+  defends that contract: bug fixes to the cost arithmetic (e.g.
+  if a future ticket adds cache-token rates) land inside
+  `estimate_cost` and propagate to every caller, with no
+  per-call-site duplication that could ship a divergent shape on
+  disk.
+- **Borderline-case threshold**: the rule's existing one-caller
+  threshold says "don't extract a pure helper just to satisfy
+  the rule." The pricing module qualifies for extraction
+  because it (a) produces a sidecar field whose shape is part of
+  `context.json`'s contract, and (b) has non-trivial resolution
+  logic (provider/model dispatch + reasoning-tokens-at-output-
+  rate folding) that would otherwise duplicate at the call site.
+  A simpler "compute one number from one number" helper would
+  not earn extraction.
+
+Traces to bead `clauditor-60x.8` (US-008) of
+`plans/super/169-pricing-cost-estimator.md`. Companion rules:
+`.claude/rules/multi-provider-dispatch.md` "Provider-dispatch
+shape extends to non-auth lookups (#169)" (the structural-
+routing invariant `estimate_cost` preserves —
+lookup-miss→`None` vs contract-violation→`ValueError`),
+`.claude/rules/centralized-sdk-call.md` "Implicit-coupling
+announcements — an emerging family" (the two pricing-coupled
+announcement members `_announced_pricing_table_stale` and
+`_announced_unknown_models` that fire from inside
+`estimate_cost`), `.claude/rules/json-schema-version.md` "New
+sidecar family — `context.json` (#154)" (the always-v1 sidecar
+field this module populates).
+
+### Tenth anchor (defensive SDK extraction + nullable-aware aggregation)
 
 The #170 `reasoning_tokens` work introduced two pure helpers that
 together codify the **defensive-extract → nullable-aware-sum**

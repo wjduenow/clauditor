@@ -448,11 +448,17 @@ harness-axis sibling (`harness: str` on the same sidecars + on
 
 One-time-per-process stderr notices are an emerging family co-located
 in the `clauditor._providers` package. Each member pairs a
-module-level bool flag with an announcement-text constant; the
+module-level flag with an announcement-text constant; the
 print-and-flip logic either lives inline at the call site (the first
-member, from #86) or is factored into a public helper (the second
-and third members, from #95 and #144 respectively, and the target
-shape going forward). Three members today:
+member, from #86) or is factored into a public helper (the later
+members, from #95, #144, #151, and #169 respectively, and the target
+shape going forward). The traditional flag shape is a module-level
+`bool`, but the family also admits **set-keyed** flags
+(`set[tuple[...]]`) for announcements that need per-key
+idempotence — see the `_announced_unknown_models` member below
+for the canonical shape. Five members today (axes:
+transport-coupled, auth-coupled, deprecation-coupled, harness-
+coupled, pricing-coupled):
 
 - `_announced_cli_transport` (bool flag) + `_CLI_AUTO_ANNOUNCEMENT`
   (plain `str` constant) in `src/clauditor/_providers/_anthropic.py`
@@ -481,6 +487,57 @@ shape going forward). Three members today:
   pinned by tests: `"clauditor._anthropic"` (deprecated path),
   `"clauditor._providers"` (canonical replacement),
   `"will be removed"` (future-removal hint).
+- `_announced_auto_codex_harness` (bool flag) +
+  `_AUTO_CODEX_ANNOUNCEMENT` (`Final[str]` constant) in
+  `src/clauditor/_providers/_auth.py` — from #151 US-002 (DEC-007).
+  Fires when the harness resolver's auto branch picks `"codex"`
+  because `claude` is not on PATH but `codex` is. Print-and-flip
+  lives in the **public helper** `announce_auto_codex_harness()`,
+  called from `clauditor.cli._resolve_harness` before returning
+  the resolved name. Names the env vars Codex needs (`CODEX_API_KEY`
+  / `OPENAI_API_KEY`) and the two pin-it-explicitly escape hatches
+  (`--harness=claude-code` and `CLAUDITOR_HARNESS=claude-code`).
+- `_announced_pricing_table_stale` (bool flag) +
+  `_PRICING_TABLE_STALE_ANNOUNCEMENT` (`Final[str]` constant) in
+  `src/clauditor/_providers/_pricing.py` — from #169 US-002
+  (DEC-003). Fires on the first `estimate_cost` call per Python
+  process when `today - _LAST_VERIFIED > 90 days`. Print-and-flip
+  lives in the **public helper**
+  `announce_pricing_table_stale_if_old()`, called from the top of
+  `estimate_cost` so the warning fires before any contract-violation
+  check. Defensive: a typo in `_LAST_VERIFIED` treats the table as
+  stale (`days_old = 9999`) so a maintainer's typo cannot crash a
+  production grading run — the fallback is loud-but-safe (a stale
+  warning is preferable to a silent skip). Three durable substrings
+  pinned by tests: `"90 days"` (the threshold), `"pricing"` (topic
+  anchor), and at least one of `"platform.claude.com"` /
+  `"openai.com/api/pricing"` (source-of-truth URLs). The
+  `f"v{_PRICING_TABLE_VERSION}"` interpolation is also pinned so
+  a future schema bump surfaces in the warning text.
+- `_announced_unknown_models` (`set[tuple[str, str]]` — NOT a
+  bool; first set-keyed member) +
+  `_UNKNOWN_MODEL_ANNOUNCEMENT_TEMPLATE` (`Final[str]` constant)
+  in `src/clauditor/_providers/_pricing.py` — from #169 US-003
+  (DEC-006). Fires when `estimate_cost(provider, model, ...)` is
+  called with a recognized provider but an unknown model. Per-
+  `(provider, model)` one-shot semantics: each unique pair emits
+  exactly once per process; distinct unknown models each get their
+  own first-call warning rather than the first miss muting all
+  subsequent ones. Print-and-flip lives in the **public helper**
+  `announce_unknown_model(provider, model)`, called from
+  `estimate_cost`'s known-provider/unknown-model branch (an
+  unknown PROVIDER stays silent — different code path — so a
+  typo'd provider does not flood stderr with every model the
+  caller subsequently tries). The set-keyed shape is the **first
+  variation** on the family's traditional bool-flag tradition,
+  and a precedent for future announcements that need per-key
+  idempotence (e.g. per-skill, per-iteration, per-symbol). Two
+  durable substrings pinned by tests: `"pricing:"` (topic
+  anchor) and `"not in rate table"` (specific failure mode), plus
+  the literal `(provider, model)` strings interpolated at emit
+  time so the maintainer can grep stderr for the missing model
+  name. Reset mechanism for tests is
+  `monkeypatch.setattr(..., set())` (an empty set, not `False`).
 
 Per #145 the OpenAI backend deliberately did **not** introduce a
 fourth announcement family. OpenAI's auth posture is strict
@@ -500,13 +557,23 @@ pattern for new members — it makes the notice independently testable
 without reaching into `call_anthropic` internals. New announcement
 flags belong in the `_providers` package (DEC-009 of
 `plans/super/95-subscription-auth-flag.md`); auth-coupled and
-deprecation-coupled notices in `_providers/_auth.py`, transport-
-coupled notices in `_providers/_anthropic.py`. Reset mechanism for
-tests is the `monkeypatch.setattr(..., False)` autouse fixture
-pattern — see
+deprecation-coupled notices (and the harness-coupled
+`_announced_auto_codex_harness` from #151, which names auth env
+vars) live in `_providers/_auth.py`, transport-coupled notices in
+`_providers/_anthropic.py`, and pricing-coupled notices in
+`_providers/_pricing.py` (a small pure-compute sibling module to
+`_retry.py` — NOT a `call_model` consumer; the pricing module is
+the first family member that lives outside the `call_*` /
+auth-helper call chain). Reset mechanism for tests is the
+`monkeypatch.setattr(..., False)` autouse fixture pattern (or
+`monkeypatch.setattr(..., set())` for the set-keyed
+`_announced_unknown_models`) — see
 `tests/test_providers_anthropic.py::TestStderrAnnouncement`,
-`tests/test_providers_auth.py::TestAnnounceImplicitNoApiKey`, and
-`tests/test_providers_auth.py::TestCallAnthropicDeprecationAnnouncement`
+`tests/test_providers_auth.py::TestAnnounceImplicitNoApiKey`,
+`tests/test_providers_auth.py::TestCallAnthropicDeprecationAnnouncement`,
+and
+`tests/test_providers_pricing.py::TestStaleAnnouncement`
+/ `tests/test_providers_pricing.py::TestUnknownModelAnnouncement`
 for the shape.
 
 ## When this rule applies
