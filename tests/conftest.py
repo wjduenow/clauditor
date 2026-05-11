@@ -715,6 +715,40 @@ def _clear_fixture_allow_cli(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _isolate_codex_home(monkeypatch, tmp_path_factory):
+    """Redirect ``CODEX_HOME`` to a hermetic tmp dir for every test.
+
+    #177 US-003 wired :func:`clauditor._providers._auth.check_codex_auth`
+    to read ``~/.codex/auth.json`` at pre-flight and refuse when
+    ``auth_mode == "chatgpt"`` (broad refusal per DEC-002 of
+    ``plans/super/177-codex-auth-mode-conflict.md``). On developer
+    machines where ``codex`` has been used in ChatGPT-login mode, every
+    test that exercises the codex harness would otherwise see the real
+    user's auth.json and route through the refusal branch — masking
+    behavior the tests intend to exercise.
+
+    Pointing ``CODEX_HOME`` at an empty tmp dir means
+    :func:`_codex_auth_json_path` resolves to a non-existent file,
+    :func:`_parse_codex_auth_json` returns ``None`` (failure-open per
+    DEC-005), and :func:`_auth_mode_is_acceptable` returns ``True`` —
+    the chatgpt-mode branch never fires under tests by default. Tests
+    that exercise the chatgpt-mode refusal explicitly stage their own
+    auth.json under their own ``tmp_path`` and override ``CODEX_HOME``
+    inside the test body (see
+    ``TestCheckCodexAuthChatGPTModeRefusal`` in
+    ``tests/test_providers_auth.py``).
+
+    Sibling pattern to ``_force_api_transport_in_tests`` (the
+    autouse ``shutil.which → None`` pin from #86 / #151), per
+    ``.claude/rules/test-infra-shutil-which-coupling.md`` — both
+    fixtures protect tests from production-side dependencies on
+    machine-local state.
+    """
+    isolated = tmp_path_factory.mktemp("isolated_codex_home")
+    monkeypatch.setenv("CODEX_HOME", str(isolated))
+
+
+@pytest.fixture(autouse=True)
 def _force_api_transport_in_tests(monkeypatch):
     """Force ``call_anthropic(transport="auto")`` to resolve to API in tests.
 

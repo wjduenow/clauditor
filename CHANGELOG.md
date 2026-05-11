@@ -17,6 +17,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking changes
 
+- **Codex auth pre-flight refuses ChatGPT-mode credentials (#177, PR #181).**
+  `check_codex_auth` now examines `~/.codex/auth.json` (or
+  `$CODEX_HOME/auth.json` when set) and refuses pre-flight when the file
+  declares `auth_mode == "chatgpt"`, regardless of whether
+  `CODEX_API_KEY` / `OPENAI_API_KEY` is exported. Rationale: the codex
+  subprocess reads `auth.json` and routes via ChatGPT in that mode,
+  rejecting every model server-side with `"The 'gpt-5-codex' model is
+  not supported when using Codex with a ChatGPT account."` The pre-flight
+  refusal fails fast with an actionable `CodexAuthMissingError` pointing
+  at `codex login --with-api-key`, rather than letting users burn a
+  subprocess + API round-trip on a guaranteed-to-fail call.
+
+  Auth.json reads are failure-open per DEC-005 — a missing, unreadable,
+  malformed, or oversize (> 1 MB) `auth.json` falls through to the
+  existing env-var / PATH-on-disk checks. Parsed content (tokens,
+  account ids) is never serialized to sidecars, logs, or error
+  messages per DEC-014.
+
+  **Supersedes #175 DECs 001, 002, 003, 004, 008, and 009** (see the
+  cross-link table in `plans/super/177-codex-auth-mode-conflict.md`).
+  The #175 plan doc stays historical; the refinement trail lives in
+  the #177 plan.
+
+  **Migration:** users with `~/.codex/auth.json` in chatgpt-mode should
+  run `codex login --with-api-key` to re-materialize the credentials
+  file in API-key mode. Users who never logged in via the ChatGPT flow
+  are unaffected.
+
 - **`clauditor_runner` is now a factory fixture (#155).** Pytest fixtures
   cannot accept call-site kwargs; only factory fixtures can. To support
   the new `harness=` operator-intent kwarg, `clauditor_runner` was
@@ -114,6 +142,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `timeout` kwargs. `SkillSpec.run` resolves the effective value once
   (explicit `EvalSpec.system_prompt` > auto-derived `SKILL.md` body)
   and threads the resolved string through this kwarg.
+
+### Changed
+
+- **Codex subprocess error mapping: chatgpt-mode rejection classified as
+  `"auth"` (#177, PR #181).** When the pre-flight refusal is bypassed
+  (e.g. `~/.codex/auth.json` is created / mutated after the pre-flight
+  check, or a sandboxed CI environment skips the parser), the codex
+  subprocess emits the server-side rejection string
+  `"The 'gpt-5-codex' model is not supported when using Codex with a
+  ChatGPT account."` `_classify_codex_failure` now classifies this as
+  `error_category = "auth"` rather than `"api"`, matching the actual
+  failure mode (credentials are pointing at the wrong auth surface).
+  No sidecar schema bump per DEC-011 — new `Literal` values inside an
+  existing field are additive.
+
+- **Codex CLI-on-PATH announcement body reworded (#177, PR #181).**
+  `_CODEX_CLI_ON_PATH_ANNOUNCEMENT` no longer mentions "the ChatGPT-login
+  flow"; the post-#177 body describes codex resolving credentials from
+  `~/.codex/auth.json` in API-key mode. Three durable substrings remain
+  pinned by tests: `"codex"`, `"PATH"`, `"~/.codex/auth.json"`. The
+  announcement fires under the narrowed condition that the PATH branch
+  is the load-bearing acceptance signal (env vars unset, codex on PATH,
+  and `auth.json` is absent or declares `auth_mode != "chatgpt"`); the
+  chatgpt-mode refusal raises `CodexAuthMissingError` and does not fire
+  the announcement (the exception is the user signal).
 
 ## [0.1.1] - 2026-04-26
 

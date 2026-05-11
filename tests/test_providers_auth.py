@@ -907,7 +907,27 @@ class TestCheckCodexAuth:
     :func:`check_provider_auth` dispatcher is unchanged; the CLI seam
     directly calls :func:`check_codex_auth` when the resolved harness
     is ``"codex"``.
+
+    Test-infra: the repo-wide autouse fixture
+    ``tests/conftest.py::_isolate_codex_home`` (#177 US-003) points
+    ``CODEX_HOME`` at a hermetic ``tmp_path_factory.mktemp(...)`` dir so
+    the dev's real ``~/.codex/auth.json`` is invisible to every test.
+    The class-level fixture below RE-points ``CODEX_HOME`` at the
+    per-test ``tmp_path`` so tests within this class can stage their
+    own ``auth.json`` files (e.g. the chatgpt-mode refusal tests).
+    The class-level fixture has a distinct name from the conftest
+    fixture to avoid the same-name shadowing CodeRabbit flagged on
+    #181, while preserving the per-test staging seam.
     """
+
+    @pytest.fixture(autouse=True)
+    def _point_codex_home_at_tmp_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Override the conftest hermetic ``CODEX_HOME`` to the per-test
+        ``tmp_path`` so tests within this class can stage ``auth.json``
+        files via ``(tmp_path / "auth.json").write_text(...)``."""
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
 
     def test_only_codex_api_key_set_passes(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1187,9 +1207,10 @@ class TestCodexCliIsAvailable:
     presence-only PATH probe that #175 uses as the load-bearing third
     branch of :func:`check_codex_auth` (DEC-001 / DEC-002), accepting
     pre-flight when neither ``CODEX_API_KEY`` nor ``OPENAI_API_KEY`` is
-    set but the ``codex`` binary itself is on PATH (i.e. the user is
-    authenticated via ChatGPT login persisted in
-    ``~/.codex/auth.json``).
+    set but the ``codex`` binary itself is on PATH and
+    ``~/.codex/auth.json`` is absent OR declares an API-key mode
+    (post-#177 the chatgpt-mode branch refuses pre-flight; see
+    :class:`TestCheckCodexAuthPathBranch`).
 
     Presence-only contract: the helper does NOT verify the CLI is
     authenticated or functional. Codex itself produces crisp
@@ -1369,6 +1390,19 @@ class TestCheckCodexAuthPathBranch:
             False,
         )
 
+    @pytest.fixture(autouse=True)
+    def _point_codex_home_at_tmp_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Re-point ``CODEX_HOME`` (already isolated to a hermetic dir
+        by the conftest autouse fixture) at the per-test ``tmp_path``
+        so PATH-branch tests that stage their own ``auth.json``
+        (chatgpt-mode refusal, etc.) see the staged file when
+        ``check_codex_auth`` resolves the auth.json path. Distinct
+        name from the conftest fixture per the CodeRabbit #181
+        review — no same-name shadowing."""
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
     def test_codex_on_path_no_env_vars_passes(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1523,6 +1557,84 @@ class TestCheckCodexAuthPathBranch:
         second = capsys.readouterr().err
         assert second == ""
 
+    def test_codex_on_path_with_chatgpt_auth_json_refuses(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """DEC-002 / DEC-007 (#177 US-004): when ``~/.codex/auth.json``
+        declares ``auth_mode == "chatgpt"``, the pre-flight refuses
+        BEFORE the PATH branch fires — even with codex on PATH and no
+        env vars set. The refusal must use the chatgpt-mode template
+        (with its four durable substrings), NOT the all-branches-failed
+        template, AND must NOT fire the codex-CLI-on-PATH announcement
+        (PATH was never the load-bearing signal)."""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        # Stage a chatgpt-mode auth.json under the isolated CODEX_HOME
+        # the autouse fixture pinned at ``tmp_path``.
+        auth_json = tmp_path / "auth.json"
+        auth_json.write_text(_json.dumps({"auth_mode": "chatgpt"}))
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        with pytest.raises(CodexAuthMissingError) as exc_info:
+            check_codex_auth("grade")
+        message = str(exc_info.value)
+        # Four durable substrings of the chatgpt-mode refusal template.
+        assert "ChatGPT" in message
+        assert "~/.codex/auth.json" in message
+        assert "codex login --with-api-key" in message
+        # Command-name interpolation.
+        assert "clauditor grade" in message
+        # The PATH-branch announcement MUST NOT fire — the refusal
+        # short-circuits before any acceptance branch.
+        assert capsys.readouterr().err == ""
+
+    def test_codex_on_path_with_apikey_auth_json_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """DEC-004 (#177): a non-chatgpt ``auth_mode`` value (here
+        ``"apikey"``) is acceptable. With no env vars set and codex on
+        PATH the pre-flight should still accept via the PATH branch
+        AND fire the announcement (PATH is the load-bearing signal)."""
+        import json as _json
+
+        from clauditor._providers import (
+            _CODEX_CLI_ON_PATH_ANNOUNCEMENT,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        auth_json = tmp_path / "auth.json"
+        auth_json.write_text(_json.dumps({"auth_mode": "apikey"}))
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        assert check_codex_auth("grade") is None
+        captured = capsys.readouterr()
+        assert _CODEX_CLI_ON_PATH_ANNOUNCEMENT in captured.err
+
 
 class TestCodexAuthMissingTemplateAcceptsPathBranch:
     """The :data:`_CODEX_AUTH_MISSING_TEMPLATE` must mention the codex
@@ -1549,3 +1661,850 @@ class TestCodexAuthMissingTemplateAcceptsPathBranch:
         assert "platform.openai.com" in _CODEX_AUTH_MISSING_TEMPLATE
         # Command-name interpolation preserved.
         assert "{cmd_name}" in _CODEX_AUTH_MISSING_TEMPLATE
+
+
+class TestCodexAuthChatGPTModeTemplate:
+    """The :data:`_CODEX_AUTH_CHATGPT_MODE_TEMPLATE` carries the refusal
+    message for the ChatGPT-mode auth-conflict branch of
+    :func:`check_codex_auth` (DEC-002 / DEC-006 / DEC-010 of
+    ``plans/super/177-codex-auth-mode-conflict.md``). The template is
+    wired into the guard in US-003; US-002 only defines the constant
+    and pins the four durable substrings tests assert on plus the
+    ``{cmd_name}`` interpolation contract."""
+
+    def test_template_mentions_chatgpt(self) -> None:
+        """Durable substring: ``ChatGPT`` — names the auth-mode that
+        clauditor refuses so users immediately recognize what their
+        credentials file currently declares."""
+        from clauditor._providers import _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+        assert "ChatGPT" in _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+    def test_template_mentions_auth_json_path(self) -> None:
+        """Durable substring: ``~/.codex/auth.json`` — the canonical
+        credentials file location the codex CLI reads, named in the
+        refusal so users know where to inspect / fix the auth_mode."""
+        from clauditor._providers import _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+        assert "~/.codex/auth.json" in _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+    def test_template_mentions_remediation_command(self) -> None:
+        """Durable substring: ``codex login --with-api-key`` — the
+        one-line remediation that re-materializes the credentials
+        file in API-key mode."""
+        from clauditor._providers import _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+        assert "codex login --with-api-key" in _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+    def test_template_carries_cmd_name_placeholder(self) -> None:
+        """Durable substring: ``{cmd_name}`` — the interpolation anchor
+        that ``check_codex_auth`` fills with the subcommand label."""
+        from clauditor._providers import _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+        assert "{cmd_name}" in _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+    def test_template_format_interpolates_cmd_name(self) -> None:
+        """``.format(cmd_name=...)`` must work and produce a message
+        containing the interpolated label. Mirrors the contract every
+        other ``_*_AUTH_MISSING_TEMPLATE`` honors so the guard body
+        can route the template through the same ``.format`` call."""
+        from clauditor._providers import _CODEX_AUTH_CHATGPT_MODE_TEMPLATE
+
+        rendered = _CODEX_AUTH_CHATGPT_MODE_TEMPLATE.format(cmd_name="grade")
+        assert "clauditor grade" in rendered
+        # The placeholder must be consumed by the format call — no
+        # stray ``{cmd_name}`` left in the rendered output.
+        assert "{cmd_name}" not in rendered
+
+
+class TestCodexAuthJsonHelpers:
+    """Unit coverage for the three pure helpers added in #177 US-001:
+    ``_codex_auth_json_path``, ``_parse_codex_auth_json``, and
+    ``_auth_mode_is_acceptable``.
+
+    Traces to DEC-004, DEC-005, DEC-008, DEC-009, DEC-012, DEC-013,
+    DEC-014 of ``plans/super/177-codex-auth-mode-conflict.md``.
+
+    - ``_codex_auth_json_path()`` resolves ``$CODEX_HOME/auth.json`` when
+      ``CODEX_HOME`` is set to a non-empty (whitespace-trimmed) string,
+      else ``Path.home() / ".codex" / "auth.json"`` (DEC-009).
+    - ``_parse_codex_auth_json(path)`` is a defensive read: returns
+      ``None`` on file-not-found, ``OSError``, oversize (>1 MB),
+      ``json.JSONDecodeError``, non-``dict`` root, or unicode-decode
+      failure. Never raises. UTF-8 strict decode (DEC-005, DEC-012).
+    - ``_auth_mode_is_acceptable(parsed)`` is a pure verdict: returns
+      ``True`` when ``parsed is None``, or when ``parsed.get("auth_mode")``
+      is missing / not a ``str`` / a ``str`` other than ``"chatgpt"``.
+      Returns ``False`` only when
+      ``isinstance(auth_mode, str) and auth_mode == "chatgpt"``
+      (DEC-004, DEC-013).
+
+    Helpers are private (leading ``_``) and NOT re-exported from
+    ``_providers/__init__.py`` per Pattern 1 of
+    ``.claude/rules/back-compat-shim-discipline.md``.
+    """
+
+    # ----- _parse_codex_auth_json: happy-path cases -----
+
+    def test_parse_happy_path_apikey(self, tmp_path) -> None:
+        """Case 1: well-formed ``auth.json`` with ``auth_mode=apikey``
+        returns the parsed dict verbatim."""
+        import json
+
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        payload = {"auth_mode": "apikey", "api_key": "sk-redacted"}
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        result = _parse_codex_auth_json(auth_path)
+
+        assert result == payload
+
+    def test_parse_happy_path_chatgpt(self, tmp_path) -> None:
+        """Case 2: well-formed ``auth.json`` with ``auth_mode=chatgpt``
+        returns the parsed dict verbatim. The caller (the pure verdict
+        helper) decides whether ``chatgpt`` is acceptable; the parser
+        is content-agnostic."""
+        import json
+
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        payload = {"auth_mode": "chatgpt", "tokens": {"access_token": "x"}}
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        result = _parse_codex_auth_json(auth_path)
+
+        assert result == payload
+
+    # ----- _parse_codex_auth_json: failure-open cases (DEC-005) -----
+
+    def test_parse_file_not_found_returns_none(self, tmp_path) -> None:
+        """Case 3: missing file returns ``None`` (never raises). Most
+        common case in CI where the user has not run ``codex login``."""
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        result = _parse_codex_auth_json(tmp_path / "does-not-exist.json")
+
+        assert result is None
+
+    def test_parse_malformed_json_returns_none(self, tmp_path) -> None:
+        """Case 4: malformed JSON returns ``None``. Real-world failure
+        mode: partially written file, truncated by a crash mid-write."""
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text("{this is not valid json", encoding="utf-8")
+
+        result = _parse_codex_auth_json(auth_path)
+
+        assert result is None
+
+    def test_parse_oversize_returns_none(self, tmp_path) -> None:
+        """Case 5: file > 1 MB returns ``None`` (DEC-012). Real codex
+        ``auth.json`` files are well under 4 KB; cap defends against
+        symlink-bomb / accidental oversize."""
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        auth_path = tmp_path / "auth.json"
+        # 1 MB + 1 byte of valid-looking JSON wrapping a giant string.
+        # We don't need it to *parse* — the size check must fire before
+        # the json.loads call.
+        oversize_blob = '{"auth_mode": "apikey", "padding": "' + (
+            "x" * (1024 * 1024 + 1)
+        ) + '"}'
+        auth_path.write_text(oversize_blob, encoding="utf-8")
+
+        result = _parse_codex_auth_json(auth_path)
+
+        assert result is None
+
+    def test_parse_non_dict_root_returns_none(self, tmp_path) -> None:
+        """Case 6: JSON whose top-level value is not a ``dict`` (e.g. a
+        list) returns ``None``. Downstream verdict helper is typed
+        ``dict | None``; a list would crash a ``.get(...)`` call."""
+        import json
+
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+        result = _parse_codex_auth_json(auth_path)
+
+        assert result is None
+
+    # ----- _auth_mode_is_acceptable: verdict cases -----
+
+    def test_verdict_missing_auth_mode_returns_true(self) -> None:
+        """Case 7: parsed dict without an ``auth_mode`` key is
+        acceptable (failure-open per DEC-005). A future codex auth
+        schema that drops the field should not block clauditor."""
+        from clauditor._providers._auth import _auth_mode_is_acceptable
+
+        assert _auth_mode_is_acceptable({"unrelated": "value"}) is True
+
+    def test_verdict_non_string_auth_mode_returns_true(self) -> None:
+        """Case 8: ``auth_mode = true`` (JSON bool) is acceptable —
+        the defensive ``isinstance(..., str)`` guard (DEC-013) returns
+        before the ``== "chatgpt"`` comparison so a bool / int / None
+        never enters the string comparison."""
+        from clauditor._providers._auth import _auth_mode_is_acceptable
+
+        assert _auth_mode_is_acceptable({"auth_mode": True}) is True
+
+    def test_verdict_chatgpt_returns_false(self) -> None:
+        """Case 9: ``auth_mode = "chatgpt"`` is the ONE refused value
+        (DEC-004 — conservative enumeration). The caller raises
+        ``CodexAuthMissingError`` with the chatgpt-mode template."""
+        from clauditor._providers._auth import _auth_mode_is_acceptable
+
+        assert _auth_mode_is_acceptable({"auth_mode": "chatgpt"}) is False
+
+    def test_verdict_apikey_returns_true(self) -> None:
+        """Case 10: ``auth_mode = "apikey"`` is acceptable. Any string
+        other than ``"chatgpt"`` (exact match) passes."""
+        from clauditor._providers._auth import _auth_mode_is_acceptable
+
+        assert _auth_mode_is_acceptable({"auth_mode": "apikey"}) is True
+
+    def test_verdict_none_parsed_returns_true(self) -> None:
+        """Verdict's ``parsed is None`` branch (parse failure
+        failure-open per DEC-005). The caller passes ``None`` from
+        ``_parse_codex_auth_json`` when the file is missing /
+        malformed / oversize."""
+        from clauditor._providers._auth import _auth_mode_is_acceptable
+
+        assert _auth_mode_is_acceptable(None) is True
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            True,
+            False,
+            0,
+            1,
+            None,
+            ["chatgpt"],
+            {"nested": "chatgpt"},
+            "CHATGPT",
+            "Chatgpt",
+            "chatgpt_login",
+            " chatgpt",
+            "chatgpt ",
+        ],
+        ids=[
+            "bool_true",
+            "bool_false",
+            "int_zero",
+            "int_one",
+            "json_null",
+            "list_containing_chatgpt",
+            "dict_value",
+            "uppercase_CHATGPT",
+            "titlecase_Chatgpt",
+            "chatgpt_login_suffix",
+            "leading_whitespace_chatgpt",
+            "trailing_whitespace_chatgpt",
+        ],
+    )
+    def test_verdict_non_chatgpt_values_return_true(self, value) -> None:
+        """DEC-004 (strict exact-match) + DEC-013 (defensive
+        ``isinstance(str)`` guard) together: ONLY the bare string
+        literal ``"chatgpt"`` is refused. Every other shape — bool,
+        int, JSON null, container, case-variant, whitespace-padded
+        — passes through as acceptable. A future contributor who
+        relaxes the guard (e.g. coerces non-string to ``str``, or
+        case-folds before comparison) would break one of these
+        parametrized cases."""
+        from clauditor._providers._auth import _auth_mode_is_acceptable
+
+        assert _auth_mode_is_acceptable({"auth_mode": value}) is True
+
+    def test_verdict_empty_dict_returns_true(self) -> None:
+        """Empty dict has no ``auth_mode`` key → ``.get`` returns
+        ``None`` → ``isinstance(None, str)`` is ``False`` → verdict
+        is acceptable. Canonical "no opinion" case."""
+        from clauditor._providers._auth import _auth_mode_is_acceptable
+
+        assert _auth_mode_is_acceptable({}) is True
+
+    # ----- _codex_auth_json_path: env-var override (DEC-009) -----
+
+    def test_path_codex_home_override(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Case 11: ``CODEX_HOME`` set to a non-empty value resolves
+        to ``$CODEX_HOME/auth.json`` (mirrors the codex CLI's own
+        behavior — DEC-009)."""
+        from clauditor._providers._auth import _codex_auth_json_path
+
+        codex_home = tmp_path / "custom-codex-home"
+        codex_home.mkdir()
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+        result = _codex_auth_json_path()
+
+        assert result == codex_home / "auth.json"
+
+    def test_path_codex_home_whitespace_only_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Case 12: ``CODEX_HOME`` set to a whitespace-only string is
+        treated as unset (same shape as ``_api_key_is_set`` /
+        ``_codex_api_key_is_set``); falls back to
+        ``~/.codex/auth.json``."""
+        from pathlib import Path
+
+        from clauditor._providers._auth import _codex_auth_json_path
+
+        monkeypatch.setenv("CODEX_HOME", "   ")
+
+        result = _codex_auth_json_path()
+
+        assert result == Path.home() / ".codex" / "auth.json"
+
+    def test_path_codex_home_unset_uses_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``CODEX_HOME`` unset falls back to ``~/.codex/auth.json``
+        (the canonical codex CLI credential location)."""
+        from pathlib import Path
+
+        from clauditor._providers._auth import _codex_auth_json_path
+
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+
+        result = _codex_auth_json_path()
+
+        assert result == Path.home() / ".codex" / "auth.json"
+
+    # ----- defense-in-depth: failure-open on Path.home() RuntimeError -----
+
+    def test_path_home_runtime_error_returns_failure_open_sentinel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When ``CODEX_HOME`` is unset AND ``Path.home()`` raises
+        ``RuntimeError`` (bare container / stripped sandbox env where
+        neither ``$HOME`` is set nor ``pwd`` can resolve a home dir),
+        ``_codex_auth_json_path`` returns a sentinel path that
+        deterministically parses to ``None``. The parser yields
+        ``None`` so the pre-flight chain falls through to env-var /
+        PATH checks (failure-open per DEC-005). Mirrors the
+        home-exclusion pattern documented in
+        ``.claude/rules/project-root-home-exclusion.md``.
+
+        The contract is *failure-open behavior*, not "the returned
+        path does not exist on the filesystem" — the production
+        helper now uses :data:`os.devnull` (a portable always-
+        readable empty stream that JSON-parsing rejects), so an
+        ``exists()``-based assertion would depend on the host
+        kernel's ``/dev/null`` presence rather than on the
+        helper's contract. The assertion below targets the
+        contract directly."""
+        from pathlib import Path
+
+        from clauditor._providers._auth import (
+            _codex_auth_json_path,
+            _parse_codex_auth_json,
+        )
+
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+
+        def _raise() -> Path:
+            raise RuntimeError("HOME not set and pwd lookup failed")
+
+        monkeypatch.setattr("clauditor._providers._auth.Path.home", _raise)
+
+        result = _codex_auth_json_path()
+
+        # Contract: the returned path deterministically parses to
+        # ``None`` so the broader chain falls through. We do NOT
+        # assert anything about ``result.exists()`` because the
+        # sentinel (``os.devnull``) is a kernel-managed pseudo-file
+        # whose presence varies by host.
+        assert _parse_codex_auth_json(result) is None
+
+    # ----- defense-in-depth: bounded read for special-file st_size=0 case -----
+
+    def test_parse_bounded_read_caps_oversize_content(self, tmp_path) -> None:
+        """``stat().st_size`` is an optimization for the common case;
+        the bounded ``fh.read(_CODEX_AUTH_JSON_MAX_BYTES + 1)`` is the
+        load-bearing security check. This test materializes a file
+        whose actual content exceeds the cap and asserts the parser
+        returns ``None`` — exercising the ``stat()`` size-check arm."""
+        from clauditor._providers._auth import (
+            _CODEX_AUTH_JSON_MAX_BYTES,
+            _parse_codex_auth_json,
+        )
+
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text("x" * (_CODEX_AUTH_JSON_MAX_BYTES + 100))
+
+        assert _parse_codex_auth_json(auth_path) is None
+
+    def test_parse_bounded_read_defends_when_stat_lies(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Defense-in-depth: the bounded ``fh.read(N+1)`` enforces the
+        cap even when ``stat()`` reports a small size while the file's
+        actual content exceeds ``_CODEX_AUTH_JSON_MAX_BYTES``. This is
+        the security-load-bearing branch defending against symlinks to
+        FIFOs, ``/proc/*`` virtual files, or ``/dev/zero`` (where
+        ``st_size`` is 0 but reads stream unboundedly). Staged here by
+        monkeypatching ``Path.stat`` to return a fake result with
+        ``st_size=0`` while the real file content exceeds the cap."""
+        import os
+
+        from clauditor._providers._auth import (
+            _CODEX_AUTH_JSON_MAX_BYTES,
+            _parse_codex_auth_json,
+        )
+
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text("x" * (_CODEX_AUTH_JSON_MAX_BYTES + 100))
+
+        # Capture the real stat fields so we can rebuild a fake result
+        # that lies only about size. ``os.stat_result`` is constructed
+        # from a 10-tuple matching the canonical stat field order.
+        real = auth_path.stat()
+        fake = os.stat_result(
+            (
+                real.st_mode,
+                real.st_ino,
+                real.st_dev,
+                real.st_nlink,
+                real.st_uid,
+                real.st_gid,
+                0,  # st_size — the lie; symlinks to FIFOs / /proc/* report 0
+                real.st_atime,
+                real.st_mtime,
+                real.st_ctime,
+            )
+        )
+
+        original_stat = type(auth_path).stat
+
+        def _lying_stat(self, *args, **kwargs):
+            if self == auth_path:
+                return fake
+            return original_stat(self, *args, **kwargs)
+
+        monkeypatch.setattr(type(auth_path), "stat", _lying_stat)
+
+        # ``stat()`` says size=0, so the early-exit arm at line 342
+        # falls through. The bounded ``fh.read(N+1)`` then materializes
+        # > N chars, and the ``len(text) > N`` post-check returns None.
+        assert _parse_codex_auth_json(auth_path) is None
+
+    # ----- defense-in-depth: non-regular files (FIFO / socket) -----
+
+    def test_parse_rejects_fifo_before_open(self, tmp_path) -> None:
+        """A hostile FIFO at the auth.json path could block ``open()``
+        / ``read()`` indefinitely waiting for a writer, even with the
+        byte cap. The ``stat.S_ISREG`` guard rejects non-regular
+        files BEFORE the ``open()`` call so the parser cannot hang
+        the whole CLI invocation. Failure-open per DEC-005:
+        non-regular files yield ``None`` and the broader chain
+        falls through. Skipped on platforms without ``os.mkfifo``
+        (Windows)."""
+        import os
+
+        if not hasattr(os, "mkfifo"):  # pragma: no cover — Windows
+            pytest.skip("os.mkfifo not available on this platform")
+
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        auth_path = tmp_path / "auth.json"
+        os.mkfifo(str(auth_path))
+
+        # Without the ``S_ISREG`` guard this call would block waiting
+        # for a FIFO writer that never arrives. The guard returns
+        # ``None`` immediately after ``stat()`` succeeds.
+        assert _parse_codex_auth_json(auth_path) is None
+
+    # ----- defense-in-depth: UnicodeDecodeError direct test -----
+
+    def test_parse_invalid_utf8_returns_none(self, tmp_path) -> None:
+        """Non-UTF-8 ``auth.json`` returns ``None``. The parser uses
+        strict UTF-8 decode (no ``errors="replace"``) so a corrupted
+        file does not silently produce a partial dict. Failure-open
+        per DEC-005."""
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        auth_path = tmp_path / "auth.json"
+        # Invalid UTF-8 (lone continuation byte 0xff) followed by
+        # what would otherwise be a valid JSON body. ``read_text``
+        # under strict decode raises ``UnicodeDecodeError``, which
+        # the parser folds into the ``None`` failure path.
+        auth_path.write_bytes(b'\xff{"auth_mode": "apikey"}')
+
+        assert _parse_codex_auth_json(auth_path) is None
+
+    # ----- back-compat-shim-discipline: helpers NOT re-exported -----
+
+    def test_helpers_not_reexported_from_package_init(self) -> None:
+        """Per Pattern 1 of
+        ``.claude/rules/back-compat-shim-discipline.md``, the three
+        new private helpers (leading ``_``) MUST NOT be re-exported
+        from ``clauditor._providers/__init__.py``. They are
+        I/O-bearing private helpers with no need for cross-module
+        identity invariants."""
+        import clauditor._providers as providers_pkg
+
+        assert not hasattr(providers_pkg, "_codex_auth_json_path")
+        assert not hasattr(providers_pkg, "_parse_codex_auth_json")
+        assert not hasattr(providers_pkg, "_auth_mode_is_acceptable")
+
+
+class TestCheckCodexAuthChatGPTModeRefusal:
+    """ChatGPT-mode pre-flight refusal wired into :func:`check_codex_auth`
+    (#177 US-003).
+
+    Traces to DEC-001, DEC-002 (Broad refusal), DEC-005 (failure-open),
+    DEC-006, DEC-010 of
+    ``plans/super/177-codex-auth-mode-conflict.md``.
+
+    The chatgpt-mode check fires BEFORE all other branches (env vars +
+    PATH). A user with ``OPENAI_API_KEY`` or ``CODEX_API_KEY`` set AND
+    ``~/.codex/auth.json`` declaring ``auth_mode == "chatgpt"`` is still
+    refused: the codex subprocess would route via ChatGPT and reject
+    every model.
+
+    Pre-flight passes (returns ``None``) when:
+
+    1. auth.json missing AND ``OPENAI_API_KEY`` set
+    2. auth.json missing AND ``CODEX_API_KEY`` set
+    3. auth.json missing AND codex on PATH (no env var)
+    4. auth.json apikey AND env var set
+    5. auth.json apikey AND codex on PATH (no env var)
+    6. auth.json malformed AND env var set (failure-open per DEC-005)
+    7. auth.json malformed AND codex on PATH (failure-open)
+
+    And raises :class:`CodexAuthMissingError` when:
+
+    8. auth.json ``auth_mode == "chatgpt"`` AND any combination of env
+       vars / PATH.
+
+    Tests use ``tmp_path`` and ``monkeypatch.setenv("CODEX_HOME", ...)``
+    to stage ``auth.json`` files at a deterministic location resolved
+    by :func:`_codex_auth_json_path`.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_announcement_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reset the codex-CLI-on-PATH one-shot flag so PATH-branch
+        passes don't leak announcement state between tests."""
+        monkeypatch.setattr(
+            "clauditor._providers._auth._announced_codex_cli_on_path",
+            False,
+        )
+
+    @staticmethod
+    def _stage_auth_json(
+        monkeypatch: pytest.MonkeyPatch, tmp_path, contents: str
+    ) -> None:
+        """Stage an ``auth.json`` under ``tmp_path`` and point
+        :func:`_codex_auth_json_path` at it via ``CODEX_HOME``."""
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text(contents, encoding="utf-8")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    # ----- Pass branches (auth.json absent / apikey / malformed) -----
+
+    def test_authjson_missing_openai_key_set_passes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 1: auth.json missing AND ``OPENAI_API_KEY`` set →
+        pre-flight passes (no chatgpt-mode signal; env var accepts)."""
+        from clauditor._providers import check_codex_auth
+
+        # CODEX_HOME points at tmp_path with NO auth.json staged.
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        assert check_codex_auth("grade") is None
+
+    def test_authjson_missing_codex_key_set_passes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 2: auth.json missing AND ``CODEX_API_KEY`` set →
+        pre-flight passes."""
+        from clauditor._providers import check_codex_auth
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert check_codex_auth("grade") is None
+
+    def test_authjson_missing_codex_on_path_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Branch 3: auth.json missing AND codex on PATH (no env var) →
+        pre-flight passes via the PATH branch (US-002 from #175). The
+        codex-CLI-on-PATH announcement fires because PATH is the
+        load-bearing acceptance signal."""
+        from clauditor._providers import (
+            _CODEX_CLI_ON_PATH_ANNOUNCEMENT,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        assert check_codex_auth("grade") is None
+        # Announcement fires because PATH is load-bearing (DEC-009 of #175).
+        assert _CODEX_CLI_ON_PATH_ANNOUNCEMENT in capsys.readouterr().err
+
+    def test_authjson_apikey_with_env_var_passes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 4: auth.json ``auth_mode="apikey"`` AND env var set →
+        pre-flight passes. The verdict helper returns ``True`` for any
+        non-``"chatgpt"`` string, so the chatgpt-mode check short-circuits
+        and the env-var branch accepts."""
+        import json as _json
+
+        from clauditor._providers import check_codex_auth
+
+        payload = {"auth_mode": "apikey", "api_key": "sk-redacted"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert check_codex_auth("grade") is None
+
+    def test_authjson_apikey_with_codex_on_path_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Branch 5: auth.json ``auth_mode="apikey"`` AND codex on PATH
+        (no env var) → pre-flight passes via the PATH branch. The
+        announcement fires because PATH is load-bearing."""
+        import json as _json
+
+        from clauditor._providers import (
+            _CODEX_CLI_ON_PATH_ANNOUNCEMENT,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        payload = {"auth_mode": "apikey", "api_key": "sk-redacted"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        assert check_codex_auth("grade") is None
+        assert _CODEX_CLI_ON_PATH_ANNOUNCEMENT in capsys.readouterr().err
+
+    def test_authjson_malformed_with_env_var_passes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 6: auth.json malformed AND env var set → pre-flight
+        passes (failure-open per DEC-005: the parser returns ``None``,
+        the verdict helper returns ``True``, env var accepts)."""
+        from clauditor._providers import check_codex_auth
+
+        self._stage_auth_json(
+            monkeypatch, tmp_path, "{this is not valid json"
+        )
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert check_codex_auth("grade") is None
+
+    def test_authjson_malformed_with_codex_on_path_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Branch 7: auth.json malformed AND codex on PATH (no env var) →
+        pre-flight passes via the PATH branch (failure-open per DEC-005).
+        The announcement fires because PATH is load-bearing."""
+        from clauditor._providers import (
+            _CODEX_CLI_ON_PATH_ANNOUNCEMENT,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        self._stage_auth_json(
+            monkeypatch, tmp_path, "{this is not valid json"
+        )
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        assert check_codex_auth("grade") is None
+        assert _CODEX_CLI_ON_PATH_ANNOUNCEMENT in capsys.readouterr().err
+
+    # ----- Refusal branch (auth_mode=="chatgpt") -----
+
+    def test_chatgpt_mode_refuses_with_no_env_vars(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 8a: auth.json ``auth_mode="chatgpt"`` AND no env vars →
+        raise. The broad refusal does not require any other auth signal
+        to be absent; chatgpt-mode is itself the refusal trigger."""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+
+        payload = {"auth_mode": "chatgpt", "tokens": {"access_token": "x"}}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(CodexAuthMissingError) as exc_info:
+            check_codex_auth("grade")
+        message = str(exc_info.value)
+        # DEC-002 / DEC-006 / DEC-010 durable substrings.
+        assert "ChatGPT" in message
+        assert "~/.codex/auth.json" in message
+        assert "codex login --with-api-key" in message
+        # Command-name interpolation.
+        assert "clauditor grade" in message
+
+    def test_chatgpt_mode_refuses_with_codex_api_key(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 8b: auth.json ``auth_mode="chatgpt"`` AND
+        ``CODEX_API_KEY`` set → raise. Per DEC-002 (Broad refusal), the
+        chatgpt check fires BEFORE env-var checks: a user with the key
+        exported but a chatgpt-mode auth.json file is still refused
+        because the codex subprocess reads auth.json and routes via
+        ChatGPT regardless of the env var."""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+
+        payload = {"auth_mode": "chatgpt"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(CodexAuthMissingError):
+            check_codex_auth("grade")
+
+    def test_chatgpt_mode_refuses_with_openai_api_key(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 8c: auth.json ``auth_mode="chatgpt"`` AND
+        ``OPENAI_API_KEY`` set → raise. Same broad-refusal posture."""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+
+        payload = {"auth_mode": "chatgpt"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        with pytest.raises(CodexAuthMissingError):
+            check_codex_auth("grade")
+
+    def test_chatgpt_mode_refuses_with_codex_on_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 8d: auth.json ``auth_mode="chatgpt"`` AND codex on PATH
+        → raise. Per DEC-002 the chatgpt check fires BEFORE the PATH
+        branch; the PATH-branch announcement does NOT fire."""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        payload = {"auth_mode": "chatgpt"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        with pytest.raises(CodexAuthMissingError):
+            check_codex_auth("grade")
+
+    def test_chatgpt_mode_refuses_with_all_signals_set(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 8e: auth.json ``auth_mode="chatgpt"`` AND both env
+        vars set AND codex on PATH → raise. The broad refusal is
+        unconditional on chatgpt-mode regardless of any other signal."""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        payload = {"auth_mode": "chatgpt"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        with pytest.raises(CodexAuthMissingError):
+            check_codex_auth("grade")
+
+    def test_chatgpt_mode_uses_chatgpt_template_not_missing_template(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """The refusal message must come from
+        :data:`_CODEX_AUTH_CHATGPT_MODE_TEMPLATE`, NOT
+        :data:`_CODEX_AUTH_MISSING_TEMPLATE`. The two templates are
+        distinguishable by their leading line: the chatgpt template
+        opens ``"ERROR: Codex auth-mode mismatch."`` while the missing
+        template opens ``"ERROR: No usable Codex authentication
+        found."``"""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+
+        payload = {"auth_mode": "chatgpt"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(CodexAuthMissingError) as exc_info:
+            check_codex_auth("grade")
+        message = str(exc_info.value)
+        # Chatgpt template's distinctive lead-in.
+        assert "auth-mode mismatch" in message
+        # Missing template's distinctive lead-in must NOT appear.
+        assert "No usable Codex authentication found" not in message
