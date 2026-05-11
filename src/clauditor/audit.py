@@ -53,8 +53,14 @@ from clauditor.paths import resolve_clauditor_dir
 # ``plans/super/147-sidecar-provider-field.md``.
 MAX_SCHEMA_VERSION: dict[str, int] = {
     "assertions.json": 2,
-    "extraction.json": 4,
-    "grading.json": 4,
+    # #170 US-004 / US-006: extraction.json bumped 4 → 5 with nullable
+    # ``reasoning_tokens`` field. Loader defaults missing field to
+    # ``None`` for legacy v1..v4 reads.
+    "extraction.json": 5,
+    # #170 US-004 / US-006: grading.json bumped 4 → 5 with nullable
+    # ``reasoning_tokens`` field. Loader defaults missing field to
+    # ``None`` for legacy v1..v4 reads.
+    "grading.json": 5,
     # #154 US-005 / DEC-010: context.json is a new sidecar family;
     # always-v1 (the v1 dataclass already ships nullable fields for the
     # observability surface, so future ``reasoning_tokens`` /
