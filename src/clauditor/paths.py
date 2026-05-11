@@ -107,7 +107,14 @@ def _filesystem_eval_skill_name(eval_path: Path) -> str:
     prompts and slash-command resolution.
     """
     if eval_path.name in ("SKILL.eval.json", "eval.json"):
-        return eval_path.parent.name
+        parent_name = eval_path.parent.name
+        if parent_name:
+            return parent_name
+        # ``Path("eval.json").parent.name`` is ``""`` (parent is ``.``);
+        # same for root-level ``/eval.json``. An empty string would
+        # propagate into ``EvalSpec.from_file`` as the skill_name and
+        # break downstream prompt text / slash-command resolution.
+        # Fall through to the legacy/stem fallback below.
     # ``<name>.eval.json`` → strip the ``.eval`` suffix.
     # ``Path("foo.eval.json").suffixes == [".eval", ".json"]``.
     suffixes = eval_path.suffixes
