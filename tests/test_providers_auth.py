@@ -1200,9 +1200,10 @@ class TestCodexCliIsAvailable:
     presence-only PATH probe that #175 uses as the load-bearing third
     branch of :func:`check_codex_auth` (DEC-001 / DEC-002), accepting
     pre-flight when neither ``CODEX_API_KEY`` nor ``OPENAI_API_KEY`` is
-    set but the ``codex`` binary itself is on PATH (i.e. the user is
-    authenticated via ChatGPT login persisted in
-    ``~/.codex/auth.json``).
+    set but the ``codex`` binary itself is on PATH and
+    ``~/.codex/auth.json`` is absent OR declares an API-key mode
+    (post-#177 the chatgpt-mode branch refuses pre-flight; see
+    :class:`TestCheckCodexAuthPathBranch`).
 
     Presence-only contract: the helper does NOT verify the CLI is
     authenticated or functional. Codex itself produces crisp
@@ -1545,6 +1546,84 @@ class TestCheckCodexAuthPathBranch:
         # Second call must be silent.
         second = capsys.readouterr().err
         assert second == ""
+
+    def test_codex_on_path_with_chatgpt_auth_json_refuses(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """DEC-002 / DEC-007 (#177 US-004): when ``~/.codex/auth.json``
+        declares ``auth_mode == "chatgpt"``, the pre-flight refuses
+        BEFORE the PATH branch fires — even with codex on PATH and no
+        env vars set. The refusal must use the chatgpt-mode template
+        (with its four durable substrings), NOT the all-branches-failed
+        template, AND must NOT fire the codex-CLI-on-PATH announcement
+        (PATH was never the load-bearing signal)."""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        # Stage a chatgpt-mode auth.json under the isolated CODEX_HOME
+        # the autouse fixture pinned at ``tmp_path``.
+        auth_json = tmp_path / "auth.json"
+        auth_json.write_text(_json.dumps({"auth_mode": "chatgpt"}))
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        with pytest.raises(CodexAuthMissingError) as exc_info:
+            check_codex_auth("grade")
+        message = str(exc_info.value)
+        # Four durable substrings of the chatgpt-mode refusal template.
+        assert "ChatGPT" in message
+        assert "~/.codex/auth.json" in message
+        assert "codex login --with-api-key" in message
+        # Command-name interpolation.
+        assert "clauditor grade" in message
+        # The PATH-branch announcement MUST NOT fire — the refusal
+        # short-circuits before any acceptance branch.
+        assert capsys.readouterr().err == ""
+
+    def test_codex_on_path_with_apikey_auth_json_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """DEC-004 (#177): a non-chatgpt ``auth_mode`` value (here
+        ``"apikey"``) is acceptable. With no env vars set and codex on
+        PATH the pre-flight should still accept via the PATH branch
+        AND fire the announcement (PATH is the load-bearing signal)."""
+        import json as _json
+
+        from clauditor._providers import (
+            _CODEX_CLI_ON_PATH_ANNOUNCEMENT,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        auth_json = tmp_path / "auth.json"
+        auth_json.write_text(_json.dumps({"auth_mode": "apikey"}))
+
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        assert check_codex_auth("grade") is None
+        captured = capsys.readouterr()
+        assert _CODEX_CLI_ON_PATH_ANNOUNCEMENT in captured.err
 
 
 class TestCodexAuthMissingTemplateAcceptsPathBranch:

@@ -624,11 +624,14 @@ def announce_auto_codex_harness() -> None:
     _announced_auto_codex_harness = True
 
 
-# DEC-003 / DEC-009 (#175 US-001): one-shot stderr announcement when
-# :func:`check_codex_auth` accepts the pre-flight via the codex-CLI-on-
-# PATH branch (i.e. neither ``CODEX_API_KEY`` nor ``OPENAI_API_KEY``
-# is set; ``codex`` binary is on PATH; user is authenticated via
-# ChatGPT login persisted in ``~/.codex/auth.json``). Flipped to
+# DEC-003 / DEC-009 (#175 US-001), refined by DEC-002 / DEC-007 (#177
+# US-004): one-shot stderr announcement when :func:`check_codex_auth`
+# accepts the pre-flight via the codex-CLI-on-PATH branch (i.e.
+# neither ``CODEX_API_KEY`` nor ``OPENAI_API_KEY`` is set; ``codex``
+# binary is on PATH; ``~/.codex/auth.json`` is absent OR declares
+# ``auth_mode != "chatgpt"`` — post-#177 the chatgpt-mode branch
+# refuses pre-flight, so this announcement no longer claims the
+# "ChatGPT-login flow" as the typical resolution path). Flipped to
 # ``True`` after the first emission per Python process. Fourth member
 # of the implicit-coupling announcement family (co-located with
 # :data:`_announced_implicit_no_api_key`,
@@ -658,9 +661,9 @@ _announced_codex_cli_on_path: bool = False
 _CODEX_CLI_ON_PATH_ANNOUNCEMENT: Final[str] = (
     "clauditor: accepted codex pre-flight via codex CLI on PATH "
     "(neither CODEX_API_KEY nor OPENAI_API_KEY is set; codex itself "
-    "will resolve credentials from ~/.codex/auth.json — typically "
-    "the ChatGPT-login flow). If you intended to use an API key, "
-    "export CODEX_API_KEY or OPENAI_API_KEY."
+    "will resolve credentials from ~/.codex/auth.json in API-key "
+    "mode). If you intended to use an API key explicitly, export "
+    "CODEX_API_KEY or OPENAI_API_KEY."
 )
 
 
