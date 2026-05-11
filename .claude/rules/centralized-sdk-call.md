@@ -451,14 +451,14 @@ in the `clauditor._providers` package. Each member pairs a
 module-level flag with an announcement-text constant; the
 print-and-flip logic either lives inline at the call site (the first
 member, from #86) or is factored into a public helper (the later
-members, from #95, #144, #151, and #169 respectively, and the target
-shape going forward). The traditional flag shape is a module-level
-`bool`, but the family also admits **set-keyed** flags
+members, from #95, #144, #151, #169, and #175 respectively, and the
+target shape going forward). The traditional flag shape is a module-
+level `bool`, but the family also admits **set-keyed** flags
 (`set[tuple[...]]`) for announcements that need per-key
 idempotence — see the `_announced_unknown_models` member below
-for the canonical shape. Five members today (axes:
+for the canonical shape. Seven members today (axes:
 transport-coupled, auth-coupled, deprecation-coupled, harness-
-coupled, pricing-coupled):
+coupled, pricing-coupled, codex-auth-coupled):
 
 - `_announced_cli_transport` (bool flag) + `_CLI_AUTO_ANNOUNCEMENT`
   (plain `str` constant) in `src/clauditor/_providers/_anthropic.py`
@@ -538,6 +538,35 @@ coupled, pricing-coupled):
   time so the maintainer can grep stderr for the missing model
   name. Reset mechanism for tests is
   `monkeypatch.setattr(..., set())` (an empty set, not `False`).
+- `_announced_codex_cli_on_path` (bool flag) +
+  `_CODEX_CLI_ON_PATH_ANNOUNCEMENT` (`Final[str]` constant) in
+  `src/clauditor/_providers/_auth.py` — from #175 US-001
+  (DEC-003 of `plans/super/175-codex-chatgpt-login-auth.md`).
+  Fires when `check_codex_auth` accepts the pre-flight via the
+  **codex-CLI-on-PATH** branch (i.e. neither `CODEX_API_KEY` nor
+  `OPENAI_API_KEY` is set, but `codex` is on PATH — typically the
+  `~/.codex/auth.json` ChatGPT-login posture). Per DEC-009 the
+  env branches (`_codex_api_key_is_set` /
+  `_openai_api_key_is_set`) short-circuit silently and do NOT
+  fire the announcement — surfacing the *implicit trust the CLI*
+  decision to the operator, not re-announcing what the operator
+  set explicitly via env. Print-and-flip lives in the **public
+  helper** `announce_codex_cli_on_path()`, called from
+  `check_codex_auth` only when the PATH branch is the accepting
+  one. Three durable substrings pinned by tests (DEC-004):
+  `"codex"` (topic anchor), `"PATH"` (the trust mechanism),
+  `"~/.codex/auth.json"` (the canonical credential file the
+  Codex CLI reads under ChatGPT-login). Re-export shape per
+  `.claude/rules/back-compat-shim-discipline.md` Pattern 1:
+  the public helper `announce_codex_cli_on_path` IS re-exported
+  from `_providers/__init__.py` (function object — safe), the
+  constant `_CODEX_CLI_ON_PATH_ANNOUNCEMENT` IS re-exported
+  (immutable `Final[str]` — safe), but the mutable flag
+  `_announced_codex_cli_on_path` is **NOT** re-exported (would
+  frozen-copy and silently diverge from the canonical location).
+  Reset mechanism for tests is
+  `monkeypatch.setattr("clauditor._providers._auth._announced_codex_cli_on_path", False)`
+  — targeting the canonical module path, not the shim.
 
 Per #145 the OpenAI backend deliberately did **not** introduce a
 fourth announcement family. OpenAI's auth posture is strict
@@ -571,6 +600,7 @@ auth-helper call chain). Reset mechanism for tests is the
 `tests/test_providers_anthropic.py::TestStderrAnnouncement`,
 `tests/test_providers_auth.py::TestAnnounceImplicitNoApiKey`,
 `tests/test_providers_auth.py::TestCallAnthropicDeprecationAnnouncement`,
+`tests/test_providers_auth.py::TestAnnounceCodexCliOnPath`,
 and
 `tests/test_providers_pricing.py::TestStaleAnnouncement`
 / `tests/test_providers_pricing.py::TestUnknownModelAnnouncement`
