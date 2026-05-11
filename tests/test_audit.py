@@ -763,33 +763,39 @@ class TestIsAcceptedVersion:
     branch and the unknown-filename ``KeyError`` contract.
     """
 
-    def test_is_accepted_version_grading_json_accepts_1_2_3_4(self) -> None:
+    def test_is_accepted_version_grading_json_accepts_1_2_3_4_5(self) -> None:
+        # #170 US-004 / US-006 bumped grading.json from v4 → v5 with
+        # the ``reasoning_tokens`` field.
         from clauditor.audit import _is_accepted_version
 
         assert _is_accepted_version("grading.json", 1) is True
         assert _is_accepted_version("grading.json", 2) is True
         assert _is_accepted_version("grading.json", 3) is True
         assert _is_accepted_version("grading.json", 4) is True
+        assert _is_accepted_version("grading.json", 5) is True
 
-    def test_is_accepted_version_grading_json_rejects_5(self) -> None:
+    def test_is_accepted_version_grading_json_rejects_6(self) -> None:
         from clauditor.audit import _is_accepted_version
 
-        assert _is_accepted_version("grading.json", 5) is False
+        assert _is_accepted_version("grading.json", 6) is False
 
-    def test_is_accepted_version_extraction_json_accepts_1_2_3(self) -> None:
+    def test_is_accepted_version_extraction_json_accepts_1_2_3_4_5(self) -> None:
+        # #170 US-004 / US-006 bumped extraction.json from v4 → v5 with
+        # the ``reasoning_tokens`` field.
         from clauditor.audit import _is_accepted_version
 
         assert _is_accepted_version("extraction.json", 1) is True
         assert _is_accepted_version("extraction.json", 2) is True
         assert _is_accepted_version("extraction.json", 3) is True
         assert _is_accepted_version("extraction.json", 4) is True
+        assert _is_accepted_version("extraction.json", 5) is True
 
-    def test_is_accepted_version_extraction_json_rejects_5(self) -> None:
-        # #152 US-003 bumped extraction.json from v3 → v4. The next
-        # un-accepted version is now 5.
+    def test_is_accepted_version_extraction_json_rejects_6(self) -> None:
+        # #170 US-004 / US-006 bumped extraction.json from v4 → v5. The
+        # next un-accepted version is now 6.
         from clauditor.audit import _is_accepted_version
 
-        assert _is_accepted_version("extraction.json", 5) is False
+        assert _is_accepted_version("extraction.json", 6) is False
 
     def test_is_accepted_version_assertions_json_accepts_1_and_2(self) -> None:
         """#152 US-002: assertions.json bumped 1 → 2 with top-level
@@ -834,7 +840,10 @@ class TestIsAcceptedVersion:
         assert _is_accepted_version("baseline_assertions.json", 3) is False
         # #152 US-004: grading.json now accepts v4 (harness field).
         assert _is_accepted_version("baseline_grading.json", 4) is True
-        assert _is_accepted_version("baseline_grading.json", 5) is False
+        # #170 US-006: grading.json now accepts v5 (reasoning_tokens
+        # field). v6 still rejected.
+        assert _is_accepted_version("baseline_grading.json", 5) is True
+        assert _is_accepted_version("baseline_grading.json", 6) is False
 
     def test_is_accepted_version_unknown_filename_raises_key_error(
         self,
@@ -1045,13 +1054,13 @@ class TestAuditLegacyCompat:
         self, tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """A grading.json with ``schema_version=5`` (out of accepted
-        range 1..4 post-#152 / DEC-008 of #147) must be skipped with a
-        stderr warning."""
+        """A grading.json with ``schema_version=6`` (out of accepted
+        range 1..5 post-#170 US-006 / DEC-008 of #147) must be skipped
+        with a stderr warning."""
         clauditor_dir = tmp_path / ".clauditor"
         skill_dir = clauditor_dir / "iteration-1" / "s"
         self._write_grading_sidecar(
-            skill_dir, version=5, transport_source="api"
+            skill_dir, version=6, transport_source="api"
         )
         records, skipped, _ctx = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
@@ -1059,19 +1068,19 @@ class TestAuditLegacyCompat:
         assert records == []
         assert skipped == 1
         err = capsys.readouterr().err
-        assert "schema_version=5" in err
+        assert "schema_version=6" in err
 
     def test_extraction_unknown_schema_version_still_skipped(
         self, tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """An extraction.json with ``schema_version=5`` (out of accepted
-        range 1..4 — #152 US-003 bumped the max to 4) must be skipped
+        """An extraction.json with ``schema_version=6`` (out of accepted
+        range 1..5 — #170 US-006 bumped the max to 5) must be skipped
         with a stderr warning."""
         clauditor_dir = tmp_path / ".clauditor"
         skill_dir = clauditor_dir / "iteration-1" / "s"
         self._write_extraction_sidecar(
-            skill_dir, version=5, transport_source="api"
+            skill_dir, version=6, transport_source="api"
         )
         records, skipped, _ctx = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
@@ -1079,15 +1088,15 @@ class TestAuditLegacyCompat:
         assert records == []
         assert skipped == 1
         err = capsys.readouterr().err
-        assert "schema_version=5" in err
+        assert "schema_version=6" in err
 
-    def test_baseline_sidecar_v5_skipped_with_baseline_prefix_stripped(
+    def test_baseline_sidecar_v6_skipped_with_baseline_prefix_stripped(
         self, tmp_path: Path,
         capsys: pytest.CaptureFixture,
     ) -> None:
-        """A ``baseline_grading.json`` with v5 must be skipped with the
-        same warning as canonical ``grading.json`` (post-#152 grading
-        max is 4). Exercises the ``base.startswith("baseline_")``
+        """A ``baseline_grading.json`` with v6 must be skipped with the
+        same warning as canonical ``grading.json`` (post-#170 grading
+        max is 5). Exercises the ``base.startswith("baseline_")``
         branch in ``_check_schema_version`` so the rejection-path's
         ``MAX_SCHEMA_VERSION[base]`` lookup uses the family's max
         rather than crashing on an unknown ``baseline_*`` key."""
@@ -1096,7 +1105,7 @@ class TestAuditLegacyCompat:
         skill_dir = clauditor_dir / "iteration-1" / "s"
         skill_dir.mkdir(parents=True)
         payload = {
-            "schema_version": 5,
+            "schema_version": 6,
             "skill_name": "s",
             "model": "claude-sonnet-4-6",
             "transport_source": "api",
@@ -1110,7 +1119,150 @@ class TestAuditLegacyCompat:
         )
         assert records == []
         err = capsys.readouterr().err
-        assert "schema_version=5" in err
+        assert "schema_version=6" in err
+
+    # ----------------------------------------------------------------- #
+    # #170 US-006: v5 grading/extraction sidecars (with reasoning_tokens)
+    # ----------------------------------------------------------------- #
+
+    def test_loads_v5_grading_with_reasoning_tokens(
+        self, tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """#170 US-006: a v5 grading.json sidecar (with
+        ``reasoning_tokens: 42``) loads cleanly through the audit
+        reader, NOT warn-and-skipped. Audit aggregation does not
+        consume the field (per data-model review: per-iteration, not
+        per-record), but the loader must accept the schema version."""
+        import json
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        payload = {
+            "schema_version": 5,
+            "skill_name": "s",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "api",
+            "provider_source": "anthropic",
+            "harness": "claude-code",
+            "reasoning_tokens": 42,
+            "results": [
+                {
+                    "id": "quality",
+                    "criterion": "is good",
+                    "passed": True,
+                    "score": 0.9,
+                    "evidence": "e",
+                    "reasoning": "r",
+                },
+            ],
+        }
+        (skill_dir / "grading.json").write_text(json.dumps(payload))
+        records, skipped, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L3"
+        assert records[0].id == "quality"
+        assert records[0].passed is True
+        # No stderr warning (the v5 was accepted, not warn-and-skipped).
+        err = capsys.readouterr().err
+        assert "schema_version" not in err
+
+    def test_loads_v5_extraction_with_reasoning_tokens(
+        self, tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """#170 US-006: a v5 extraction.json sidecar (with
+        ``reasoning_tokens: 17``) loads cleanly through the audit
+        reader, NOT warn-and-skipped."""
+        import json
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        payload = {
+            "schema_version": 5,
+            "skill_name": "s",
+            "model": "haiku",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "transport_source": "api",
+            "provider_source": "anthropic",
+            "harness": "claude-code",
+            "reasoning_tokens": 17,
+            "fields": {
+                "v1": [
+                    {
+                        "field_name": "a",
+                        "section": "Venues",
+                        "tier": "primary",
+                        "entry_index": 0,
+                        "required": True,
+                        "passed": True,
+                        "presence_passed": True,
+                        "format_passed": None,
+                        "evidence": "v",
+                    },
+                ],
+            },
+        }
+        (skill_dir / "extraction.json").write_text(json.dumps(payload))
+        records, skipped, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L2"
+        # No stderr warning (the v5 was accepted, not warn-and-skipped).
+        err = capsys.readouterr().err
+        assert "schema_version" not in err
+
+    def test_loads_v4_grading_no_reasoning_tokens_defaults_none(
+        self, tmp_path: Path,
+    ) -> None:
+        """#170 US-006: a legacy v4 grading.json (no
+        ``reasoning_tokens``) still loads cleanly. The default-on-read
+        contract (``GradingReport.from_json`` returns
+        ``reasoning_tokens=None``) keeps pre-#170 history readable."""
+        import json
+
+        from clauditor.quality_grader import GradingReport
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        payload = {
+            "schema_version": 4,
+            "skill_name": "s",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "api",
+            "provider_source": "anthropic",
+            "harness": "claude-code",
+            "results": [
+                {
+                    "id": "quality",
+                    "criterion": "is good",
+                    "passed": True,
+                    "score": 0.9,
+                    "evidence": "e",
+                    "reasoning": "r",
+                },
+            ],
+        }
+        (skill_dir / "grading.json").write_text(json.dumps(payload))
+        records, skipped, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        # Verify the from_json default-on-read contract: a v4 sidecar
+        # parsed through GradingReport.from_json yields
+        # reasoning_tokens=None.
+        report = GradingReport.from_json(
+            (skill_dir / "grading.json").read_text()
+        )
+        assert report.reasoning_tokens is None
 
 
 class TestCmdAuditInvalidSkillName:
@@ -2994,7 +3146,13 @@ def _write_context_sidecar(
 
 class TestMaxSchemaVersion:
     """#154 US-005 / DEC-010: ``context.json`` registered at v1 in the
-    canonical ``MAX_SCHEMA_VERSION`` map."""
+    canonical ``MAX_SCHEMA_VERSION`` map.
+
+    #170 US-006: ``grading.json`` and ``extraction.json`` bumped 4 → 5
+    with the nullable ``reasoning_tokens`` field. ``assertions.json``
+    and ``context.json`` are NOT bumped (L1 makes no LLM call;
+    ``context.json`` is always-v1 by design).
+    """
 
     def test_context_json_registered_at_v1(self) -> None:
         from clauditor.audit import MAX_SCHEMA_VERSION, _is_accepted_version
@@ -3007,6 +3165,34 @@ class TestMaxSchemaVersion:
 
         assert _is_accepted_version("context.json", 999) is False
         assert _is_accepted_version("context.json", 2) is False
+
+    def test_audit_max_schema_version_grading_is_5(self) -> None:
+        """#170 US-006: ``grading.json`` accepts v5 (reasoning_tokens
+        field added by US-004)."""
+        from clauditor.audit import MAX_SCHEMA_VERSION
+
+        assert MAX_SCHEMA_VERSION["grading.json"] == 5
+
+    def test_audit_max_schema_version_extraction_is_5(self) -> None:
+        """#170 US-006: ``extraction.json`` accepts v5 (reasoning_tokens
+        field added by US-004)."""
+        from clauditor.audit import MAX_SCHEMA_VERSION
+
+        assert MAX_SCHEMA_VERSION["extraction.json"] == 5
+
+    def test_audit_max_schema_version_context_unchanged_at_1(self) -> None:
+        """#170 US-006: ``context.json`` stays at v1 (always-v1 by
+        design — nullable fields ship from day one)."""
+        from clauditor.audit import MAX_SCHEMA_VERSION
+
+        assert MAX_SCHEMA_VERSION["context.json"] == 1
+
+    def test_audit_max_schema_version_assertions_unchanged_at_2(self) -> None:
+        """#170 US-006: ``assertions.json`` stays at v2 (L1 makes no
+        LLM call → no reasoning tokens to record)."""
+        from clauditor.audit import MAX_SCHEMA_VERSION
+
+        assert MAX_SCHEMA_VERSION["assertions.json"] == 2
 
 class TestReadContext:
     """#154 US-005 / DEC-011: pure helper that reads + schema-validates
