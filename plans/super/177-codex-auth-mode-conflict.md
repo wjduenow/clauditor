@@ -34,6 +34,13 @@ login materialized via `codex login --with-api-key`.
 
 ## Discovery
 
+> **Note.** This Discovery section is a **pre-change snapshot** captured at
+> planning time (before US-001..US-005 landed). Line numbers, branch counts,
+> and "does NOT parse auth.json" descriptions describe the pre-#177
+> implementation. The post-implementation behavior is documented inline in
+> the function docstrings (`check_codex_auth`, `_codex_cli_is_available`,
+> `_parse_codex_auth_json`) and in the CHANGELOG.
+
 ### Codebase findings (from Codebase Scout)
 
 - **`check_codex_auth`** lives at `src/clauditor/_providers/_auth.py:582-663`.
@@ -545,7 +552,7 @@ uv run pytest --cov=clauditor --cov-report=term-missing  # 80% gate
 
 ### Story map
 
-```
+```text
 US-001 ────┐
 US-002 ────┴──> US-003 ──> US-004 ──┐
 US-005 ──────────────────────────────┴──> US-006 ──> US-007

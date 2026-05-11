@@ -907,19 +907,26 @@ class TestCheckCodexAuth:
     :func:`check_provider_auth` dispatcher is unchanged; the CLI seam
     directly calls :func:`check_codex_auth` when the resolved harness
     is ``"codex"``.
+
+    Test-infra: the repo-wide autouse fixture
+    ``tests/conftest.py::_isolate_codex_home`` (#177 US-003) points
+    ``CODEX_HOME`` at a hermetic ``tmp_path_factory.mktemp(...)`` dir so
+    the dev's real ``~/.codex/auth.json`` is invisible to every test.
+    The class-level fixture below RE-points ``CODEX_HOME`` at the
+    per-test ``tmp_path`` so tests within this class can stage their
+    own ``auth.json`` files (e.g. the chatgpt-mode refusal tests).
+    The class-level fixture has a distinct name from the conftest
+    fixture to avoid the same-name shadowing CodeRabbit flagged on
+    #181, while preserving the per-test staging seam.
     """
 
     @pytest.fixture(autouse=True)
-    def _isolate_codex_home(
+    def _point_codex_home_at_tmp_path(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
-        """Redirect ``CODEX_HOME`` to an empty ``tmp_path`` so the
-        chatgpt-mode pre-flight check (#177 US-003) reads from an
-        isolated location rather than the dev's real
-        ``~/.codex/auth.json``. Without this, a developer with a real
-        ChatGPT-mode auth.json would see every test in this class
-        refuse via the new branch — a test-infra hygiene issue, not a
-        production behavior change."""
+        """Override the conftest hermetic ``CODEX_HOME`` to the per-test
+        ``tmp_path`` so tests within this class can stage ``auth.json``
+        files via ``(tmp_path / "auth.json").write_text(...)``."""
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
 
     def test_only_codex_api_key_set_passes(
@@ -1384,13 +1391,16 @@ class TestCheckCodexAuthPathBranch:
         )
 
     @pytest.fixture(autouse=True)
-    def _isolate_codex_home(
+    def _point_codex_home_at_tmp_path(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
-        """Redirect ``CODEX_HOME`` to an empty ``tmp_path`` so the
-        chatgpt-mode pre-flight check (#177 US-003) reads from an
-        isolated location rather than the dev's real
-        ``~/.codex/auth.json``."""
+        """Re-point ``CODEX_HOME`` (already isolated to a hermetic dir
+        by the conftest autouse fixture) at the per-test ``tmp_path``
+        so PATH-branch tests that stage their own ``auth.json``
+        (chatgpt-mode refusal, etc.) see the staged file when
+        ``check_codex_auth`` resolves the auth.json path. Distinct
+        name from the conftest fixture per the CodeRabbit #181
+        review — no same-name shadowing."""
         monkeypatch.setenv("CODEX_HOME", str(tmp_path))
 
     def test_codex_on_path_no_env_vars_passes(
@@ -1972,18 +1982,27 @@ class TestCodexAuthJsonHelpers:
 
     # ----- defense-in-depth: failure-open on Path.home() RuntimeError -----
 
-    def test_path_home_runtime_error_returns_nonexistent_sentinel(
+    def test_path_home_runtime_error_returns_failure_open_sentinel(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """When ``CODEX_HOME`` is unset AND ``Path.home()`` raises
         ``RuntimeError`` (bare container / stripped sandbox env where
         neither ``$HOME`` is set nor ``pwd`` can resolve a home dir),
-        ``_codex_auth_json_path`` returns a sentinel path that is
-        guaranteed not to exist. The parser then returns ``None`` for
-        that path, and the pre-flight chain falls through to env-var /
+        ``_codex_auth_json_path`` returns a sentinel path that
+        deterministically parses to ``None``. The parser yields
+        ``None`` so the pre-flight chain falls through to env-var /
         PATH checks (failure-open per DEC-005). Mirrors the
         home-exclusion pattern documented in
-        ``.claude/rules/project-root-home-exclusion.md``."""
+        ``.claude/rules/project-root-home-exclusion.md``.
+
+        The contract is *failure-open behavior*, not "the returned
+        path does not exist on the filesystem" — the production
+        helper now uses :data:`os.devnull` (a portable always-
+        readable empty stream that JSON-parsing rejects), so an
+        ``exists()``-based assertion would depend on the host
+        kernel's ``/dev/null`` presence rather than on the
+        helper's contract. The assertion below targets the
+        contract directly."""
         from pathlib import Path
 
         from clauditor._providers._auth import (
@@ -2000,9 +2019,11 @@ class TestCodexAuthJsonHelpers:
 
         result = _codex_auth_json_path()
 
-        # Path returned is unconditionally non-existent; parser yields
-        # ``None`` so the broader chain falls through.
-        assert not result.exists()
+        # Contract: the returned path deterministically parses to
+        # ``None`` so the broader chain falls through. We do NOT
+        # assert anything about ``result.exists()`` because the
+        # sentinel (``os.devnull``) is a kernel-managed pseudo-file
+        # whose presence varies by host.
         assert _parse_codex_auth_json(result) is None
 
     # ----- defense-in-depth: bounded read for special-file st_size=0 case -----
@@ -2075,6 +2096,32 @@ class TestCodexAuthJsonHelpers:
         # ``stat()`` says size=0, so the early-exit arm at line 342
         # falls through. The bounded ``fh.read(N+1)`` then materializes
         # > N chars, and the ``len(text) > N`` post-check returns None.
+        assert _parse_codex_auth_json(auth_path) is None
+
+    # ----- defense-in-depth: non-regular files (FIFO / socket) -----
+
+    def test_parse_rejects_fifo_before_open(self, tmp_path) -> None:
+        """A hostile FIFO at the auth.json path could block ``open()``
+        / ``read()`` indefinitely waiting for a writer, even with the
+        byte cap. The ``stat.S_ISREG`` guard rejects non-regular
+        files BEFORE the ``open()`` call so the parser cannot hang
+        the whole CLI invocation. Failure-open per DEC-005:
+        non-regular files yield ``None`` and the broader chain
+        falls through. Skipped on platforms without ``os.mkfifo``
+        (Windows)."""
+        import os
+
+        if not hasattr(os, "mkfifo"):  # pragma: no cover — Windows
+            pytest.skip("os.mkfifo not available on this platform")
+
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        auth_path = tmp_path / "auth.json"
+        os.mkfifo(str(auth_path))
+
+        # Without the ``S_ISREG`` guard this call would block waiting
+        # for a FIFO writer that never arrives. The guard returns
+        # ``None`` immediately after ``stat()`` succeeds.
         assert _parse_codex_auth_json(auth_path) is None
 
     # ----- defense-in-depth: UnicodeDecodeError direct test -----

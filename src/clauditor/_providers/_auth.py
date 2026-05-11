@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 from typing import Final
@@ -218,14 +219,20 @@ def _codex_cli_is_available() -> bool:
 
     DEC-001 / DEC-002 of ``plans/super/175-codex-chatgpt-login-auth.md``.
     Presence check only — we do NOT verify the CLI is authenticated or
-    functional. That's deliberate: the goal of the pre-flight guard is
-    to bail out cheaply when *neither* env-var auth path nor the CLI
-    binary is even theoretically available. If the CLI is on PATH but
-    its ``~/.codex/auth.json`` is stale or absent, ``codex exec``
-    itself produces a crisp ``"Please log out and sign in again"``
-    error downstream — pre-flight does NOT try to parse the JSON to
-    second-guess codex (DEC-008: explicit decision to skip
-    ``auth.json`` parsing in favor of trusting the CLI binary).
+    functional. That's deliberate: the goal of this helper is to bail
+    out cheaply when *neither* env-var auth path nor the CLI binary is
+    even theoretically available.
+
+    Post-#177, pre-flight DOES parse ``~/.codex/auth.json`` upstream
+    of this helper — :func:`check_codex_auth` calls
+    :func:`_parse_codex_auth_json` + :func:`_auth_mode_is_acceptable`
+    BEFORE consulting PATH and refuses when
+    ``auth_mode == "chatgpt"`` (DEC-002 / DEC-006 of
+    ``plans/super/177-codex-auth-mode-conflict.md``, superseding the
+    earlier #175 DEC-008 "do not parse auth.json" stance). This
+    helper stays narrow — PATH presence only — and is the third
+    acceptance branch that fires only after the chatgpt-mode refusal
+    has cleared.
 
     Parallel shape to :func:`_claude_cli_is_available`: both helpers
     pin ``shutil.which`` against their respective harness binary names
@@ -271,23 +278,29 @@ def _codex_auth_json_path() -> Path:
         exist — that's the parser's concern, not the resolver's.
     """
     raw = os.environ.get("CODEX_HOME")
-    if raw is not None and raw.strip() != "":
-        return Path(raw) / "auth.json"
+    if raw is not None:
+        stripped = raw.strip()
+        if stripped != "":
+            return Path(stripped) / "auth.json"
     try:
         return Path.home() / ".codex" / "auth.json"
     except (RuntimeError, OSError):
         # ``Path.home()`` raises ``RuntimeError`` on systems where
         # neither ``HOME`` is set nor ``pwd`` can resolve a home dir
         # (bare containers, stripped sandbox env, some CI runners).
-        # Failure-open per DEC-005: return a path that is guaranteed
-        # not to exist so :func:`_parse_codex_auth_json` returns
-        # ``None`` (treating the situation as "no auth.json opinion")
-        # and the pre-flight chain falls through to env-var / PATH
+        # Failure-open per DEC-005: return ``Path(os.devnull)`` so
+        # :func:`_parse_codex_auth_json` returns ``None`` cleanly
+        # (``os.devnull`` always opens as an empty stream — JSON
+        # parsing fails — and is portable across POSIX and Windows).
+        # The pre-flight chain then falls through to env-var / PATH
         # checks. Mirrors the home-exclusion pattern documented in
         # ``.claude/rules/project-root-home-exclusion.md`` (the
         # ``try/except (RuntimeError, OSError)`` shape used by
-        # ``setup.py::find_project_root`` and ``paths.py``).
-        return Path("/nonexistent-codex-home/.codex/auth.json")
+        # ``setup.py::find_project_root`` and ``paths.py``); the
+        # ``os.devnull`` choice avoids depending on a hard-coded
+        # absolute path that might exist on a hostile / unusual
+        # filesystem.
+        return Path(os.devnull)
 
 
 def _parse_codex_auth_json(path: Path) -> dict | None:
@@ -339,6 +352,16 @@ def _parse_codex_auth_json(path: Path) -> dict | None:
         # permission errors, device errors, etc. into the same
         # failure-open path.
         st = path.stat()
+        # Regular-file check BEFORE ``open()`` so a hostile FIFO /
+        # socket / device file at the auth.json location cannot block
+        # the read indefinitely (a FIFO with no writer would hang
+        # ``fh.read`` even with the byte cap — the cap bounds
+        # *successful* reads, not the time spent waiting on EOF).
+        # Failure-open per DEC-005: non-regular files yield ``None``
+        # so the broader pre-flight chain falls through to env-var /
+        # PATH checks rather than hanging the whole CLI invocation.
+        if not stat.S_ISREG(st.st_mode):
+            return None
         if st.st_size > _CODEX_AUTH_JSON_MAX_BYTES:
             return None
         # Defense-in-depth: ``stat()`` follows symlinks and reports
@@ -688,9 +711,12 @@ _announced_codex_cli_on_path: bool = False
 _CODEX_CLI_ON_PATH_ANNOUNCEMENT: Final[str] = (
     "clauditor: accepted codex pre-flight via codex CLI on PATH "
     "(neither CODEX_API_KEY nor OPENAI_API_KEY is set; codex itself "
-    "will resolve credentials from ~/.codex/auth.json in API-key "
-    "mode). If you intended to use an API key explicitly, export "
-    "CODEX_API_KEY or OPENAI_API_KEY."
+    "will resolve credentials from ~/.codex/auth.json downstream). "
+    "Post-#177 we have already refused at pre-flight if "
+    "~/.codex/auth.json declared auth_mode=\"chatgpt\", so this "
+    "branch fires only when auth.json is absent, unreadable, or "
+    "declares a non-chatgpt auth_mode. If you intended to use an "
+    "API key explicitly, export CODEX_API_KEY or OPENAI_API_KEY."
 )
 
 
@@ -802,18 +828,31 @@ def check_codex_auth(cmd_name: str) -> None:
 
     DEC-001 / DEC-002 / DEC-009 / DEC-010 of
     ``plans/super/175-codex-chatgpt-login-auth.md`` (extending
-    DEC-003 / DEC-010 of ``plans/super/151-harness-precedence.md``).
-    Three-branch strict-OR: accepts when ANY of
+    DEC-003 / DEC-010 of ``plans/super/151-harness-precedence.md``),
+    further refined by DEC-002 / DEC-006 of
+    ``plans/super/177-codex-auth-mode-conflict.md``.
 
-    1. ``CODEX_API_KEY`` is set (whitespace-trimmed non-empty), OR
-    2. ``OPENAI_API_KEY`` is set (whitespace-trimmed non-empty), OR
-    3. The ``codex`` binary is on PATH (i.e. the user is logged in
-       via ChatGPT and credentials are persisted at
-       ``~/.codex/auth.json``; the codex CLI itself resolves them
-       downstream).
+    Pre-flight runs in two passes:
 
-    Raises :class:`CodexAuthMissingError` only when all three branches
-    fail.
+    1. **ChatGPT-mode refusal (post-#177).** Parse
+       ``~/.codex/auth.json``; if ``auth_mode == "chatgpt"`` refuse
+       unconditionally — the codex subprocess routes via ChatGPT
+       regardless of any env var and rejects every model the
+       harness asks for. Failure-open per DEC-005 of #177:
+       missing / unreadable / malformed auth.json falls through
+       silently to the acceptance branches below.
+    2. **Three-branch strict-OR acceptance.** Accepts when ANY of
+
+       a. ``CODEX_API_KEY`` is set (whitespace-trimmed non-empty), OR
+       b. ``OPENAI_API_KEY`` is set (whitespace-trimmed non-empty), OR
+       c. The ``codex`` binary is on PATH AND the chatgpt-mode
+          refusal did not fire above — i.e. ``~/.codex/auth.json``
+          is absent, malformed, or declares a non-chatgpt
+          ``auth_mode``. The codex CLI itself resolves credentials
+          downstream when the subprocess actually runs.
+
+    Raises :class:`CodexAuthMissingError` on EITHER the chatgpt-mode
+    refusal OR an all-three-branches-failed fall-through.
 
     Per DEC-010 the env-var branches are checked FIRST and
     short-circuit before the PATH probe — a CI run with
