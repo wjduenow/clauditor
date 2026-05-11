@@ -70,22 +70,29 @@ jobs:
           grep -A 2 "^addopts" pyproject.toml || true
           echo "=== relevant env vars ==="
           env | grep -iE "^(COV|COVERAGE|PYTEST|UV)" | sort
-      - name: Run tests with coverage (coverage starts at Python startup via COVERAGE_PROCESS_START)
-        # Without ``COVERAGE_PROCESS_START``, pytest-cov starts coverage in
+      - name: Run tests under coverage (coverage starts before pytest)
+        # ``pytest --cov`` starts coverage inside pytest's
         # ``pytest_load_initial_conftests`` — AFTER entry-point plugins
         # (``clauditor.pytest_plugin``) have imported their transitive
         # graph. Modules loaded during that early phase have their
         # module-level statements (imports, constants, class/def lines)
-        # executed without tracing, producing the ~12pp CI undercount
-        # documented in codecov.yml and the #169 investigation comment.
-        # Setting ``COVERAGE_PROCESS_START`` triggers the ``a1_coverage.pth``
-        # file (shipped with the ``coverage`` package) which calls
-        # ``coverage.process_startup()`` at interpreter startup, before
-        # any module imports. The ``.coveragerc`` value points at the
-        # existing config (``[run] source = src/clauditor``).
-        env:
-          COVERAGE_PROCESS_START: ${{ github.workspace }}/.coveragerc
-        run: uv run pytest --cov=clauditor --cov-report=xml --cov-report=term
+        # executed without tracing, producing the ~12pp CI undercount.
+        # ``coverage run -m pytest`` flips the order: coverage tracing
+        # starts when the ``coverage`` script begins, then it execs
+        # ``pytest`` as a module — every subsequent import (including
+        # entry-point plugins) runs with coverage active.
+        #
+        # ``-p no:pytest_cov`` disables the pytest-cov plugin so it
+        # doesn't try to start its own (now-redundant) coverage tracer.
+        # ``-o "addopts=--import-mode=importlib"`` overrides
+        # ``pyproject.toml::addopts`` to drop ``--cov-fail-under=80``
+        # (that flag belongs to pytest-cov which is disabled here);
+        # the fail-under gate is enforced by the ``coverage report``
+        # step below instead.
+        run: |
+          uv run coverage run -m pytest -p no:pytest_cov -o "addopts=--import-mode=importlib"
+          uv run coverage xml
+          uv run coverage report --fail-under=80
       - name: Show coverage of files previously reported low by codecov
         if: matrix.python-version == '3.13'
         run: |
