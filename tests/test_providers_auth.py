@@ -1603,3 +1603,230 @@ class TestCodexAuthChatGPTModeTemplate:
         # The placeholder must be consumed by the format call — no
         # stray ``{cmd_name}`` left in the rendered output.
         assert "{cmd_name}" not in rendered
+
+
+class TestCodexAuthJsonHelpers:
+    """Unit coverage for the three pure helpers added in #177 US-001:
+    ``_codex_auth_json_path``, ``_parse_codex_auth_json``, and
+    ``_auth_mode_is_acceptable``.
+
+    Traces to DEC-004, DEC-005, DEC-008, DEC-009, DEC-012, DEC-013,
+    DEC-014 of ``plans/super/177-codex-auth-mode-conflict.md``.
+
+    - ``_codex_auth_json_path()`` resolves ``$CODEX_HOME/auth.json`` when
+      ``CODEX_HOME`` is set to a non-empty (whitespace-trimmed) string,
+      else ``Path.home() / ".codex" / "auth.json"`` (DEC-009).
+    - ``_parse_codex_auth_json(path)`` is a defensive read: returns
+      ``None`` on file-not-found, ``OSError``, oversize (>1 MB),
+      ``json.JSONDecodeError``, non-``dict`` root, or unicode-decode
+      failure. Never raises. UTF-8 strict decode (DEC-005, DEC-012).
+    - ``_auth_mode_is_acceptable(parsed)`` is a pure verdict: returns
+      ``True`` when ``parsed is None``, or when ``parsed.get("auth_mode")``
+      is missing / not a ``str`` / a ``str`` other than ``"chatgpt"``.
+      Returns ``False`` only when
+      ``isinstance(auth_mode, str) and auth_mode == "chatgpt"``
+      (DEC-004, DEC-013).
+
+    Helpers are private (leading ``_``) and NOT re-exported from
+    ``_providers/__init__.py`` per Pattern 1 of
+    ``.claude/rules/back-compat-shim-discipline.md``.
+    """
+
+    # ----- _parse_codex_auth_json: happy-path cases -----
+
+    def test_parse_happy_path_apikey(self, tmp_path) -> None:
+        """Case 1: well-formed ``auth.json`` with ``auth_mode=apikey``
+        returns the parsed dict verbatim."""
+        import json
+
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        payload = {"auth_mode": "apikey", "api_key": "sk-redacted"}
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        result = _parse_codex_auth_json(auth_path)
+
+        assert result == payload
+
+    def test_parse_happy_path_chatgpt(self, tmp_path) -> None:
+        """Case 2: well-formed ``auth.json`` with ``auth_mode=chatgpt``
+        returns the parsed dict verbatim. The caller (the pure verdict
+        helper) decides whether ``chatgpt`` is acceptable; the parser
+        is content-agnostic."""
+        import json
+
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        payload = {"auth_mode": "chatgpt", "tokens": {"access_token": "x"}}
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        result = _parse_codex_auth_json(auth_path)
+
+        assert result == payload
+
+    # ----- _parse_codex_auth_json: failure-open cases (DEC-005) -----
+
+    def test_parse_file_not_found_returns_none(self, tmp_path) -> None:
+        """Case 3: missing file returns ``None`` (never raises). Most
+        common case in CI where the user has not run ``codex login``."""
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        result = _parse_codex_auth_json(tmp_path / "does-not-exist.json")
+
+        assert result is None
+
+    def test_parse_malformed_json_returns_none(self, tmp_path) -> None:
+        """Case 4: malformed JSON returns ``None``. Real-world failure
+        mode: partially written file, truncated by a crash mid-write."""
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text("{this is not valid json", encoding="utf-8")
+
+        result = _parse_codex_auth_json(auth_path)
+
+        assert result is None
+
+    def test_parse_oversize_returns_none(self, tmp_path) -> None:
+        """Case 5: file > 1 MB returns ``None`` (DEC-012). Real codex
+        ``auth.json`` files are well under 4 KB; cap defends against
+        symlink-bomb / accidental oversize."""
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        auth_path = tmp_path / "auth.json"
+        # 1 MB + 1 byte of valid-looking JSON wrapping a giant string.
+        # We don't need it to *parse* — the size check must fire before
+        # the json.loads call.
+        oversize_blob = '{"auth_mode": "apikey", "padding": "' + (
+            "x" * (1024 * 1024 + 1)
+        ) + '"}'
+        auth_path.write_text(oversize_blob, encoding="utf-8")
+
+        result = _parse_codex_auth_json(auth_path)
+
+        assert result is None
+
+    def test_parse_non_dict_root_returns_none(self, tmp_path) -> None:
+        """Case 6: JSON whose top-level value is not a ``dict`` (e.g. a
+        list) returns ``None``. Downstream verdict helper is typed
+        ``dict | None``; a list would crash a ``.get(...)`` call."""
+        import json
+
+        from clauditor._providers._auth import _parse_codex_auth_json
+
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text(json.dumps([1, 2, 3]), encoding="utf-8")
+
+        result = _parse_codex_auth_json(auth_path)
+
+        assert result is None
+
+    # ----- _auth_mode_is_acceptable: verdict cases -----
+
+    def test_verdict_missing_auth_mode_returns_true(self) -> None:
+        """Case 7: parsed dict without an ``auth_mode`` key is
+        acceptable (failure-open per DEC-005). A future codex auth
+        schema that drops the field should not block clauditor."""
+        from clauditor._providers._auth import _auth_mode_is_acceptable
+
+        assert _auth_mode_is_acceptable({"unrelated": "value"}) is True
+
+    def test_verdict_non_string_auth_mode_returns_true(self) -> None:
+        """Case 8: ``auth_mode = true`` (JSON bool) is acceptable —
+        the defensive ``isinstance(..., str)`` guard (DEC-013) returns
+        before the ``== "chatgpt"`` comparison so a bool / int / None
+        never enters the string comparison."""
+        from clauditor._providers._auth import _auth_mode_is_acceptable
+
+        assert _auth_mode_is_acceptable({"auth_mode": True}) is True
+
+    def test_verdict_chatgpt_returns_false(self) -> None:
+        """Case 9: ``auth_mode = "chatgpt"`` is the ONE refused value
+        (DEC-004 — conservative enumeration). The caller raises
+        ``CodexAuthMissingError`` with the chatgpt-mode template."""
+        from clauditor._providers._auth import _auth_mode_is_acceptable
+
+        assert _auth_mode_is_acceptable({"auth_mode": "chatgpt"}) is False
+
+    def test_verdict_apikey_returns_true(self) -> None:
+        """Case 10: ``auth_mode = "apikey"`` is acceptable. Any string
+        other than ``"chatgpt"`` (exact match) passes."""
+        from clauditor._providers._auth import _auth_mode_is_acceptable
+
+        assert _auth_mode_is_acceptable({"auth_mode": "apikey"}) is True
+
+    def test_verdict_none_parsed_returns_true(self) -> None:
+        """Verdict's ``parsed is None`` branch (parse failure
+        failure-open per DEC-005). The caller passes ``None`` from
+        ``_parse_codex_auth_json`` when the file is missing /
+        malformed / oversize."""
+        from clauditor._providers._auth import _auth_mode_is_acceptable
+
+        assert _auth_mode_is_acceptable(None) is True
+
+    # ----- _codex_auth_json_path: env-var override (DEC-009) -----
+
+    def test_path_codex_home_override(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Case 11: ``CODEX_HOME`` set to a non-empty value resolves
+        to ``$CODEX_HOME/auth.json`` (mirrors the codex CLI's own
+        behavior — DEC-009)."""
+        from clauditor._providers._auth import _codex_auth_json_path
+
+        codex_home = tmp_path / "custom-codex-home"
+        codex_home.mkdir()
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+        result = _codex_auth_json_path()
+
+        assert result == codex_home / "auth.json"
+
+    def test_path_codex_home_whitespace_only_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Case 12: ``CODEX_HOME`` set to a whitespace-only string is
+        treated as unset (same shape as ``_api_key_is_set`` /
+        ``_codex_api_key_is_set``); falls back to
+        ``~/.codex/auth.json``."""
+        from pathlib import Path
+
+        from clauditor._providers._auth import _codex_auth_json_path
+
+        monkeypatch.setenv("CODEX_HOME", "   ")
+
+        result = _codex_auth_json_path()
+
+        assert result == Path.home() / ".codex" / "auth.json"
+
+    def test_path_codex_home_unset_uses_default(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``CODEX_HOME`` unset falls back to ``~/.codex/auth.json``
+        (the canonical codex CLI credential location)."""
+        from pathlib import Path
+
+        from clauditor._providers._auth import _codex_auth_json_path
+
+        monkeypatch.delenv("CODEX_HOME", raising=False)
+
+        result = _codex_auth_json_path()
+
+        assert result == Path.home() / ".codex" / "auth.json"
+
+    # ----- back-compat-shim-discipline: helpers NOT re-exported -----
+
+    def test_helpers_not_reexported_from_package_init(self) -> None:
+        """Per Pattern 1 of
+        ``.claude/rules/back-compat-shim-discipline.md``, the three
+        new private helpers (leading ``_``) MUST NOT be re-exported
+        from ``clauditor._providers/__init__.py``. They are
+        I/O-bearing private helpers with no need for cross-module
+        identity invariants."""
+        import clauditor._providers as providers_pkg
+
+        assert not hasattr(providers_pkg, "_codex_auth_json_path")
+        assert not hasattr(providers_pkg, "_parse_codex_auth_json")
+        assert not hasattr(providers_pkg, "_auth_mode_is_acceptable")

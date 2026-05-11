@@ -30,9 +30,11 @@ star-import re-export creates a separate name binding, but
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sys
+from pathlib import Path
 from typing import Final
 
 # Imports cleanly because ``AnthropicAuthMissingError`` is defined in
@@ -232,6 +234,160 @@ def _codex_cli_is_available() -> bool:
     ``monkeypatch.setattr`` targeting this module's ``shutil``.
     """
     return shutil.which("codex") is not None
+
+
+# DEC-012 (#177 US-001): hard cap on the size of ``auth.json`` read by
+# :func:`_parse_codex_auth_json`. Real codex ``auth.json`` files are
+# well under 4 KB; the 1 MB cap defends against symlink-bomb or
+# accidental oversize without ever materializing a large blob in
+# memory. Exceeding the cap returns ``None`` (failure-open per DEC-005)
+# so the broader pre-flight chain falls through to env-var / PATH
+# checks rather than aborting.
+_CODEX_AUTH_JSON_MAX_BYTES: Final[int] = 1024 * 1024
+
+
+def _codex_auth_json_path() -> Path:
+    """Return the canonical path to ``auth.json`` for the codex CLI.
+
+    DEC-009 of ``plans/super/177-codex-auth-mode-conflict.md``.
+    Mirrors the codex CLI's own resolution: consults ``$CODEX_HOME``
+    first, falls back to ``~/.codex/auth.json``. Whitespace-only values
+    are treated as unset (same shape as :func:`_api_key_is_set` /
+    :func:`_codex_api_key_is_set`) so an accidental
+    ``export CODEX_HOME=" "`` does not silently redirect the resolver.
+
+    Pure function per ``.claude/rules/pure-compute-vs-io-split.md``:
+    reads ``os.environ`` only; does NOT touch the filesystem (no
+    ``Path.exists()``, no ``Path.stat()``). The caller
+    (:func:`_parse_codex_auth_json`) owns the actual file read.
+
+    Returns:
+        The :class:`pathlib.Path` pointing at the codex CLI's
+        ``auth.json`` location. The file itself may or may not
+        exist — that's the parser's concern, not the resolver's.
+    """
+    raw = os.environ.get("CODEX_HOME")
+    if raw is not None and raw.strip() != "":
+        return Path(raw) / "auth.json"
+    return Path.home() / ".codex" / "auth.json"
+
+
+def _parse_codex_auth_json(path: Path) -> dict | None:
+    """Defensively read and parse the codex CLI's ``auth.json``.
+
+    DEC-005 / DEC-008 / DEC-012 of
+    ``plans/super/177-codex-auth-mode-conflict.md``. Returns the parsed
+    dict on success; returns ``None`` on ANY failure (file not found,
+    :class:`OSError`, oversize per :data:`_CODEX_AUTH_JSON_MAX_BYTES`,
+    :class:`json.JSONDecodeError`, non-``dict`` root,
+    :class:`UnicodeDecodeError`). Never raises.
+
+    Failure-open semantics (DEC-005): when the file cannot be parsed,
+    the broader pre-flight chain falls through to env-var / PATH
+    checks. The whole point of #177 is to refuse ``auth_mode ==
+    "chatgpt"`` specifically; an unreadable ``auth.json`` is not a
+    "chatgpt" signal and should not block authentication. Mirrors the
+    defensive-read shape in ``.claude/rules/stream-json-schema.md``.
+
+    Per DEC-014, the parsed dict is NEVER serialized downstream — no
+    sidecar field, no log line, no error-message interpolation
+    contains parsed content. The dict is consumed in-process by
+    :func:`_auth_mode_is_acceptable` and immediately discarded. Tokens,
+    account ids, and refresh tokens stay in-process. Error messages
+    name the file PATH only, never its body.
+
+    Pure-ish per ``.claude/rules/pure-compute-vs-io-split.md``: the
+    one documented side-effect is the file read (size check + UTF-8
+    decode + JSON parse). All four failure paths return ``None``
+    cleanly; the caller branches on a single sentinel.
+
+    Args:
+        path: Path to ``auth.json`` (typically the result of
+            :func:`_codex_auth_json_path`). The parser does not
+            assume the file exists.
+
+    Returns:
+        The top-level ``dict`` on success, or ``None`` on any
+        failure. UTF-8 strict decode (no ``errors="replace"``) — a
+        non-UTF-8 file returns ``None`` rather than a corrupted dict.
+    """
+    try:
+        # Size check first: avoid allocating a 100 MB string into
+        # memory just to discover the file is oversize. ``stat()``
+        # raises ``FileNotFoundError`` (subclass of ``OSError``) for
+        # missing files; we catch the broad ``OSError`` to fold
+        # permission errors, device errors, etc. into the same
+        # failure-open path.
+        st = path.stat()
+        if st.st_size > _CODEX_AUTH_JSON_MAX_BYTES:
+            return None
+        with path.open("r", encoding="utf-8") as fh:
+            text = fh.read()
+    except (OSError, UnicodeDecodeError):
+        return None
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    return parsed
+
+
+def _auth_mode_is_acceptable(parsed: dict | None) -> bool:
+    """Pure verdict: is the parsed ``auth.json`` acceptable for codex?
+
+    DEC-004 / DEC-013 of
+    ``plans/super/177-codex-auth-mode-conflict.md``. Returns ``True``
+    in all of:
+
+    - ``parsed is None`` (failure-open per DEC-005 — the parser
+      returned no opinion; defer to other auth signals).
+    - ``parsed`` is a ``dict`` but has no ``auth_mode`` key (failure-
+      open per DEC-004 — a future schema that drops the field should
+      not block clauditor).
+    - ``auth_mode`` is present but ``isinstance(..., str)`` is
+      ``False`` (e.g. JSON ``true`` / ``false`` / ``null`` / number).
+      The defensive guard (DEC-013) returns BEFORE the ``==
+      "chatgpt"`` comparison so a non-string value never enters the
+      string compare. Mirrors the discipline in
+      ``.claude/rules/constant-with-type-info.md``.
+    - ``auth_mode`` is a string OTHER than ``"chatgpt"`` exactly
+      (e.g. ``"apikey"``, ``"chatgptAuthTokens"``, a future enum
+      value). Per DEC-004 the refusal is conservative — exact match
+      on ``"chatgpt"`` only.
+
+    Returns ``False`` ONLY when ``parsed`` is a ``dict``,
+    ``parsed.get("auth_mode")`` ``isinstance(..., str)``, AND equals
+    ``"chatgpt"`` exactly. This is the load-bearing #177 refusal:
+    ChatGPT-mode rejects every model the harness currently asks for
+    (``gpt-5-codex``, ``gpt-5``), so accepting it via PATH shipped a
+    latent failure that this verdict catches up-front.
+
+    Pure function per ``.claude/rules/pure-compute-vs-io-split.md``:
+    no I/O, no state, no side-effects. Trivially unit-testable with
+    inline dict literals — no ``tmp_path`` or ``monkeypatch``
+    needed.
+
+    Args:
+        parsed: The dict returned by :func:`_parse_codex_auth_json`,
+            or ``None`` when that helper failed-open.
+
+    Returns:
+        ``True`` if pre-flight should accept this auth posture;
+        ``False`` only on the exact-string ``"chatgpt"`` case.
+    """
+    if parsed is None:
+        return True
+    auth_mode = parsed.get("auth_mode")
+    # DEC-013: defensive ``isinstance`` guard BEFORE the ``==``
+    # comparison so JSON bool / int / null / dict values do not
+    # enter the string compare. The ``str`` type does not share
+    # Python's ``bool is int`` foot-gun, but the discipline carries
+    # forward — explicit type guard at every value boundary.
+    if not isinstance(auth_mode, str):
+        return True
+    return auth_mode != "chatgpt"
 
 
 def check_any_auth_available(cmd_name: str) -> None:
