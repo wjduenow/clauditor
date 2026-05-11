@@ -830,6 +830,31 @@ def check_codex_auth(cmd_name: str) -> None:
             ``platform.openai.com``, ``codex CLI``) and the
             interpolated command name.
     """
+    # Local import to avoid a module-load circular hazard analogous to
+    # ``AnthropicAuthMissingError`` (defined in ``_providers/__init__``
+    # so both the auth helpers and the SDK seam reference it). At call
+    # time the parent package is fully initialized. Hoisted ahead of
+    # the branch table so both refusal arms (chatgpt-mode and
+    # all-branches-failed) share the same import.
+    from clauditor._providers import CodexAuthMissingError
+
+    # DEC-002 / DEC-006 (#177): chatgpt-mode pre-flight refusal fires
+    # BEFORE all other branches. The codex subprocess reads
+    # ``~/.codex/auth.json`` and routes via ChatGPT when
+    # ``auth_mode == "chatgpt"`` regardless of any env var the user
+    # has exported — accepting via the env-var branches here would
+    # ship a latent failure where the subprocess rejects every model.
+    # Broad refusal per DEC-002: unconditional on auth_mode=="chatgpt".
+    # Failure-open per DEC-005: an unreadable / malformed / missing
+    # auth.json returns ``None`` from the parser; the verdict helper
+    # returns ``True`` for ``None``; this branch falls through to the
+    # env-var / PATH checks below.
+    parsed = _parse_codex_auth_json(_codex_auth_json_path())
+    if not _auth_mode_is_acceptable(parsed):
+        raise CodexAuthMissingError(
+            _CODEX_AUTH_CHATGPT_MODE_TEMPLATE.format(cmd_name=cmd_name)
+        )
+
     # DEC-010: env-var branches short-circuit BEFORE the PATH probe so
     # env-driven acceptance stays silent (no codex-CLI-on-PATH notice).
     if _codex_api_key_is_set() or _openai_api_key_is_set():
@@ -840,12 +865,6 @@ def check_codex_auth(cmd_name: str) -> None:
     if _codex_cli_is_available():
         announce_codex_cli_on_path()
         return None
-    # Local import to avoid a module-load circular hazard analogous to
-    # ``AnthropicAuthMissingError`` (defined in ``_providers/__init__``
-    # so both the auth helpers and the SDK seam reference it). At call
-    # time the parent package is fully initialized.
-    from clauditor._providers import CodexAuthMissingError
-
     raise CodexAuthMissingError(
         _CODEX_AUTH_MISSING_TEMPLATE.format(cmd_name=cmd_name)
     )

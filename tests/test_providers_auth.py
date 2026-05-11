@@ -909,6 +909,19 @@ class TestCheckCodexAuth:
     is ``"codex"``.
     """
 
+    @pytest.fixture(autouse=True)
+    def _isolate_codex_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Redirect ``CODEX_HOME`` to an empty ``tmp_path`` so the
+        chatgpt-mode pre-flight check (#177 US-003) reads from an
+        isolated location rather than the dev's real
+        ``~/.codex/auth.json``. Without this, a developer with a real
+        ChatGPT-mode auth.json would see every test in this class
+        refuse via the new branch — a test-infra hygiene issue, not a
+        production behavior change."""
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
     def test_only_codex_api_key_set_passes(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1368,6 +1381,16 @@ class TestCheckCodexAuthPathBranch:
             "clauditor._providers._auth._announced_codex_cli_on_path",
             False,
         )
+
+    @pytest.fixture(autouse=True)
+    def _isolate_codex_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Redirect ``CODEX_HOME`` to an empty ``tmp_path`` so the
+        chatgpt-mode pre-flight check (#177 US-003) reads from an
+        isolated location rather than the dev's real
+        ``~/.codex/auth.json``."""
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
 
     def test_codex_on_path_no_env_vars_passes(
         self,
@@ -1830,3 +1853,338 @@ class TestCodexAuthJsonHelpers:
         assert not hasattr(providers_pkg, "_codex_auth_json_path")
         assert not hasattr(providers_pkg, "_parse_codex_auth_json")
         assert not hasattr(providers_pkg, "_auth_mode_is_acceptable")
+
+
+class TestCheckCodexAuthChatGPTModeRefusal:
+    """ChatGPT-mode pre-flight refusal wired into :func:`check_codex_auth`
+    (#177 US-003).
+
+    Traces to DEC-001, DEC-002 (Broad refusal), DEC-005 (failure-open),
+    DEC-006, DEC-010 of
+    ``plans/super/177-codex-auth-mode-conflict.md``.
+
+    The chatgpt-mode check fires BEFORE all other branches (env vars +
+    PATH). A user with ``OPENAI_API_KEY`` or ``CODEX_API_KEY`` set AND
+    ``~/.codex/auth.json`` declaring ``auth_mode == "chatgpt"`` is still
+    refused: the codex subprocess would route via ChatGPT and reject
+    every model.
+
+    Pre-flight passes (returns ``None``) when:
+
+    1. auth.json missing AND ``OPENAI_API_KEY`` set
+    2. auth.json missing AND ``CODEX_API_KEY`` set
+    3. auth.json missing AND codex on PATH (no env var)
+    4. auth.json apikey AND env var set
+    5. auth.json apikey AND codex on PATH (no env var)
+    6. auth.json malformed AND env var set (failure-open per DEC-005)
+    7. auth.json malformed AND codex on PATH (failure-open)
+
+    And raises :class:`CodexAuthMissingError` when:
+
+    8. auth.json ``auth_mode == "chatgpt"`` AND any combination of env
+       vars / PATH.
+
+    Tests use ``tmp_path`` and ``monkeypatch.setenv("CODEX_HOME", ...)``
+    to stage ``auth.json`` files at a deterministic location resolved
+    by :func:`_codex_auth_json_path`.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_announcement_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reset the codex-CLI-on-PATH one-shot flag so PATH-branch
+        passes don't leak announcement state between tests."""
+        monkeypatch.setattr(
+            "clauditor._providers._auth._announced_codex_cli_on_path",
+            False,
+        )
+
+    @staticmethod
+    def _stage_auth_json(
+        monkeypatch: pytest.MonkeyPatch, tmp_path, contents: str
+    ) -> None:
+        """Stage an ``auth.json`` under ``tmp_path`` and point
+        :func:`_codex_auth_json_path` at it via ``CODEX_HOME``."""
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text(contents, encoding="utf-8")
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
+    # ----- Pass branches (auth.json absent / apikey / malformed) -----
+
+    def test_authjson_missing_openai_key_set_passes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 1: auth.json missing AND ``OPENAI_API_KEY`` set →
+        pre-flight passes (no chatgpt-mode signal; env var accepts)."""
+        from clauditor._providers import check_codex_auth
+
+        # CODEX_HOME points at tmp_path with NO auth.json staged.
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        assert check_codex_auth("grade") is None
+
+    def test_authjson_missing_codex_key_set_passes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 2: auth.json missing AND ``CODEX_API_KEY`` set →
+        pre-flight passes."""
+        from clauditor._providers import check_codex_auth
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert check_codex_auth("grade") is None
+
+    def test_authjson_missing_codex_on_path_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Branch 3: auth.json missing AND codex on PATH (no env var) →
+        pre-flight passes via the PATH branch (US-002 from #175)."""
+        from clauditor._providers import _auth as _auth_mod
+        from clauditor._providers import check_codex_auth
+
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        assert check_codex_auth("grade") is None
+
+    def test_authjson_apikey_with_env_var_passes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 4: auth.json ``auth_mode="apikey"`` AND env var set →
+        pre-flight passes. The verdict helper returns ``True`` for any
+        non-``"chatgpt"`` string, so the chatgpt-mode check short-circuits
+        and the env-var branch accepts."""
+        import json as _json
+
+        from clauditor._providers import check_codex_auth
+
+        payload = {"auth_mode": "apikey", "api_key": "sk-redacted"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert check_codex_auth("grade") is None
+
+    def test_authjson_apikey_with_codex_on_path_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Branch 5: auth.json ``auth_mode="apikey"`` AND codex on PATH
+        (no env var) → pre-flight passes via the PATH branch."""
+        import json as _json
+
+        from clauditor._providers import _auth as _auth_mod
+        from clauditor._providers import check_codex_auth
+
+        payload = {"auth_mode": "apikey", "api_key": "sk-redacted"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        assert check_codex_auth("grade") is None
+
+    def test_authjson_malformed_with_env_var_passes(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 6: auth.json malformed AND env var set → pre-flight
+        passes (failure-open per DEC-005: the parser returns ``None``,
+        the verdict helper returns ``True``, env var accepts)."""
+        from clauditor._providers import check_codex_auth
+
+        self._stage_auth_json(
+            monkeypatch, tmp_path, "{this is not valid json"
+        )
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        assert check_codex_auth("grade") is None
+
+    def test_authjson_malformed_with_codex_on_path_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Branch 7: auth.json malformed AND codex on PATH (no env var) →
+        pre-flight passes via the PATH branch (failure-open per DEC-005)."""
+        from clauditor._providers import _auth as _auth_mod
+        from clauditor._providers import check_codex_auth
+
+        self._stage_auth_json(
+            monkeypatch, tmp_path, "{this is not valid json"
+        )
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        assert check_codex_auth("grade") is None
+
+    # ----- Refusal branch (auth_mode=="chatgpt") -----
+
+    def test_chatgpt_mode_refuses_with_no_env_vars(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 8a: auth.json ``auth_mode="chatgpt"`` AND no env vars →
+        raise. The broad refusal does not require any other auth signal
+        to be absent; chatgpt-mode is itself the refusal trigger."""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+
+        payload = {"auth_mode": "chatgpt", "tokens": {"access_token": "x"}}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(CodexAuthMissingError) as exc_info:
+            check_codex_auth("grade")
+        message = str(exc_info.value)
+        # DEC-002 / DEC-006 / DEC-010 durable substrings.
+        assert "ChatGPT" in message
+        assert "~/.codex/auth.json" in message
+        assert "codex login --with-api-key" in message
+        # Command-name interpolation.
+        assert "clauditor grade" in message
+
+    def test_chatgpt_mode_refuses_with_codex_api_key(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 8b: auth.json ``auth_mode="chatgpt"`` AND
+        ``CODEX_API_KEY`` set → raise. Per DEC-002 (Broad refusal), the
+        chatgpt check fires BEFORE env-var checks: a user with the key
+        exported but a chatgpt-mode auth.json file is still refused
+        because the codex subprocess reads auth.json and routes via
+        ChatGPT regardless of the env var."""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+
+        payload = {"auth_mode": "chatgpt"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(CodexAuthMissingError):
+            check_codex_auth("grade")
+
+    def test_chatgpt_mode_refuses_with_openai_api_key(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 8c: auth.json ``auth_mode="chatgpt"`` AND
+        ``OPENAI_API_KEY`` set → raise. Same broad-refusal posture."""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+
+        payload = {"auth_mode": "chatgpt"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        with pytest.raises(CodexAuthMissingError):
+            check_codex_auth("grade")
+
+    def test_chatgpt_mode_refuses_with_codex_on_path(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 8d: auth.json ``auth_mode="chatgpt"`` AND codex on PATH
+        → raise. Per DEC-002 the chatgpt check fires BEFORE the PATH
+        branch; the PATH-branch announcement does NOT fire."""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        payload = {"auth_mode": "chatgpt"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        with pytest.raises(CodexAuthMissingError):
+            check_codex_auth("grade")
+
+    def test_chatgpt_mode_refuses_with_all_signals_set(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """Branch 8e: auth.json ``auth_mode="chatgpt"`` AND both env
+        vars set AND codex on PATH → raise. The broad refusal is
+        unconditional on chatgpt-mode regardless of any other signal."""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+        from clauditor._providers import _auth as _auth_mod
+
+        payload = {"auth_mode": "chatgpt"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex-test")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-test")
+        monkeypatch.setattr(
+            _auth_mod.shutil,
+            "which",
+            lambda name: "/usr/bin/codex" if name == "codex" else None,
+        )
+        with pytest.raises(CodexAuthMissingError):
+            check_codex_auth("grade")
+
+    def test_chatgpt_mode_uses_chatgpt_template_not_missing_template(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """The refusal message must come from
+        :data:`_CODEX_AUTH_CHATGPT_MODE_TEMPLATE`, NOT
+        :data:`_CODEX_AUTH_MISSING_TEMPLATE`. The two templates are
+        distinguishable by their leading line: the chatgpt template
+        opens ``"ERROR: Codex auth-mode mismatch."`` while the missing
+        template opens ``"ERROR: No usable Codex authentication
+        found."``"""
+        import json as _json
+
+        from clauditor._providers import (
+            CodexAuthMissingError,
+            check_codex_auth,
+        )
+
+        payload = {"auth_mode": "chatgpt"}
+        self._stage_auth_json(monkeypatch, tmp_path, _json.dumps(payload))
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(CodexAuthMissingError) as exc_info:
+            check_codex_auth("grade")
+        message = str(exc_info.value)
+        # Chatgpt template's distinctive lead-in.
+        assert "auth-mode mismatch" in message
+        # Missing template's distinctive lead-in must NOT appear.
+        assert "No usable Codex authentication found" not in message
