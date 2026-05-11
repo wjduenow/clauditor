@@ -5,8 +5,9 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/175
 - **Branch:** `feature/175-codex-chatgpt-login-auth`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/175-codex-chatgpt-login-auth`
-- **PR:** (pending)
-- **Phase:** detailing
+- **PR:** https://github.com/wjduenow/clauditor/pull/179
+- **Phase:** devolved
+- **Epic:** clauditor-lacb
 - **Sessions:** 1 (2026-05-11)
 - **Total decisions:** 10 (DEC-001 through DEC-010)
 - **Depends on:** #95 (CLOSED — Anthropic relaxed-guard precedent), #149 (CLOSED — Codex harness), #151 (CLOSED — harness precedence + `check_codex_auth` dispatch)
@@ -378,7 +379,22 @@ Same as DEC-009's resolution order. Beyond the announcement-suppression rational
 
 ## Beads Manifest
 
-_Pending devolve phase. Will be filled in after the user approves the plan and says "devolve" or "ready for Ralph"._
+- **Epic:** `clauditor-lacb` — 175: Codex ChatGPT-login auth
+- **US-001:** `clauditor-v3b5` — Pure helper `_codex_cli_is_available` + 4th announcement-family member. **READY** (no blockers).
+- **US-002:** `clauditor-0oe4` — Extend `check_codex_auth` acceptance set + update error template. Blocked by US-001.
+- **US-003:** `clauditor-xf8p` — CLI end-to-end test for cached source-label production wiring. Blocked by US-002.
+- **US-004 (Quality Gate):** `clauditor-fuyz` — Code-reviewer × 4 + CodeRabbit + project validation. Blocked by US-001, US-002, US-003.
+- **US-005 (Patterns & Memory):** `clauditor-11zj` — Update rules for the new announcement family member. Blocked by US-004.
+
+**Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/175-codex-chatgpt-login-auth`
+**Branch:** `feature/175-codex-chatgpt-login-auth`
+**Plan PR:** https://github.com/wjduenow/clauditor/pull/179
+
+### Execution
+
+1. Run Ralph: `/ralph-run`.
+2. Monitor: `bd list --status=in_progress`.
+3. After completion: `/closeout`.
 
 ---
 
