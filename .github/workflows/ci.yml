@@ -51,32 +51,16 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --dev
-      - name: Debug coverage environment
-        if: matrix.python-version == '3.13'
-        run: |
-          echo "=== uv version ==="
-          uv --version
-          echo "=== Python / pytest / coverage versions ==="
-          uv run python -V
-          uv run python -c "import pytest; print('pytest', pytest.__version__)"
-          uv run python -c "import coverage; print('coverage', coverage.__version__)"
-          uv run python -c "import pytest_cov; print('pytest_cov', pytest_cov.__version__)"
-          echo "=== Editable install path ==="
-          uv run python -c "import clauditor, os; print('clauditor file:', clauditor.__file__); print('clauditor dir:', os.path.dirname(clauditor.__file__))"
-          echo "=== .coveragerc and codecov.yml present ==="
-          ls -la .coveragerc codecov.yml pyproject.toml 2>&1 | head -10
-          cat .coveragerc
-          echo "=== addopts ==="
-          grep -A 2 "^addopts" pyproject.toml || true
-          echo "=== relevant env vars ==="
-          env | grep -iE "^(COV|COVERAGE|PYTEST|UV)" | sort
-      - name: Run tests under coverage (coverage starts before pytest)
+      - name: Run tests under coverage
         # ``pytest --cov`` starts coverage inside pytest's
         # ``pytest_load_initial_conftests`` — AFTER entry-point plugins
         # (``clauditor.pytest_plugin``) have imported their transitive
         # graph. Modules loaded during that early phase have their
         # module-level statements (imports, constants, class/def lines)
-        # executed without tracing, producing the ~12pp CI undercount.
+        # executed without tracing, producing a ~12pp CI undercount
+        # diagnosed in PR #173 (see CI run 25652367478 for the
+        # before/after).
+        #
         # ``coverage run -m pytest`` flips the order: coverage tracing
         # starts when the ``coverage`` script begins, then it execs
         # ``pytest`` as a module — every subsequent import (including
@@ -93,33 +77,6 @@ jobs:
           uv run coverage run -m pytest -p no:pytest_cov -o "addopts=--import-mode=importlib"
           uv run coverage xml
           uv run coverage report --fail-under=80
-      - name: Show coverage of files previously reported low by codecov
-        if: matrix.python-version == '3.13'
-        run: |
-          uv run python <<'PY'
-          import xml.etree.ElementTree as ET
-          tree = ET.parse('coverage.xml')
-          root = tree.getroot()
-          targets = {
-              'src/clauditor/_providers/_pricing.py',
-              'src/clauditor/formats.py',
-              'src/clauditor/_providers/_retry.py',
-              'src/clauditor/_providers/_auth.py',
-              'src/clauditor/badge.py',
-              'src/clauditor/benchmark.py',
-          }
-          for cls in root.iter('class'):
-              fn = cls.attrib.get('filename', '')
-              if fn in targets:
-                  rate = cls.attrib.get('line-rate', '?')
-                  lines = cls.findall('.//line')
-                  hit = sum(1 for l in lines if int(l.attrib['hits']) > 0)
-                  total = len(lines)
-                  missing_nums = [l.attrib['number'] for l in lines if int(l.attrib['hits']) == 0]
-                  print(f"{fn}: rate={rate} ({hit}/{total})")
-                  if missing_nums:
-                      print(f"  missing lines: {missing_nums[:30]}")
-          PY
       - uses: codecov/codecov-action@v5
         if: matrix.python-version == '3.13'
         with:

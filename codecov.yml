@@ -1,32 +1,26 @@
 # Codecov configuration.
 #
-# Context: CI's coverage upload systematically reports lower per-file
-# coverage than a local ``uv run pytest --cov=clauditor --cov-report=xml``
-# does on the same commit. On 2e195e7 the CI report shows
-# ``src/clauditor/_providers/_pricing.py`` at 67.6% / ``formats.py`` at
-# 28.6% / ``_retry.py`` at 61.5% — all of which test at 100% locally
-# with the same pytest invocation. Root cause is most likely an
-# interaction between the ``clauditor.pytest_plugin`` entry-point
-# loading order and pytest-cov's tracer (the entry-point's
-# module-level imports execute before coverage instrumentation
-# starts; function bodies should still be traced when called, but
-# CI's report contradicts that).
+# Coverage is collected by ``coverage run -m pytest`` in CI (see
+# ``.github/workflows/ci.yml``). Total project coverage runs at ~99%
+# (the same number ``coverage report`` prints locally on a fresh clone).
 #
-# Until that's diagnosed, this config:
+# Status checks:
 #
-# 1. Sets ``coverage.status.project.target: auto`` with a 1% drop
-#    threshold so a real regression still trips the check.
-# 2. Marks ``coverage.status.patch`` as ``informational: true`` so
-#    codecov continues to report patch coverage on every PR but does
-#    NOT block merge on the systematic CI undercount. New-code
-#    coverage discipline is still enforced locally by the
-#    ``--cov-fail-under=80`` flag in ``pyproject.toml::addopts`` and
-#    by the project's standard code-review pass that asserts the new
-#    module's tests pass at the 80% gate.
+# 1. ``project.target: auto`` with a 1% drop threshold so a real
+#    regression still trips the check.
+# 2. ``patch`` uses codecov's default (informational: false / blocking)
+#    so PRs that drop patch coverage below the implicit threshold fail
+#    the check.
 #
-# When the CI undercount is root-caused and fixed, flip ``patch`` back
-# to ``informational: false`` (the default) so codecov can block
-# coverage regressions on future PRs.
+# History — PR #173 originally shipped ``patch.informational: true``
+# while a ~12pp CI vs local coverage gap was undiagnosed. The root
+# cause was pytest-cov starting tracing in
+# ``pytest_load_initial_conftests`` AFTER entry-point plugin
+# (``clauditor.pytest_plugin``) imports had executed their transitive
+# graph — module-level statements went untraced. Switching to
+# ``coverage run -m pytest`` made coverage start before pytest loads,
+# which closed the gap; ``patch.informational`` was flipped back to
+# its default in the same PR.
 
 coverage:
   status:
@@ -34,6 +28,3 @@ coverage:
       default:
         target: auto
         threshold: 1%
-    patch:
-      default:
-        informational: true
