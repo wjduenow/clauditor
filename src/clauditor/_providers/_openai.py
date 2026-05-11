@@ -139,9 +139,69 @@ class OpenAIHelperError(Exception):
     """
 
 
+def _extract_reasoning_tokens(usage: Any) -> int | None:
+    """Defensively read ``usage.output_tokens_details.reasoning_tokens``.
+
+    Pure helper per ``.claude/rules/pure-compute-vs-io-split.md``:
+    no I/O, never raises, returns ``int | None``.
+
+    Bead clauditor-s0vu (US-002 of #170). The OpenAI Responses-API
+    ``usage`` object on reasoning-capable models surfaces a nested
+    ``output_tokens_details`` carrying ``reasoning_tokens: int`` —
+    the count of "thinking" tokens charged on top of the
+    user-visible ``output_tokens``. Older / non-reasoning models
+    omit the nested object entirely.
+
+    Per **DEC-002** of ``plans/super/170-reasoning-tokens-capture.md``,
+    ``0`` is preserved (the model chose not to reason on this call)
+    and is structurally distinct from ``None`` (the SDK didn't
+    surface the field at all). Both states are valid on disk; the
+    distinction matters when callers aggregate over many calls.
+
+    Per **DEC-006**, the explicit ``isinstance(val, bool)`` guard
+    is load-bearing: in Python ``isinstance(True, int)`` returns
+    ``True``, so a future SDK that surfaced ``reasoning_tokens=True``
+    would silently coerce to ``1`` without it. See
+    ``.claude/rules/constant-with-type-info.md`` for the canonical
+    bool-vs-int discipline.
+
+    Args:
+        usage: The Responses-API ``response.usage`` object (or any
+            duck-typed stand-in). May be ``None``.
+
+    Returns:
+        ``int`` (including ``0``) when a well-formed
+        ``reasoning_tokens`` field is present on
+        ``usage.output_tokens_details``; otherwise ``None``.
+        ``None`` is returned for: ``usage is None``, missing
+        ``output_tokens_details``, missing or ``None`` /
+        non-int / ``bool`` ``reasoning_tokens``, or any
+        attribute-access exception.
+    """
+    if usage is None:
+        return None
+    try:
+        details = getattr(usage, "output_tokens_details", None)
+    except Exception:  # noqa: BLE001 — defensive against SDK quirks
+        return None
+    if details is None:
+        return None
+    try:
+        value = getattr(details, "reasoning_tokens", None)
+    except Exception:  # noqa: BLE001 — defensive against SDK quirks
+        return None
+    # Bool guard MUST precede the int check because ``isinstance(True, int)``
+    # is ``True`` in Python — see .claude/rules/constant-with-type-info.md.
+    if isinstance(value, bool):
+        return None
+    if not isinstance(value, int):
+        return None
+    return value
+
+
 def _extract_openai_result(
     response: Any,
-) -> tuple[str, list[str], int, int, dict]:
+) -> tuple[str, list[str], int, int, dict, int | None]:
     """Project a Responses-API response into the ``ModelResult`` payload.
 
     Pure helper per ``.claude/rules/pure-compute-vs-io-split.md``:
@@ -165,7 +225,7 @@ def _extract_openai_result(
 
     Returns:
         Tuple of ``(response_text, text_blocks, input_tokens,
-        output_tokens, raw_message)``:
+        output_tokens, raw_message, reasoning_tokens)``:
 
         - ``response_text`` prefers ``response.output_text`` (the
           SDK's joined-message-text convenience accessor). Falls
@@ -179,6 +239,12 @@ def _extract_openai_result(
           fall back to 0 on missing/null/non-numeric values.
         - ``raw_message`` is ``response.model_dump()`` (Pydantic-v2
           dict) when available, else ``{}``.
+        - ``reasoning_tokens`` is the per-call reasoning-token
+          count read from
+          ``response.usage.output_tokens_details.reasoning_tokens``
+          via :func:`_extract_reasoning_tokens`. ``0`` is preserved;
+          ``None`` means the field was absent / malformed (DEC-002
+          of #170).
     """
     # Walk response.output[], filtering to message items and
     # collecting per-message joined text. Non-message items
@@ -241,7 +307,20 @@ def _extract_openai_result(
         if isinstance(dumped, dict):
             raw_message = dumped
 
-    return output_text, text_blocks, input_tokens, output_tokens, raw_message
+    # Reasoning-token extraction (#170 US-002, DEC-002): pure
+    # helper reads ``usage.output_tokens_details.reasoning_tokens``
+    # defensively — ``0`` (model didn't reason) is preserved
+    # distinct from ``None`` (couldn't read).
+    reasoning_tokens = _extract_reasoning_tokens(usage)
+
+    return (
+        output_text,
+        text_blocks,
+        input_tokens,
+        output_tokens,
+        raw_message,
+        reasoning_tokens,
+    )
 
 
 async def call_openai(
@@ -480,6 +559,7 @@ async def call_openai(
             input_tokens,
             output_tokens,
             raw_message,
+            reasoning_tokens,
         ) = _extract_openai_result(response)
 
         return ModelResult(
@@ -491,4 +571,5 @@ async def call_openai(
             source="api",
             duration_seconds=duration,
             provider="openai",
+            reasoning_tokens=reasoning_tokens,
         )
