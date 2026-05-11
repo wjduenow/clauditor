@@ -256,10 +256,14 @@ def _codex_auth_json_path() -> Path:
     :func:`_codex_api_key_is_set`) so an accidental
     ``export CODEX_HOME=" "`` does not silently redirect the resolver.
 
-    Pure function per ``.claude/rules/pure-compute-vs-io-split.md``:
-    reads ``os.environ`` only; does NOT touch the filesystem (no
-    ``Path.exists()``, no ``Path.stat()``). The caller
-    (:func:`_parse_codex_auth_json`) owns the actual file read.
+    Resolver-side helper per ``.claude/rules/pure-compute-vs-io-split.md``:
+    primarily reads ``os.environ``; ``Path.home()`` may transitively
+    consult the system password database when ``$HOME`` is unset
+    (both ``RuntimeError`` and ``OSError`` are caught and resolved
+    failure-open per DEC-005 by returning a non-existent sentinel
+    path). Never opens a file (no ``Path.exists()``, no
+    ``Path.stat()``). The caller (:func:`_parse_codex_auth_json`)
+    owns the actual file read.
 
     Returns:
         The :class:`pathlib.Path` pointing at the codex CLI's
@@ -269,7 +273,21 @@ def _codex_auth_json_path() -> Path:
     raw = os.environ.get("CODEX_HOME")
     if raw is not None and raw.strip() != "":
         return Path(raw) / "auth.json"
-    return Path.home() / ".codex" / "auth.json"
+    try:
+        return Path.home() / ".codex" / "auth.json"
+    except (RuntimeError, OSError):
+        # ``Path.home()`` raises ``RuntimeError`` on systems where
+        # neither ``HOME`` is set nor ``pwd`` can resolve a home dir
+        # (bare containers, stripped sandbox env, some CI runners).
+        # Failure-open per DEC-005: return a path that is guaranteed
+        # not to exist so :func:`_parse_codex_auth_json` returns
+        # ``None`` (treating the situation as "no auth.json opinion")
+        # and the pre-flight chain falls through to env-var / PATH
+        # checks. Mirrors the home-exclusion pattern documented in
+        # ``.claude/rules/project-root-home-exclusion.md`` (the
+        # ``try/except (RuntimeError, OSError)`` shape used by
+        # ``setup.py::find_project_root`` and ``paths.py``).
+        return Path("/nonexistent-codex-home/.codex/auth.json")
 
 
 def _parse_codex_auth_json(path: Path) -> dict | None:
@@ -296,10 +314,12 @@ def _parse_codex_auth_json(path: Path) -> dict | None:
     account ids, and refresh tokens stay in-process. Error messages
     name the file PATH only, never its body.
 
-    Pure-ish per ``.claude/rules/pure-compute-vs-io-split.md``: the
-    one documented side-effect is the file read (size check + UTF-8
-    decode + JSON parse). All four failure paths return ``None``
-    cleanly; the caller branches on a single sentinel.
+    I/O helper, defensive: per ``.claude/rules/pure-compute-vs-io-split.md``
+    this function owns the file read on behalf of the orchestrator
+    (:func:`check_codex_auth`); the pure verdict helper
+    :func:`_auth_mode_is_acceptable` consumes the result. All failure
+    paths return ``None`` cleanly; the caller branches on a single
+    sentinel.
 
     Args:
         path: Path to ``auth.json`` (typically the result of
@@ -321,8 +341,15 @@ def _parse_codex_auth_json(path: Path) -> dict | None:
         st = path.stat()
         if st.st_size > _CODEX_AUTH_JSON_MAX_BYTES:
             return None
+        # Defense-in-depth: ``stat()`` follows symlinks and reports
+        # ``st_size=0`` for some pseudo-files (FIFOs, ``/proc/*``,
+        # ``/dev/zero``). The bounded read below is what enforces
+        # the security invariant — ``stat()`` is an optimization for
+        # the common case where size accurately reflects content.
         with path.open("r", encoding="utf-8") as fh:
-            text = fh.read()
+            text = fh.read(_CODEX_AUTH_JSON_MAX_BYTES + 1)
+        if len(text) > _CODEX_AUTH_JSON_MAX_BYTES:
+            return None
     except (OSError, UnicodeDecodeError):
         return None
     try:
