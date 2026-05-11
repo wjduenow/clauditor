@@ -212,14 +212,51 @@ async def call_openai(
   `response_text`, per-block `text_blocks`, `input_tokens`,
   `output_tokens`, `raw_message`, plus `provider` (`"anthropic"`
   or `"openai"`) and `source` (`"api"` or `"cli"`) so callers can
-  stamp per-call provenance on their reports. Callers that want
-  to distinguish "no text" from "empty text" check `text_blocks`;
-  callers that want refusal handling read `raw_message`; metrics
-  consumers read the token fields. One return type covers every
-  current consumer without forcing them to dig through the raw
-  SDK response. The legacy alias `AnthropicResult = ModelResult`
+  stamp per-call provenance on their reports. Plus
+  `reasoning_tokens: int | None` (#170) carrying the per-call
+  separately-billed reasoning / thinking-token count when the
+  provider exposes one. Callers that want to distinguish "no
+  text" from "empty text" check `text_blocks`; callers that want
+  refusal handling read `raw_message`; metrics consumers read
+  the token fields. One return type covers every current
+  consumer without forcing them to dig through the raw SDK
+  response. The legacy alias `AnthropicResult = ModelResult`
   is preserved so existing test fixtures and docstrings keep
   working.
+- **Asymmetric `reasoning_tokens` capture per provider** (#170).
+  The two backends populate `reasoning_tokens` differently
+  because the underlying SDKs surface different things, NOT as a
+  consistency lapse:
+  - **Anthropic always returns `None`** (DEC-001 of
+    `plans/super/170-reasoning-tokens-capture.md`).
+    `anthropic.types.Usage` carries no separately-billed
+    thinking-token field; for extended-thinking models (Opus 4.x,
+    Sonnet 4.x with `thinking={"type":"enabled",...}`) the
+    thinking tokens are ALREADY INCLUDED in `output_tokens`. The
+    construction site at `_providers/_anthropic.py::_extract_result`
+    hardcodes `reasoning_tokens=None` with an inline comment
+    citing DEC-001 so future contributors don't copy-paste a
+    `usage.<something>` shape from the OpenAI side. A
+    drift-guard test in `tests/test_providers_anthropic.py`
+    asserts `result.reasoning_tokens is None` for both a
+    normal mock and a thinking-style mock.
+  - **OpenAI extracts via a pure helper** (DEC-002, DEC-006).
+    `_providers/_openai.py::_extract_reasoning_tokens(usage)`
+    defensively reads `usage.output_tokens_details.reasoning_tokens`
+    and returns the int (including `0`) or `None` on any
+    malformed shape (`usage is None`, missing
+    `output_tokens_details`, missing field, non-int, `bool`,
+    any attribute-access exception). `0` is preserved as a
+    real signal ("model didn't reason on this call"); `None`
+    means "couldn't read" — conflating the two would lose the
+    per-call signal. The explicit `isinstance(value, bool)`
+    guard precedes the `int` check per
+    `.claude/rules/constant-with-type-info.md` (Python's
+    `isinstance(True, int)` is `True`).
+  Sum semantics across multi-call grader runs are codified in
+  `quality_grader.py::_sum_optional_reasoning_tokens` and
+  documented under the "Schema version bumps for #170"
+  subsection of `.claude/rules/json-schema-version.md`.
 - **Asymmetric transport: anthropic supports `{api,cli,auto}`,
   openai always `source="api"`.** Per DEC-002 of
   `plans/super/145-openai-provider.md`, OpenAI has no CLI
