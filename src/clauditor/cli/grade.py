@@ -920,8 +920,12 @@ def _write_context_sidecar(
     ``cost_usd: null``) when any internal lookup misses, per DEC-002
     all-or-nothing semantics.
 
-    ``reasoning_tokens`` still ships as ``None`` per DEC-001 (placeholder
-    for #170).
+    #170 US-005: ``reasoning_tokens`` is threaded from the primary
+    :class:`GradingReport` (sum-of-non-None semantics across grader
+    attempts; see DEC-003 of
+    ``plans/super/170-reasoning-tokens-capture.md``). ``None`` means
+    "no provider call surfaced a reasoning-token count" — distinct
+    from ``0``.
 
     Runs inside the workspace staging block per
     ``.claude/rules/sidecar-during-staging.md``; the caller's
@@ -942,7 +946,7 @@ def _write_context_sidecar(
             extraction_report,
             provider,
         ),
-        reasoning_tokens=None,
+        reasoning_tokens=primary_report.reasoning_tokens,
     )
     (skill_dir / "context.json").write_text(
         context.to_json(), encoding="utf-8"

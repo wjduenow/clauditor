@@ -10272,6 +10272,113 @@ class TestCmdGradeWritesContextJson:
         assert next(iter(payload.keys())) == "schema_version"
         assert payload["schema_version"] == 1
 
+    def test_grade_command_writes_reasoning_tokens_to_context_json(
+        self, tmp_path, monkeypatch
+    ):
+        """#170 US-005: a graded run whose ``GradingReport`` carries
+        ``reasoning_tokens=50`` lands the same value on
+        ``context.json``. Mirrors the ``model_grader`` threading
+        pattern."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = make_grading_report(
+            passed=True,
+            score=0.9,
+            model="claude-sonnet-4-6",
+            reasoning_tokens=50,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        assert payload["reasoning_tokens"] == 50
+
+    def test_grade_command_writes_zero_reasoning_tokens_to_context_json(
+        self, tmp_path, monkeypatch
+    ):
+        """#170 DEC-002: ``reasoning_tokens=0`` is a real value (the
+        model didn't reason on this call) and MUST land on disk as
+        ``0``, NOT collapse to ``null`` via a truthiness coercion at
+        the sidecar-write seam. Distinguishing ``0`` (measured zero)
+        from ``None`` (couldn't measure) is the whole point of the
+        ``int | None`` axis."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = make_grading_report(
+            passed=True,
+            score=0.9,
+            model="claude-sonnet-4-6",
+            reasoning_tokens=0,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        assert payload["reasoning_tokens"] == 0
+        # Distinct from ``None`` — the JSON value is the integer 0,
+        # not the JSON ``null`` literal.
+        assert payload["reasoning_tokens"] is not None
+
+    def test_grade_command_writes_null_reasoning_tokens_when_none(
+        self, tmp_path, monkeypatch
+    ):
+        """#170 US-005: a graded run whose ``GradingReport`` carries
+        ``reasoning_tokens=None`` (no grader call surfaced a count)
+        lands ``"reasoning_tokens": null`` on disk — distinct from
+        ``0`` per DEC-003."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = make_grading_report(
+            passed=True,
+            score=0.9,
+            model="claude-sonnet-4-6",
+            reasoning_tokens=None,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        assert payload["reasoning_tokens"] is None
+
     def test_captured_output_mode_skips_context_sidecar(
         self, tmp_path, monkeypatch
     ):
@@ -10606,6 +10713,26 @@ class TestCmdValidateWritesContextJson:
         assert payload["model_runner"] == "gpt-5-codex"
         assert payload["system_prompt_source"] == "agents_md"
         assert payload["sandbox_mode"] == "workspace-write"
+
+    def test_validate_command_writes_null_reasoning_tokens_to_context_json(
+        self, tmp_path, monkeypatch
+    ):
+        """#170 US-005 / DEC-008: validate has no LLM grader call, so
+        ``reasoning_tokens`` is structurally ``None`` on the
+        ``context.json`` sidecar."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._live_spec()
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        assert payload["reasoning_tokens"] is None
 
 
 class TestCmdValidateContextCostUsd:

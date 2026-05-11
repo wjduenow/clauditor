@@ -310,9 +310,13 @@ def cmd_validate(args: argparse.Namespace) -> int:
             # #154 US-004 / DEC-007 / DEC-008: write the per-iteration
             # comparability sidecar inside the staging block. Validate
             # has no Layer 3 grading, so ``provider`` and ``model_grader``
-            # stay ``None``; ``cost_usd`` and ``reasoning_tokens`` are
-            # ``None`` per DEC-001 / DEC-002 (placeholders for #169 /
-            # #170). ``model``/``system_prompt_source`` are unguarded
+            # stay ``None``; ``cost_usd`` is ``None`` per DEC-001
+            # (placeholder for #169). ``reasoning_tokens`` is
+            # structurally ``None`` for this path per DEC-008 of
+            # ``plans/super/170-reasoning-tokens-capture.md``: validate
+            # makes no LLM grader call, so there is no per-call
+            # reasoning-token count to surface.
+            # ``model``/``system_prompt_source`` are unguarded
             # subscripts per the harness contract; ``sandbox_mode`` IS
             # optional (Codex-only).
             context = IterationContext(

@@ -229,6 +229,23 @@ class ModelResult:
             pre-#144 caller; the future OpenAI backend (#145) sets
             ``"openai"``. DEC-006 of
             ``plans/super/144-providers-call-model.md``.
+        reasoning_tokens: Per-call reasoning / thinking token count
+            reported by the provider, when available. ``None`` means
+            "the provider did not surface a reasoning-token count"
+            (no thinking block, transport that strips it, a backend
+            without a reasoning concept) — distinct from ``0`` which
+            asserts "the call ran but used zero reasoning tokens".
+            Per-backend population (#170): the **Anthropic backend
+            unconditionally returns ``None``** because the SDK has no
+            separately-billed thinking-token field — extended-thinking
+            counts are folded into ``output_tokens`` already. The
+            **OpenAI backend** populates this from
+            ``usage.output_tokens_details.reasoning_tokens`` via the
+            defensive helper ``_extract_reasoning_tokens`` (returns
+            ``0`` for non-reasoning models, the real count for o-series
+            / GPT-5 reasoning models, and ``None`` only on
+            malformed/absent SDK shape). DEC-001 / DEC-002 of
+            ``plans/super/170-reasoning-tokens-capture.md``.
     """
 
     response_text: str
@@ -239,6 +256,7 @@ class ModelResult:
     source: Literal["api", "cli"] = "api"
     duration_seconds: float = 0.0
     provider: Literal["anthropic", "openai"] = "anthropic"
+    reasoning_tokens: int | None = None
 
 
 # Back-compat alias (DEC-006 of #144): the legacy name stays callable
@@ -303,6 +321,18 @@ def _extract_result(response: Any) -> ModelResult:
         output_tokens=output_tokens,
         raw_message=response,
         source="api",
+        # DEC-001 of plans/super/170-reasoning-tokens-capture.md:
+        # ``anthropic.types.Usage`` carries no separately-billed
+        # reasoning-token field. For extended-thinking models
+        # (Opus 4.x, Sonnet 4.x with ``thinking={"type":"enabled",...}``)
+        # the thinking tokens are ALREADY INCLUDED in
+        # ``output_tokens``; there is no separate count to surface.
+        # Honest ``None`` is the only correct representation —
+        # distinct from ``0``, which would falsely assert "the call
+        # ran but used zero reasoning tokens". Do NOT copy-paste a
+        # ``reasoning_tokens=usage.<something>`` shape from the
+        # OpenAI backend here; the SDK simply does not expose one.
+        reasoning_tokens=None,
     )
 
 
@@ -749,6 +779,13 @@ async def _call_via_claude_cli(
                 raw_message=None,
                 source="cli",
                 duration_seconds=duration,
+                # DEC-001 of #170 — see ``_extract_result`` for the
+                # full rationale. Parity with the SDK branch: the
+                # ``claude -p`` subprocess stream-json carries no
+                # separately-billed reasoning-token field either,
+                # and ``InvokeResult.output_tokens`` already includes
+                # any thinking tokens for extended-thinking models.
+                reasoning_tokens=None,
             )
 
         # Decide retry vs raise using the shared ladder.

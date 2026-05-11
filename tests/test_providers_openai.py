@@ -23,6 +23,7 @@ from clauditor._providers._openai import (
     OpenAIHelperError,
     _body_excerpt,
     _extract_openai_result,
+    _extract_reasoning_tokens,
     call_openai,
 )
 
@@ -33,16 +34,25 @@ def _mock_response(
     input_tokens: int = 10,
     output_tokens: int = 5,
     raw_dict: dict | None = None,
+    reasoning_tokens: int | None = None,
 ) -> MagicMock:
     """Build a MagicMock shaped like an OpenAI Responses-API response.
 
     The real ``openai.types.responses.Response`` object is a Pydantic
     model with ``output[]`` (list of output items: messages,
     reasoning, tool-use), ``output_text`` (SDK convenience accessor
-    joining message text), ``usage`` (input/output token counts),
+    joining message text), ``usage`` (input/output token counts +
+    nested ``output_tokens_details`` carrying ``reasoning_tokens``),
     and ``model_dump()`` (Pydantic v2 dict serialization). Build a
     single-message ``output[]`` mirroring ``output_text`` so the
     extractor's per-block walker yields matching ``text_blocks``.
+
+    When ``reasoning_tokens`` is non-``None``, populate
+    ``usage.output_tokens_details.reasoning_tokens`` so the #170
+    extractor can read it. Default ``None`` omits the nested
+    attribute entirely (MagicMock auto-creates attributes lazily,
+    so a `del` is needed to mimic a real SDK response that lacks
+    the field).
     """
     resp = MagicMock()
     if output_text:
@@ -58,9 +68,16 @@ def _mock_response(
     else:
         resp.output = []
     resp.output_text = output_text
-    resp.usage = MagicMock(
-        input_tokens=input_tokens, output_tokens=output_tokens
-    )
+    usage = MagicMock(input_tokens=input_tokens, output_tokens=output_tokens)
+    if reasoning_tokens is not None:
+        details = MagicMock()
+        details.reasoning_tokens = reasoning_tokens
+        usage.output_tokens_details = details
+    else:
+        # Mimic an SDK response that does not surface the nested
+        # details object (older models, non-reasoning responses).
+        del usage.output_tokens_details
+    resp.usage = usage
     resp.model_dump = MagicMock(
         return_value=raw_dict if raw_dict is not None else {"id": "resp_x"}
     )
@@ -256,6 +273,41 @@ class TestCallOpenAISuccess:
         kwargs = fake_client.responses.create.call_args.kwargs
         assert kwargs["max_output_tokens"] == 2048
 
+    @pytest.mark.asyncio
+    async def test_reasoning_tokens_populated_on_result(self) -> None:
+        # Bead clauditor-s0vu (US-002 of #170): when the SDK surfaces
+        # ``usage.output_tokens_details.reasoning_tokens=99``, the
+        # backend stamps it on ``ModelResult.reasoning_tokens``.
+        resp = _mock_response(reasoning_tokens=99)
+        ctx, _ = _patch_async_openai(resp)
+        with ctx:
+            result = await call_openai("p", model="gpt-5.4")
+        assert result.reasoning_tokens == 99
+
+    @pytest.mark.asyncio
+    async def test_reasoning_tokens_zero_preserved_on_result(self) -> None:
+        # DEC-002 load-bearing: ``0`` reaches the dataclass intact —
+        # NOT collapsed to ``None``. ``0`` means "model didn't
+        # reason"; ``None`` means "couldn't read."
+        resp = _mock_response(reasoning_tokens=0)
+        ctx, _ = _patch_async_openai(resp)
+        with ctx:
+            result = await call_openai("p", model="gpt-5.4")
+        assert result.reasoning_tokens == 0
+        assert result.reasoning_tokens is not None
+
+    @pytest.mark.asyncio
+    async def test_reasoning_tokens_none_when_details_absent(self) -> None:
+        # The default ``_mock_response`` shape (no ``reasoning_tokens``
+        # kwarg) deletes ``output_tokens_details`` entirely so the
+        # extractor reads ``None`` — same shape an older non-reasoning
+        # model would surface.
+        resp = _mock_response()  # default reasoning_tokens=None → del
+        ctx, _ = _patch_async_openai(resp)
+        with ctx:
+            result = await call_openai("p", model="gpt-5.4")
+        assert result.reasoning_tokens is None
+
 
 def _build_message_item(*texts: str) -> MagicMock:
     """Build a Responses-API ``message``-typed output item.
@@ -351,7 +403,7 @@ class TestExtractOpenAIResult:
             output=[_build_message_item("hello world")],
             output_text="hello world",
         )
-        text, blocks, in_t, out_t, raw = _extract_openai_result(resp)
+        text, blocks, in_t, out_t, raw, _ = _extract_openai_result(resp)
         assert blocks == ["hello world"]
         assert text == "hello world"
 
@@ -367,7 +419,7 @@ class TestExtractOpenAIResult:
             ],
             output_text="msg",
         )
-        text, blocks, _, _, _ = _extract_openai_result(resp)
+        text, blocks, _, _, _, _ = _extract_openai_result(resp)
         assert blocks == ["msg"]
         assert text == "msg"
 
@@ -382,7 +434,7 @@ class TestExtractOpenAIResult:
             ],
             output_text="firstsecond",
         )
-        text, blocks, _, _, _ = _extract_openai_result(resp)
+        text, blocks, _, _, _, _ = _extract_openai_result(resp)
         assert blocks == ["first", "second"]
         assert text == "firstsecond"
 
@@ -390,7 +442,7 @@ class TestExtractOpenAIResult:
         # Empty response.output[] list AND empty output_text — the
         # extractor returns empty containers without raising.
         resp = _make_response(output=[], output_text="")
-        text, blocks, _, _, _ = _extract_openai_result(resp)
+        text, blocks, _, _, _, _ = _extract_openai_result(resp)
         assert text == ""
         assert blocks == []
 
@@ -404,7 +456,7 @@ class TestExtractOpenAIResult:
         item.type = "message"
         item.content = None
         resp = _make_response(output=[item], output_text="")
-        text, blocks, _, _, _ = _extract_openai_result(resp)
+        text, blocks, _, _, _, _ = _extract_openai_result(resp)
         assert blocks == []
         assert text == ""
 
@@ -416,7 +468,7 @@ class TestExtractOpenAIResult:
         item.type = "message"
         item.content = []
         resp = _make_response(output=[item], output_text="")
-        text, blocks, _, _, _ = _extract_openai_result(resp)
+        text, blocks, _, _, _, _ = _extract_openai_result(resp)
         assert blocks == []
         assert text == ""
 
@@ -431,7 +483,7 @@ class TestExtractOpenAIResult:
         refusal.refusal = "I cannot help with that."
         item.content = [refusal]
         resp = _make_response(output=[item], output_text="")
-        text, blocks, _, _, _ = _extract_openai_result(resp)
+        text, blocks, _, _, _, _ = _extract_openai_result(resp)
         assert blocks == []
         assert text == ""
 
@@ -441,7 +493,7 @@ class TestExtractOpenAIResult:
         # default to 0.
         resp = _make_response(output=[], output_text="")
         del resp.usage
-        _, _, in_t, out_t, _ = _extract_openai_result(resp)
+        _, _, in_t, out_t, _, _ = _extract_openai_result(resp)
         assert in_t == 0
         assert out_t == 0
 
@@ -453,7 +505,7 @@ class TestExtractOpenAIResult:
         usage.input_tokens = None
         usage.output_tokens = None
         resp = _make_response(output=[], output_text="", usage=usage)
-        _, _, in_t, out_t, _ = _extract_openai_result(resp)
+        _, _, in_t, out_t, _, _ = _extract_openai_result(resp)
         assert in_t == 0
         assert out_t == 0
 
@@ -465,7 +517,7 @@ class TestExtractOpenAIResult:
         usage.input_tokens = "not a number"
         usage.output_tokens = "garbage"
         resp = _make_response(output=[], output_text="", usage=usage)
-        _, _, in_t, out_t, _ = _extract_openai_result(resp)
+        _, _, in_t, out_t, _, _ = _extract_openai_result(resp)
         assert in_t == 0
         assert out_t == 0
 
@@ -484,7 +536,7 @@ class TestExtractOpenAIResult:
         )
         resp.status = "incomplete"
         resp.incomplete_details = MagicMock(reason="max_output_tokens")
-        text, blocks, _, _, raw = _extract_openai_result(resp)
+        text, blocks, _, _, raw, _ = _extract_openai_result(resp)
         assert text == "partial"
         assert blocks == ["partial"]
         assert raw["status"] == "incomplete"
@@ -497,7 +549,7 @@ class TestExtractOpenAIResult:
         resp = _make_response(
             output=[], output_text="", raw_dict=raw
         )
-        _, _, _, _, got = _extract_openai_result(resp)
+        _, _, _, _, got, _ = _extract_openai_result(resp)
         assert got == raw
 
     def test_raw_message_fallback_on_missing_model_dump(self) -> None:
@@ -507,7 +559,7 @@ class TestExtractOpenAIResult:
         resp = _make_response(
             output=[], output_text="", has_model_dump=False
         )
-        _, _, _, _, raw = _extract_openai_result(resp)
+        _, _, _, _, raw, _ = _extract_openai_result(resp)
         assert raw == {}
 
     def test_output_text_attribute_missing_falls_back_to_blocks(
@@ -520,7 +572,7 @@ class TestExtractOpenAIResult:
             output=[_build_message_item("alpha", "beta")],
             output_text=None,
         )
-        text, blocks, _, _, _ = _extract_openai_result(resp)
+        text, blocks, _, _, _, _ = _extract_openai_result(resp)
         assert blocks == ["alphabeta"]
         assert text == "alphabeta"
 
@@ -539,7 +591,7 @@ class TestExtractOpenAIResult:
         refusal.refusal = "I cannot help"
         msg.content = [refusal, text_block]
         resp = _make_response(output=[msg], output_text="real")
-        text, blocks, _, _, _ = _extract_openai_result(resp)
+        text, blocks, _, _, _, _ = _extract_openai_result(resp)
         # Only the output_text block contributes; refusal is skipped.
         assert blocks == ["real"]
         assert text == "real"
@@ -551,7 +603,7 @@ class TestExtractOpenAIResult:
         msg.type = "message"
         msg.content = "not-a-list"
         resp = _make_response(output=[msg], output_text="")
-        text, blocks, _, _, _ = _extract_openai_result(resp)
+        text, blocks, _, _, _, _ = _extract_openai_result(resp)
         assert blocks == []
         assert text == ""
 
@@ -561,8 +613,150 @@ class TestExtractOpenAIResult:
         # back to {} rather than propagating.
         resp = _make_response(output=[], output_text="")
         resp.model_dump = MagicMock(side_effect=TypeError("boom"))
-        _, _, _, _, raw = _extract_openai_result(resp)
+        _, _, _, _, raw, _ = _extract_openai_result(resp)
         assert raw == {}
+
+    def test_reasoning_tokens_extracted_into_tuple(self) -> None:
+        # End-to-end through ``_extract_openai_result``: the helper
+        # must thread reasoning_tokens out of the
+        # ``usage.output_tokens_details.reasoning_tokens`` accessor
+        # into the 6th tuple slot so ``call_openai`` can stamp the
+        # field on the returned ``ModelResult``.
+        usage = MagicMock()
+        usage.input_tokens = 10
+        usage.output_tokens = 5
+        details = MagicMock()
+        details.reasoning_tokens = 99
+        usage.output_tokens_details = details
+        resp = _make_response(output=[], output_text="", usage=usage)
+        _, _, _, _, _, reasoning = _extract_openai_result(resp)
+        assert reasoning == 99
+
+    def test_reasoning_tokens_missing_details_yields_none(self) -> None:
+        # Sibling: a response with ``usage`` but no nested
+        # ``output_tokens_details`` (older models, non-reasoning
+        # responses) yields ``None`` — distinct from ``0`` ("model
+        # didn't reason") per DEC-002.
+        usage = MagicMock()
+        usage.input_tokens = 10
+        usage.output_tokens = 5
+        del usage.output_tokens_details
+        resp = _make_response(output=[], output_text="", usage=usage)
+        _, _, _, _, _, reasoning = _extract_openai_result(resp)
+        assert reasoning is None
+
+
+class TestExtractReasoningTokens:
+    """Pure-helper tests for ``_extract_reasoning_tokens``.
+
+    Bead clauditor-s0vu (US-002 of #170): the helper defensively
+    reads ``usage.output_tokens_details.reasoning_tokens`` and
+    returns ``int | None``. Per DEC-002, ``0`` is preserved (model
+    chose not to reason); ``None`` means "couldn't read." Per
+    DEC-006, the helper is pure: no I/O, never raises, with a
+    bool guard per ``.claude/rules/constant-with-type-info.md``
+    (Python's ``isinstance(True, int)`` is ``True``).
+    """
+
+    def test_none_usage(self) -> None:
+        assert _extract_reasoning_tokens(None) is None
+
+    def test_well_formed_int_value(self) -> None:
+        usage = MagicMock()
+        details = MagicMock()
+        details.reasoning_tokens = 42
+        usage.output_tokens_details = details
+        assert _extract_reasoning_tokens(usage) == 42
+
+    def test_zero_value_is_preserved(self) -> None:
+        # DEC-002 load-bearing: ``0`` means "model didn't reason"
+        # and MUST NOT collapse to ``None`` ("couldn't read").
+        # Distinguishing the two states is the whole point of the
+        # ``int | None`` axis.
+        usage = MagicMock()
+        details = MagicMock()
+        details.reasoning_tokens = 0
+        usage.output_tokens_details = details
+        result = _extract_reasoning_tokens(usage)
+        assert result == 0
+        assert result is not None
+
+    def test_missing_output_tokens_details(self) -> None:
+        # A real SDK response that lacks the nested ``details``
+        # object entirely (older models, non-reasoning responses)
+        # yields ``None``.
+        usage = MagicMock()
+        del usage.output_tokens_details
+        assert _extract_reasoning_tokens(usage) is None
+
+    def test_missing_reasoning_tokens_field(self) -> None:
+        # ``output_tokens_details`` exists but lacks the
+        # ``reasoning_tokens`` field — yield ``None``.
+        usage = MagicMock()
+        details = MagicMock(spec=[])  # spec=[] blocks attr auto-creation
+        usage.output_tokens_details = details
+        assert _extract_reasoning_tokens(usage) is None
+
+    def test_bool_value_rejected(self) -> None:
+        # Per .claude/rules/constant-with-type-info.md: Python's
+        # ``isinstance(True, int)`` is ``True``. A future SDK that
+        # surfaced ``reasoning_tokens=True`` would silently coerce
+        # to ``1`` if we only checked ``isinstance(val, int)``;
+        # the bool guard rejects it back to ``None``.
+        usage = MagicMock()
+        details = MagicMock()
+        details.reasoning_tokens = True
+        usage.output_tokens_details = details
+        assert _extract_reasoning_tokens(usage) is None
+
+    def test_string_value_rejected(self) -> None:
+        # Defensive: a non-int (string, float, dict, None) value
+        # yields ``None`` rather than coercing or raising.
+        usage = MagicMock()
+        details = MagicMock()
+        details.reasoning_tokens = "99"
+        usage.output_tokens_details = details
+        assert _extract_reasoning_tokens(usage) is None
+
+    def test_none_value_yields_none(self) -> None:
+        # Explicit ``reasoning_tokens=None`` (a possible SDK shape
+        # for "no reasoning tokens recorded") yields ``None``.
+        usage = MagicMock()
+        details = MagicMock()
+        details.reasoning_tokens = None
+        usage.output_tokens_details = details
+        assert _extract_reasoning_tokens(usage) is None
+
+    def test_attribute_access_raising_yields_none(self) -> None:
+        # Defensive: a future SDK shape where attribute access
+        # itself raises (a Pydantic-v2 computed field that throws,
+        # a __getattr__ that fails) must collapse to ``None``
+        # rather than propagate.
+        class Raising:
+            @property
+            def output_tokens_details(self):
+                raise RuntimeError("nope")
+
+        assert _extract_reasoning_tokens(Raising()) is None
+
+    def test_inner_attribute_access_raising_yields_none(self) -> None:
+        # Sibling of ``test_attribute_access_raising_yields_none``:
+        # the OUTER ``getattr(usage, "output_tokens_details")``
+        # succeeds, but accessing ``reasoning_tokens`` on the
+        # returned ``details`` object raises. The inner try/except
+        # MUST collapse to ``None`` rather than propagate. Covers
+        # the inner defensive branch (a future SDK shape where the
+        # nested ``output_tokens_details`` is a Pydantic-v2 model
+        # whose ``reasoning_tokens`` is a computed property that
+        # throws on missing-data inputs).
+        class RaisingDetails:
+            @property
+            def reasoning_tokens(self):
+                raise RuntimeError("nope")
+
+        usage = MagicMock()
+        usage.output_tokens_details = RaisingDetails()
+        assert _extract_reasoning_tokens(usage) is None
 
 
 # ---------------------------------------------------------------------------
