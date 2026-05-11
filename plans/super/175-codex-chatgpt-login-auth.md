@@ -6,7 +6,7 @@
 - **Branch:** `feature/175-codex-chatgpt-login-auth`
 - **Worktree:** `/home/wesd/dev/worktrees/clauditor/feature/175-codex-chatgpt-login-auth`
 - **PR:** https://github.com/wjduenow/clauditor/pull/179
-- **Phase:** devolved
+- **Phase:** completed
 - **Epic:** clauditor-lacb
 - **Sessions:** 1 (2026-05-11)
 - **Total decisions:** 10 (DEC-001 through DEC-010)
@@ -423,3 +423,12 @@ Same as DEC-009's resolution order. Beyond the announcement-suppression rational
 - Key precedent: `CodexHarness._detect_auth_source` already detects file existence for observability/logging (DEC-017 of `#149`). The forward-declared `"cached"` source-name has never fired because the pre-flight blocks first — `#175` is what makes it reachable.
 - Strong precedent for Path B (trust `codex` on PATH): `check_any_auth_available` (#95) did exactly this for the Anthropic side and the symmetry is structurally clean.
 - Phase advance: discovery complete → awaiting scoping answers before architecture.
+
+### Session 2 — 2026-05-11
+
+- /ralph-run executed the full devolve chain.
+- US-001 → US-002 → US-003 → Quality Gate → US-005 (this story).
+- Quality Gate: 0 bugs across 4 review passes (plan compliance, adversarial edge cases, test quality, production readiness).
+- All 3744 tests pass; coverage 86.20% (above 80% gate).
+- The forward-declared `apiKeySource=cached` value from DEC-017 of #149 finally reaches production users.
+- Phase advance: devolved → completed.
