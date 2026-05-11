@@ -3707,6 +3707,21 @@ class TestGradingReportReasoningTokens:
         restored = GradingReport.from_json(original.to_json())
         assert restored.reasoning_tokens == 42
 
+    def test_grading_report_reasoning_tokens_round_trips_zero(self):
+        """#170 DEC-002: ``reasoning_tokens=0`` is a real value (the
+        model didn't reason on this call) and MUST round-trip
+        through ``to_json``/``from_json`` as ``0``, NOT collapse to
+        ``None`` via a truthiness coercion. The on-disk JSON value
+        is the integer ``0``, not the JSON ``null`` literal."""
+        original = self._report(reasoning_tokens=0)
+        raw = original.to_json()
+        data = json.loads(raw)
+        assert data["reasoning_tokens"] == 0
+        assert data["reasoning_tokens"] is not None
+        restored = GradingReport.from_json(raw)
+        assert restored.reasoning_tokens == 0
+        assert restored.reasoning_tokens is not None
+
     def test_grading_report_reasoning_tokens_round_trips_none(self):
         original = self._report()
         restored = GradingReport.from_json(original.to_json())
@@ -3972,6 +3987,65 @@ class TestGradeQualityReasoningTokensSum:
             report = await grade_quality("output", spec)
         assert report.reasoning_tokens == 30
 
+    @pytest.mark.asyncio
+    async def test_grade_quality_reasoning_tokens_zero_and_none(self):
+        """#170 DEC-002 + DEC-003: aggregation must treat ``0`` as a
+        real measurement, NOT as a falsy "skip me." With one
+        attempt at ``0`` and one at ``None``, the aggregate is
+        ``0`` (sum of non-None values is ``0``) — distinct from
+        the all-None → ``None`` case."""
+        from clauditor._providers import ModelResult
+
+        spec = _make_spec()
+        bad = ModelResult(
+            response_text="not-json",
+            text_blocks=["not-json"],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=0,
+        )
+        good_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.85,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 0.8,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+        ]
+        good = ModelResult(
+            response_text=json.dumps(good_data),
+            text_blocks=[json.dumps(good_data)],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[bad, good]),
+        ):
+            report = await grade_quality("output", spec)
+        assert report.reasoning_tokens == 0
+        assert report.reasoning_tokens is not None
+
 
 class TestBlindReportReasoningTokens:
     """#170 US-004: BlindReport carries a nullable
@@ -4010,6 +4084,16 @@ class TestBlindReportReasoningTokens:
         report = self._report()
         data = json.loads(report.to_json())
         assert data["reasoning_tokens"] is None
+
+    def test_blind_report_to_json_emits_reasoning_tokens_zero(self):
+        """#170 DEC-002: ``reasoning_tokens=0`` survives through
+        ``to_json`` as the integer ``0``, distinct from
+        ``null``. Locks down the truthiness-coercion failure mode
+        on the ``BlindReport`` writer too."""
+        report = self._report(reasoning_tokens=0)
+        data = json.loads(report.to_json())
+        assert data["reasoning_tokens"] == 0
+        assert data["reasoning_tokens"] is not None
 
     @pytest.mark.asyncio
     async def test_blind_report_sums_reasoning_tokens_across_two_calls(
@@ -4134,6 +4218,49 @@ class TestBlindReportReasoningTokens:
         ):
             report = await blind_compare("query", "out_a", "out_b")
         assert report.reasoning_tokens == 42
+
+    @pytest.mark.asyncio
+    async def test_blind_report_reasoning_tokens_zero_and_none(self):
+        """#170 DEC-002 + DEC-003: with one parallel side at ``0``
+        and the other at ``None``, the aggregate is ``0`` (sum of
+        non-None values is ``0``) — ``0`` MUST NOT collapse to
+        ``None`` via a truthiness coercion at the wiring seam."""
+        from clauditor._providers import ModelResult
+
+        verdict = json.dumps(
+            {
+                "preference": "1",
+                "confidence": 0.8,
+                "score_1": 0.8,
+                "score_2": 0.4,
+                "reasoning": "r",
+            }
+        )
+        side1 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=0,
+        )
+        side2 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[side1, side2]),
+        ):
+            report = await blind_compare("query", "out_a", "out_b")
+        assert report.reasoning_tokens == 0
+        assert report.reasoning_tokens is not None
 
 
 class TestSumOptionalReasoningTokens:

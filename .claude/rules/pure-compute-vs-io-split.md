@@ -690,8 +690,11 @@ Why the split mattered specifically here:
 - **Future nullable-token-style fields plug in trivially**:
   `#169` (`cost_usd: float | None`) will use the same shape —
   per-provider defensive extractor (with a parallel `bool`/`int`
-  guard, since Python's `bool` is also a subclass of `float`),
-  chain-level `_sum_optional_cost_usd` aggregator with the same
+  guard, since Python's `bool` is a subclass of `int` — NOT of
+  `float` — and `True`/`False` therefore pass any broad numeric
+  check like `isinstance(x, (int, float))` without an explicit
+  bool guard ahead of the int/float check), chain-level
+  `_sum_optional_cost_usd` aggregator with the same
   all-None-stays-None semantic. The 9th anchor here documents
   the recipe so that future ticket inherits it without
   rediscovering.

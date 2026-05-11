@@ -1624,10 +1624,13 @@ class TestModelResult:
 
     def test_reasoning_tokens_kwarg(self) -> None:
         """``reasoning_tokens=`` is keyword-settable to a non-negative
-        int. Future Anthropic-backend wiring (US-002) will populate
-        this from ``response.usage.cache_creation_input_tokens`` /
-        the thinking-block accounting; this test pins the field
-        carrier shape regardless of how the value is sourced."""
+        int. Per DEC-001 of #170 the **Anthropic backend itself
+        unconditionally hardcodes this field to ``None``** (the SDK
+        has no separately-billed thinking-token surface today —
+        thinking tokens are folded into ``output_tokens``); this
+        test pins only the dataclass field carrier shape so callers
+        and the OpenAI backend (which DOES populate it) can rely on
+        the field being settable to an int."""
         from clauditor._providers._anthropic import ModelResult
 
         result = ModelResult(response_text="ok", reasoning_tokens=42)

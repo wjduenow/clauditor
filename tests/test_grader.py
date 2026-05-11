@@ -2797,6 +2797,22 @@ class TestExtractionReportReasoningTokens:
         restored = ExtractionReport.from_json(original.to_json())
         assert restored.reasoning_tokens == 42
 
+    def test_extraction_report_reasoning_tokens_round_trips_zero(self):
+        """#170 DEC-002: ``reasoning_tokens=0`` is a real value (the
+        model didn't reason on this call) and MUST round-trip
+        through ``to_json``/``from_json`` as ``0``, NOT collapse to
+        ``None`` via a truthiness coercion. The on-disk JSON value
+        is the integer ``0``, not the JSON ``null`` literal."""
+        original = self._report(reasoning_tokens=0)
+        raw = original.to_json()
+        data = json.loads(raw)
+        # Writer emits the literal integer 0, distinct from null.
+        assert data["reasoning_tokens"] == 0
+        assert data["reasoning_tokens"] is not None
+        restored = ExtractionReport.from_json(raw)
+        assert restored.reasoning_tokens == 0
+        assert restored.reasoning_tokens is not None
+
     def test_extraction_report_reasoning_tokens_round_trips_none(self):
         original = self._report()
         restored = ExtractionReport.from_json(original.to_json())
@@ -3035,4 +3051,45 @@ class TestExtractAndReportReasoningTokensSum:
                 "output", spec, skill_name="reasoning-extract"
             )
         assert report.reasoning_tokens == 30
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_reasoning_tokens_zero_and_none(self):
+        """#170 DEC-002 + DEC-003: aggregation must treat ``0`` as a
+        real measurement, NOT as a falsy "skip me." With one
+        attempt at ``0`` and one at ``None``, the aggregate is
+        ``0`` (sum of non-None values is ``0``) — distinct from
+        the all-None → ``None`` case."""
+        from clauditor._providers import ModelResult
+
+        spec = self._spec()
+        bad = ModelResult(
+            response_text="not-json",
+            text_blocks=["not-json"],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=0,
+        )
+        good_payload = json.dumps(
+            {"Items": {"default": [{"title": "Hello"}]}}
+        )
+        good = ModelResult(
+            response_text=good_payload,
+            text_blocks=[good_payload],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[bad, good]),
+        ):
+            report = await extract_and_report(
+                "output", spec, skill_name="reasoning-extract"
+            )
+        assert report.reasoning_tokens == 0
+        assert report.reasoning_tokens is not None
 

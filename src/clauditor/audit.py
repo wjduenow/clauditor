@@ -35,15 +35,20 @@ from clauditor.context import IterationContext
 from clauditor.paths import resolve_clauditor_dir
 
 # US-002 / #147 / DEC-008: per-sidecar maximum accepted schema version.
-# Grading and extraction sidecars accept v1..v3:
+# Grading and extraction sidecars accept v1..v5:
 #   - v1: original shape;
 #   - v2 (#86, US-006 of ``plans/super/86-claude-cli-transport.md``):
 #     adds ``transport_source``; loader defaults missing field to
 #     ``"api"`` at read time;
 #   - v3 (#147, US-001): adds ``provider_source``; loader defaults
-#     missing field to ``"anthropic"`` at read time.
-# Assertions sidecars stay at v1 (no transport_source/provider_source
-# fields for L1 assertions).
+#     missing field to ``"anthropic"`` at read time;
+#   - v4 (#152): adds ``harness``; loader defaults missing field to
+#     ``"claude-code"`` at read time;
+#   - v5 (#170, US-004 / US-006): adds nullable ``reasoning_tokens``;
+#     loader defaults missing field to ``None`` at read time.
+# Assertions sidecars accept v1..v2 (#152 added the ``harness`` field
+# for L1; no transport_source/provider_source/reasoning_tokens — L1
+# makes no LLM call).
 #
 # This is the canonical map; the pure helper :func:`_is_accepted_version`
 # answers ``1 <= version <= MAX_SCHEMA_VERSION[base]`` for any

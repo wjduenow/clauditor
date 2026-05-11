@@ -130,8 +130,8 @@ These shape DEC-001 through DEC-005.
 - **Q1 → A.** Anthropic always returns `None`. No SDK round-trip; no char-count heuristic. Document the rationale.
 - **Q2 → A.** OpenAI: `0` is a real value (model didn't reason); `None` only when SDK shape is malformed/absent.
 - **Q3 → A.** Sum across all grader calls in the iteration. `None` if every component is `None`; otherwise sum of non-None values.
-- **Q4 → C.** Persist on `GradingReport`/`ExtractionReport` (schema bump v4→v5 on both) AND wire to `BlindReport`. Symmetric with input/output token persistence.
-- **Q5 → A** (folded into Q4=C). BlindReport gets the field too. Note: BlindReport has `to_json()` but no CLI command writes it to disk today (`grep` confirms); BlindReport.to_json() is invoked by tests / programmatic callers only. No `from_json()` exists. Adding `reasoning_tokens` to its `to_json()` payload is safe at the existing schema_version=1 (always-v1-by-design pattern, mirroring IterationContext) — the absence of a `from_json()` reader means there is no legacy-read compat to worry about.
+- **Q4 → A.** Persist on `GradingReport`/`ExtractionReport` (schema bump v4→v5 on both) AND wire to `BlindReport`. Symmetric with input/output token persistence.
+- **Q5 → A** (folded into Q4=A). BlindReport gets the field too. Note: BlindReport has `to_json()` but no CLI command writes it to disk today (`grep` confirms); BlindReport.to_json() is invoked by tests / programmatic callers only. No `from_json()` exists. Adding `reasoning_tokens` to its `to_json()` payload is safe at the existing schema_version=1 (always-v1-by-design pattern, mirroring IterationContext) — the absence of a `from_json()` reader means there is no legacy-read compat to worry about.
 
 ---
 

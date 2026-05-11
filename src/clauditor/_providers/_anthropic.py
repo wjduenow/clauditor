@@ -234,12 +234,18 @@ class ModelResult:
             "the provider did not surface a reasoning-token count"
             (no thinking block, transport that strips it, a backend
             without a reasoning concept) — distinct from ``0`` which
-            would assert "the call ran but used zero reasoning
-            tokens". Per-backend population lands in subsequent #170
-            stories (US-002 wires the Anthropic backend; US-003 wires
-            the OpenAI backend); this US-001 carrier-only addition
-            keeps the field None for every existing caller. DEC-001 /
-            DEC-002 of ``plans/super/170-reasoning-tokens-capture.md``.
+            asserts "the call ran but used zero reasoning tokens".
+            Per-backend population (#170): the **Anthropic backend
+            unconditionally returns ``None``** because the SDK has no
+            separately-billed thinking-token field — extended-thinking
+            counts are folded into ``output_tokens`` already. The
+            **OpenAI backend** populates this from
+            ``usage.output_tokens_details.reasoning_tokens`` via the
+            defensive helper ``_extract_reasoning_tokens`` (returns
+            ``0`` for non-reasoning models, the real count for o-series
+            / GPT-5 reasoning models, and ``None`` only on
+            malformed/absent SDK shape). DEC-001 / DEC-002 of
+            ``plans/super/170-reasoning-tokens-capture.md``.
     """
 
     response_text: str
