@@ -480,6 +480,122 @@ Traces to DEC-010 of `plans/super/153-cross-axis-comparability.md`.
 Companion rule: `.claude/rules/cross-axis-comparability-refusal.md`
 (the per-axis refusal+filter+opt-in shape this helper drives).
 
+### Ninth anchor (defensive SDK extraction + nullable-aware aggregation)
+
+The #170 `reasoning_tokens` work introduced two pure helpers that
+together codify the **defensive-extract → nullable-aware-sum**
+pipeline shape: a per-provider extractor that maps a raw SDK
+shape to `int | None` with a load-bearing `bool`-guard, and a
+chain-level aggregator that distinguishes "no source surfaced a
+count" (all-None → None) from "sources surfaced zero" (mixed or
+all-int → real sum). The two helpers live in different modules
+(provider-side vs report-side) but solve a coupled concern; both
+are unit-testable in isolation without `AsyncMock`, subprocess
+patches, or any SDK import:
+
+- `src/clauditor/_providers/_openai.py::_extract_reasoning_tokens(usage:
+  Any) -> int | None` — defensive read of
+  `usage.output_tokens_details.reasoning_tokens`. Returns the
+  integer (including `0` — preserved as a real "model didn't
+  reason" signal per DEC-002 of `#170`); returns `None` for
+  `usage is None`, missing nested attribute, missing field,
+  non-int value, `bool` value (the guard), or any
+  attribute-access exception. The bool-vs-int guard precedes
+  the `isinstance(value, int)` check per
+  `.claude/rules/constant-with-type-info.md` because Python's
+  `isinstance(True, int)` returns `True` — without the explicit
+  `isinstance(value, bool) → return None` arm, a future SDK
+  surfacing `reasoning_tokens=True` would silently coerce to
+  `1`. Anthropic does NOT get an analogous helper: per DEC-001
+  the SDK has no separately-billed reasoning-token field, so
+  the construction site at
+  `src/clauditor/_providers/_anthropic.py::_extract_result`
+  hardcodes `reasoning_tokens=None` with an inline comment
+  citing the rationale. The asymmetry is structural ("when the
+  SDK doesn't expose it, return None — don't approximate"),
+  not an oversight.
+- `src/clauditor/quality_grader.py::_sum_optional_reasoning_tokens(values:
+  list[int | None]) -> int | None` — chain-level aggregator
+  that filters out `None`s and returns `sum(present) if present
+  else None`. The semantic teaching is novel: a single `None`
+  component does NOT poison a sum that has at least one real
+  value (`[None, 42]` → `42`, NOT `0` and NOT `None`), and an
+  all-`None` chain stays `None` rather than collapsing to `0`.
+  This preserves the provider-attribution distinction across
+  the multi-call grader chain — variance reps, parse-retry
+  attempts, blind-compare's two parallel calls, mixed
+  Anthropic+OpenAI grader pairs all aggregate cleanly. The
+  `or None` shorthand on an empty `present` list collapses the
+  empty-sum-equals-zero foot-gun. Per DEC-003 of #170.
+
+Both tested directly via dedicated test classes
+(`TestExtractReasoningTokens` in `tests/test_providers_openai.py`,
+`TestSumOptionalReasoningTokens` in
+`tests/test_quality_grader.py`) that pass plain `MagicMock` /
+list literals and assert on the return value — no `AsyncMock`,
+no `patch("subprocess.Popen")`, no Responses-API stubs. Every
+edge case (missing attribute, `0`-vs-`None`, bool guard, mixed
+all-None / mixed-non-None / all-int chains) is one inline
+assertion away.
+
+The orchestrator-side wiring is the canonical thin shape:
+`grader.py::extract_and_grade` and `quality_grader.py::grade_quality`
+each collect per-attempt `ModelResult.reasoning_tokens` into a
+list (`reasoning_attempts.append(api_result.reasoning_tokens)`),
+then hand the list to `_sum_optional_reasoning_tokens(...)` for
+the final report field. None of the verdict logic, coercion
+discipline, or aggregation semantics live inside the
+orchestrator; both helpers stay at the boundary.
+
+Why the split mattered specifically here:
+
+- **One bool-guard, one place per provider**: had the bool guard
+  been inlined at every `ModelResult` construction site (one per
+  provider × one per code path × one per retry branch), it
+  would have drifted within weeks. Centralizing it inside
+  `_extract_reasoning_tokens` means a future SDK shape change
+  edits one helper, and every call path inherits the fix.
+- **The `0`-vs-`None` distinction survives all aggregation
+  layers**: the per-call extractor preserves `0`, and the
+  chain-level aggregator preserves the all-None→None semantic.
+  Together they thread an honest signal from the SDK boundary
+  through to `IterationContext.reasoning_tokens` without any
+  layer collapsing the distinction. A future audit/trend
+  consumer can compare "no reasoning-capable call ran" against
+  "reasoning-capable calls ran but model used zero tokens"
+  cleanly.
+- **Symmetric reader-side bool-guard in
+  `from_json`**: the same defensive pattern applies on the
+  on-disk read side. Both `GradingReport.from_json` and
+  `ExtractionReport.from_json` carry a parallel
+  `if raw_reasoning is None or isinstance(raw_reasoning, bool):
+  reasoning_tokens = None` branch per the
+  `.claude/rules/json-schema-version.md` "Schema version bumps
+  for #170" subsection. The on-disk JSON boundary is a
+  serialize-then-parse roundtrip; a malformed sidecar with
+  `"reasoning_tokens": true` would otherwise coerce to `1` on
+  the way back in. Symmetric guards on both sides of the I/O
+  boundary keep the discipline structural.
+- **Future nullable-token-style fields plug in trivially**:
+  `#169` (`cost_usd: float | None`) will use the same shape —
+  per-provider defensive extractor (with a parallel `bool`/`int`
+  guard, since Python's `bool` is also a subclass of `float`),
+  chain-level `_sum_optional_cost_usd` aggregator with the same
+  all-None-stays-None semantic. The 9th anchor here documents
+  the recipe so that future ticket inherits it without
+  rediscovering.
+
+Traces to DEC-001, DEC-002, DEC-003, DEC-006 of
+`plans/super/170-reasoning-tokens-capture.md`. Companion rules:
+`.claude/rules/centralized-sdk-call.md` (the asymmetric per-
+provider population that `_extract_reasoning_tokens` lives
+inside),
+`.claude/rules/json-schema-version.md` (the schema-bump and
+loader-side-bool-guard contract that mirrors the writer-side
+discipline this anchor codifies),
+`.claude/rules/constant-with-type-info.md` (the bool-vs-int
+discipline this helper enforces at the SDK boundary).
+
 ## When this rule applies
 
 Any new code that combines spec/config resolution with a

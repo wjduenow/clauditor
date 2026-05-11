@@ -367,6 +367,120 @@ Writers and readers (post-#152):
   and `"auto"`) / `read_records` (defaults missing `harness` to
   `"claude-code"` for v1/v2 reads).
 
+### Schema version bumps for #170 (`reasoning_tokens` field)
+
+`#170` added `reasoning_tokens: int | None` — the per-call
+separately-billed reasoning / thinking-token count surfaced by
+the grader's `ModelResult` chain — to the persisted token-totals
+surface. The field rides alongside the existing `input_tokens` /
+`output_tokens` totals on `GradingReport` / `ExtractionReport`,
+sums across multi-call grader runs (variance, parse-retry,
+blind-compare's two parallel calls), and threads from
+`primary_report.reasoning_tokens` into the
+`IterationContext.reasoning_tokens` placeholder that `#154`
+pre-declared as nullable in v1.
+
+Three schema bumps shipped together in #170 — and **two
+deliberate non-bumps** that demonstrate the always-v1 pattern
+paying off:
+
+- **`grading.json` v4 → v5** — adds nullable top-level
+  `reasoning_tokens` field (placed after `output_tokens` in
+  canonical key order). Per DEC-004 of
+  `plans/super/170-reasoning-tokens-capture.md`.
+- **`extraction.json` v4 → v5** — same shape (DEC-004).
+- **audit `MAX_SCHEMA_VERSION`** bumped:
+  `{"assertions.json": 2, "extraction.json": 5, "grading.json": 5,
+  "context.json": 1}`.
+- **`BlindReport` stays at `schema_version: 1`** per DEC-005.
+  `BlindReport` has `to_json()` but no `from_json()` reader (no
+  CLI command writes it as a sidecar today), so the additive
+  nullable `reasoning_tokens` field has no legacy-read compat
+  surface to maintain. This is the **always-v1-by-design**
+  pattern (same as `context.json` itself) applied to a second
+  artifact: when the only persistence path is `to_json()` and no
+  reader exists, a nullable additive field is forward-compat-safe
+  at the existing version.
+- **`IterationContext` stays at `schema_version: 1`** by design.
+  This is **the canonical example of the always-v1 contract
+  paying off** that the `#154` subsection above predicted: the
+  `reasoning_tokens: int \| None` placeholder pre-declared in v1
+  is now populated by production writers, with zero schema bump
+  and zero loader-side default-on-read churn. The on-disk shape
+  is byte-identical between a pre-#170 `context.json` (with
+  `"reasoning_tokens": null`) and a post-#170 `context.json`
+  (with `"reasoning_tokens": 42`). Future tickets that wire up
+  `cost_usd` (#169) will inherit the same property.
+
+`audit.py::_records_from_*` helpers do NOT need to read the new
+field — `reasoning_tokens` is a per-iteration concern (single
+value per `IterationContext`), not a per-record concern. The
+existing per-record loaders consume the v5 sidecars unchanged
+because the field is additive at the top level only.
+
+**Loader-side default-on-read.** `GradingReport.from_json` and
+`ExtractionReport.from_json` default missing `reasoning_tokens`
+to `None` for v1/v2/v3/v4 reads (mirrors the
+`provider_source`-defaults-to-`"anthropic"` and
+`harness`-defaults-to-`"claude-code"` patterns from #147 / #152).
+Per DEC-007: the default `None` correctly represents "we don't
+know whether reasoning happened" for pre-#170 history, which is
+semantically distinct from `0` ("provider surfaced a count of
+zero — model chose not to reason").
+
+**`from_json` reader carries an explicit `bool` guard** per
+`.claude/rules/constant-with-type-info.md` and symmetric with the
+writer-side `_extract_reasoning_tokens` discipline (DEC-006). A
+malformed sidecar carrying `"reasoning_tokens": true` would
+otherwise silently coerce to `1` because Python's
+`isinstance(True, int)` is `True`. The reader pattern is:
+
+```python
+raw_reasoning = parsed.get("reasoning_tokens")
+reasoning_tokens: int | None
+if raw_reasoning is None or isinstance(raw_reasoning, bool):
+    reasoning_tokens = None
+elif isinstance(raw_reasoning, int):
+    reasoning_tokens = raw_reasoning
+else:
+    reasoning_tokens = None
+```
+
+This was added during #170's Quality Gate after a code-review
+pass surfaced the asymmetry between writer-side (which has the
+guard via `_extract_reasoning_tokens`) and reader-side (which
+originally accepted any truthy int-like value). The guard now
+fires symmetrically on both sides of the on-disk boundary.
+
+**Writers and readers (post-#170):**
+
+- `src/clauditor/quality_grader.py::GradingReport.to_json` /
+  `GradingReport.from_json` — emits `schema_version: 5`; reader
+  defaults missing `reasoning_tokens` to `None` and rejects
+  `bool` values defensively.
+- `src/clauditor/grader.py::ExtractionReport.to_json` /
+  `ExtractionReport.from_json` — same shape.
+- `src/clauditor/quality_grader.py::BlindReport.to_json` —
+  schema_version stays `1`; emits `reasoning_tokens` field
+  additively; no `from_json` reader to update.
+- `src/clauditor/quality_grader.py::_sum_optional_reasoning_tokens`
+  — pure helper computing the all-None→None / mixed→sum-of-non-
+  None semantic across the multi-call grader chain.
+- `src/clauditor/_providers/_openai.py::_extract_reasoning_tokens`
+  — pure helper extracting the field from the OpenAI usage
+  shape with the bool guard.
+- `src/clauditor/_providers/_anthropic.py::_extract_result` —
+  hardcodes `reasoning_tokens=None` per DEC-001 (no SDK field
+  to read).
+- `src/clauditor/cli/grade.py::_write_context_sidecar` — reads
+  `primary_report.reasoning_tokens` (was hardcoded `None`
+  pre-#170) and threads into `IterationContext.reasoning_tokens`.
+  `cli/validate.py` keeps the `None` hardcode — `validate` has
+  no LLM grader, so the value is structurally `None` (DEC-008).
+- `src/clauditor/audit.py::MAX_SCHEMA_VERSION` — single-number
+  edit per DEC-008 of #147 lifted both `extraction.json` and
+  `grading.json` from `4` to `5`.
+
 ## When this rule applies
 
 Any new persisted JSON file whose shape may evolve. Internal-only debug
