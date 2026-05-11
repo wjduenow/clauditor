@@ -459,7 +459,9 @@ class TestFromFile:
         assert spec.trigger_tests is None
         assert spec.variance is None
 
-    def test_from_file_empty_dict_defaults_skill_name_strips_eval_suffix(self, tmp_path):
+    def test_from_file_empty_dict_defaults_skill_name_strips_eval_suffix(
+        self, tmp_path
+    ):
         """``<name>.eval.json`` default strips the ``.eval`` suffix (#176)."""
         path = _write_json(tmp_path, {}, name="my-skill.eval.json")
         spec = EvalSpec.from_file(path)
