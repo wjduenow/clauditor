@@ -2847,6 +2847,51 @@ class TestExtractionReportReasoningTokens:
                 f"v{version} default reasoning_tokens should be None"
             )
 
+    def test_extraction_report_from_json_rejects_bool_reasoning_tokens(self):
+        """Quality Gate Pass 1 fix (#170 US-007): a malformed sidecar
+        with ``"reasoning_tokens": true`` MUST default to ``None``,
+        NOT silently coerce to ``1``. Symmetric with the writer-side
+        ``_extract_reasoning_tokens`` bool guard per DEC-006 and
+        ``.claude/rules/constant-with-type-info.md`` (Python's
+        ``isinstance(True, int)`` is ``True``)."""
+        for bad_value in (True, False):
+            payload = json.dumps({
+                "schema_version": 5,
+                "skill_name": "hostile",
+                "model": "haiku",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": bad_value,
+                "parse_errors": [],
+                "fields": {},
+            })
+            restored = ExtractionReport.from_json(payload)
+            assert restored.reasoning_tokens is None, (
+                f"bool {bad_value} must default to None, not coerce to int"
+            )
+
+    def test_extraction_report_from_json_rejects_non_int_reasoning_tokens(
+        self,
+    ):
+        """Quality Gate Pass 1 fix: non-int ``reasoning_tokens``
+        (string, float, list, dict) MUST default to ``None`` rather
+        than raise or coerce."""
+        for bad_value in ("99", 3.14, [42], {"x": 1}):
+            payload = json.dumps({
+                "schema_version": 5,
+                "skill_name": "hostile",
+                "model": "haiku",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": bad_value,
+                "parse_errors": [],
+                "fields": {},
+            })
+            restored = ExtractionReport.from_json(payload)
+            assert restored.reasoning_tokens is None, (
+                f"non-int {bad_value!r} must default to None"
+            )
+
 
 class TestExtractAndReportReasoningTokensSum:
     """#170 US-004: ``extract_and_report`` accumulates per-attempt

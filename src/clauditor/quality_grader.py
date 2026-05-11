@@ -242,13 +242,20 @@ class GradingReport:
         # missing key for legacy sidecars) → ``None``; explicit int
         # → preserve as int. Per US-004 of #170 / DEC-003: ``None`` is
         # semantically distinct from ``0`` ("provider didn't surface
-        # a count" vs "provider surfaced a count of zero").
+        # a count" vs "provider surfaced a count of zero"). Bool
+        # values are rejected per ``.claude/rules/constant-with-type-info.md``
+        # (Python's ``isinstance(True, int)`` is ``True``); a malformed
+        # sidecar with ``"reasoning_tokens": true`` would otherwise
+        # silently coerce to ``1``. Symmetric with the writer-side
+        # ``_extract_reasoning_tokens`` discipline (DEC-006).
         raw_reasoning = parsed.get("reasoning_tokens")
         reasoning_tokens: int | None
-        if raw_reasoning is None:
+        if raw_reasoning is None or isinstance(raw_reasoning, bool):
             reasoning_tokens = None
+        elif isinstance(raw_reasoning, int):
+            reasoning_tokens = raw_reasoning
         else:
-            reasoning_tokens = int(raw_reasoning)
+            reasoning_tokens = None
         return cls(
             skill_name=parsed.get("skill_name", ""),
             results=results,
