@@ -12,6 +12,7 @@ importlib.reload(_paths_mod)
 
 from clauditor.paths import (  # noqa: E402
     SKILL_NAME_RE,
+    _filesystem_eval_skill_name,
     derive_project_dir,
     derive_skill_name,
     resolve_agents_md,
@@ -128,6 +129,48 @@ class TestSkillNameRe:
     def test_rejects_known_bad_identifier(self):
         assert re.fullmatch(SKILL_NAME_RE, "bad;name") is None
         assert re.fullmatch(SKILL_NAME_RE, "") is None
+
+
+class TestFilesystemEvalSkillName:
+    """Unit tests for the pure ``_filesystem_eval_skill_name`` helper (#176)."""
+
+    def test_modern_layout_skill_eval_json_uses_parent_dir(self):
+        assert (
+            _filesystem_eval_skill_name(Path("/repo/find-restaurants/SKILL.eval.json"))
+            == "find-restaurants"
+        )
+
+    def test_modern_layout_eval_json_uses_parent_dir(self):
+        assert (
+            _filesystem_eval_skill_name(Path("/repo/find-restaurants/eval.json"))
+            == "find-restaurants"
+        )
+
+    def test_legacy_named_eval_json_strips_eval_suffix(self):
+        assert (
+            _filesystem_eval_skill_name(Path("/repo/my-skill.eval.json")) == "my-skill"
+        )
+
+    def test_plain_json_falls_back_to_stem(self):
+        assert _filesystem_eval_skill_name(Path("/repo/my-skill.json")) == "my-skill"
+
+    def test_relative_eval_json_with_no_parent_falls_back(self):
+        """``Path("eval.json").parent.name`` is ``""`` — must not return empty."""
+        result = _filesystem_eval_skill_name(Path("eval.json"))
+        assert result != ""
+        assert result == "eval"
+
+    def test_relative_skill_eval_json_with_no_parent_falls_back(self):
+        """``Path("SKILL.eval.json").parent.name`` is ``""`` — strip suffix instead."""
+        result = _filesystem_eval_skill_name(Path("SKILL.eval.json"))
+        assert result != ""
+        assert result == "SKILL"
+
+    def test_root_level_eval_json_falls_back(self):
+        """``Path("/eval.json").parent.name`` is ``""`` — must not return empty."""
+        result = _filesystem_eval_skill_name(Path("/eval.json"))
+        assert result != ""
+        assert result == "eval"
 
 
 class TestDeriveSkillName:

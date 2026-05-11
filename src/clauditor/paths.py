@@ -88,6 +88,42 @@ def _filesystem_name(skill_path: Path) -> str:
     return skill_path.stem
 
 
+def _filesystem_eval_skill_name(eval_path: Path) -> str:
+    """Return the layout-aware filesystem-derived skill name for an eval file.
+
+    Sibling of :func:`_filesystem_name`, applied to the eval-spec file.
+    Authority order (matches the JSON eval-file conventions clauditor
+    accepts on disk):
+
+    - Modern layouts (``<dir>/SKILL.eval.json`` or ``<dir>/eval.json``)
+      → ``eval_path.parent.name``.
+    - Legacy ``<name>.eval.json`` (``<name>`` != ``"SKILL"``) → strip
+      the ``.eval`` suffix and return ``<name>``.
+    - Otherwise (e.g. ``<name>.json``) → ``eval_path.stem``.
+
+    The fix codifies the convention surfaced in issue #176: the previous
+    naive ``eval_path.stem`` default produced ``"SKILL.eval"`` for the
+    canonical agentskills.io layout, which then propagated into grading
+    prompts and slash-command resolution.
+    """
+    if eval_path.name in ("SKILL.eval.json", "eval.json"):
+        parent_name = eval_path.parent.name
+        if parent_name:
+            return parent_name
+        # ``Path("eval.json").parent.name`` is ``""`` (parent is ``.``);
+        # same for root-level ``/eval.json``. An empty string would
+        # propagate into ``EvalSpec.from_file`` as the skill_name and
+        # break downstream prompt text / slash-command resolution.
+        # Fall through to the legacy/stem fallback below.
+    # ``<name>.eval.json`` → strip the ``.eval`` suffix.
+    # ``Path("foo.eval.json").suffixes == [".eval", ".json"]``.
+    suffixes = eval_path.suffixes
+    if len(suffixes) >= 2 and suffixes[-2:] == [".eval", ".json"]:
+        # Strip both suffixes; e.g. ``foo.eval.json`` → ``foo``.
+        return eval_path.name[: -len(".eval.json")]
+    return eval_path.stem
+
+
 def derive_skill_name(skill_path: Path, skill_md_text: str) -> str:
     """Return the resolved ``skill_name`` — pure, no I/O.
 
