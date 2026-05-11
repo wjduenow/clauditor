@@ -1540,6 +1540,31 @@ class TestModelResult:
         result = ModelResult(response_text="ok", provider="openai")
         assert result.provider == "openai"
 
+    def test_reasoning_tokens_default_none(self) -> None:
+        """A ``ModelResult`` constructed without ``reasoning_tokens``
+        defaults to ``None`` so every pre-#170 caller stays unchanged.
+
+        The field is nullable from day one (DEC-001 / DEC-002 of
+        ``plans/super/170-reasoning-tokens-capture.md``): null means
+        "the provider did not surface a reasoning-token count" (no
+        thinking block, transport that strips it, etc.) rather than
+        the misleading "0 reasoning tokens were used"."""
+        from clauditor._providers._anthropic import ModelResult
+
+        result = ModelResult(response_text="ok")
+        assert result.reasoning_tokens is None
+
+    def test_reasoning_tokens_kwarg(self) -> None:
+        """``reasoning_tokens=`` is keyword-settable to a non-negative
+        int. Future Anthropic-backend wiring (US-002) will populate
+        this from ``response.usage.cache_creation_input_tokens`` /
+        the thinking-block accounting; this test pins the field
+        carrier shape regardless of how the value is sourced."""
+        from clauditor._providers._anthropic import ModelResult
+
+        result = ModelResult(response_text="ok", reasoning_tokens=42)
+        assert result.reasoning_tokens == 42
+
 
 class TestCallModel:
     """Regression tests for the #144 US-003 ``call_model`` dispatcher.

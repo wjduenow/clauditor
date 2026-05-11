@@ -229,6 +229,17 @@ class ModelResult:
             pre-#144 caller; the future OpenAI backend (#145) sets
             ``"openai"``. DEC-006 of
             ``plans/super/144-providers-call-model.md``.
+        reasoning_tokens: Per-call reasoning / thinking token count
+            reported by the provider, when available. ``None`` means
+            "the provider did not surface a reasoning-token count"
+            (no thinking block, transport that strips it, a backend
+            without a reasoning concept) — distinct from ``0`` which
+            would assert "the call ran but used zero reasoning
+            tokens". Per-backend population lands in subsequent #170
+            stories (US-002 wires the Anthropic backend; US-003 wires
+            the OpenAI backend); this US-001 carrier-only addition
+            keeps the field None for every existing caller. DEC-001 /
+            DEC-002 of ``plans/super/170-reasoning-tokens-capture.md``.
     """
 
     response_text: str
@@ -239,6 +250,7 @@ class ModelResult:
     source: Literal["api", "cli"] = "api"
     duration_seconds: float = 0.0
     provider: Literal["anthropic", "openai"] = "anthropic"
+    reasoning_tokens: int | None = None
 
 
 # Back-compat alias (DEC-006 of #144): the legacy name stays callable
