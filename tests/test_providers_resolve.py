@@ -76,13 +76,14 @@ class TestInferProviderFromModel:
         with pytest.raises(ValueError, match=r"unknown model prefix"):
             infer_provider_from_model("oai-2")
 
-    def test_infer_raises_for_none_with_actionable_message(self) -> None:
-        """None case: caller has no model AND provider auto-resolves.
-        Message names both layers ("grading_provider", "grading_model")."""
-        with pytest.raises(
-            ValueError, match=r"provide grading_provider or grading_model"
-        ):
-            infer_provider_from_model(None)
+    def test_infer_none_falls_back_to_anthropic(self) -> None:
+        """Post-#182 (DEC-001b default-flip): ``None`` model falls
+        back to ``"anthropic"`` — the subscription-first historical
+        default. Pre-#146 specs that omit both ``grading_provider``
+        and ``grading_model`` resolve cleanly without the
+        "provide grading_provider or grading_model" hostile error.
+        """
+        assert infer_provider_from_model(None) == "anthropic"
 
     def test_infer_raises_for_empty_string(self) -> None:
         with pytest.raises(ValueError, match=r"non-empty string"):
@@ -195,14 +196,17 @@ class TestResolveGradingProvider:
         result = resolve_grading_provider("openai", "totally-invalid", None, None)
         assert result == "openai"
 
-    def test_default_auto_with_none_model_raises(self) -> None:
-        """All layers None AND model None → resolver delegates to
-        inference → infer raises 'provide grading_provider or
-        grading_model' (CLI maps to exit 2)."""
-        with pytest.raises(
-            ValueError, match=r"provide grading_provider or grading_model"
-        ):
-            resolve_grading_provider(None, None, None, None)
+    def test_default_auto_with_none_model_falls_back_to_anthropic(
+        self,
+    ) -> None:
+        """Post-#182 (DEC-001b default-flip): all layers None AND
+        model None → resolver delegates to inference →
+        ``infer_provider_from_model(None)`` falls back to the
+        subscription-first historical default ``"anthropic"``.
+        Pre-#146 specs (no provider, no model) grade against anthropic
+        with byte-identical output to today.
+        """
+        assert resolve_grading_provider(None, None, None, None) == "anthropic"
 
     def test_explicit_anthropic_with_none_model_skips_inference(self) -> None:
         """Explicit 'anthropic' at any layer means the resolver does
@@ -281,3 +285,25 @@ class TestResolveGradingModel:
         default fires)."""
         spec = SimpleNamespace()
         assert resolve_grading_model(spec, "anthropic") == "claude-sonnet-4-6"
+
+    def test_every_concrete_provider_has_a_non_none_default(self) -> None:
+        """Issue #182 drift-guard: every concrete provider in
+        :data:`_VALID_GRADING_PROVIDER_VALUES` (minus ``"auto"``) must
+        have a non-``None`` entry in :func:`resolve_grading_model`'s
+        default-picker. A future provider added without a default
+        would silently return ``None`` and produce an opaque
+        downstream error.
+        """
+        from clauditor._providers import _VALID_GRADING_PROVIDER_VALUES
+
+        concrete_providers = _VALID_GRADING_PROVIDER_VALUES - {"auto"}
+        # Sanity check: the set covers at least anthropic + openai today.
+        assert {"anthropic", "openai"}.issubset(concrete_providers)
+
+        for provider in concrete_providers:
+            default = resolve_grading_model(None, provider)
+            assert isinstance(default, str) and default.strip(), (
+                f"resolve_grading_model({provider!r}) returned an "
+                f"invalid default {default!r}; every concrete provider "
+                "must have a non-empty default-picker entry."
+            )

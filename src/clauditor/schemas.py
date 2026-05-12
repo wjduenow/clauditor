@@ -259,25 +259,18 @@ class EvalSpec:
     # str}`` when loaded via ``from_file`` per DEC-001 (#25). Consumers must
     # normalize via ``criterion_text()``.
     grading_criteria: list = field(default_factory=list)
-    # DEC-004a of #146 (US-003 scope): nullable migration. Field type
-    # promoted from ``str`` to ``str | None`` so #145-vintage specs
-    # that emit ``"grading_model": null`` round-trip cleanly. The
-    # dataclass default is preserved (``"claude-sonnet-4-6"``) — the
-    # default-flip from a hardcoded string to ``None`` (so the
-    # provider-aware ``resolve_grading_model`` helper from US-001
-    # can pick a sensible per-provider default) is deferred to
-    # DEC-004b until a follow-up story normalizes the ~10 production
-    # call sites that read ``eval_spec.grading_model`` directly via
-    # patterns like ``args.model or spec.eval_spec.grading_model``.
-    # In the interim, the CLI seams (``cli/grade.py``,
-    # ``cli/extract.py``, ``cli/compare.py``) check
-    # ``infer_provider_from_model(effective_model) == provider`` and
-    # exit 2 with an actionable message when the resolved provider
-    # mismatches the resolved model — covering the regression window
-    # that was previously protected by ``_validate_provider_model``
-    # in ``quality_grader.py`` (removed in this PR). Bool guard at
-    # load time per ``.claude/rules/constant-with-type-info.md``.
-    grading_model: str | None = "claude-sonnet-4-6"
+    # DEC-004b of #146 (issue #182): nullable migration completed. The
+    # dataclass default is now ``None`` so the provider-aware
+    # ``resolve_grading_model`` helper picks the per-provider default
+    # (``"claude-sonnet-4-6"`` for anthropic, ``DEFAULT_MODEL_L3`` for
+    # openai). Pre-#146 specs that omit ``grading_model`` load as
+    # ``None`` and grade against the right default for whichever
+    # provider wins precedence — no more provider/model mismatch on
+    # ``--grading-provider openai`` against a spec with no model set.
+    # Explicit ``null`` in JSON loads as ``None`` (unchanged from
+    # DEC-004a). Bool guard at load time per
+    # ``.claude/rules/constant-with-type-info.md``.
+    grading_model: str | None = None
     output_file: str | None = None  # Single output file path
     output_files: list[str] = field(default_factory=list)  # Multiple file paths/globs
     trigger_tests: TriggerTests | None = None
@@ -329,25 +322,22 @@ class EvalSpec:
     # guarded at load time per
     # ``.claude/rules/constant-with-type-info.md``.
     sync_tasks: bool = False
-    # DEC-001 of #146 (split into a/b — see Refinement Log): per-spec
-    # grading provider selector. US-002 lands DEC-001a — accept the
-    # new ``"auto"`` literal value alongside the existing
-    # ``"anthropic"`` and ``"openai"``, while keeping the dataclass
-    # default at ``None``. Default flip from ``None`` → ``"auto"``
-    # is deferred to a follow-up story after US-005 (CLI seam) and
-    # US-006 (orchestrator normalization) eliminate the call sites
-    # that rely on the falsy-``None`` ``or "anthropic"`` short-circuit.
-    # ``"auto"`` will be the subscription-first resolution token (the
-    # ``_resolve_grading_provider`` helper from US-001 / US-004 infers
-    # Anthropic vs OpenAI from the resolved ``grading_model`` prefix).
-    # ``"anthropic"`` and ``"openai"`` pin a specific backend.
-    # Validated at load time against the literal set; non-string /
-    # bool / unknown-string values rejected per
-    # ``.claude/rules/constant-with-type-info.md``. The full
-    # four-layer precedence resolver (CLI ``--grading-provider`` >
+    # DEC-001b of #146 (issue #182): default-flip completed. The
+    # dataclass default is now ``"auto"`` so resolution flows through
+    # :func:`clauditor._providers.resolve_grading_provider` (which
+    # delegates to :func:`infer_provider_from_model` when the winning
+    # value is ``"auto"``). Pre-#146 specs that omit the field load
+    # as ``"auto"`` and pick a provider from the resolved model.
+    # Explicit ``null`` in JSON still loads as ``None`` so legacy
+    # #145-vintage round-trips stay readable; the CLI seam treats
+    # ``None`` the same as the default. ``"anthropic"`` and
+    # ``"openai"`` pin a specific backend. Validated at load time
+    # against the literal set; non-string / bool / unknown-string
+    # values rejected per ``.claude/rules/constant-with-type-info.md``.
+    # Four-layer precedence (CLI ``--grading-provider`` >
     # ``CLAUDITOR_GRADING_PROVIDER`` env > this field > default
-    # ``"auto"``) lives in US-004 of #146.
-    grading_provider: Literal["anthropic", "openai", "auto"] | None = None
+    # ``"auto"``) per ``.claude/rules/spec-cli-precedence.md``.
+    grading_provider: Literal["anthropic", "openai", "auto"] | None = "auto"
 
     @classmethod
     def from_file(cls, path: str | Path) -> EvalSpec:
@@ -824,16 +814,14 @@ class EvalSpec:
                 )
             sync_tasks = raw_sync_tasks
 
-        # DEC-001a of #146 (US-002 scope): per-spec grading provider
-        # selector. Adds ``"auto"`` to the accepted literal set
-        # alongside ``"anthropic"`` and ``"openai"``; missing or
-        # explicit ``null`` continues to round-trip as ``None`` per
-        # #145's behavior. The default-flip from ``None`` to
-        # ``"auto"`` is deferred until US-005 / US-006 normalize the
-        # downstream call sites that currently rely on the falsy-
-        # ``None`` ``or "anthropic"`` short-circuit. Bool guard first
-        # per ``.claude/rules/constant-with-type-info.md``.
-        grading_provider: Literal["anthropic", "openai", "auto"] | None = None
+        # DEC-001b of #146 (issue #182): per-spec grading provider
+        # selector. Default is ``"auto"`` (resolution flows through
+        # :func:`clauditor._providers.resolve_grading_provider`).
+        # Explicit ``null`` in JSON still loads as ``None`` so
+        # #145-vintage round-trips stay readable; the CLI seam treats
+        # ``None`` the same as the default. Bool guard first per
+        # ``.claude/rules/constant-with-type-info.md``.
+        grading_provider: Literal["anthropic", "openai", "auto"] | None = "auto"
         if "grading_provider" in data:
             raw_grading_provider = data["grading_provider"]
             if raw_grading_provider is None:
@@ -878,13 +866,13 @@ class EvalSpec:
                 min_mean_score=gt.get("min_mean_score", 0.5),
             )
 
-        # DEC-004a of #146 (US-003 scope): nullable migration for
-        # ``grading_model``. Default preserved (``"claude-sonnet-4-6"``);
-        # explicit ``null`` accepted and round-trips as ``None`` so
-        # #145-vintage specs that emit ``"grading_model": null`` keep
-        # loading cleanly. Bool guard first per
-        # ``.claude/rules/constant-with-type-info.md``.
-        grading_model: str | None = "claude-sonnet-4-6"
+        # DEC-004b of #146 (issue #182): nullable migration completed.
+        # Default is ``None`` — the provider-aware
+        # ``resolve_grading_model`` helper picks per-provider defaults
+        # downstream. Explicit ``null`` in JSON also loads as ``None``
+        # so #145-vintage specs round-trip cleanly. Bool guard first
+        # per ``.claude/rules/constant-with-type-info.md``.
+        grading_model: str | None = None
         if "grading_model" in data:
             raw_grading_model = data["grading_model"]
             if raw_grading_model is None:
@@ -989,14 +977,16 @@ class EvalSpec:
                 for s in self.sections
             ],
             "grading_criteria": self.grading_criteria,
-            # DEC-004a of #146 (US-003 scope): nullable migration. Field
-            # is now ``str | None``; default ``"claude-sonnet-4-6"``
-            # preserved. Emit unconditionally (including when ``None``,
-            # serialized as JSON ``null``) so explicit-null specs round-
-            # trip cleanly through the new from_dict accept-``None``
-            # branch and the existing default keeps emitting verbatim.
-            "grading_model": self.grading_model,
         }
+        # DEC-004b of #146 (issue #182): nullable migration completed.
+        # Default is ``None``; emit only when explicitly set so #146-
+        # vintage specs that omit ``grading_model`` round-trip with no
+        # synthetic key. Explicit-string specs round-trip verbatim.
+        # Explicit ``null`` in the source JSON also round-trips as
+        # ``None`` (no key emitted) — re-loading yields the default
+        # ``None`` again.
+        if self.grading_model is not None:
+            result["grading_model"] = self.grading_model
         if not self.allow_hang_heuristic:
             # Emit only on non-default to keep diffs minimal; omission
             # at load time means "default True" per from_dict.
@@ -1014,10 +1004,16 @@ class EvalSpec:
             # Tier 1.5 of GitHub #103: emit only on non-default.
             # Omission at load time means default ``False``.
             result["sync_tasks"] = True
-        # DEC-001a of #146: default still ``None`` (default-flip to
-        # ``"auto"`` deferred until US-005 / US-006 normalize call
-        # sites). Emit only on non-default, matching #145 behavior.
-        if self.grading_provider is not None:
+        # DEC-001b of #146 (issue #182): default-flip completed.
+        # Default is ``"auto"`` — emit only on non-default, matching
+        # the ``transport`` / ``harness`` pattern. ``None`` (from a
+        # #145-vintage spec with explicit ``null``) is also treated
+        # as default and omitted; re-loading yields the new default
+        # ``"auto"`` which is semantically equivalent at the CLI seam.
+        if (
+            self.grading_provider is not None
+            and self.grading_provider != "auto"
+        ):
             result["grading_provider"] = self.grading_provider
         if self.output_file is not None:
             result["output_file"] = self.output_file

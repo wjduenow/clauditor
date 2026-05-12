@@ -304,7 +304,8 @@ class TestEvalSpecNewFields:
             f.flush()
             spec = EvalSpec.from_file(f.name)
 
-        assert spec.grading_model == "claude-sonnet-4-6"
+        # DEC-004b of #146 (issue #182): default flipped to None.
+        assert spec.grading_model is None
         assert spec.trigger_tests is None
         assert spec.variance is None
 
@@ -362,7 +363,8 @@ class TestEvalSpecNewFields:
         d = spec.to_dict()
         assert "trigger_tests" not in d
         assert "variance" not in d
-        assert d["grading_model"] == "claude-sonnet-4-6"
+        # DEC-004b of #146 (issue #182): default flipped to None; key omitted.
+        assert "grading_model" not in d
 
 
 # --- New test classes for from_file, to_dict, and edge cases ---
@@ -455,7 +457,8 @@ class TestFromFile:
         assert spec.assertions == []
         assert spec.sections == []
         assert spec.grading_criteria == []
-        assert spec.grading_model == "claude-sonnet-4-6"
+        # DEC-004b of #146 (issue #182): default flipped to None.
+        assert spec.grading_model is None
         assert spec.trigger_tests is None
         assert spec.variance is None
 
@@ -1616,7 +1619,8 @@ class TestEvalSpecFromDict:
         assert spec.assertions == []
         assert spec.sections == []
         assert spec.grading_criteria == []
-        assert spec.grading_model == "claude-sonnet-4-6"
+        # DEC-004b of #146 (issue #182): default flipped to None.
+        assert spec.grading_model is None
         assert spec.test_args == ""
         assert spec.input_files == []
 
@@ -2285,37 +2289,34 @@ class TestEvalSpecHarness:
 
 
 class TestEvalSpecGradingModel:
-    """US-003 / DEC-004a of #146: ``EvalSpec.grading_model`` nullable
-    migration.
+    """DEC-004b of #146 (issue #182): ``EvalSpec.grading_model``
+    nullable migration completed.
 
-    Field type promoted from ``str`` to ``str | None`` so #145-vintage
-    specs that emit ``"grading_model": null`` round-trip cleanly. The
-    dataclass default is preserved (``"claude-sonnet-4-6"``); the
-    default-flip from a hardcoded string to ``None`` is deferred until
-    a follow-up story normalizes the production call sites that read
-    ``eval_spec.grading_model`` directly. ``_validate_provider_model``
-    in ``quality_grader.py`` continues to guard live runtime invariants.
-    Bool / non-string-non-null values rejected at load time per
+    Field type is ``str | None`` and the dataclass default is now
+    ``None`` so the provider-aware ``resolve_grading_model`` helper
+    picks the per-provider default (``"claude-sonnet-4-6"`` for
+    anthropic, ``DEFAULT_MODEL_L3`` for openai). #145-vintage specs
+    that emit ``"grading_model": null`` and #146-vintage specs that
+    omit the field both load as ``None``. Bool / non-string-non-null
+    values rejected at load time per
     ``.claude/rules/constant-with-type-info.md``.
     """
 
-    def test_grading_model_default_is_claude_sonnet(self, tmp_path):
-        """No ``grading_model`` key → default ``"claude-sonnet-4-6"``.
+    def test_grading_model_default_is_none(self, tmp_path):
+        """No ``grading_model`` key → default ``None`` (DEC-004b).
 
-        DEC-004a preserves the existing default so production call
-        sites that read the field directly keep working unchanged.
+        The provider-aware ``resolve_grading_model`` helper picks the
+        per-provider default downstream, so an unset spec grades
+        against the right model for whichever provider wins
+        precedence.
         """
         data = {"skill_name": "s"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
-        assert spec.grading_model == "claude-sonnet-4-6"
+        assert spec.grading_model is None
 
     def test_grading_model_explicit_null_loads_as_none(self, tmp_path):
-        """``{"grading_model": null}`` round-trips as ``None``.
-
-        New capability under DEC-004a: explicit ``null`` is no longer
-        coerced to the default, enabling the future provider-aware
-        ``_resolve_grading_model`` helper to pick a per-provider
-        default when the spec opts out of pinning a model.
+        """``{"grading_model": null}`` loads as ``None`` (same as
+        omitting the key post-DEC-004b).
         """
         data = {"skill_name": "s", "grading_model": None}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
@@ -2383,35 +2384,29 @@ class TestEvalSpecGradingModel:
         result = spec.to_dict()
         assert result["grading_model"] == "claude-opus-4-6"
 
-    def test_to_dict_emits_null_when_none(self, tmp_path):
-        """``to_dict()`` emits ``grading_model`` as JSON ``null`` when
-        the spec was loaded with explicit ``null``.
-
-        Choice: emit (not omit) when ``None`` so the explicit-null
-        intent round-trips faithfully — re-loading the dict yields
-        ``None`` again via the new ``from_dict`` accept-``None``
-        branch, rather than silently coercing back to the default
-        string.
+    def test_to_dict_omits_when_none(self, tmp_path):
+        """DEC-004b: default is ``None`` → ``to_dict()`` omits the key
+        so #146-vintage specs that omit ``grading_model`` round-trip
+        with no synthetic key.
         """
         data = {"skill_name": "s", "grading_model": None}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         result = spec.to_dict()
-        assert "grading_model" in result
-        assert result["grading_model"] is None
+        assert "grading_model" not in result
 
-    def test_to_dict_emits_default_when_unset(self, tmp_path):
-        """When the key is omitted at load time, ``to_dict()`` still
-        emits the default ``"claude-sonnet-4-6"`` so #145-vintage
-        round-trips stay byte-identical (no minimal-diff regression).
+    def test_to_dict_omits_when_unset(self, tmp_path):
+        """When the key is omitted at load time, ``to_dict()`` omits it
+        too (default ``None`` post-DEC-004b). Pre-#146 specs that
+        omitted the field round-trip clean.
         """
         data = {"skill_name": "s"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         result = spec.to_dict()
-        assert result["grading_model"] == "claude-sonnet-4-6"
+        assert "grading_model" not in result
 
     def test_to_dict_round_trip_preserves_none(self, tmp_path):
         """End-to-end: explicit-null → from_dict → to_dict → from_dict
-        yields ``None`` again (no silent coercion to default).
+        yields ``None`` again (default semantics).
         """
         data = {"skill_name": "s", "grading_model": None}
         spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
@@ -2507,25 +2502,25 @@ class TestGradingProviderValidation:
 
     # --- Accept cases ---
 
-    def test_grading_provider_default_is_none(self, tmp_path):
-        """No ``grading_provider`` key → ``.grading_provider is None``.
+    def test_grading_provider_default_is_auto(self, tmp_path):
+        """No ``grading_provider`` key → default ``"auto"`` (DEC-001b).
 
-        DEC-001a of #146 (US-002 scope): default stays ``None``;
-        the flip to ``"auto"`` is deferred to a follow-up after the
-        downstream ``or "anthropic"`` call sites are normalized in
-        US-005 / US-006.
+        Resolution flows through ``resolve_grading_provider`` which
+        delegates to ``infer_provider_from_model`` when the winning
+        value is ``"auto"``.
         """
         data = {"skill_name": "s"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
-        assert spec.grading_provider is None
+        assert spec.grading_provider == "auto"
 
     def test_grading_provider_explicit_null_loads_as_none(
         self, tmp_path
     ):
-        """``{"grading_provider": null}`` round-trips as ``None``.
+        """``{"grading_provider": null}`` loads as ``None``.
 
-        DEC-001a: legacy #145-vintage specs continue to load as
-        ``None`` until the default-flip ships (deferred).
+        Legacy #145-vintage specs that emit explicit ``null`` keep
+        loading without error; the CLI seam treats ``None`` the same
+        as the default ``"auto"``.
         """
         data = {"skill_name": "s", "grading_provider": None}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
@@ -2562,24 +2557,27 @@ class TestGradingProviderValidation:
         result = spec.to_dict()
         assert result["grading_provider"] == "openai"
 
-    def test_grading_provider_to_dict_omits_when_none(
+    def test_grading_provider_to_dict_omits_when_default(
         self, tmp_path
     ):
-        """Default ``None`` is omitted from ``to_dict`` per DEC-001a
-        of #146 (default-flip deferred). Round-trip stays minimal-
-        diff for #145-vintage specs that don't set the field.
+        """Default ``"auto"`` is omitted from ``to_dict`` per DEC-001b
+        — matches the ``transport`` / ``harness`` pattern. Pre-#146
+        specs that don't set the field round-trip with no synthetic
+        key.
         """
         data = {"skill_name": "s"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         result = spec.to_dict()
         assert "grading_provider" not in result
 
-    def test_grading_provider_accepts_auto_round_trip(self, tmp_path):
-        """When explicitly set to ``"auto"``, round-trip preserves it."""
+    def test_grading_provider_omits_auto_round_trip(self, tmp_path):
+        """Explicit ``"auto"`` is treated as default and omitted from
+        ``to_dict``. Re-loading yields ``"auto"`` (the new default).
+        """
         data = {"skill_name": "s", "grading_provider": "auto"}
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         result = spec.to_dict()
-        assert result["grading_provider"] == "auto"
+        assert "grading_provider" not in result
 
     def test_to_dict_round_trip_preserves_grading_provider(
         self, tmp_path
@@ -2602,28 +2600,29 @@ class TestGradingProviderValidation:
 
     def test_to_dict_round_trip_auto(self, tmp_path):
         """Round-trip stability for the new default ``"auto"`` —
-        from_dict → to_dict → from_dict yields ``"auto"``.
+        from_dict (with explicit ``"auto"`` or no key) yields ``"auto"``
+        after a to_dict → from_dict pass.
         """
         data = {"skill_name": "s", "grading_provider": "auto"}
         spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
         spec2 = EvalSpec.from_dict(spec1.to_dict(), spec_dir=tmp_path)
         assert spec2.grading_provider == "auto"
 
-    def test_to_dict_round_trip_legacy_null_stays_unset(
+    def test_to_dict_round_trip_legacy_null_coerces_to_auto(
         self, tmp_path
     ):
         """Legacy ``null`` round-trips: from_dict yields ``None``,
-        to_dict omits the field, re-load yields ``None`` (default).
-
-        DEC-001a defers the default-flip; the runtime semantics for
-        legacy ``null`` specs stay byte-identical to #145 behavior.
+        to_dict omits the field, re-load yields the new default
+        ``"auto"``. DEC-001b: ``None`` and ``"auto"`` are
+        semantically equivalent at the CLI seam, so the round-trip
+        is intentionally lossy on this asymmetry.
         """
         data = {"skill_name": "s", "grading_provider": None}
         spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
         round_tripped = spec1.to_dict()
         assert "grading_provider" not in round_tripped
         spec2 = EvalSpec.from_dict(round_tripped, spec_dir=tmp_path)
-        assert spec2.grading_provider is None
+        assert spec2.grading_provider == "auto"
 
 
 class TestAssertionKeySpec:

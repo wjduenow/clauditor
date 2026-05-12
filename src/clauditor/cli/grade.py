@@ -428,40 +428,23 @@ def cmd_grade(args: argparse.Namespace) -> int:
     else:
         harness_name = None
 
-    # #146 US-006 / DEC-004: pick the per-provider default model when
-    # the spec's ``grading_model`` is unset. ``args.model`` (if the
-    # operator passed ``--model``) always wins; otherwise the pure
-    # helper picks ``"claude-sonnet-4-6"`` for anthropic or
-    # ``"gpt-5.4"`` for openai based on the resolved provider.
+    # #146 US-006 / DEC-004 / issue #182: pick the per-provider default
+    # model when the spec's ``grading_model`` is unset (post-DEC-004b
+    # default-flip, an omitted ``grading_model`` loads as ``None``).
+    # ``args.model`` (if the operator passed ``--model``) always wins;
+    # otherwise the pure helper picks ``"claude-sonnet-4-6"`` for
+    # anthropic or ``"gpt-5.4"`` for openai based on the resolved
+    # provider. An explicit-but-mismatching spec value (e.g. spec
+    # pinned ``grading_model: "claude-sonnet-4-6"`` and operator
+    # passed ``--grading-provider openai``) surfaces as a clean SDK
+    # 400 with the right blame — no pre-flight guard needed now that
+    # the unset-spec paper cut is gone.
     if args.model:
         model = args.model
     else:
         from clauditor._providers import resolve_grading_model
 
         model = resolve_grading_model(spec.eval_spec, provider)
-
-    # Provider/model coherence check (CodeRabbit finding on PR #164).
-    # ``EvalSpec.grading_model`` still defaults to ``"claude-sonnet-4-6"``
-    # at the dataclass level (DEC-004a partial migration), so a user
-    # who pinned ``--grading-provider openai`` on a spec that omitted
-    # ``grading_model`` would otherwise silently send a Claude model
-    # to the OpenAI backend. Fail fast with a clear actionable message.
-    from clauditor._providers import infer_provider_from_model
-    try:
-        model_provider = infer_provider_from_model(model)
-    except ValueError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 2
-    if model_provider != provider:
-        print(
-            f"ERROR: resolved grading provider {provider!r} conflicts "
-            f"with grading_model {model!r} (inferred provider "
-            f"{model_provider!r}). Pass --model with a matching "
-            f"model, set EvalSpec.grading_model: null to use the "
-            f"per-provider default, or pin a matching --grading-provider.",
-            file=sys.stderr,
-        )
-        return 2
 
     # Allocate the iteration workspace early so that a collision
     # (--iteration N already exists) fails before we make any LLM calls.

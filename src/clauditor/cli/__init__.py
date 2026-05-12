@@ -246,19 +246,18 @@ def _resolve_grading_provider(
        and it was set (operator intent);
     2. else ``eval_spec.grading_model`` if a spec is attached and
        the attribute is non-``None`` (author intent);
-    3. else ``None`` — the inference layer raises a precise
-       ``ValueError`` ("provide grading_provider or grading_model")
-       that this wrapper surfaces as ``SystemExit(2)``.
+    3. else ``None`` — the inference layer falls back to
+       ``"anthropic"`` (subscription-first historical default per
+       issue #182 / DEC-001b).
 
     ``eval_spec`` is the loaded ``EvalSpec`` (or ``None`` when the
     calling command has no eval spec — e.g. ``suggest``,
     ``propose-eval``).
 
     Raises ``SystemExit(2)`` on any ``ValueError`` from the pure
-    resolver (invalid env / spec value, unknown model prefix, or
-    ``"auto"`` with no model). Printing the error to stderr before
-    exit centralizes the routing so all six LLM-mediated commands
-    share one error surface, per
+    resolver (invalid env / spec value, unknown model prefix).
+    Printing the error to stderr before exit centralizes the routing
+    so all six LLM-mediated commands share one error surface, per
     ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
     """
     import os

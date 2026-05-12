@@ -334,16 +334,14 @@ class TestGradingProviderResolutionFailsE2E:
         err = capsys.readouterr().err
         assert "unknown-foo" in err
 
-    def test_auto_with_null_model_exits_2_without_calling_model(
-        self, tmp_path, monkeypatch, capsys
+    def test_auto_with_null_model_falls_back_to_anthropic(
+        self, tmp_path, monkeypatch
     ):
-        """``grading_provider="auto"`` + ``grading_model=null`` exits 2.
-
-        The CLI's ``_resolve_grading_provider`` falls through to
-        ``args.model`` (also ``None`` when ``--model`` is absent), so
-        the pure resolver receives ``model=None`` and
-        ``infer_provider_from_model`` raises with the actionable
-        ``"provide grading_provider or grading_model"`` message.
+        """Post-#182 / DEC-001b: ``grading_provider="auto"`` +
+        ``grading_model=null`` falls back to anthropic (subscription-
+        first historical default) instead of raising a hostile error.
+        Pre-#146 specs that omit both fields grade against anthropic
+        with byte-identical output to today.
         """
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
         monkeypatch.setenv("OPENAI_API_KEY", "sk-oai-test")
@@ -355,17 +353,21 @@ class TestGradingProviderResolutionFailsE2E:
             tmp_path, monkeypatch, eval_data
         )
 
-        call_model_mock = AsyncMock(side_effect=_StopE2EError("halt"))
+        captured: dict = {}
+
+        async def _capture_call_model(*args, **kwargs):
+            captured["provider"] = kwargs.get("provider")
+            captured["model"] = kwargs.get("model")
+            raise _StopE2EError("halt")
+
         with patch(
-            "clauditor._providers.call_model", new=call_model_mock
+            "clauditor._providers.call_model", new=_capture_call_model
         ):
-            with pytest.raises(SystemExit) as excinfo:
+            with pytest.raises(_StopE2EError):
                 main(["grade", str(skill_md), "--output", str(output)])
 
-        assert excinfo.value.code == 2
-        assert call_model_mock.call_count == 0
-        err = capsys.readouterr().err
-        assert "grading_provider" in err or "grading_model" in err
+        assert captured["provider"] == "anthropic"
+        assert captured["model"] == "claude-sonnet-4-6"
 
 
 # ---------------------------------------------------------------------------

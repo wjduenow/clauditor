@@ -345,17 +345,22 @@ def infer_provider_from_model(
 
     Raises:
         ValueError: ``model`` is a non-empty string with an unknown
-            prefix, OR ``model`` is ``None`` (callers reaching this
-            branch through :func:`resolve_grading_provider` have no
-            other layer to fall back on; the resolver translates the
-            ``None`` case into a more actionable
-            ``"provide grading_provider or grading_model"`` message).
+            prefix.
+
+    Note:
+        Post-#182, ``model is None`` falls back to ``"anthropic"`` —
+        the subscription-first historical default. A pre-#146 spec
+        that omits both ``grading_provider`` and ``grading_model``
+        loads with defaults ``("auto", None)`` and must still grade
+        against anthropic with byte-identical output to today.
     """
     if model is None:
-        # Reached only when caller has no model AND provider="auto"
-        # at every precedence layer. Surface a precise actionable
-        # message — the CLI seam routes this to exit 2.
-        raise ValueError("provide grading_provider or grading_model")
+        # Subscription-first historical default. Reached when every
+        # precedence layer is ``"auto"`` (or unset) AND no model is
+        # available. Returning ``"anthropic"`` here preserves
+        # byte-identical behavior for pre-#146 specs after the
+        # DEC-001b default-flip in #182.
+        return "anthropic"
     if not isinstance(model, str):
         raise ValueError(
             f"infer_provider_from_model: model must be str or None, "
