@@ -77,12 +77,68 @@ def parse_grading_response(text: str, criteria: list[dict]) -> list[Result]:
   If the judge misbehaves, the right answer is to regenerate, not to
   guess.
 
+## Prompt-side companion: don't render items in a shape that tempts the model to echo a prefix
+
+The strict text-match validator on the parser side is only half of
+the contract. The prompt-side rendering of the same items must NOT
+present them in a shape that some well-behaved model will faithfully
+reproduce a positional prefix from. The canonical foot-gun is a
+markdown numbered list:
+
+```python
+# WRONG — `1. `, `2. `, … tempt the model to echo the prefix.
+for i, criterion in enumerate(criteria, 1):
+    lines.append(f"{i}. {criterion_text(criterion)}")
+```
+
+Anthropic Claude models tend to strip the leading `N.` prefix when echoing
+the item into a structured response field; OpenAI gpt-5.4 (and
+likely gpt-5.4-mini) preserves it verbatim. The result: every
+positional-zip text match fails with
+`"Expected 'Output contains ...', got '1. Output contains ...'"`
+across every criterion, and the user sees `parse_response: 0/N`
+even when the model graded correctly.
+
+The fix is structural at the prompt boundary, not the parser:
+
+```python
+# RIGHT — XML-tagged items, explicit verbatim-echo instruction.
+for i, criterion in enumerate(criteria, 1):
+    lines.append(
+        f'<criterion id="{i}">{criterion_text(criterion)}</criterion>'
+    )
+# ... plus prompt body adds:
+# "In each result object, the `criterion` field MUST contain the
+#  verbatim text inside the corresponding <criterion> tag — no
+#  leading number, no tag, no prefix, no rewording. Return one
+#  result per criterion, in the same order as listed."
+```
+
+The XML tag is visually distinct so the model has no "obvious"
+prefix to copy. The explicit `id` attribute is intentionally
+adjacent on the line (not on the next line) so it does NOT bleed
+into the inner text, and the instruction sentence enumerates every
+plausible thing the model might echo (number, tag, prefix,
+rewording) so the prohibition is exhaustive.
+
+This rule applies wherever a positional-zip-validated structured
+list lives at the LLM boundary: grading criteria, trigger-test
+slots, future per-section field lists. Anything else risks the
+same silent cross-provider divergence.
+
+Traces to #183.
+
 ## Canonical implementation
 
 `src/clauditor/quality_grader.py::parse_grading_response` — length check,
 per-index text check, then positional id assignment. `grade_quality`
 catches the `ValueError` and produces a failed-parse `GradingReport` so the
 hard-fail surfaces as a graceful report rather than a traceback.
+
+`src/clauditor/quality_grader.py::build_grading_prompt` — renders
+the criteria block as `<criterion id="N">...</criterion>` tags
+plus the explicit verbatim-echo instruction per the prompt-side
+companion above (#183).
 
 ## When this rule applies
 

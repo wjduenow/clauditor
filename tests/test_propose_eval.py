@@ -1008,7 +1008,7 @@ class TestProposeEval:
         pi = _make_propose_input()
         result = _mock_anthropic_result(text=_good_response_text())
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1037,7 +1037,7 @@ class TestProposeEval:
         # default in ``_good_spec_dict``). Override must win.
         result = _mock_anthropic_result(text=_good_response_text())
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1062,7 +1062,7 @@ class TestProposeEval:
         pi.captured_skill_args = ""  # sidecar present, args were empty
         result = _mock_anthropic_result(text=_good_response_text())
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1076,7 +1076,7 @@ class TestProposeEval:
         pi = _make_propose_input()  # captured_skill_args=None
         result = _mock_anthropic_result(text=_good_response_text())
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1090,7 +1090,7 @@ class TestProposeEval:
         pi = _make_propose_input()
         result = _mock_anthropic_result(text=_good_response_text())
         call_mock = AsyncMock(return_value=result)
-        with patch("clauditor._anthropic.call_anthropic", call_mock):
+        with patch("clauditor._providers.call_model", call_mock):
             _ = await propose_eval(pi, spec_dir=tmp_path)
         call_mock.assert_awaited_once()
         kwargs = call_mock.await_args.kwargs
@@ -1108,7 +1108,7 @@ class TestProposeEval:
         pi = _make_propose_input()
         result = _mock_anthropic_result(text=_good_response_text())
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ), patch(
             # Aggregate ``duration_seconds`` is the SUM of per-attempt
@@ -1128,7 +1128,7 @@ class TestProposeEval:
     ) -> None:
         pi = _make_propose_input()
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(side_effect=RuntimeError("boom")),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1150,7 +1150,7 @@ class TestProposeEval:
         first = _mock_anthropic_result(text="not json {{{")
         second = _mock_anthropic_result(text="still not json {{{")
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(side_effect=[first, second]),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1175,7 +1175,7 @@ class TestProposeEval:
         }
         result = _mock_anthropic_result(text=json.dumps(bad_spec))
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1208,7 +1208,7 @@ class TestProposeEval:
         # build_propose_eval_prompt before the SDK call.
         call_mock = AsyncMock()
         with patch(
-            "clauditor._anthropic.call_anthropic", call_mock
+            "clauditor._providers.call_model", call_mock
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
         call_mock.assert_not_awaited()
@@ -1223,7 +1223,7 @@ class TestProposeEval:
         result = _mock_anthropic_result(text=_good_response_text())
         monkeypatch.chdir(tmp_path)
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi)
@@ -1241,7 +1241,7 @@ class TestProposeEval:
         )
         result = _mock_anthropic_result(text=_good_response_text())
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1265,7 +1265,7 @@ class TestProposeEval:
             raw_message=None,
         )
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=empty),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1299,7 +1299,7 @@ class TestProposeEval:
         split_result = ResultWithoutResponseText([full[:half], full[half:]])
 
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=split_result),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1502,7 +1502,7 @@ class TestProposeEvalRepairRetry:
             output_tokens=70,
         )
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(side_effect=[first, second]),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1557,7 +1557,7 @@ class TestProposeEvalRepairRetry:
         second = _mock_anthropic_result(text=json.dumps(second_bad))
 
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(side_effect=[first, second]),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1587,7 +1587,7 @@ class TestProposeEvalRepairRetry:
         result = _mock_anthropic_result(text=_good_response_text())
         call_mock = AsyncMock(side_effect=[result])
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             call_mock,
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1617,7 +1617,7 @@ class TestProposeEvalRepairRetry:
             side_effect=[AnthropicHelperError("401 auth failed")]
         )
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             call_mock,
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1662,7 +1662,7 @@ class TestProposeEvalRepairRetry:
             side_effect=[first, AnthropicHelperError("503 repair boom")]
         )
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             call_mock,
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1701,7 +1701,7 @@ class TestProposeEvalRepairRetry:
             output_tokens=44,
         )
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(side_effect=[first, second]),
         ):
             report = await propose_eval(pi, spec_dir=tmp_path)
@@ -1751,7 +1751,7 @@ class TestProposeEvalRepairRetry:
         )
 
         mock_call = AsyncMock(side_effect=[first_bad])
-        with patch("clauditor._anthropic.call_anthropic", mock_call):
+        with patch("clauditor._providers.call_model", mock_call):
             report = await propose_eval(pi, spec_dir=tmp_path)
 
         # The retry was skipped: only one API call fired, only one
@@ -1829,24 +1829,27 @@ class TestSingleProposeAttemptImportError:
     async def test_missing_anthropic_sdk_returns_api_error(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """When ``from clauditor._anthropic import call_anthropic``
-        raises ``ImportError`` (SDK not installed), the first
-        attempt returns an ``api_error`` without making any network
-        call. The orchestrator surfaces it as ``report.api_error``
-        and ``report.repair_attempted`` stays ``False``.
+        """When ``from clauditor._providers import call_model`` raises
+        ``ImportError`` (SDK extra not installed), the first attempt
+        returns an ``api_error`` without making any network call. The
+        orchestrator surfaces it as ``report.api_error`` and
+        ``report.repair_attempted`` stays ``False``.
+
+        Production target moved from ``clauditor._anthropic`` to
+        ``clauditor._providers`` in #144 US-005; the patched
+        ``__import__`` filter follows the symbol's new location.
         """
         import sys as _sys
 
-        real_anthropic = _sys.modules.get("clauditor._anthropic")
-        # Remove the cached helper module AND stub the raw SDK so
-        # re-import raises ImportError on
-        # ``from clauditor._anthropic import call_anthropic``. We
-        # restore the original module at the end to avoid polluting
-        # the rest of the test suite's module cache.
-        _sys.modules.pop("clauditor._anthropic", None)
+        real_providers = _sys.modules.get("clauditor._providers")
+        # Remove the cached package AND stub re-import to raise on
+        # ``from clauditor._providers import call_model``. We restore
+        # the original module at the end to avoid polluting the rest
+        # of the test suite's module cache.
+        _sys.modules.pop("clauditor._providers", None)
 
-        def _raise_on_anthropic_import(name, *args, **kwargs):
-            if name == "clauditor._anthropic":
+        def _raise_on_providers_import(name, *args, **kwargs):
+            if name == "clauditor._providers":
                 raise ImportError("fake SDK-missing error")
             return _original_import(name, *args, **kwargs)
 
@@ -1855,20 +1858,21 @@ class TestSingleProposeAttemptImportError:
         ) else __builtins__.__import__
 
         monkeypatch.setattr(
-            "builtins.__import__", _raise_on_anthropic_import
+            "builtins.__import__", _raise_on_providers_import
         )
 
         try:
             pi = _make_propose_input()
             report = await propose_eval(pi, spec_dir=tmp_path)
         finally:
-            if real_anthropic is not None:
-                _sys.modules["clauditor._anthropic"] = real_anthropic
+            if real_providers is not None:
+                _sys.modules["clauditor._providers"] = real_providers
 
         # Attempt registered (with zero tokens since the API call
-        # never fired) and api_error surfaced.
+        # never fired) and api_error surfaced. The patched
+        # ``__import__`` raises with our fixed message; the assertion
+        # is tight (no permissive ``or`` fallback) so the test fails
+        # loudly if the patch ever stops triggering the branch.
         assert report.api_error is not None
-        assert "fake SDK-missing error" in report.api_error or (
-            "anthropic" in report.api_error.lower()
-        )
+        assert "fake SDK-missing error" in report.api_error
         assert report.repair_attempted is False

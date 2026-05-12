@@ -1167,6 +1167,87 @@ class TestExtractionReport:
         with pytest.raises(ValueError, match="no stable id"):
             build_extraction_report(extracted, spec)
 
+    def test_to_json_emits_v4_with_harness(self):
+        """#152 US-003 + #170 US-004: ``to_json`` emits
+        ``schema_version: 5`` first key (#170 bumped v4→v5 to add
+        ``reasoning_tokens``); ``harness`` field still present."""
+        report = ExtractionReport(
+            skill_name="s",
+            model="m",
+            results=[],
+            declared_field_ids=["v1"],
+            harness="codex",
+        )
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert next(iter(data)) == "schema_version"
+        assert data["schema_version"] == 5
+        assert data["harness"] == "codex"
+
+    def test_from_json_v4_round_trip(self):
+        """#152 US-003: v4 ``to_json`` then ``from_json`` preserves
+        the ``harness`` field verbatim."""
+        original = ExtractionReport(
+            skill_name="s",
+            model="m",
+            results=[],
+            declared_field_ids=["v1"],
+            harness="codex",
+        )
+        restored = ExtractionReport.from_json(original.to_json())
+        assert restored.harness == "codex"
+
+    def test_from_json_v3_defaults_harness_to_claude_code(self):
+        """#152 US-003: v3 sidecars (no ``harness``) load with
+        ``harness="claude-code"`` defaulted so pre-#152 history
+        loads cleanly."""
+        v3_payload = json.dumps({
+            "schema_version": 3,
+            "skill_name": "legacy-v3",
+            "model": "haiku",
+            "transport_source": "cli",
+            "provider_source": "anthropic",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {},
+        })
+        restored = ExtractionReport.from_json(v3_payload)
+        assert restored.harness == "claude-code"
+        assert restored.provider_source == "anthropic"
+
+    def test_from_json_v1_v2_legacy_still_load(self):
+        """#152 US-003: v1 and v2 sidecars (pre-provider, pre-harness)
+        still load with all legacy fields defaulted."""
+        v1_payload = json.dumps({
+            "schema_version": 1,
+            "skill_name": "legacy-v1",
+            "model": "haiku",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {},
+        })
+        v1_report = ExtractionReport.from_json(v1_payload)
+        assert v1_report.harness == "claude-code"
+        assert v1_report.provider_source == "anthropic"
+        assert v1_report.transport_source == "api"
+
+        v2_payload = json.dumps({
+            "schema_version": 2,
+            "skill_name": "legacy-v2",
+            "model": "haiku",
+            "transport_source": "cli",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {},
+        })
+        v2_report = ExtractionReport.from_json(v2_payload)
+        assert v2_report.harness == "claude-code"
+        assert v2_report.provider_source == "anthropic"
+        assert v2_report.transport_source == "cli"
+
 
 class TestExtractionPromptHardening:
     def test_build_extraction_prompt_fences_untrusted_content(self) -> None:
@@ -1642,10 +1723,14 @@ class TestExtractionReportTransport:
         report = self._report()
         assert report.transport_source == "api"
 
-    def test_to_json_schema_version_bumped_to_2(self):
+    def test_to_json_schema_version_bumped_to_4(self):
+        # Post-#170 US-004 the on-disk version is 5 (added
+        # ``reasoning_tokens``). Test name preserved for historical
+        # regression-grep continuity; assertion tracks current
+        # MAX_SCHEMA_VERSION for extraction.json.
         report = self._report(transport_source="cli")
         data = json.loads(report.to_json())
-        assert data["schema_version"] == 2
+        assert data["schema_version"] == 5
 
     def test_schema_version_is_first_key(self):
         report = self._report(transport_source="cli")
@@ -1768,6 +1853,337 @@ class TestExtractionReportTransport:
             transport_source="cli",
         )
         assert good_report.transport_source == "cli"
+
+
+class TestExtractionReportProviderSource:
+    """#147 US-001: ExtractionReport persists a ``provider_source``
+    field on disk at ``schema_version: 3``. The field defaults to
+    ``"anthropic"`` and reads through from
+    :class:`ModelResult.provider`. Legacy v1/v2 sidecars (no
+    ``provider_source``) load with ``provider_source="anthropic"``
+    defaulted."""
+
+    def _spec(self) -> EvalSpec:
+        return EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            fields=[FieldRequirement(name="a", id="v1")],
+                        )
+                    ],
+                )
+            ],
+        )
+
+    def test_provider_source_defaults_to_anthropic(self):
+        report = ExtractionReport(
+            skill_name="s",
+            model="m",
+            results=[],
+            declared_field_ids=["v1"],
+        )
+        assert report.provider_source == "anthropic"
+
+    def test_extraction_report_to_json_v4_emits_provider_source(self):
+        """``to_json`` emits ``schema_version: 5`` first key (#170
+        US-004 bumped v4→v5 to add ``reasoning_tokens``);
+        ``provider_source`` field continues to ride along."""
+        report = ExtractionReport(
+            skill_name="s",
+            model="m",
+            results=[],
+            declared_field_ids=["v1"],
+            provider_source="openai",
+        )
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert next(iter(data)) == "schema_version"
+        assert data["schema_version"] == 5
+        assert data["provider_source"] == "openai"
+
+    def test_extraction_report_from_json_v3_round_trips(self):
+        """v3 from_json round-trips ``provider_source`` faithfully."""
+        original = ExtractionReport(
+            skill_name="s",
+            model="m",
+            results=[],
+            declared_field_ids=["v1"],
+            provider_source="openai",
+        )
+        restored = ExtractionReport.from_json(original.to_json())
+        assert restored.provider_source == "openai"
+
+    def test_extraction_report_from_json_v2_defaults_provider_source_to_anthropic(
+        self,
+    ):
+        """v2 sidecars (no ``provider_source``) default to
+        ``"anthropic"`` so pre-#147 history loads cleanly."""
+        v2_payload = json.dumps({
+            "schema_version": 2,
+            "skill_name": "legacy-v2",
+            "model": "haiku",
+            "transport_source": "cli",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {},
+        })
+        restored = ExtractionReport.from_json(v2_payload)
+        assert restored.provider_source == "anthropic"
+        assert restored.transport_source == "cli"
+
+    def test_extraction_report_from_json_v1_defaults_both_legacy_fields(
+        self,
+    ):
+        """v1 sidecars (no ``transport_source``, no
+        ``provider_source``) default both fields."""
+        v1_payload = json.dumps({
+            "schema_version": 1,
+            "skill_name": "legacy-v1",
+            "model": "haiku",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "fields": {},
+        })
+        restored = ExtractionReport.from_json(v1_payload)
+        assert restored.provider_source == "anthropic"
+        assert restored.transport_source == "api"
+
+    def test_provider_source_anthropic_emitted_explicitly_on_disk(self):
+        """v3 always emits ``provider_source`` on disk, even for the
+        default ``"anthropic"`` value, so the field is explicit and
+        round-trip is byte-stable."""
+        report = ExtractionReport(
+            skill_name="s",
+            model="m",
+            results=[],
+            declared_field_ids=["v1"],
+        )  # default provider_source="anthropic"
+        data = json.loads(report.to_json())
+        assert data["provider_source"] == "anthropic"
+
+    def test_build_extraction_report_forwards_provider_source(self):
+        report = build_extraction_report(
+            ExtractedOutput(raw_json={}, sections={}),
+            self._spec(),
+            provider_source="openai",
+        )
+        assert report.provider_source == "openai"
+
+    def test_build_extraction_report_from_text_forwards_provider_source(
+        self,
+    ):
+        """All three branches (empty text, JSON error, success)
+        propagate ``provider_source``."""
+        spec = self._spec()
+
+        empty_report = build_extraction_report_from_text(
+            "",
+            spec,
+            skill_name="s",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            provider_source="openai",
+        )
+        assert empty_report.provider_source == "openai"
+
+        bad_report = build_extraction_report_from_text(
+            "not json at all",
+            spec,
+            skill_name="s",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            provider_source="openai",
+        )
+        assert bad_report.provider_source == "openai"
+
+        good_text = json.dumps({"Venues": {"primary": [{"a": "v"}]}})
+        good_report = build_extraction_report_from_text(
+            good_text,
+            spec,
+            skill_name="s",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            provider_source="openai",
+        )
+        assert good_report.provider_source == "openai"
+
+
+class TestExtractAndReportProviderSource:
+    """#144 US-005: ``extract_and_report`` propagates
+    ``ModelResult.provider`` into the resulting
+    :class:`ExtractionReport`'s ``provider_source`` field."""
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_propagates_provider_source(self):
+        from clauditor._providers import ModelResult
+        from clauditor.grader import extract_and_report
+
+        spec = EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Items",
+                    tiers=[
+                        TierRequirement(
+                            label="default",
+                            min_entries=1,
+                            fields=[
+                                FieldRequirement(
+                                    name="name",
+                                    required=True,
+                                    id="items-name",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        extraction_text = json.dumps(
+            {"Items": {"default": [{"name": "foo"}]}}
+        )
+        fake = ModelResult(
+            response_text=extraction_text,
+            text_blocks=[extraction_text],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(return_value=fake),
+        ):
+            report = await extract_and_report("output", spec)
+        assert report.provider_source == "anthropic"
+
+
+class TestExtractAndReportGradingProviderOpenAI:
+    """#145 US-010: when ``eval_spec.grading_provider == "openai"``,
+    ``extract_and_report`` and ``extract_and_grade`` route through the
+    OpenAI backend and stamp ``ExtractionReport.provider_source ==
+    "openai"``."""
+
+    def _spec(self, *, grading_provider: str | None = None) -> EvalSpec:
+        return EvalSpec(
+            skill_name="s",
+            sections=[
+                SectionRequirement(
+                    name="Items",
+                    tiers=[
+                        TierRequirement(
+                            label="default",
+                            min_entries=1,
+                            fields=[
+                                FieldRequirement(
+                                    name="name",
+                                    required=True,
+                                    id="items-name",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+            grading_provider=grading_provider,
+        )
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_stamps_openai_when_grading_provider_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec(grading_provider="openai")
+        extraction_text = json.dumps(
+            {"Items": {"default": [{"name": "foo"}]}}
+        )
+        fake = ModelResult(
+            response_text=extraction_text,
+            text_blocks=[extraction_text],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            # #146 US-006: orchestrators no longer read
+            # ``eval_spec.grading_provider`` directly — pass
+            # ``provider="openai"`` explicitly to mirror the
+            # production CLI seam.
+            report = await extract_and_report(
+                "output", spec, model="gpt-5.4-mini", provider="openai"
+            )
+        assert report.provider_source == "openai"
+        # Verify ``provider="openai"`` flowed through to call_model.
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_extract_and_grade_stamps_openai_when_grading_provider_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec(grading_provider="openai")
+        extraction_text = json.dumps(
+            {"Items": {"default": [{"name": "foo"}]}}
+        )
+        fake = ModelResult(
+            response_text=extraction_text,
+            text_blocks=[extraction_text],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            # #146 US-006: pass ``provider="openai"`` explicitly.
+            await extract_and_grade(
+                "output", spec, model="gpt-5.4-mini", provider="openai"
+            )
+        # ``extract_and_grade`` returns an ``AssertionSet`` (no
+        # provider_source field) — verify the resolved provider flowed
+        # through to ``call_model``.
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_defaults_to_anthropic_when_unset(
+        self,
+    ) -> None:
+        """Back-compat regression: a spec with ``grading_provider=None``
+        (the default) still routes through anthropic."""
+        from clauditor._providers import ModelResult
+
+        spec = self._spec()  # grading_provider default = None
+        extraction_text = json.dumps(
+            {"Items": {"default": [{"name": "foo"}]}}
+        )
+        fake = ModelResult(
+            response_text=extraction_text,
+            text_blocks=[extraction_text],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            report = await extract_and_report("output", spec)
+        assert report.provider_source == "anthropic"
+        assert call_mock.await_args.kwargs["provider"] == "anthropic"
 
 
 class TestExtractionReportDeclaredFieldIds:
@@ -2217,3 +2633,463 @@ class TestExtractionParseErrorDataclass:
         )
         assert err.section == "Venues"
         assert err.raw == {"Venues": []}
+
+
+class TestExtractAndReportWithOpenAI:
+    """#145 US-011 — End-to-end: an :class:`EvalSpec` with
+    ``grading_provider="openai"`` runs L2 extraction through the full
+    pipeline (prompt build -> ``call_model`` -> parse -> report build)
+    and produces a populated :class:`ExtractionReport` with
+    ``provider_source == "openai"`` plus non-empty extracted data.
+
+    Acceptance criterion 2 of issue #145. Builds on the unit-level
+    wiring tests in :class:`TestExtractAndReportGradingProviderOpenAI`
+    by exercising a non-trivial section/tier shape and asserting on the
+    full report surface (extracted data, token counts, parse_errors).
+    """
+
+    def _spec(self) -> EvalSpec:
+        return EvalSpec(
+            skill_name="venues-skill",
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            min_entries=2,
+                            fields=[
+                                FieldRequirement(
+                                    name="name",
+                                    required=True,
+                                    id="venues-name",
+                                ),
+                                FieldRequirement(
+                                    name="address",
+                                    required=True,
+                                    id="venues-address",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+            grading_provider="openai",
+        )
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_openai_e2e(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Full L2 path: spec.grading_provider="openai" flows through
+        ``call_model(provider="openai", ...)``, the mocked OpenAI
+        ``ModelResult`` is parsed into the per-section/tier shape, and
+        the returned :class:`ExtractionReport` is fully populated:
+
+        - ``provider_source == "openai"``
+        - per-field results present for every declared field
+        - token counts from the mocked ``ModelResult``
+        - no parse errors
+        """
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec()
+        # JSON shape that matches the non-trivial section/tier:
+        # two entries with both required fields populated.
+        extraction_payload = {
+            "Venues": {
+                "primary": [
+                    {"name": "The Blue Note", "address": "131 W 3rd St"},
+                    {"name": "Smalls Jazz", "address": "183 W 10th St"},
+                ],
+            },
+        }
+        extraction_text = json.dumps(extraction_payload)
+        fake = ModelResult(
+            response_text=extraction_text,
+            text_blocks=[extraction_text],
+            input_tokens=42,
+            output_tokens=17,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            # #146 US-006: orchestrators no longer read
+            # ``eval_spec.grading_provider`` directly; the CLI seam
+            # resolves and threads ``provider`` through. Pass it
+            # explicitly to mirror production.
+            report = await extract_and_report(
+                "fake skill output text",
+                spec,
+                model="gpt-5.4-mini",
+                provider="openai",
+            )
+
+        # Provider stamping (acceptance criterion 2 — primary signal).
+        assert report.provider_source == "openai"
+        # ``call_model`` received ``provider="openai"`` — the spec
+        # field flowed through the resolver to the dispatcher.
+        assert call_mock.await_count == 1
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+        # Token counts propagated from the mocked ``ModelResult``.
+        assert report.input_tokens == 42
+        assert report.output_tokens == 17
+        # No parse errors: the JSON above is shape-valid for the spec.
+        assert report.parse_errors == []
+        # Non-empty extracted data: every declared field id has at
+        # least one record (two entries in this fixture).
+        assert {r.field_id for r in report.results} == {
+            "venues-name",
+            "venues-address",
+        }
+        assert len(report.results) == 4  # 2 entries * 2 fields
+        # Every per-field record passes presence (required fields,
+        # non-empty values).
+        assert all(r.presence_passed for r in report.results)
+
+
+class TestExtractionReportReasoningTokens:
+    """#170 US-004: ExtractionReport carries a nullable
+    ``reasoning_tokens`` field. ``schema_version`` bumps v4→v5 to
+    add the field on disk; legacy v1/v2/v3/v4 sidecars default
+    missing ``reasoning_tokens`` to ``None``. Sum semantics per
+    DEC-003: all-None → ``None``; mixed → sum of non-None;
+    all-int → integer sum."""
+
+    def _report(self, **overrides) -> ExtractionReport:
+        defaults = dict(
+            skill_name="reasoning-test",
+            model="haiku",
+            results=[],
+            declared_field_ids=["v1"],
+        )
+        defaults.update(overrides)
+        return ExtractionReport(**defaults)
+
+    def test_extraction_report_reasoning_tokens_default_none(self):
+        report = self._report()
+        assert report.reasoning_tokens is None
+
+    def test_extraction_report_to_json_emits_schema_version_5(self):
+        """to_json emits ``schema_version: 5`` first key (post-#170
+        US-004), ``reasoning_tokens`` field present after token
+        counts."""
+        report = self._report(reasoning_tokens=42)
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert next(iter(data)) == "schema_version"
+        assert data["schema_version"] == 5
+        assert data["reasoning_tokens"] == 42
+
+    def test_extraction_report_to_json_emits_reasoning_tokens_none(self):
+        """The ``reasoning_tokens`` field is always emitted, even
+        when ``None`` (carries semantic distinction "no count
+        surfaced" vs "count was zero")."""
+        report = self._report()  # default reasoning_tokens=None
+        data = json.loads(report.to_json())
+        assert "reasoning_tokens" in data
+        assert data["reasoning_tokens"] is None
+
+    def test_extraction_report_reasoning_tokens_round_trips_42(self):
+        original = self._report(reasoning_tokens=42)
+        restored = ExtractionReport.from_json(original.to_json())
+        assert restored.reasoning_tokens == 42
+
+    def test_extraction_report_reasoning_tokens_round_trips_zero(self):
+        """#170 DEC-002: ``reasoning_tokens=0`` is a real value (the
+        model didn't reason on this call) and MUST round-trip
+        through ``to_json``/``from_json`` as ``0``, NOT collapse to
+        ``None`` via a truthiness coercion. The on-disk JSON value
+        is the integer ``0``, not the JSON ``null`` literal."""
+        original = self._report(reasoning_tokens=0)
+        raw = original.to_json()
+        data = json.loads(raw)
+        # Writer emits the literal integer 0, distinct from null.
+        assert data["reasoning_tokens"] == 0
+        assert data["reasoning_tokens"] is not None
+        restored = ExtractionReport.from_json(raw)
+        assert restored.reasoning_tokens == 0
+        assert restored.reasoning_tokens is not None
+
+    def test_extraction_report_reasoning_tokens_round_trips_none(self):
+        original = self._report()
+        restored = ExtractionReport.from_json(original.to_json())
+        assert restored.reasoning_tokens is None
+
+    def test_extraction_report_from_json_v4_defaults_reasoning_tokens_to_none(
+        self,
+    ):
+        """v4 sidecars (no ``reasoning_tokens``) load with
+        ``reasoning_tokens=None`` defaulted so pre-#170 history
+        loads cleanly."""
+        v4_payload = json.dumps({
+            "schema_version": 4,
+            "skill_name": "legacy-v4",
+            "model": "haiku",
+            "transport_source": "cli",
+            "provider_source": "openai",
+            "harness": "codex",
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "parse_errors": [],
+            "fields": {},
+        })
+        restored = ExtractionReport.from_json(v4_payload)
+        assert restored.reasoning_tokens is None
+        # Other v4 fields still populate correctly.
+        assert restored.harness == "codex"
+        assert restored.provider_source == "openai"
+        assert restored.transport_source == "cli"
+
+    def test_extraction_report_from_json_v3_v2_v1_default_reasoning_tokens(
+        self,
+    ):
+        """All legacy schema versions default ``reasoning_tokens``
+        to ``None``."""
+        for version in (1, 2, 3):
+            payload = json.dumps({
+                "schema_version": version,
+                "skill_name": f"legacy-v{version}",
+                "model": "haiku",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "parse_errors": [],
+                "fields": {},
+            })
+            restored = ExtractionReport.from_json(payload)
+            assert restored.reasoning_tokens is None, (
+                f"v{version} default reasoning_tokens should be None"
+            )
+
+    def test_extraction_report_from_json_rejects_bool_reasoning_tokens(self):
+        """Quality Gate Pass 1 fix (#170 US-007): a malformed sidecar
+        with ``"reasoning_tokens": true`` MUST default to ``None``,
+        NOT silently coerce to ``1``. Symmetric with the writer-side
+        ``_extract_reasoning_tokens`` bool guard per DEC-006 and
+        ``.claude/rules/constant-with-type-info.md`` (Python's
+        ``isinstance(True, int)`` is ``True``)."""
+        for bad_value in (True, False):
+            payload = json.dumps({
+                "schema_version": 5,
+                "skill_name": "hostile",
+                "model": "haiku",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": bad_value,
+                "parse_errors": [],
+                "fields": {},
+            })
+            restored = ExtractionReport.from_json(payload)
+            assert restored.reasoning_tokens is None, (
+                f"bool {bad_value} must default to None, not coerce to int"
+            )
+
+    def test_extraction_report_from_json_rejects_non_int_reasoning_tokens(
+        self,
+    ):
+        """Quality Gate Pass 1 fix: non-int ``reasoning_tokens``
+        (string, float, list, dict) MUST default to ``None`` rather
+        than raise or coerce."""
+        for bad_value in ("99", 3.14, [42], {"x": 1}):
+            payload = json.dumps({
+                "schema_version": 5,
+                "skill_name": "hostile",
+                "model": "haiku",
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_tokens": bad_value,
+                "parse_errors": [],
+                "fields": {},
+            })
+            restored = ExtractionReport.from_json(payload)
+            assert restored.reasoning_tokens is None, (
+                f"non-int {bad_value!r} must default to None"
+            )
+
+
+class TestExtractAndReportReasoningTokensSum:
+    """#170 US-004: ``extract_and_report`` accumulates per-attempt
+    ``ModelResult.reasoning_tokens`` via sum-of-non-None semantics
+    (DEC-003). Uses ``side_effect=[r1, r2]`` per
+    ``.claude/rules/mock-side-effect-for-distinct-calls.md``."""
+
+    def _spec(self) -> EvalSpec:
+        return EvalSpec(
+            skill_name="reasoning-extract",
+            sections=[
+                SectionRequirement(
+                    name="Items",
+                    tiers=[
+                        TierRequirement(
+                            label="default",
+                            min_entries=1,
+                            fields=[
+                                FieldRequirement(
+                                    name="title",
+                                    id="items-title",
+                                    required=True,
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_reasoning_tokens_all_none(self):
+        """All attempts surface ``None`` → report aggregate is
+        ``None``. Forces a parse retry by returning malformed JSON
+        first then valid JSON."""
+        from clauditor._providers import ModelResult
+
+        spec = self._spec()
+        bad = ModelResult(
+            response_text="not-json",
+            text_blocks=["not-json"],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        good_payload = json.dumps(
+            {"Items": {"default": [{"title": "Hello"}]}}
+        )
+        good = ModelResult(
+            response_text=good_payload,
+            text_blocks=[good_payload],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[bad, good]),
+        ):
+            report = await extract_and_report(
+                "output", spec, skill_name="reasoning-extract"
+            )
+        assert report.reasoning_tokens is None
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_reasoning_tokens_mixed(self):
+        """Mixed ``[None, 42]`` → aggregate is ``42`` (sum of
+        non-None, NOT 0, NOT None)."""
+        from clauditor._providers import ModelResult
+
+        spec = self._spec()
+        bad = ModelResult(
+            response_text="not-json",
+            text_blocks=["not-json"],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        good_payload = json.dumps(
+            {"Items": {"default": [{"title": "Hello"}]}}
+        )
+        good = ModelResult(
+            response_text=good_payload,
+            text_blocks=[good_payload],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=42,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[bad, good]),
+        ):
+            report = await extract_and_report(
+                "output", spec, skill_name="reasoning-extract"
+            )
+        assert report.reasoning_tokens == 42
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_reasoning_tokens_all_int_sums(
+        self,
+    ):
+        """Two attempts with ``[10, 20]`` → aggregate is ``30``
+        (integer sum)."""
+        from clauditor._providers import ModelResult
+
+        spec = self._spec()
+        bad = ModelResult(
+            response_text="not-json",
+            text_blocks=["not-json"],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=10,
+        )
+        good_payload = json.dumps(
+            {"Items": {"default": [{"title": "Hello"}]}}
+        )
+        good = ModelResult(
+            response_text=good_payload,
+            text_blocks=[good_payload],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=20,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[bad, good]),
+        ):
+            report = await extract_and_report(
+                "output", spec, skill_name="reasoning-extract"
+            )
+        assert report.reasoning_tokens == 30
+
+    @pytest.mark.asyncio
+    async def test_extract_and_report_reasoning_tokens_zero_and_none(self):
+        """#170 DEC-002 + DEC-003: aggregation must treat ``0`` as a
+        real measurement, NOT as a falsy "skip me." With one
+        attempt at ``0`` and one at ``None``, the aggregate is
+        ``0`` (sum of non-None values is ``0``) — distinct from
+        the all-None → ``None`` case."""
+        from clauditor._providers import ModelResult
+
+        spec = self._spec()
+        bad = ModelResult(
+            response_text="not-json",
+            text_blocks=["not-json"],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=0,
+        )
+        good_payload = json.dumps(
+            {"Items": {"default": [{"title": "Hello"}]}}
+        )
+        good = ModelResult(
+            response_text=good_payload,
+            text_blocks=[good_payload],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[bad, good]),
+        ):
+            report = await extract_and_report(
+                "output", spec, skill_name="reasoning-extract"
+            )
+        assert report.reasoning_tokens == 0
+        assert report.reasoning_tokens is not None
+

@@ -279,7 +279,7 @@ the CLI layer is an extend, not a redesign.
 
 - **CLI**: `--no-api-key` flag on `validate`, `grade`, `capture`,
   `run`. When set, constructs the env dict via
-  `env_without_api_key()` in `runner.py`; passes as
+  `env_without_api_key()` in `_harnesses/_claude_code.py`; passes as
   `spec.run(env_override=env)`.
 - **Spec field**: NONE. Auth source is environmental, not
   skill-intrinsic (DEC-004 of
@@ -334,6 +334,576 @@ the same `{api,cli,auto}` vocabulary but thread to different seams.
 
 Traces to DEC-003, DEC-008, DEC-012, DEC-017 of
 `plans/super/86-claude-cli-transport.md`.
+
+### Four-layer precedence — grading provider (#146)
+
+`grading_provider` for the LLM-grader calls (which provider's SDK
+handles the Layer 2/3 grading call), introduced in #146:
+
+- **CLI flag**: `--grading-provider {anthropic,openai,auto}` on all
+  six LLM-mediated commands (`grade`, `extract`, `triggers`,
+  `compare --blind`, `propose-eval`, `suggest`). Validated by the
+  shared `_provider_choice` argparse type helper in
+  `src/clauditor/cli/__init__.py`.
+- **Env var**: `CLAUDITOR_GRADING_PROVIDER={anthropic,openai,auto}`.
+  Whitespace-only values are normalized to `None` (treated as unset)
+  so an accidental `export CLAUDITOR_GRADING_PROVIDER=" "` does not
+  override everything.
+- **Spec field**: `EvalSpec.grading_provider` — per-skill preference
+  set by the skill author in `eval.json`. Validated at load time
+  against `{"anthropic", "openai", "auto"}`. Legacy `null` (post-
+  JSON-decode `None`) is silently treated as "unset" so #145-vintage
+  specs round-trip unchanged (DEC-008).
+- **Default**: `"auto"` — the auto-inference layer (see below)
+  decides the concrete provider from `grading_model`.
+
+Resolution lives in
+`src/clauditor/cli/__init__.py::_resolve_grading_provider` (the thin
+CLI wrapper) which delegates to the pure
+`clauditor._providers.resolve_grading_provider(cli, env, spec, model)`
+helper. Like `_resolve_grader_transport`, the resolution is
+centralized at the CLI layer because grader calls are direct
+`await call_model(...)` invocations from the six grader
+orchestrators — they are not routed through `SkillSpec.run`. The
+centralized helper keeps whitespace normalization, layer
+validation, and exit-2 routing on `ValueError` consistent across
+all six commands.
+
+**Novel: auto-inference layer.** Unlike the prior four anchors
+(`timeout`, `transport`, `skill_runner_transport`,
+`allow_hang_heuristic`), `grading_provider` adds a fifth resolution
+step that fires when the winning value is `"auto"` (or unset and
+falls through to the default `"auto"`):
+
+- `claude-*` model prefix → `"anthropic"`.
+- `gpt-*` or `o[0-9]+*` model prefix → `"openai"` (the o-series
+  branch forward-compats reasoning models per #145 DEC-005).
+- Any other non-empty model string → `ValueError` ("cannot infer
+  provider from unknown model prefix … — set `--grading-provider`
+  explicitly"). DEC-003 chose strict prefix-match over silent
+  fallback so a typo like `gtp-5.4` raises a crisp actionable
+  error at resolve time rather than silently routing the wrong
+  provider's SDK and surfacing as an opaque 400.
+- `model is None` AND every precedence layer is `"auto"` →
+  falls back to `"anthropic"` (subscription-first historical
+  default per issue #182 / DEC-001b). Pre-#146 specs that omit
+  both `grading_provider` and `grading_model` resolve cleanly
+  to anthropic instead of raising the hostile
+  "provide grading_provider or grading_model" error.
+
+The auto-inference layer lives in
+`clauditor._providers.infer_provider_from_model` and is invoked by
+`resolve_grading_provider` only when the winning precedence value
+is `"auto"`. The effective model used for inference follows the
+operator-intent direction at the CLI seam: `args.model` (when the
+command exposes a `--model` flag) wins over `eval_spec.grading_model`
+so an operator passing `--model gpt-5.4 --grading-provider auto`
+gets OpenAI even when the spec author wrote `claude-sonnet-4-6`.
+
+**Companion knob — `grading_model` (nullable, post-#182).** #146
+promoted `EvalSpec.grading_model` from `str` to `str | None`, and
+issue #182 / DEC-004b flipped the dataclass default to `None`. The
+provider-aware default-picker
+`clauditor._providers.resolve_grading_model(eval_spec, provider)`
+returns `eval_spec.grading_model` when non-`None`, else the
+Anthropic-default (`"claude-sonnet-4-6"`) for `provider="anthropic"`
+or the OpenAI-default (`_providers._openai.DEFAULT_MODEL_L3` —
+currently `"gpt-5.4"`) for `provider="openai"`. Each grader
+orchestrator calls `resolve_grading_model(...)` rather than reading
+`eval_spec.grading_model` directly so the right per-provider
+default fires.
+
+**Default flip completed — DEC-001b / DEC-004b (#182).** #146 split
+the dataclass-default flip into two stories because doing it in
+lockstep with the field-shape changes would have broken six CLI
+files and several orchestrators that resolved provider via the
+falsy-`None` short-circuit `eval_spec.grading_provider or
+"anthropic"`. The deferred work landed in #182:
+
+- **DEC-001b (shipped in #182)** — flip default
+  `grading_provider: None → "auto"`. The shipped behavior is
+  fully consistent: every CLI seam now routes through the
+  four-layer `_resolve_grading_provider` helper, and
+  `infer_provider_from_model(None)` falls back to `"anthropic"`
+  (subscription-first historical default) so pre-#146 specs that
+  omit both `grading_provider` and `grading_model` grade against
+  anthropic with byte-identical output to today. `to_dict` omits
+  the field when it equals `"auto"` (or `None` from legacy
+  specs), matching the `transport` / `harness` pattern.
+- **DEC-004b (shipped in #182)** — flip default
+  `grading_model: "claude-sonnet-4-6" → None`. The
+  `_validate_provider_model` runtime guard was already removed in
+  #146; the per-flight CLI coherence check in grade.py / extract.py
+  / compare.py was retired in #182 because the motivating
+  regression (Claude default sent to OpenAI backend) is
+  structurally gone once the default is `None`. An
+  explicit-but-mismatching spec value still surfaces as a clean
+  SDK 400 with the right blame. `to_dict` omits the field when
+  it equals `None`.
+
+Companion code: do NOT reintroduce the legacy
+`eval_spec.grading_provider or "anthropic"` short-circuit; always
+go through `_resolve_grading_provider`. The pure resolver +
+auto-inference + per-provider default-picker stack is the only
+sanctioned path.
+
+Canonical implementation paths:
+
+- Pure helpers (no I/O):
+  `clauditor._providers.infer_provider_from_model`,
+  `clauditor._providers.resolve_grading_provider`,
+  `clauditor._providers.resolve_grading_model`.
+- CLI wrappers (own stderr + `SystemExit(2)` routing):
+  `clauditor.cli._resolve_grading_provider`,
+  `clauditor.cli._provider_choice` (argparse `type=` validator).
+- Pytest fixture dispatcher (mirrors the CLI seam in fixture-
+  land): `clauditor.pytest_plugin._dispatch_fixture_auth_guard` +
+  `_resolve_fixture_provider`.
+
+Traces to DEC-001a/b, DEC-003, DEC-004a/b, DEC-005, DEC-006,
+DEC-007, DEC-008 of
+`plans/super/146-grading-provider-precedence.md` plus the
+default-flip closeout in issue #182.
+Companion rules: `.claude/rules/multi-provider-dispatch.md` (the
+`check_provider_auth` dispatcher this resolver feeds),
+`.claude/rules/centralized-sdk-call.md` (the `call_model(provider=...)`
+seam this resolver targets),
+`.claude/rules/precall-env-validation.md` (the per-provider
+auth-missing-exception shape that fires after this resolver
+picks the provider),
+`.claude/rules/plan-contradiction-stop.md` (the deferred-default-
+flip migration discipline that drove the #146 → #182 split).
+
+### Four-layer precedence — harness (#151)
+
+`harness` for the skill-running subprocess (which CLI binary
+clauditor `exec`s to *run* the skill — `claude-code` for the
+Anthropic Claude Code harness, `codex` for the OpenAI Codex
+harness), introduced in #151:
+
+- **CLI flag**: `--harness {claude-code,codex,auto}` on the four
+  skill-running commands — `validate`, `grade`, `capture`, `run`.
+  Deliberately **NOT** wired on the LLM-mediated grader CLIs
+  (`extract`, `triggers`, `compare --blind`, `propose-eval`,
+  `suggest`) because those commands do not run a skill subprocess
+  — they call `call_model` directly and have no harness axis.
+  Validated by the shared `_harness_choice` argparse type helper
+  in `src/clauditor/cli/__init__.py`.
+- **Env var**: `CLAUDITOR_HARNESS={claude-code,codex,auto}`.
+  Whitespace-only values are normalized to `None` (treated as
+  unset) so an accidental `export CLAUDITOR_HARNESS=" "` does not
+  override everything. The CLI seam strips the value before
+  calling the pure resolver; the resolver also strips
+  defensively so direct callers (tests, future programmatic
+  invocations) get the same robustness.
+- **Spec field**: `EvalSpec.harness: str = "auto"` — per-skill
+  preference set by the skill author in `eval.json`. Validated at
+  load time against the literal set `{"claude-code", "codex",
+  "auto"}` per DEC-001 / DEC-008. `to_dict` skips emission when
+  the value equals the default `"auto"` so pre-#151 specs round-
+  trip byte-identical (omitting the field is the canonical "no
+  preference" shape).
+- **Default**: `"auto"` — auto-resolves at runtime via
+  `shutil.which("claude")` first, then `shutil.which("codex")`.
+  Hard-fails with a three-escape-hatch error message ("Install
+  one of the harness CLIs, or pin a harness explicitly via
+  `--harness=<name>`, the `CLAUDITOR_HARNESS=<name>` env var, or
+  the `harness` field in `eval.json`") when neither binary is
+  found, per DEC-002.
+
+Resolution lives in
+`src/clauditor/_providers/__init__.py::resolve_harness` (the
+pure helper, returning `tuple[str, str | None]` where the first
+element is the resolved name and the second is `"codex"` when
+the auto branch picked codex / `None` otherwise) and
+`src/clauditor/cli/__init__.py::_resolve_harness` (the thin CLI
+wrapper that owns stderr + `SystemExit(2)` routing on
+`ValueError` and fires the auto→codex announcement). Like
+`_resolve_grader_transport` and `_resolve_grading_provider`, the
+resolution is centralized at the CLI layer; the result is then
+threaded down to `SkillSpec.run` as a kwarg (see DEC-004 below).
+
+The harness construction dispatcher
+`src/clauditor/_harnesses/__init__.py::construct_harness(name)`
+materializes the named harness with deferred per-call imports
+of `_claude_code` and `_codex` (back-compat-shim discipline
+Pattern 3 — `__init__.py` is already imported by both
+submodules at protocol-class load time, so eager top-level
+imports here would circular-import). The dispatcher rejects
+`"auto"` explicitly: callers must resolve auto via
+`resolve_harness` before constructing. Per DEC-009 the
+dispatcher lives in `_harnesses/__init__.py` (mirroring
+`call_model` in `_providers/__init__.py`), keeping one seam per
+concern — PATH lookup belongs to the resolver, instance
+construction belongs to the harness package.
+
+The resolved harness threads into `SkillSpec.run` via the new
+keyword-only `harness_name_override: str | None = None` kwarg
+(per DEC-004). When non-`None`, `SkillSpec.run` materializes a
+fresh `SkillRunner` with the named harness rather than mutating
+the shared `self.runner.harness` attribute — construction cost
+is negligible and the immutability buys safe concurrent reuse.
+The five skill-running call sites (`cli/validate.py`,
+`cli/grade.py`, `cli/capture.py`, `cli/run.py`, plus the
+pytest fixture in `pytest_plugin.py`) all resolve the harness
+at the seam and pass `harness_name_override=` to `spec.run`.
+
+**PATH-lookup-in-pure-resolver precedent.** Unlike `transport`
+and `grading_provider`, the auto branch of `resolve_harness`
+reads PATH via `shutil.which` to pick a binary. This is the
+**first four-layer resolver in clauditor that touches PATH from
+the pure layer**, and it is acceptable because PATH is an
+operator-controlled contract, not local mutable state —
+operators set it once at session start, and the resolver's
+read is idempotent within a process. The pre-existing
+precedent for PATH reads inside `_providers/_auth.py` is
+`_claude_cli_is_available`, but that helper is consumed by the
+auth dispatcher (a different axis); `resolve_harness` is the
+first to combine the four-layer precedence shape with PATH
+discovery. Future resolvers needing PATH discovery (e.g. a
+hypothetical `editor` knob that finds `vim` / `nano` / `code`,
+or a `differ` knob that finds `delta` / `git diff` / `diff`)
+inherit the precedent and the rationale: keep the PATH read in
+the resolver layer, not in `EvalSpec.from_dict` (DEC-008
+explicitly rejected load-time PATH validation — author intent
+should not be conditioned on the validating machine's PATH,
+which differs from the running machine's).
+
+**Harness ≠ provider — distinct dispatch axes (DEC-010).** Codex
+is a **harness**, NOT a **provider**. The auth dispatcher
+`check_provider_auth(provider, cmd_name)` does NOT route Codex;
+the CLI seam directly calls
+`clauditor._providers._auth.check_codex_auth(cmd_name)` when the
+resolved harness is `"codex"`. The two checks compose
+independently when a `grade` invocation resolves both axes:
+`check_provider_auth` runs first (gating the LLM-grader call),
+then `check_codex_auth` runs second (gating the skill
+subprocess), and both fire when applicable per DEC-012.
+`CodexAuthMissingError` is a direct subclass of `Exception`,
+**NOT** a subclass of `AnthropicAuthMissingError` /
+`OpenAIAuthMissingError` / any helper-error class — preserving
+the structural-routing invariant per
+`.claude/rules/llm-cli-exit-code-taxonomy.md` and
+`.claude/rules/multi-provider-dispatch.md`. The CLI's `except`
+ladder gets a third sibling branch
+(`except CodexAuthMissingError as exc: ... return 2`) alongside
+the two provider-auth branches; the harness vs provider axis
+distinction is structural, not message-based. The auth check is
+strict-OR: at least one of `CODEX_API_KEY` or `OPENAI_API_KEY`
+must be set (whitespace-trimmed non-empty) per DEC-003. There
+is no CLI-fallback / subscription analog like Claude Pro/Max.
+
+**Auto→codex announcement (DEC-007).** When the auto branch
+picks `"codex"` (because `claude` is not on PATH but `codex`
+is), the CLI wrapper `_resolve_harness` fires
+`announce_auto_codex_harness()` once per process before
+returning the resolved name. The announcement names the env
+vars Codex needs (`CODEX_API_KEY` / `OPENAI_API_KEY`) and the
+two pin-it-explicitly escape hatches (`--harness=claude-code`
+and `CLAUDITOR_HARNESS=claude-code`). Per the
+"Implicit-coupling announcements — an emerging family"
+subsection of `.claude/rules/centralized-sdk-call.md`, the
+helper lives in `_providers/_auth.py` because the notice is
+auth-coupled (it names the env vars users must export). Same
+print-and-flip + `Final[str]` constant + public-helper shape
+as `announce_implicit_no_api_key` (#95) and
+`announce_call_anthropic_deprecation` (#144). Explicit non-
+`"auto"` selections at any precedence layer (and auto resolving
+to `"claude-code"`) do NOT fire the announcement — the notice
+exists to surface the *implicit* fallback decision to surprised
+users, not to re-announce what the user typed.
+
+**`--baseline` arm propagation (DEC-013).** The `--baseline`
+branch of `cli/grade.py::cmd_grade` propagates the resolved
+harness to BOTH the primary and baseline `spec.run` calls —
+there is no separate `--baseline-harness` flag. The A/B
+comparison's whole point is to isolate the "with skill vs
+without skill" variable; allowing the harness to differ
+between the two arms would muddy the delta with a confound. The
+baseline arm constructs a fresh `SkillRunner` with the override
+harness via `construct_harness(harness_name)` (rather than
+mutating `spec.runner.harness`) so the primary and baseline
+runs each get a clean harness instance with no shared mutable
+state. When the resolved harness is `"claude-code"` (the
+default `SkillRunner` shape) the baseline arm skips the
+override and uses `spec.runner` as-is — a small optimization
+that costs no expressiveness because both arms use the same
+harness class regardless.
+
+Canonical implementation paths:
+
+- Pure helpers (no I/O at the precedence-decision layer; the
+  one PATH read sits inside `resolve_harness`'s auto branch):
+  `clauditor._providers.resolve_harness`,
+  `clauditor._harnesses.construct_harness`.
+- Pure auth helpers:
+  `clauditor._providers._auth.check_codex_auth`,
+  `clauditor._providers._auth._codex_api_key_is_set`.
+- One-shot stderr announcement:
+  `clauditor._providers._auth.announce_auto_codex_harness` +
+  the `_announced_auto_codex_harness` flag and
+  `_AUTO_CODEX_ANNOUNCEMENT` `Final[str]` constant.
+- CLI wrappers (own stderr + `SystemExit(2)` routing,
+  announcement firing): `clauditor.cli._resolve_harness`,
+  `clauditor.cli._harness_choice` (argparse `type=` validator).
+- Spec-field load + serialization:
+  `clauditor.schemas.EvalSpec.harness` (default `"auto"`),
+  `EvalSpec.from_dict` validator block,
+  `EvalSpec.to_dict` (skips emission when value equals default).
+- Resolved-name threading:
+  `clauditor.spec.SkillSpec.run(*, harness_name_override=...)`,
+  which calls `construct_harness` and materializes a fresh
+  `SkillRunner` when the override is non-`None`.
+- CLI call sites (skill-running commands only — not LLM-grader
+  CLIs): `cli/validate.py::cmd_validate`,
+  `cli/grade.py::cmd_grade` (both the primary arm and the
+  `--baseline` arm), `cli/capture.py::cmd_capture`,
+  `cli/run.py::cmd_run`. Each calls `_resolve_harness(args,
+  spec.eval_spec)`, dispatches `check_codex_auth(cmd_name)`
+  when the resolved name is `"codex"`, and threads
+  `harness_name_override=harness_name` into `spec.run`.
+- Pytest fixture: `clauditor.pytest_plugin.clauditor_spec` —
+  honors `eval_spec.harness` automatically. The factory reads
+  the spec field (when set to a non-`"auto"` value) and threads
+  it as `harness_name_override` to `spec.run`. Operator-intent
+  `harness_name_override=` passed to the fixture wins over the
+  spec field per DEC-005, mirroring the four-layer CLI
+  precedence inside fixture-land.
+
+Traces to DEC-001 through DEC-013 of
+`plans/super/151-harness-precedence.md`. Companion rules:
+`.claude/rules/harness-protocol-shape.md` (the protocol surface
+`construct_harness` materializes; canonical implementations of
+`ClaudeCodeHarness` and `CodexHarness`),
+`.claude/rules/centralized-sdk-call.md` (the implicit-coupling
+announcement family `announce_auto_codex_harness` belongs to),
+`.claude/rules/precall-env-validation.md` (the
+`CodexAuthMissingError`-as-sibling-of-`Exception` shape and the
+distinct exit-2 routing branch alongside the provider auth
+classes),
+`.claude/rules/multi-provider-dispatch.md` (the structural
+routing invariant the harness-vs-provider axis distinction
+preserves — `check_provider_auth` does NOT route Codex),
+`.claude/rules/back-compat-shim-discipline.md` (Pattern 3: the
+deferred per-call imports inside `construct_harness` that keep
+test patches on `clauditor._harnesses._claude_code.ClaudeCodeHarness`
+/ `clauditor._harnesses._codex.CodexHarness` working).
+
+### Pytest fixture mirror — operator-intent precedence in fixture-land (#155)
+
+The CLI seams (`grade`, `extract`, `triggers`, `compare --blind`,
+`propose-eval`, `suggest`, `validate`, `capture`, `run`) and the
+pytest fixture seams now mirror each other on every multi-axis
+precedence resolver above (`harness`, `grading_provider`,
+`grading_model`). The fixture seam is a **factory-fixture mirror**:
+each fixture exposes a `_factory(...)` callable whose kwargs are
+the operator-intent layer at the call site, and the factory closes
+over the pytest CLI options + env vars + spec fields to compose the
+same operator > author > default direction the CLI honors.
+
+The mirror is intentionally asymmetric across the four fixtures —
+**three distinct precedence shapes** ship in #155, each tuned to
+the seam's available context:
+
+**Shape A — `clauditor_runner` (harness axis, no spec layer).**
+The runner-factory fixture does not load an `EvalSpec`, so only
+the operator-intent and default layers apply. Four layers:
+
+1. Factory `harness=` kwarg — operator intent at the call site.
+2. `--clauditor-harness` pytest option — operator intent at
+   session start.
+3. `CLAUDITOR_HARNESS` env var — operator intent in the shell.
+4. Default `"auto"` — `resolve_harness(..., spec_value=None)`
+   delegates to PATH lookup (`claude` first, then `codex`).
+
+The author layer (`EvalSpec.harness`) is structurally absent, NOT
+silently skipped. A test that wants spec-author intent honored must
+use `clauditor_spec` (Shape B) instead. This trim is intentional
+per DEC-006 (cross-axis isolation): `clauditor_runner` is the
+operator-only seam; mixing in spec-author intent at the runner
+factory would re-introduce the "harness ≠ provider" axis confusion
+DEC-010 of #151 explicitly rejected. When the resolved harness is
+`"codex"`, an eager `check_codex_auth("runner")` fires per DEC-005
+so a missing-key surfaces as a `CodexAuthMissingError` (sibling of
+`Exception`) at fixture setup rather than a deep subprocess error
+later.
+
+**Shape B — `clauditor_spec` (harness axis, spec layer only).**
+The spec-loading fixture honors `EvalSpec.harness` (when set to a
+concrete value, not `"auto"`) and threads it as
+`harness_name_override` to `SkillSpec.run`. Operator-intent layers
+do NOT apply at this fixture — there is no `harness=` factory
+kwarg, no pytest CLI option consulted, no env var consulted. The
+operator-intent layers live on `clauditor_runner`'s factory; the
+spec-author layer lives here. Two seams, one axis, no overlap.
+When the spec author declared `harness="codex"`, the fixture also
+fires an eager `check_codex_auth("spec")` per DEC-005 — mirroring
+the runner-side guard so any test using either fixture sees the
+same crisp `CodexAuthMissingError`.
+
+**Shape C — `clauditor_grader` / `clauditor_blind_compare` /
+`clauditor_triggers` (provider + model axes, full mirror).** The
+three grading fixtures expose a five-layer precedence on each axis,
+mirroring the CLI seam's `_resolve_grading_provider` /
+`resolve_grading_model` chain:
+
+1. Factory `provider=` / `model=` kwarg — operator intent at the
+   call site (highest precedence per DEC-007).
+2. `--clauditor-grading-provider` / `--clauditor-model` pytest
+   option — operator intent at session start.
+3. `CLAUDITOR_GRADING_PROVIDER` env var (provider only — no
+   `CLAUDITOR_MODEL` env var ships in #155 per DEC-010).
+4. `EvalSpec.grading_provider` / `EvalSpec.grading_model` — author
+   intent.
+5. Default — `"auto"` (provider, with auto-inference from model)
+   or per-provider model default (`"claude-sonnet-4-6"` /
+   `_providers._openai.DEFAULT_MODEL_L3`).
+
+Both axes flow through the same pure resolver chain
+(`resolve_grading_provider` + `resolve_grading_model`) the CLI
+uses, so a fixture caller and an operator running `clauditor
+grade` get the same provider+model resolution from the same
+`EvalSpec`. The auth dispatch fires per-provider via
+`_dispatch_fixture_auth_guard`, which mirrors the CLI's
+`check_provider_auth` ladder with distinct exception classes
+(`AnthropicAuthMissingError` / `OpenAIAuthMissingError`) so
+fixture callers route on a structural `except` ladder per
+`.claude/rules/multi-provider-dispatch.md`. The Anthropic branch
+retains the `CLAUDITOR_FIXTURE_ALLOW_CLI` opt-in toggle (relaxed
+`check_any_auth_available` vs strict `check_api_key_only`) per #86
+DEC-009; the OpenAI branch is always strict (no CLI-fallback /
+subscription analogue per #145 DEC-002).
+
+**Shape A vs Shape B — why the asymmetry is load-bearing.**
+`clauditor_runner` is operator-only because it has no spec to
+read; `clauditor_spec` is author-only because it is the spec-load
+seam itself, and mixing operator-intent layers at the spec-load
+boundary would let a `--clauditor-harness` flag silently override
+a skill author's explicit `EvalSpec.harness` even for tests that
+deliberately probe author intent. The five grading fixtures (Shape
+C) compose both layers because they wrap a spec-load AND a grader
+call, so they have BOTH author intent (in the loaded spec) AND
+operator intent (factory kwargs + pytest options + env). Per DEC-007
+of #155, the operator-intent factory kwarg always wins at the call
+site, mirroring the CLI's CLI-flag-wins-over-spec direction.
+
+**Eager `check_codex_auth` at TWO seams, not one (DEC-005).**
+Both `clauditor_runner` (when its resolved harness is `"codex"`)
+AND `clauditor_spec` (when `eval_spec.harness == "codex"`) fire
+the codex auth guard eagerly, before returning to the test body.
+The double-guard mirrors the CLI's `cli/grade.py::cmd_grade` shape
+(`_resolve_harness` resolves the harness; `check_codex_auth`
+dispatches the guard) and ensures any test using either fixture
+sees the same `CodexAuthMissingError` shape at setup time. The
+two seams are independent: `clauditor_runner` does not load a
+spec, so its guard fires on the resolved-from-PATH-or-env-or-CLI
+harness; `clauditor_spec` does load a spec, so its guard fires on
+the spec-author preference. A test using both fixtures sees both
+guards fire (when applicable); a test using only one sees only
+that seam's guard.
+
+**Hard break, not back-compat shim.** Per DEC-002 / DEC-009 of
+issue #155, the pre-#155 value-fixture form
+(`def test(clauditor_runner): clauditor_runner.run("foo")`) is a
+hard break — `clauditor_runner` is now a factory and callers must
+invoke `clauditor_runner()` to get the runner. There is no
+back-compat shim because the value-fixture shape conflicts
+structurally with the per-call `harness=` kwarg the factory needs;
+keeping a shim would defeat the whole point of the conversion.
+Migration is mechanical (search for `clauditor_runner.run(` →
+`clauditor_runner().run(`) and the CHANGELOG documents the
+recipe. Companion discipline:
+`.claude/rules/back-compat-shim-discipline.md` codifies the
+class-identity invariants (Pattern 2) shims must preserve when
+they ARE shipped — this case ships none, but the discipline
+informed the decision to break loudly rather than degrade
+silently.
+
+**B1 / non-mutating per-call env scrub.** A subtle pitfall
+discovered in #155 QG pass 4: `clauditor_spec`'s factory tempts
+the implementer to pre-compute `env_without_api_key()` outside
+the per-call `_run_with_overrides` closure (since the
+`--clauditor-no-api-key` option is session-scoped). Doing so
+defaults the scrub to claude-code semantics (strips
+`OPENAI_API_KEY`), which silently breaks codex callers when the
+resolved harness is codex — the eager `check_codex_auth` accepts
+the key from `os.environ`, but the subprocess inherits a stripped
+env and fails with no auth. The fix is to defer the
+`env_without_api_key(harness_name=...)` call until inside the
+per-call wrapper, after the effective harness is resolved. This
+is the inverse failure mode of
+`.claude/rules/test-infra-shutil-which-coupling.md`, where
+pre-computed `shutil.which` patches couple unrelated resolvers; here
+the pre-computed scrub couples unrelated harness backends. The
+canonical implementation defers the call inside
+`_run_with_overrides` per DEC-006 / US-007.
+
+Canonical implementation paths:
+
+- Factory fixture (Shape A — operator-only, four layers):
+  `src/clauditor/pytest_plugin.py::clauditor_runner` — closes over
+  `request.config.getoption("--clauditor-harness")`, env via
+  `os.environ.get("CLAUDITOR_HARNESS")`, and the factory `harness=`
+  kwarg. Calls `clauditor._providers.resolve_harness(cli, env, None)`
+  (note `spec_value=None` — no spec at this seam) then
+  `check_codex_auth("runner")` when name == `"codex"`. Materializes
+  a fresh `SkillRunner` via `construct_harness(name)` for non-default
+  harnesses; preserves the `--clauditor-claude-bin` plumbing for the
+  default `"claude-code"` path.
+- Spec fixture (Shape B — author-only, one layer):
+  `src/clauditor/pytest_plugin.py::clauditor_spec` — reads
+  `spec.eval_spec.harness` (when set to a concrete value) and threads
+  it as `harness_name_override=` to `SkillSpec.run`. Eager
+  `check_codex_auth("spec")` fires when the spec author declared
+  `harness="codex"`. Same-harness skip layer (defense-in-depth)
+  avoids reconstructing a runner with the same harness class but
+  losing the fixture's `--clauditor-claude-bin` configuration.
+- Grading fixtures (Shape C — full five-layer mirror):
+  `src/clauditor/pytest_plugin.py::clauditor_grader`,
+  `clauditor_blind_compare`, `clauditor_triggers`. Each closes over
+  `--clauditor-grading-provider` / `--clauditor-model` pytest
+  options, accepts `provider=` / `model=` factory kwargs (operator
+  intent, kwarg > pytest option), loads the spec, dispatches
+  `_dispatch_fixture_auth_guard` and `_resolve_fixture_provider`,
+  then invokes the grader orchestrator with the resolved values.
+- Pure helpers (no I/O, mirror the CLI seam):
+  `src/clauditor/pytest_plugin.py::_resolve_fixture_provider` —
+  pure resolver mirroring the CLI's
+  `_resolve_grading_provider`. Threads `provider_override` (factory
+  kwarg or pytest option, kwarg wins at call site) as
+  `cli_override` to `clauditor._providers.resolve_grading_provider`,
+  honoring the same env > spec > auto chain. Does NOT swallow
+  `ValueError` (CodeRabbit finding on PR #164) — fail-fast on
+  misconfigured spec / CLI override at test setup.
+- Auth dispatcher (mirror of `check_provider_auth`):
+  `src/clauditor/pytest_plugin.py::_dispatch_fixture_auth_guard` —
+  routes by resolved provider (anthropic strict/relaxed via
+  `CLAUDITOR_FIXTURE_ALLOW_CLI`; openai always strict). Distinct
+  exception classes per `.claude/rules/multi-provider-dispatch.md`.
+
+Test-infra coupling: the autouse `shutil.which` pin in
+`tests/conftest.py:754` (originally from #86 to force `transport=
+"auto"` to API) needs a parallel `monkeypatch.setenv("CLAUDITOR_HARNESS",
+"claude-code")` line so the new harness resolver short-circuits at
+the env layer rather than landing on the `which → None` path and
+hard-failing every test in the suite. Pattern documented in
+`.claude/rules/test-infra-shutil-which-coupling.md` (the autouse
+clobbering hazard); #155 DEC-011 inherits the recipe.
+
+Traces to DEC-001 through DEC-012 of
+`plans/super/155-pytest-fixtures-parametrize.md`. Companion rules:
+`.claude/rules/multi-provider-dispatch.md` (the structural-routing
+invariant the distinct fixture-side exception classes preserve),
+`.claude/rules/precall-env-validation.md` (the eager auth-guard
+pattern at the fixture seam, mirroring the CLI's
+`check_provider_auth` shape and `CodexAuthMissingError`-as-sibling-
+of-`Exception` discipline), `.claude/rules/back-compat-shim-discipline.md`
+(the value→factory hard break — Pattern 2 ≠ here, but the
+discipline's "don't ship a shim that silently degrades" posture
+informs the decision),
+`.claude/rules/test-infra-shutil-which-coupling.md` (the autouse-
+PATH-pin coupling the new harness resolver inherits at fixture
+collection time).
 
 ### Implicit coupling at the operator-intent layers
 

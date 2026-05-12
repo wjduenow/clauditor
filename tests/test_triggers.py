@@ -71,7 +71,7 @@ def _mock_anthropic_result(
     """Return an :class:`AnthropicResult` shaped like a successful helper call.
 
     After bead ``clauditor-24h.3`` triggers.py routes through
-    ``clauditor._anthropic.call_anthropic`` instead of instantiating its
+    ``clauditor._providers.call_model`` instead of instantiating its
     own ``AsyncAnthropic`` client, so tests stub the helper and hand
     back an ``AnthropicResult`` directly.
     """
@@ -259,7 +259,7 @@ class TestClassifyQuery:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "match"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "do it", True, "test-model"
             )
@@ -272,7 +272,7 @@ class TestClassifyQuery:
         call = _mock_call_anthropic(
             '{"triggered": false, "confidence": 0.8, "reasoning": "nope"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "unrelated", False, "test-model"
             )
@@ -284,7 +284,7 @@ class TestClassifyQuery:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.6, "reasoning": "maybe"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "unrelated", False, "test-model"
             )
@@ -294,7 +294,7 @@ class TestClassifyQuery:
     @pytest.mark.asyncio
     async def test_parse_failure_defaults(self):
         call = _mock_call_anthropic("garbage response")
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "query", True, "test-model"
             )
@@ -307,7 +307,7 @@ class TestClassifyQuery:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "ok"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "query", True, "test-model"
             )
@@ -319,7 +319,7 @@ class TestClassifyQuery:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "ok"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             await classify_query(
                 "skill", "desc", "query", True, "my-model"
             )
@@ -331,7 +331,7 @@ class TestClassifyQuery:
     async def test_empty_text_blocks_falls_back_to_no_text(self):
         """A helper response with zero text blocks yields the 'no text' branch."""
         call = AsyncMock(return_value=_mock_anthropic_result(""))
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "query", True, "test-model"
             )
@@ -352,7 +352,7 @@ class TestClassifyQuery:
         from clauditor._anthropic import AnthropicHelperError
 
         call = AsyncMock(side_effect=AnthropicHelperError("rate limited"))
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "query", True, "test-model"
             )
@@ -373,7 +373,7 @@ class TestClassifyQuery:
         from clauditor._anthropic import AnthropicHelperError
 
         call = AsyncMock(side_effect=AnthropicHelperError("auth failure"))
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             result = await classify_query(
                 "skill", "desc", "unrelated query", False, "test-model"
             )
@@ -381,6 +381,37 @@ class TestClassifyQuery:
         assert result.predicted_trigger is False
         assert result.passed is False
         assert "API error" in result.reasoning
+
+    @pytest.mark.asyncio
+    async def test_classify_query_returns_failed_result_on_openai_helper_error(
+        self,
+    ):
+        """#145 QG pass 1: an :class:`OpenAIHelperError` from the OpenAI
+        backend must be caught with the same graceful-degradation contract
+        as :class:`AnthropicHelperError`. Without this, a single OpenAI
+        failure (auth, rate-limit exhaustion, conn error, 5xx) escapes
+        ``asyncio.gather`` and aborts the whole ``test_triggers`` batch
+        when ``provider="openai"``.
+        """
+        from clauditor._providers import OpenAIHelperError
+
+        call = AsyncMock(side_effect=OpenAIHelperError("simulated openai"))
+        with patch("clauditor._providers.call_model", call):
+            result = await classify_query(
+                "skill",
+                "desc",
+                "query",
+                True,
+                "test-model",
+                provider="openai",
+            )
+        assert result.predicted_trigger is False
+        assert result.passed is False
+        assert result.confidence == 0.0
+        assert "API error" in result.reasoning
+        assert "simulated openai" in result.reasoning
+        assert result.input_tokens == 0
+        assert result.output_tokens == 0
 
 
 # --- test_triggers tests ---
@@ -404,7 +435,7 @@ class TestTestTriggers:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             report = await run_test_triggers(spec, model="test-model")
         assert len(report.results) == 3
         assert report.model == "test-model"
@@ -419,7 +450,7 @@ class TestTestTriggers:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             report = await run_test_triggers(spec)
         # 3 queries × 500/200 per mock
         assert report.input_tokens == 1500
@@ -436,9 +467,70 @@ class TestTestTriggers:
         call = _mock_call_anthropic(
             '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
         )
-        with patch("clauditor._anthropic.call_anthropic", call):
+        with patch("clauditor._providers.call_model", call):
             report = await run_test_triggers(spec)
 
         # All 3 queries should have been sent through the helper
         assert call.await_count == 3
         assert len(report.results) == 3
+
+
+class TestTriggersGradingProviderOpenAI:
+    """#145 US-010: when ``eval_spec.grading_provider == "openai"``,
+    ``test_triggers`` resolves the provider once from the spec and
+    threads it into every per-query ``classify_query`` call."""
+
+    @pytest.mark.asyncio
+    async def test_triggers_stamps_openai_when_grading_provider_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = _make_eval_spec(
+            should_trigger=["a", "b"],
+            should_not_trigger=["c"],
+        )
+        spec.grading_provider = "openai"
+        call = _mock_call_anthropic(
+            '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
+        )
+        with patch("clauditor._providers.call_model", call):
+            # #146 US-006: orchestrators no longer read
+            # ``eval_spec.grading_provider`` directly — pass
+            # ``provider="openai"`` explicitly.
+            await run_test_triggers(spec, model="gpt-5.4", provider="openai")
+        # All 3 per-query call_model invocations must have received
+        # ``provider="openai"``.
+        assert call.await_count == 3
+        for c in call.await_args_list:
+            assert c.kwargs["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_triggers_defaults_to_anthropic_when_unset(self) -> None:
+        """Back-compat regression: a spec with ``grading_provider=None``
+        still routes through anthropic."""
+        spec = _make_eval_spec(
+            should_trigger=["a"],
+        )
+        # grading_provider default = None
+        call = _mock_call_anthropic(
+            '{"triggered": true, "confidence": 0.9, "reasoning": "yes"}'
+        )
+        with patch("clauditor._providers.call_model", call):
+            await run_test_triggers(spec)
+        assert call.await_count == 1
+        assert call.await_args.kwargs["provider"] == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_classify_query_provider_kwarg_threaded(self) -> None:
+        """``classify_query`` accepts a ``provider`` kwarg and threads
+        it directly into ``call_model``."""
+        call = _mock_call_anthropic(
+            '{"triggered": true, "confidence": 0.9, "reasoning": "ok"}'
+        )
+        with patch("clauditor._providers.call_model", call):
+            await classify_query(
+                "skill", "desc", "q", True, "test-model",
+                provider="openai",
+            )
+        call.assert_awaited_once()
+        assert call.await_args.kwargs["provider"] == "openai"

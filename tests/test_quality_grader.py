@@ -354,10 +354,14 @@ class TestGradingReportTransport:
         report = self._report()
         assert report.transport_source == "api"
 
-    def test_to_json_schema_version_bumped_to_2(self):
+    def test_to_json_schema_version_bumped_to_4(self):
+        # Post-#170 US-004 the on-disk version is 5 (added
+        # ``reasoning_tokens``). The test name is preserved for
+        # historical regression-grep continuity; the assertion
+        # tracks the current MAX_SCHEMA_VERSION for grading.json.
         report = self._report(transport_source="cli")
         data = json.loads(report.to_json())
-        assert data["schema_version"] == 2
+        assert data["schema_version"] == 5
 
     def test_schema_version_is_first_key(self):
         """Per ``.claude/rules/json-schema-version.md``, schema_version
@@ -399,9 +403,10 @@ class TestGradingReportTransport:
         original = self._report(transport_source="cli")
         restored = GradingReport.from_json(original.to_json())
         assert restored.transport_source == "cli"
-        # v2 round-trip still emits v2.
+        # Post-#170 US-004 the round-trip emits v5 (added
+        # ``reasoning_tokens`` field).
         data = json.loads(restored.to_json())
-        assert data["schema_version"] == 2
+        assert data["schema_version"] == 5
 
 
 class TestBlindReportSchema:
@@ -449,6 +454,499 @@ class TestBlindReportSchema:
         report = self._report(transport_source="api")
         data = json.loads(report.to_json())
         assert data["transport_source"] == "api"
+
+
+class TestGradingReportProviderSource:
+    """#147 US-001: GradingReport persists a ``provider_source`` field
+    on disk at ``schema_version: 3``. The field defaults to
+    ``"anthropic"`` and reads through from :class:`ModelResult.provider`.
+    Legacy v1/v2 sidecars (no ``provider_source``) load with
+    ``provider_source="anthropic"`` defaulted."""
+
+    def _report(self, **overrides) -> GradingReport:
+        defaults = dict(
+            skill_name="provider-test",
+            results=_make_results([True]),
+            model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
+        )
+        defaults.update(overrides)
+        return GradingReport(**defaults)
+
+    def test_provider_source_defaults_to_anthropic(self):
+        report = self._report()
+        assert report.provider_source == "anthropic"
+
+    def test_grading_report_to_json_v3_emits_provider_source(self):
+        """to_json emits ``schema_version: 5`` first key (post-#170
+        US-004), ``provider_source`` field present."""
+        report = self._report(provider_source="openai")
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert next(iter(data)) == "schema_version"
+        assert data["schema_version"] == 5
+        assert data["provider_source"] == "openai"
+
+    def test_grading_report_from_json_v3_round_trips(self):
+        """v3 from_json round-trips ``provider_source`` faithfully."""
+        original = self._report(provider_source="openai")
+        restored = GradingReport.from_json(original.to_json())
+        assert restored.provider_source == "openai"
+
+    def test_grading_report_from_json_v2_defaults_provider_source_to_anthropic(
+        self,
+    ):
+        """v2 sidecars (no ``provider_source``) default to
+        ``"anthropic"`` so pre-#147 history loads cleanly."""
+        v2_payload = json.dumps({
+            "schema_version": 2,
+            "skill_name": "legacy-v2",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "cli",
+            "results": [],
+        })
+        restored = GradingReport.from_json(v2_payload)
+        assert restored.provider_source == "anthropic"
+        assert restored.transport_source == "cli"
+
+    def test_grading_report_from_json_v1_defaults_both_legacy_fields(self):
+        """v1 sidecars (no ``transport_source``, no
+        ``provider_source``) default both fields."""
+        v1_payload = json.dumps({
+            "schema_version": 1,
+            "skill_name": "legacy-v1",
+            "model": "claude-sonnet-4-6",
+            "results": [],
+        })
+        restored = GradingReport.from_json(v1_payload)
+        assert restored.provider_source == "anthropic"
+        assert restored.transport_source == "api"
+
+    def test_provider_source_anthropic_emitted_explicitly_on_disk(self):
+        """v3 always emits ``provider_source`` on disk, even for the
+        default ``"anthropic"`` value, so the field is explicit and
+        round-trip is byte-stable."""
+        report = self._report()  # default provider_source="anthropic"
+        data = json.loads(report.to_json())
+        assert data["provider_source"] == "anthropic"
+
+
+class TestGradingReportHarness:
+    """#152 US-004: GradingReport persists a ``harness`` field on disk
+    at ``schema_version: 4``. The field defaults to ``"claude-code"``
+    and reads through from :class:`SkillResult.harness`. Legacy
+    v1/v2/v3 sidecars (no ``harness``) load with
+    ``harness="claude-code"`` defaulted."""
+
+    def _report(self, **overrides) -> GradingReport:
+        defaults = dict(
+            skill_name="harness-test",
+            results=_make_results([True]),
+            model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
+        )
+        defaults.update(overrides)
+        return GradingReport(**defaults)
+
+    def test_harness_defaults_to_claude_code(self):
+        report = self._report()
+        assert report.harness == "claude-code"
+
+    def test_to_json_emits_v4_with_harness(self):
+        """``to_json`` emits ``schema_version: 5`` first key (post-#170
+        US-004 bumped v4→v5 to add ``reasoning_tokens``),
+        ``harness`` field present after ``provider_source``."""
+        report = self._report(harness="codex")
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert next(iter(data)) == "schema_version"
+        assert data["schema_version"] == 5
+        assert data["harness"] == "codex"
+
+    def test_from_json_v4_round_trip(self):
+        """v4 from_json round-trips ``harness`` faithfully."""
+        original = self._report(harness="codex")
+        restored = GradingReport.from_json(original.to_json())
+        assert restored.harness == "codex"
+
+    def test_from_json_v3_defaults_harness_to_claude_code(self):
+        """v3 sidecars (no ``harness``) default to ``"claude-code"``
+        so pre-#152 history loads cleanly."""
+        v3_payload = json.dumps({
+            "schema_version": 3,
+            "skill_name": "legacy-v3",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "cli",
+            "provider_source": "openai",
+            "results": [],
+        })
+        restored = GradingReport.from_json(v3_payload)
+        assert restored.harness == "claude-code"
+        assert restored.provider_source == "openai"
+        assert restored.transport_source == "cli"
+
+    def test_from_json_v1_v2_legacy_still_load(self):
+        """v1 and v2 sidecars still load, with ``harness`` defaulted
+        to ``"claude-code"`` alongside the existing v1/v2 defaults."""
+        v1_payload = json.dumps({
+            "schema_version": 1,
+            "skill_name": "legacy-v1",
+            "model": "claude-sonnet-4-6",
+            "results": [],
+        })
+        restored_v1 = GradingReport.from_json(v1_payload)
+        assert restored_v1.harness == "claude-code"
+        assert restored_v1.provider_source == "anthropic"
+        assert restored_v1.transport_source == "api"
+
+        v2_payload = json.dumps({
+            "schema_version": 2,
+            "skill_name": "legacy-v2",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "cli",
+            "results": [],
+        })
+        restored_v2 = GradingReport.from_json(v2_payload)
+        assert restored_v2.harness == "claude-code"
+        assert restored_v2.provider_source == "anthropic"
+        assert restored_v2.transport_source == "cli"
+
+    def test_harness_claude_code_emitted_explicitly_on_disk(self):
+        """v4 always emits ``harness`` on disk, even for the default
+        ``"claude-code"`` value, so the field is explicit and
+        round-trip is byte-stable."""
+        report = self._report()  # default harness="claude-code"
+        data = json.loads(report.to_json())
+        assert data["harness"] == "claude-code"
+
+
+class TestBlindReportProviderSource:
+    """#144 US-005: BlindReport carries a ``provider_source`` field
+    that defaults to ``"anthropic"``. Per DEC-006 the field is
+    in-memory only this ticket — :meth:`to_json` does NOT include it;
+    #147 owns the on-disk schema bump."""
+
+    def _report(self, **overrides) -> BlindReport:
+        defaults = dict(
+            preference="a",
+            confidence=0.8,
+            score_a=0.9,
+            score_b=0.6,
+            reasoning="A is better",
+            model="claude-sonnet-4-6",
+        )
+        defaults.update(overrides)
+        return BlindReport(**defaults)
+
+    def test_provider_source_defaults_to_anthropic(self):
+        report = self._report()
+        assert report.provider_source == "anthropic"
+
+    def test_to_json_does_not_include_provider_source(self):
+        """DEC-006: sidecar JSON shape is unchanged this ticket."""
+        report = self._report(provider_source="openai")
+        data = json.loads(report.to_json())
+        assert "provider_source" not in data
+
+
+class TestProviderSourcePropagation:
+    """#144 US-005: ``ModelResult.provider`` flows through the async
+    grader wrappers (``grade_quality``, ``blind_compare``) into the
+    resulting report's ``provider_source`` field."""
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_propagates_provider_source(self):
+        from clauditor._providers import ModelResult
+
+        spec = _make_spec()
+        grading_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.85,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 0.8,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+        ]
+        fake = ModelResult(
+            response_text=json.dumps(grading_data),
+            text_blocks=[json.dumps(grading_data)],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(return_value=fake),
+        ):
+            report = await grade_quality("output", spec)
+        assert report.provider_source == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_propagates_provider_source(self):
+        from clauditor._providers import ModelResult
+
+        verdict = json.dumps(
+            {
+                "preference": "1",
+                "confidence": 0.8,
+                "score_1": 0.8,
+                "score_2": 0.4,
+                "reasoning": "r",
+            }
+        )
+        fake = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(return_value=fake),
+        ):
+            report = await blind_compare("query", "out_a", "out_b")
+        assert report.provider_source == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_provider_source_mixed(self):
+        """When the two parallel judges return different providers,
+        ``provider_source`` stamps ``"mixed"``."""
+        from clauditor._providers import ModelResult
+
+        verdict = json.dumps(
+            {
+                "preference": "1",
+                "confidence": 0.8,
+                "score_1": 0.8,
+                "score_2": 0.4,
+                "reasoning": "r",
+            }
+        )
+        fake_a = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+        )
+        fake_o = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[fake_a, fake_o]),
+        ):
+            report = await blind_compare("query", "out_a", "out_b")
+        assert report.provider_source == "mixed"
+
+
+class TestGradingProviderOpenAIWiring:
+    """#145 US-010: when ``eval_spec.grading_provider == "openai"``,
+    ``grade_quality`` and ``blind_compare`` route through the OpenAI
+    backend and stamp ``provider_source == "openai"`` on the returned
+    report."""
+
+    def _spec_with_openai(self) -> EvalSpec:
+        return EvalSpec(
+            skill_name="test-skill",
+            description="A test skill for unit tests",
+            grading_criteria=[
+                "Output contains actionable recommendations",
+                "Tone is professional and clear",
+                "All requested topics are covered",
+            ],
+            grading_provider="openai",
+        )
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_stamps_openai_when_grading_provider_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec_with_openai()
+        grading_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.85,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 0.8,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+        ]
+        fake = ModelResult(
+            response_text=json.dumps(grading_data),
+            text_blocks=[json.dumps(grading_data)],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            # #146 US-006: orchestrators no longer read
+            # ``eval_spec.grading_provider`` directly — the CLI seam
+            # resolves and threads ``provider`` through. Pass it
+            # explicitly here to mirror the production call shape.
+            report = await grade_quality(
+                "output", spec, model="gpt-5.4", provider="openai"
+            )
+        assert report.provider_source == "openai"
+        # Verify ``provider="openai"`` flowed through to call_model.
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_blind_compare_stamps_openai_when_grading_provider_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``blind_compare`` accepts a ``provider`` kwarg; both parallel
+        judge calls must use the SAME resolved provider value. The
+        composition helper :func:`blind_compare_from_spec` resolves it
+        from ``spec.eval_spec.grading_provider`` once, before the
+        ``asyncio.gather``, so the two sides cannot disagree."""
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        verdict = json.dumps(
+            {
+                "preference": "1",
+                "confidence": 0.8,
+                "score_1": 0.8,
+                "score_2": 0.4,
+                "reasoning": "r",
+            }
+        )
+        # Per .claude/rules/mock-side-effect-for-distinct-calls.md:
+        # ``blind_compare`` calls ``call_model`` twice (once per side
+        # of the position swap), so distinct results are wired through
+        # ``side_effect=[...]``. Both sides return ``provider="openai"``
+        # so ``provider_source`` lands as ``"openai"`` not ``"mixed"``.
+        side1 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        side2 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(side_effect=[side1, side2])
+        with patch("clauditor._providers.call_model", call_mock):
+            report = await blind_compare(
+                "query",
+                "out_a",
+                "out_b",
+                provider="openai",
+                model="gpt-5.4",
+            )
+        assert report.provider_source == "openai"
+        # Both calls received the same resolved provider.
+        assert call_mock.await_count == 2
+        for call in call_mock.await_args_list:
+            assert call.kwargs["provider"] == "openai"
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_defaults_to_anthropic_when_unset(
+        self,
+    ) -> None:
+        """Back-compat regression: a spec with ``grading_provider=None``
+        still routes through anthropic."""
+        from clauditor._providers import ModelResult
+
+        spec = _make_spec()  # grading_provider default = None
+        grading_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.85,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 0.8,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+        ]
+        fake = ModelResult(
+            response_text=json.dumps(grading_data),
+            text_blocks=[json.dumps(grading_data)],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            report = await grade_quality("output", spec)
+        assert report.provider_source == "anthropic"
+        assert call_mock.await_args.kwargs["provider"] == "anthropic"
+
+
+# Note: ``TestValidateProviderModel`` was retired in #146 US-006 along
+# with the ``_validate_provider_model`` runtime guard. The CLI seam now
+# resolves the per-provider default model via
+# ``clauditor._providers.resolve_grading_model`` BEFORE the orchestrator
+# runs, so the Anthropic-default never reaches the OpenAI backend.
+# Coverage of the resolver lives in
+# ``tests/test_providers.py::TestResolveGradingModel``.
 
 
 class TestParseGradingResponse:
@@ -545,12 +1043,41 @@ class TestBuildGradingPrompt:
         assert "professional and clear" in prompt
         assert "requested topics are covered" in prompt
 
-    def test_criteria_are_numbered(self):
+    def test_criteria_are_wrapped_in_tags(self):
+        """Criteria are rendered as ``<criterion id="N">text</criterion>``
+        (NOT a leading-``N.`` numbered list). gpt-5.4 echoed the ``"N. "``
+        prefix into the ``criterion`` field of each result object, which
+        broke the strict positional-zip parser per
+        ``.claude/rules/positional-id-zip-validation.md``. The tag wrapper
+        plus the explicit verbatim instruction below removes the prefix
+        the model would otherwise reproduce. See issue #183.
+        """
         spec = _make_spec()
         prompt = build_grading_prompt(spec)
-        assert "1. Output contains actionable" in prompt
-        assert "2. Tone is professional" in prompt
-        assert "3. All requested topics" in prompt
+        assert (
+            '<criterion id="1">Output contains actionable'
+            in prompt
+        )
+        assert '<criterion id="2">Tone is professional' in prompt
+        assert '<criterion id="3">All requested topics' in prompt
+        # The pre-#183 leading-``N.`` shape must not reappear.
+        assert "1. Output contains actionable" not in prompt
+        assert "2. Tone is professional" not in prompt
+
+    def test_instructs_verbatim_echo_without_prefix(self):
+        """Issue #183: the prompt must tell the model not to echo any
+        leading number, tag, prefix, or rewording into the ``criterion``
+        field. The full prohibition set is pinned so a future prompt
+        edit that drops any clause trips this test (CodeRabbit nit on
+        PR #184).
+        """
+        spec = _make_spec()
+        prompt = build_grading_prompt(spec)
+        assert "verbatim text inside the corresponding <criterion>" in prompt
+        assert "no leading number" in prompt
+        assert "no tag" in prompt
+        assert "no prefix" in prompt
+        assert "no rewording" in prompt
 
     def test_asks_for_json_response(self):
         spec = _make_spec()
@@ -2955,4 +3482,850 @@ class TestCombineBlindResults:
         )
         assert report.transport_source == "cli"
 
+    def test_provider_source_default_anthropic(self):
+        """#144 US-005: ``provider_source`` defaults to ``"anthropic"``
+        on the both-fail / only-one-parsed / agreement branches."""
+        report = combine_blind_results(
+            parsed1=None,
+            parsed2=None,
+            text1="garbage1",
+            text2="garbage2",
+            run1_mapping="ab->12",
+            run2_mapping="ab->21",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+        )
+        assert report.provider_source == "anthropic"
+
+    def test_provider_source_propagated_through_all_branches(self):
+        """#144 US-005: ``provider_source`` flows through all four
+        branches (both-fail, only-one-parsed × 2, agreement)."""
+        # Both-fail.
+        r0 = combine_blind_results(
+            parsed1=None,
+            parsed2=None,
+            text1="g1",
+            text2="g2",
+            run1_mapping="ab->12",
+            run2_mapping="ab->21",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+            provider_source="openai",
+        )
+        assert r0.provider_source == "openai"
+
+        # Only-first-parsed.
+        r1 = combine_blind_results(
+            parsed1=self._parsed(preference="1"),
+            parsed2=None,
+            text1="ok",
+            text2="g",
+            run1_mapping="ab->12",
+            run2_mapping="ab->21",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+            provider_source="openai",
+        )
+        assert r1.provider_source == "openai"
+
+        # Only-second-parsed.
+        r2 = combine_blind_results(
+            parsed1=None,
+            parsed2=self._parsed(preference="1"),
+            text1="g",
+            text2="ok",
+            run1_mapping="ab->12",
+            run2_mapping="ab->21",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+            provider_source="openai",
+        )
+        assert r2.provider_source == "openai"
+
+        # Agreement / disagreement (both parsed) branch.
+        r3 = combine_blind_results(
+            parsed1=self._parsed(preference="1"),
+            parsed2=self._parsed(preference="2"),
+            text1="t1",
+            text2="t2",
+            run1_mapping="ab->12",
+            run2_mapping="ab->21",
+            model="m",
+            input_tokens=0,
+            output_tokens=0,
+            duration_seconds=0.0,
+            provider_source="openai",
+        )
+        assert r3.provider_source == "openai"
+
+
+class TestGradeQualityWithOpenAI:
+    """#145 US-011 — End-to-end: an :class:`EvalSpec` with
+    ``grading_provider="openai"`` runs L3 grading through the full
+    pipeline (prompt build -> ``call_model`` -> parse -> report build)
+    and produces a populated :class:`GradingReport` with
+    ``provider_source == "openai"`` plus per-criterion verdicts.
+
+    Acceptance criterion 2 of issue #145. Builds on the unit-level
+    wiring tests in :class:`TestGradingProviderOpenAIWiring` by
+    asserting on the full report surface (per-criterion results,
+    metric properties, token counts) rather than just the
+    provider-stamping signal.
+
+    ``grade_quality`` makes a single ``call_model`` invocation per
+    happy-path attempt (L3 only — L2 extraction is orchestrated
+    separately in :mod:`clauditor.spec` and is not part of the
+    ``grade_quality`` entry point), so this test uses
+    ``return_value=`` per the second-paragraph contract of
+    ``.claude/rules/mock-side-effect-for-distinct-calls.md``.
+    """
+
+    def _spec(self) -> EvalSpec:
+        return EvalSpec(
+            skill_name="rubric-skill",
+            description="A test skill for rubric grading",
+            grading_criteria=[
+                "Output contains actionable recommendations",
+                "Tone is professional and clear",
+                "All requested topics are covered",
+            ],
+            grading_provider="openai",
+        )
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_openai_e2e(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Full L3 path: spec.grading_provider="openai" flows through
+        ``call_model(provider="openai", ...)``, the mocked OpenAI
+        ``ModelResult`` is parsed into per-criterion verdicts, and the
+        returned :class:`GradingReport` is fully populated:
+
+        - ``provider_source == "openai"``
+        - per-criterion results aligned to the spec's criteria
+        - aggregated pass_rate / mean_score from parsed verdicts
+        - token counts from the mocked ``ModelResult``
+        """
+        from clauditor._providers import ModelResult
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec()
+        # JSON shape positionally aligned to spec.grading_criteria.
+        grading_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.92,
+                "evidence": "Three concrete next-step bullets at the end.",
+                "reasoning": "Each recommendation names an actor + action.",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.88,
+                "evidence": "No slang; consistent register throughout.",
+                "reasoning": "Sentence structure stays declarative.",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": False,
+                "score": 0.55,
+                "evidence": "Topic 3 (rollback) is not mentioned.",
+                "reasoning": "Two of three topics covered; one omitted.",
+            },
+        ]
+        verdict_text = json.dumps(grading_data)
+        fake = ModelResult(
+            response_text=verdict_text,
+            text_blocks=[verdict_text],
+            input_tokens=120,
+            output_tokens=240,
+            source="api",
+            provider="openai",
+        )
+        call_mock = AsyncMock(return_value=fake)
+        with patch("clauditor._providers.call_model", call_mock):
+            # #146 US-006: orchestrators no longer read
+            # ``eval_spec.grading_provider`` directly; pass
+            # ``provider="openai"`` explicitly to mirror the
+            # production CLI seam.
+            report = await grade_quality(
+                "fake skill output",
+                spec,
+                model="gpt-5.4",
+                provider="openai",
+            )
+
+        # Provider stamping (acceptance criterion 2 — primary signal).
+        assert report.provider_source == "openai"
+        # ``call_model`` was called exactly once with ``provider="openai"``
+        # — the spec field flowed through the resolver to the dispatcher.
+        assert call_mock.await_count == 1
+        assert call_mock.await_args.kwargs["provider"] == "openai"
+        # Per-criterion verdicts populated, positionally aligned to spec.
+        assert len(report.results) == 3
+        assert [r.criterion for r in report.results] == [
+            "Output contains actionable recommendations",
+            "Tone is professional and clear",
+            "All requested topics are covered",
+        ]
+        assert [r.passed for r in report.results] == [True, True, False]
+        # Aggregated metrics computed from per-criterion scores.
+        assert report.pass_rate == pytest.approx(2 / 3)
+        assert report.mean_score == pytest.approx(
+            (0.92 + 0.88 + 0.55) / 3
+        )
+        # Token counts propagated from the mocked ``ModelResult``.
+        assert report.input_tokens == 120
+        assert report.output_tokens == 240
+
+
+class TestGradingReportReasoningTokens:
+    """#170 US-004: GradingReport carries a nullable
+    ``reasoning_tokens`` field. ``schema_version`` bumps v4→v5 to
+    add the field on disk; legacy v1/v2/v3/v4 sidecars default
+    missing ``reasoning_tokens`` to ``None``. Sum semantics per
+    DEC-003: all-None inputs → ``None``; mixed → sum of non-None;
+    all-int → integer sum."""
+
+    def _report(self, **overrides) -> GradingReport:
+        defaults = dict(
+            skill_name="reasoning-test",
+            results=_make_results([True]),
+            model="claude-sonnet-4-6",
+            thresholds=GradeThresholds(),
+            metrics={},
+        )
+        defaults.update(overrides)
+        return GradingReport(**defaults)
+
+    def test_grading_report_reasoning_tokens_default_none(self):
+        report = self._report()
+        assert report.reasoning_tokens is None
+
+    def test_grading_report_to_json_emits_schema_version_5(self):
+        """to_json emits ``schema_version: 5`` first key (post-#170
+        US-004), ``reasoning_tokens`` field present after token
+        counts."""
+        report = self._report(reasoning_tokens=42)
+        raw = report.to_json()
+        data = json.loads(raw)
+        assert next(iter(data)) == "schema_version"
+        assert data["schema_version"] == 5
+        assert data["reasoning_tokens"] == 42
+
+    def test_grading_report_to_json_emits_reasoning_tokens_none(self):
+        """The ``reasoning_tokens`` field is always emitted, even
+        when ``None`` (carries semantic distinction "no count
+        surfaced" vs "count was zero")."""
+        report = self._report()  # default reasoning_tokens=None
+        data = json.loads(report.to_json())
+        assert "reasoning_tokens" in data
+        assert data["reasoning_tokens"] is None
+
+    def test_grading_report_reasoning_tokens_round_trips_42(self):
+        original = self._report(reasoning_tokens=42)
+        restored = GradingReport.from_json(original.to_json())
+        assert restored.reasoning_tokens == 42
+
+    def test_grading_report_reasoning_tokens_round_trips_zero(self):
+        """#170 DEC-002: ``reasoning_tokens=0`` is a real value (the
+        model didn't reason on this call) and MUST round-trip
+        through ``to_json``/``from_json`` as ``0``, NOT collapse to
+        ``None`` via a truthiness coercion. The on-disk JSON value
+        is the integer ``0``, not the JSON ``null`` literal."""
+        original = self._report(reasoning_tokens=0)
+        raw = original.to_json()
+        data = json.loads(raw)
+        assert data["reasoning_tokens"] == 0
+        assert data["reasoning_tokens"] is not None
+        restored = GradingReport.from_json(raw)
+        assert restored.reasoning_tokens == 0
+        assert restored.reasoning_tokens is not None
+
+    def test_grading_report_reasoning_tokens_round_trips_none(self):
+        original = self._report()
+        restored = GradingReport.from_json(original.to_json())
+        assert restored.reasoning_tokens is None
+
+    def test_grading_report_from_json_v4_defaults_reasoning_tokens_to_none(
+        self,
+    ):
+        """v4 sidecars (no ``reasoning_tokens``) load with
+        ``reasoning_tokens=None`` defaulted so pre-#170 history
+        loads cleanly."""
+        v4_payload = json.dumps({
+            "schema_version": 4,
+            "skill_name": "legacy-v4",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "cli",
+            "provider_source": "openai",
+            "harness": "codex",
+            "input_tokens": 10,
+            "output_tokens": 20,
+            "results": [],
+        })
+        restored = GradingReport.from_json(v4_payload)
+        assert restored.reasoning_tokens is None
+        # Other v4 fields still populate correctly.
+        assert restored.harness == "codex"
+        assert restored.provider_source == "openai"
+        assert restored.transport_source == "cli"
+
+    def test_grading_report_from_json_v3_v2_v1_default_reasoning_tokens(
+        self,
+    ):
+        """All legacy schema versions default ``reasoning_tokens``
+        to ``None`` (preserves "no provider call surfaced a
+        count")."""
+        for version in (1, 2, 3):
+            payload = json.dumps({
+                "schema_version": version,
+                "skill_name": f"legacy-v{version}",
+                "model": "claude-sonnet-4-6",
+                "results": [],
+            })
+            restored = GradingReport.from_json(payload)
+            assert restored.reasoning_tokens is None, (
+                f"v{version} default reasoning_tokens should be None"
+            )
+
+    def test_grading_report_from_json_rejects_bool_reasoning_tokens(self):
+        """Quality Gate Pass 1 fix (#170 US-007): a malformed sidecar
+        with ``"reasoning_tokens": true`` MUST default to ``None``,
+        NOT silently coerce to ``1``. Symmetric with the writer-side
+        ``_extract_reasoning_tokens`` bool guard per DEC-006 and
+        ``.claude/rules/constant-with-type-info.md`` (Python's
+        ``isinstance(True, int)`` is ``True``)."""
+        for bad_value in (True, False):
+            payload = json.dumps({
+                "schema_version": 5,
+                "skill_name": "hostile",
+                "model": "claude-sonnet-4-6",
+                "results": [],
+                "reasoning_tokens": bad_value,
+            })
+            restored = GradingReport.from_json(payload)
+            assert restored.reasoning_tokens is None, (
+                f"bool {bad_value} must default to None, not coerce to int"
+            )
+
+    def test_grading_report_from_json_rejects_non_int_reasoning_tokens(
+        self,
+    ):
+        """Quality Gate Pass 1 fix: non-int ``reasoning_tokens``
+        (string, float, list, dict) MUST default to ``None`` rather
+        than raise or coerce."""
+        for bad_value in ("99", 3.14, [42], {"x": 1}):
+            payload = json.dumps({
+                "schema_version": 5,
+                "skill_name": "hostile",
+                "model": "claude-sonnet-4-6",
+                "results": [],
+                "reasoning_tokens": bad_value,
+            })
+            restored = GradingReport.from_json(payload)
+            assert restored.reasoning_tokens is None, (
+                f"non-int {bad_value!r} must default to None"
+            )
+
+
+class TestGradeQualityReasoningTokensSum:
+    """#170 US-004: ``grade_quality`` accumulates per-attempt
+    ``ModelResult.reasoning_tokens`` via sum-of-non-None semantics
+    (DEC-003). Uses ``side_effect=[r1, r2]`` per
+    ``.claude/rules/mock-side-effect-for-distinct-calls.md`` so the
+    sum arithmetic actually runs across two distinct call values."""
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_reasoning_tokens_all_none(self):
+        """Every ``ModelResult.reasoning_tokens`` is ``None`` →
+        report's aggregate is ``None`` (no provider call surfaced
+        a count)."""
+        from clauditor._providers import ModelResult
+
+        spec = _make_spec()
+        # Force a parse failure on the first attempt so the retry
+        # loop fires twice — that exercises the sum across two
+        # distinct call results.
+        bad = ModelResult(
+            response_text="not-json",
+            text_blocks=["not-json"],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        good_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.85,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 0.8,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+        ]
+        good = ModelResult(
+            response_text=json.dumps(good_data),
+            text_blocks=[json.dumps(good_data)],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[bad, good]),
+        ):
+            report = await grade_quality("output", spec)
+        assert report.reasoning_tokens is None
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_reasoning_tokens_mixed_returns_present(
+        self,
+    ):
+        """Mixed ``[None, 42]`` → report's aggregate is ``42``
+        (sum of non-None values, NOT 0, NOT None)."""
+        from clauditor._providers import ModelResult
+
+        spec = _make_spec()
+        bad = ModelResult(
+            response_text="not-json",
+            text_blocks=["not-json"],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        good_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.85,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 0.8,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+        ]
+        good = ModelResult(
+            response_text=json.dumps(good_data),
+            text_blocks=[json.dumps(good_data)],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=42,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[bad, good]),
+        ):
+            report = await grade_quality("output", spec)
+        assert report.reasoning_tokens == 42
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_reasoning_tokens_all_int_sums(self):
+        """Two attempts with ``[10, 20]`` → report's aggregate is
+        ``30`` (integer sum)."""
+        from clauditor._providers import ModelResult
+
+        spec = _make_spec()
+        bad = ModelResult(
+            response_text="not-json",
+            text_blocks=["not-json"],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=10,
+        )
+        good_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.85,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 0.8,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+        ]
+        good = ModelResult(
+            response_text=json.dumps(good_data),
+            text_blocks=[json.dumps(good_data)],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=20,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[bad, good]),
+        ):
+            report = await grade_quality("output", spec)
+        assert report.reasoning_tokens == 30
+
+    @pytest.mark.asyncio
+    async def test_grade_quality_reasoning_tokens_zero_and_none(self):
+        """#170 DEC-002 + DEC-003: aggregation must treat ``0`` as a
+        real measurement, NOT as a falsy "skip me." With one
+        attempt at ``0`` and one at ``None``, the aggregate is
+        ``0`` (sum of non-None values is ``0``) — distinct from
+        the all-None → ``None`` case."""
+        from clauditor._providers import ModelResult
+
+        spec = _make_spec()
+        bad = ModelResult(
+            response_text="not-json",
+            text_blocks=["not-json"],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=0,
+        )
+        good_data = [
+            {
+                "criterion": "Output contains actionable recommendations",
+                "passed": True,
+                "score": 0.9,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "Tone is professional and clear",
+                "passed": True,
+                "score": 0.85,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+            {
+                "criterion": "All requested topics are covered",
+                "passed": True,
+                "score": 0.8,
+                "evidence": "ev",
+                "reasoning": "r",
+            },
+        ]
+        good = ModelResult(
+            response_text=json.dumps(good_data),
+            text_blocks=[json.dumps(good_data)],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[bad, good]),
+        ):
+            report = await grade_quality("output", spec)
+        assert report.reasoning_tokens == 0
+        assert report.reasoning_tokens is not None
+
+
+class TestBlindReportReasoningTokens:
+    """#170 US-004: BlindReport carries a nullable
+    ``reasoning_tokens`` field. Per DEC-005 the schema_version
+    stays at ``1`` (always-v1 pattern; the additive nullable field
+    is forward-compat-safe; there is no ``from_json`` reader to
+    break). Sum semantics per DEC-003."""
+
+    def _report(self, **overrides) -> BlindReport:
+        defaults = dict(
+            preference="a",
+            confidence=0.8,
+            score_a=0.9,
+            score_b=0.6,
+            reasoning="A is better",
+            model="claude-sonnet-4-6",
+        )
+        defaults.update(overrides)
+        return BlindReport(**defaults)
+
+    def test_blind_report_reasoning_tokens_default_none(self):
+        report = self._report()
+        assert report.reasoning_tokens is None
+
+    def test_blind_report_to_json_emits_reasoning_tokens(self):
+        """``reasoning_tokens`` is emitted in to_json; schema_version
+        stays at ``1`` per DEC-005 (always-v1 pattern)."""
+        report = self._report(reasoning_tokens=35)
+        data = json.loads(report.to_json())
+        assert data["schema_version"] == 1
+        assert "reasoning_tokens" in data
+        assert data["reasoning_tokens"] == 35
+
+    def test_blind_report_to_json_emits_reasoning_tokens_none(self):
+        """The field is always emitted, even when ``None``."""
+        report = self._report()
+        data = json.loads(report.to_json())
+        assert data["reasoning_tokens"] is None
+
+    def test_blind_report_to_json_emits_reasoning_tokens_zero(self):
+        """#170 DEC-002: ``reasoning_tokens=0`` survives through
+        ``to_json`` as the integer ``0``, distinct from
+        ``null``. Locks down the truthiness-coercion failure mode
+        on the ``BlindReport`` writer too."""
+        report = self._report(reasoning_tokens=0)
+        data = json.loads(report.to_json())
+        assert data["reasoning_tokens"] == 0
+        assert data["reasoning_tokens"] is not None
+
+    @pytest.mark.asyncio
+    async def test_blind_report_sums_reasoning_tokens_across_two_calls(
+        self,
+    ):
+        """Two parallel judge calls with ``reasoning_tokens=15``
+        and ``20`` → ``BlindReport.reasoning_tokens == 35`` (sum
+        of non-None across the two parallel calls per DEC-003)."""
+        from clauditor._providers import ModelResult
+
+        verdict = json.dumps(
+            {
+                "preference": "1",
+                "confidence": 0.8,
+                "score_1": 0.8,
+                "score_2": 0.4,
+                "reasoning": "r",
+            }
+        )
+        side1 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=15,
+        )
+        side2 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=20,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[side1, side2]),
+        ):
+            report = await blind_compare("query", "out_a", "out_b")
+        assert report.reasoning_tokens == 35
+
+    @pytest.mark.asyncio
+    async def test_blind_report_reasoning_tokens_all_none(self):
+        """Both calls report ``reasoning_tokens=None`` → aggregate
+        is ``None`` (preserves "no provider call surfaced a
+        count")."""
+        from clauditor._providers import ModelResult
+
+        verdict = json.dumps(
+            {
+                "preference": "1",
+                "confidence": 0.8,
+                "score_1": 0.8,
+                "score_2": 0.4,
+                "reasoning": "r",
+            }
+        )
+        side1 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        side2 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[side1, side2]),
+        ):
+            report = await blind_compare("query", "out_a", "out_b")
+        assert report.reasoning_tokens is None
+
+    @pytest.mark.asyncio
+    async def test_blind_report_reasoning_tokens_mixed(self):
+        """One side ``None``, other side ``42`` → aggregate is
+        ``42`` (sum of non-None, NOT 0, NOT None)."""
+        from clauditor._providers import ModelResult
+
+        verdict = json.dumps(
+            {
+                "preference": "1",
+                "confidence": 0.8,
+                "score_1": 0.8,
+                "score_2": 0.4,
+                "reasoning": "r",
+            }
+        )
+        side1 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        side2 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=42,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[side1, side2]),
+        ):
+            report = await blind_compare("query", "out_a", "out_b")
+        assert report.reasoning_tokens == 42
+
+    @pytest.mark.asyncio
+    async def test_blind_report_reasoning_tokens_zero_and_none(self):
+        """#170 DEC-002 + DEC-003: with one parallel side at ``0``
+        and the other at ``None``, the aggregate is ``0`` (sum of
+        non-None values is ``0``) — ``0`` MUST NOT collapse to
+        ``None`` via a truthiness coercion at the wiring seam."""
+        from clauditor._providers import ModelResult
+
+        verdict = json.dumps(
+            {
+                "preference": "1",
+                "confidence": 0.8,
+                "score_1": 0.8,
+                "score_2": 0.4,
+                "reasoning": "r",
+            }
+        )
+        side1 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="openai",
+            reasoning_tokens=0,
+        )
+        side2 = ModelResult(
+            response_text=verdict,
+            text_blocks=[verdict],
+            input_tokens=10,
+            output_tokens=5,
+            source="api",
+            provider="anthropic",
+            reasoning_tokens=None,
+        )
+        with patch(
+            "clauditor._providers.call_model",
+            AsyncMock(side_effect=[side1, side2]),
+        ):
+            report = await blind_compare("query", "out_a", "out_b")
+        assert report.reasoning_tokens == 0
+        assert report.reasoning_tokens is not None
+
+
+class TestSumOptionalReasoningTokens:
+    """#170 US-004 / DEC-003: pure helper for sum-of-non-None
+    semantics. Direct unit tests since the helper is consumed by
+    multiple sum sites and worth exercising in isolation."""
+
+    def test_all_none_returns_none(self):
+        from clauditor.quality_grader import _sum_optional_reasoning_tokens
+
+        assert _sum_optional_reasoning_tokens([None, None]) is None
+
+    def test_empty_list_returns_none(self):
+        from clauditor.quality_grader import _sum_optional_reasoning_tokens
+
+        assert _sum_optional_reasoning_tokens([]) is None
+
+    def test_mixed_returns_sum_of_non_none(self):
+        from clauditor.quality_grader import _sum_optional_reasoning_tokens
+
+        assert _sum_optional_reasoning_tokens([None, 42]) == 42
+        assert _sum_optional_reasoning_tokens([42, None]) == 42
+        assert _sum_optional_reasoning_tokens([None, 10, None, 20]) == 30
+
+    def test_all_int_sums(self):
+        from clauditor.quality_grader import _sum_optional_reasoning_tokens
+
+        assert _sum_optional_reasoning_tokens([10, 20]) == 30
+        assert _sum_optional_reasoning_tokens([0, 0]) == 0
+        assert _sum_optional_reasoning_tokens([100]) == 100
+
+    def test_zero_present_returns_zero_not_none(self):
+        """``[None, 0]`` returns ``0`` (the present value), NOT
+        ``None`` — distinguishes "provider surfaced a count of
+        zero" from "no provider call surfaced a count"."""
+        from clauditor.quality_grader import _sum_optional_reasoning_tokens
+
+        assert _sum_optional_reasoning_tokens([None, 0]) == 0
 

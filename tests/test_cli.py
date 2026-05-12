@@ -851,8 +851,13 @@ class TestCmdGradeSaveDiff:
         assert assertions_path.is_file()
 
         payload = json.loads(assertions_path.read_text())
-        # FIX-7 (#25): sidecar envelopes pin schema_version=1.
-        assert payload["schema_version"] == 1
+        # FIX-7 (#25): sidecar envelopes pin schema_version.
+        # #152 US-002: assertions.json bumped 1 → 2 with top-level
+        # ``harness`` field. ``--output`` mode has no SkillResult, so
+        # the writer falls back to ``"claude-code"`` (the default
+        # harness_name).
+        assert payload["schema_version"] == 2
+        assert payload["harness"] == "claude-code"
         assert payload["skill"] == "test-skill"
         assert payload["iteration"] == 1
         assert len(payload["runs"]) == 1
@@ -2695,6 +2700,585 @@ class TestCmdCompareBlind:
         assert "file-pair form" in err
 
 
+class TestCmdCompareBlindProviderAuth:
+    """#145 QG pass 1 (Bug 3): ``compare --blind`` resolves provider and
+    dispatches the per-provider auth guard.
+
+    Pre-fix: ``_run_blind_compare`` called the Anthropic-only
+    ``check_any_auth_available("compare --blind")`` regardless of
+    ``eval_spec.grading_provider``. A spec declaring
+    ``grading_provider="openai"`` would surface a misleading
+    ANTHROPIC_API_KEY-required error when only OPENAI_API_KEY was set.
+    """
+
+    def test_compare_blind_with_openai_grading_provider_passes_when_key_set(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec with ``grading_provider="openai"`` and ``OPENAI_API_KEY`` set
+        → proceeds through the auth guard. Mocks the blind judge so the
+        test does not actually call OpenAI.
+
+        The spec also pins ``grading_model="gpt-5.4"`` so the provider/
+        model coherence check (CodeRabbit finding on PR #164) does not
+        trip — without it, ``EvalSpec.grading_model`` defaults to
+        ``"claude-sonnet-4-6"`` which would conflict with the openai
+        provider until DEC-004b lands.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        before, after = _write_pair(tmp_path)
+        eval_spec = _make_eval_spec(
+            user_prompt="Write a hello world",
+            grading_provider="openai",
+            grading_model="gpt-5.4",
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = _make_blind_report()
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.blind_compare",
+                new=AsyncMock(return_value=report),
+            ),
+        ):
+            rc = main(_blind_argv(before, after))
+        assert rc == 0
+
+    def test_compare_blind_with_openai_grading_provider_exits_2_when_key_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Spec with ``grading_provider="openai"`` and missing
+        ``OPENAI_API_KEY`` → exit 2 with stderr mentioning the env var
+        (not ANTHROPIC_API_KEY).
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        # Even if Anthropic key is present, OpenAI provider must require
+        # OPENAI_API_KEY — the spec's grading_provider is the source of
+        # truth.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-irrelevant")
+        before, after = _write_pair(tmp_path)
+        eval_spec = _make_eval_spec(
+            user_prompt="Write a hello world",
+            grading_provider="openai",
+            grading_model="gpt-5.4",
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = _make_blind_report()
+        # The blind_compare mock should never be reached.
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.blind_compare",
+                new_callable=AsyncMock,
+                return_value=report,
+            ) as mock_blind,
+        ):
+            rc = main(_blind_argv(before, after))
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "OPENAI_API_KEY" in err
+        assert mock_blind.await_count == 0
+
+    def test_compare_blind_with_default_anthropic_provider_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression check: spec with default ``grading_provider``
+        (post-#146 the default is ``"auto"``) still routes through
+        the Anthropic auth guard once the resolver lands.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        before, after = _write_pair(tmp_path)
+        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
+        # DEC-001b of #146 (issue #182): default flipped to "auto".
+        assert eval_spec.grading_provider == "auto"
+        spec = _make_spec(eval_spec=eval_spec)
+        report = _make_blind_report()
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.blind_compare",
+                new=AsyncMock(return_value=report),
+            ),
+        ):
+            rc = main(_blind_argv(before, after))
+        assert rc == 0
+
+
+class TestCmdCompareCrossAxis:
+    """#153 US-005: ``compare`` delta cross-axis detection + ``--cross-*`` opt-in flags.
+
+    The ``compare --blind`` path is intentionally untouched per the
+    ticket; these tests cover only the delta path (positional
+    ``.grade.json`` and numeric ``--skill --from --to`` modes).
+    Silent-skip on ``.txt`` capture pairs (DEC-003) is exercised by
+    ``test_compare_two_txt_files_silent_skip``. Multi-axis refusal
+    (DEC-011) names every still-uncovered axis when only one
+    ``--cross-*`` flag is passed.
+    """
+
+    @staticmethod
+    def _write_grading_with_harness(
+        path, *, harness="claude-code", provider="anthropic"
+    ):
+        """Write a minimal ``grading.json`` carrying the supplied
+        harness/provider metadata to ``path``.
+
+        ``path`` may be a directory (writes ``grading.json`` inside it)
+        or a file path ending in ``.grade.json``. Inline per DEC-009 of
+        ``plans/super/153-cross-axis-comparability.md`` — the helper is
+        kept local to this class rather than promoted to ``conftest.py``
+        because compare tests are the only consumers and the test-fixture
+        shadowing hazard noted in ``CLAUDE.md`` argues against extracting.
+        """
+        from pathlib import Path as _Path
+        path = _Path(path)
+        results = [
+            GradingResult(
+                criterion="c1",
+                passed=True,
+                score=0.9,
+                evidence="",
+                reasoning="",
+            )
+        ]
+        report = GradingReport(
+            skill_name=path.parent.name if path.is_dir() else path.stem,
+            model="test-model",
+            results=results,
+            duration_seconds=0.0,
+            thresholds=GradeThresholds(),
+            metrics={},
+            harness=harness,
+            provider_source=provider,
+        )
+        if path.suffix == "" or path.is_dir():
+            path.mkdir(parents=True, exist_ok=True)
+            (path / "grading.json").write_text(report.to_json())
+            return path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(report.to_json())
+        return path
+
+    def test_compare_two_iters_same_harness_silent(self, tmp_path, capsys):
+        """Same-harness pair (both ``claude-code``): no warning, normal exit."""
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            harness="claude-code",
+        )
+        rc = main(["compare", str(before_dir), str(after_dir)])
+        # Both have identical pass results → "no flips" and rc=0.
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "Mixed harnesses" not in captured.err
+        assert "comparing across" not in captured.err
+
+    def test_compare_two_iters_mixed_harness_refuses_exit_2(
+        self, tmp_path, capsys
+    ):
+        """Mixed-harness iteration dirs without opt-in → exit 2 + refusal."""
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            harness="codex",
+        )
+        rc = main(["compare", str(before_dir), str(after_dir)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed harnesses" in err
+        assert "'claude-code'" in err
+        assert "'codex'" in err
+        assert "--cross-harness" in err
+
+    def test_compare_two_iters_mixed_harness_cross_flag_succeeds(
+        self, tmp_path, capsys
+    ):
+        """Mixed-harness pair + ``--cross-harness`` → normal exit + WARNING."""
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            harness="codex",
+        )
+        rc = main(
+            [
+                "compare",
+                str(before_dir),
+                str(after_dir),
+                "--cross-harness",
+            ]
+        )
+        # Both reports pass identically → no regression → rc=0.
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "comparing across harnesses" in captured.err
+        assert "'claude-code'" in captured.err
+        assert "'codex'" in captured.err
+
+    def test_compare_two_grade_json_mixed_harness_refuses(
+        self, tmp_path, capsys
+    ):
+        """Two flat ``.grade.json`` files with different harness → exit 2."""
+        before = self._write_grading_with_harness(
+            tmp_path / "before.grade.json",
+            harness="claude-code",
+        )
+        after = self._write_grading_with_harness(
+            tmp_path / "after.grade.json",
+            harness="codex",
+        )
+        rc = main(["compare", str(before), str(after)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed harnesses" in err
+        assert "--cross-harness" in err
+
+    def test_compare_two_grade_json_cross_harness_flag_succeeds(
+        self, tmp_path, capsys
+    ):
+        """Mixed-harness ``.grade.json`` pair + ``--cross-harness`` → ok + WARN."""
+        before = self._write_grading_with_harness(
+            tmp_path / "before.grade.json",
+            harness="claude-code",
+        )
+        after = self._write_grading_with_harness(
+            tmp_path / "after.grade.json",
+            harness="codex",
+        )
+        rc = main(
+            ["compare", str(before), str(after), "--cross-harness"]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "comparing across harnesses" in captured.err
+
+    def test_compare_two_iters_mixed_provider_refuses_exit_2(
+        self, tmp_path, capsys
+    ):
+        """Mixed-provider pair without opt-in → exit 2 + refusal."""
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            provider="anthropic",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            provider="openai",
+        )
+        rc = main(["compare", str(before_dir), str(after_dir)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed providers" in err
+        assert "'anthropic'" in err
+        assert "'openai'" in err
+        assert "--cross-provider" in err
+
+    def test_compare_provider_cross_flag_succeeds(self, tmp_path, capsys):
+        """Mixed-provider pair + ``--cross-provider`` → normal exit + WARN."""
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            provider="anthropic",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            provider="openai",
+        )
+        rc = main(
+            [
+                "compare",
+                str(before_dir),
+                str(after_dir),
+                "--cross-provider",
+            ]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "comparing across providers" in captured.err
+        assert "'anthropic'" in captured.err
+        assert "'openai'" in captured.err
+
+    def test_compare_two_txt_files_silent_skip(self, tmp_path, capsys):
+        """``.txt`` capture pair has no harness/provider metadata → silent-skip.
+
+        Per DEC-003: when either input is a ``.txt`` capture, the
+        cross-axis check is skipped entirely. The diff proceeds
+        normally with no refusal and no WARNING — we have no way to
+        know whether the captures came from different harnesses.
+        """
+        before_txt = tmp_path / "before.txt"
+        after_txt = tmp_path / "after.txt"
+        before_txt.write_text("hello world")
+        after_txt.write_text("hello world")
+
+        eval_spec = _make_eval_spec(
+            assertions=[{"type": "contains", "needle": "hello"}]
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(
+                [
+                    "compare",
+                    str(before_txt),
+                    str(after_txt),
+                    "--spec",
+                    "skill.md",
+                ]
+            )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "Mixed harnesses" not in captured.err
+        assert "Mixed providers" not in captured.err
+        assert "comparing across" not in captured.err
+
+    def test_compare_both_axes_mixed_only_cross_harness_refuses(
+        self, tmp_path, capsys
+    ):
+        """DEC-011: both axes mixed + only ``--cross-harness`` → exit 2.
+
+        The provider axis is still uncovered, so the run refuses with
+        the provider refusal message naming ``--cross-provider``. The
+        single-axis opt-in does NOT silently allow the other axis to
+        slip through.
+
+        Per the cross-axis-comparability-refusal rule's "Do NOT print
+        WARNINGs above refusals" invariant (PR #168 Copilot/CodeRabbit
+        review), the harness WARNING must NOT appear when the run
+        ultimately refuses on the provider axis. Compare collects
+        warnings during the per-axis scan and only emits them if no
+        refusals land — mirror of trend's behavior.
+        """
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            harness="codex",
+            provider="openai",
+        )
+        rc = main(
+            [
+                "compare",
+                str(before_dir),
+                str(after_dir),
+                "--cross-harness",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Provider axis is the still-uncovered one → refusal.
+        assert "Mixed providers" in err
+        assert "--cross-provider" in err
+        # Harness WARNING is suppressed because the run refused on the
+        # provider axis. Pinning the collect-then-print invariant.
+        assert "WARNING: comparing across harnesses" not in err
+
+    def test_compare_both_axes_mixed_both_flags_succeeds_with_two_warnings(
+        self, tmp_path, capsys
+    ):
+        """Both flags + both axes mixed → normal exit + two WARNINGs."""
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            harness="codex",
+            provider="openai",
+        )
+        rc = main(
+            [
+                "compare",
+                str(before_dir),
+                str(after_dir),
+                "--cross-harness",
+                "--cross-provider",
+            ]
+        )
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "comparing across harnesses" in err
+        assert "comparing across providers" in err
+
+    def test_compare_numeric_ref_mixed_harness_refuses(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``compare --skill X --from 1 --to 2`` exercises the numeric-ref
+        CLI resolution path (CodeRabbit PR #168 review).
+
+        The numeric-ref form constructs ``.clauditor/iteration-N/<skill>/``
+        paths through a different code branch than positional inputs.
+        Cross-axis detection must fire on this path too.
+        """
+        monkeypatch.chdir(tmp_path)
+        # Seed iteration-1 (claude-code) and iteration-2 (codex).
+        self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "test-skill",
+            harness="codex",
+            provider="anthropic",
+        )
+        rc = main(
+            [
+                "compare",
+                "--skill",
+                "test-skill",
+                "--from",
+                "1",
+                "--to",
+                "2",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed harnesses detected" in err
+        assert "--cross-harness" in err
+
+    def test_compare_numeric_ref_cross_harness_succeeds(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``compare --skill X --from 1 --to 2 --cross-harness`` opt-in
+        path on the numeric-ref form. Exit code reflects the diff
+        outcome (0 or 1) rather than the cross-axis refusal."""
+        monkeypatch.chdir(tmp_path)
+        self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "test-skill",
+            harness="codex",
+            provider="anthropic",
+        )
+        rc = main(
+            [
+                "compare",
+                "--skill",
+                "test-skill",
+                "--from",
+                "1",
+                "--to",
+                "2",
+                "--cross-harness",
+            ]
+        )
+        # Same content → no flips → exit 0.
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "WARNING: comparing across harnesses" in err
+
+    def test_compare_warning_does_not_appear_above_refusal(
+        self, tmp_path, capsys
+    ):
+        """When both axes are mixed and only one ``--cross-*`` is passed,
+        the WARNING for the opted-in axis must NOT appear above the
+        ERROR for the un-opted axis (Copilot/CodeRabbit PR #168 review).
+
+        Pinning the collect-then-print invariant aligns compare with
+        trend's behavior and the
+        ``cross-axis-comparability-refusal.md`` rule's "Do NOT print
+        WARNINGs above refusals" antipattern.
+        """
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        after_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-2" / "foo",
+            harness="codex",  # mixed harness
+            provider="openai",  # mixed provider
+        )
+        rc = main(
+            [
+                "compare",
+                str(before_dir),
+                str(after_dir),
+                "--cross-harness",
+                # No --cross-provider → provider axis still refuses.
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Refusal landed; warning must NOT have printed.
+        assert "Mixed providers detected" in err
+        assert "WARNING: comparing across" not in err
+
+    def test_compare_malformed_non_dict_grading_json_exits_2(
+        self, tmp_path, capsys
+    ):
+        """A ``grading.json`` whose JSON root is a list (not a dict)
+        triggers an ``AttributeError`` deep in
+        ``GradingReport.from_json``. ``_load_grading_report_safe``
+        catches it and re-raises as a ``ValueError``, producing a
+        clean exit-2 + stable stderr substring.
+
+        Pre-PR-#168-review, the AttributeError catch was added in
+        ``_load_grading_metadata`` only and was unreachable because
+        ``_load_assertion_set`` (called first) parsed the file
+        independently and let the AttributeError escape as a
+        traceback. The PR review surfaced this; the fix extracted
+        ``_load_grading_report_safe`` as the single normalized parse
+        seam shared by both call sites — this test exercises that
+        seam through the ``_load_assertion_set`` path, which is what
+        runs first in ``cmd_compare``.
+        """
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        # Malformed: JSON array instead of object at the root.
+        after_dir = tmp_path / ".clauditor" / "iteration-2" / "foo"
+        after_dir.mkdir(parents=True)
+        (after_dir / "grading.json").write_text("[]")
+        rc = main(["compare", str(before_dir), str(after_dir)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "malformed grading.json" in err
+
+    def test_compare_iter_dir_without_grading_json_exits_2(
+        self, tmp_path, capsys
+    ):
+        """A directory missing ``grading.json`` surfaces a ``ValueError``
+        from ``_load_grading_metadata`` which the CLI routes to exit 2
+        with a stable substring on stderr.
+
+        Quality-gate regression: prior to QG pass 2, this branch was
+        uncovered — an iteration dir whose ``grading.json`` was missing
+        (mid-write, accidentally deleted, etc.) would silently surface
+        through the same exit-2 path but had no test pinning the
+        message shape.
+        """
+        before_dir = self._write_grading_with_harness(
+            tmp_path / ".clauditor" / "iteration-1" / "foo",
+            harness="claude-code",
+            provider="anthropic",
+        )
+        # Empty after_dir — no grading.json inside.
+        after_dir = tmp_path / ".clauditor" / "iteration-2" / "foo"
+        after_dir.mkdir(parents=True)
+        rc = main(["compare", str(before_dir), str(after_dir)])
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "no grading.json found" in err
+
 class TestCmdGradeCompareFlagRemoved:
     """US-003: the legacy --compare flag on grade is gone."""
 
@@ -2770,7 +3354,16 @@ class TestCmdTriggers:
         assert "should_not_trigger" in out
 
     def test_triggers_no_model_exits_2(self, capsys):
-        """Missing grading_model (neither --model nor spec) exits 2."""
+        """Missing grading_model (neither --model nor spec) exits 2.
+
+        Post-#146: ``grading_provider`` defaults to ``"auto"`` and the
+        provider resolver runs BEFORE the model is consumed. An empty-
+        string ``grading_model`` cannot drive auto-inference, so the
+        ``_resolve_grading_provider`` helper raises ``SystemExit(2)``
+        with a message naming the empty-model failure mode. Either
+        path produces an exit-2 surface with an actionable error in
+        stderr — the contract the test guards.
+        """
         eval_spec = _make_eval_spec(
             grading_model="",
             trigger_tests=TriggerTests(
@@ -2780,12 +3373,18 @@ class TestCmdTriggers:
         )
         spec = _make_spec(eval_spec=eval_spec)
         with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
-            rc = main(["triggers", "skill.md"])
+            with pytest.raises(SystemExit) as excinfo:
+                main(["triggers", "skill.md"])
 
-        assert rc == 2
+        assert excinfo.value.code == 2
         err = capsys.readouterr().err
-        assert "No grading model specified" in err
-        assert "--model" in err
+        # Tightened per CodeRabbit finding on PR #164: assert the new
+        # provider-resolution failure surface, not the legacy
+        # ``"No grading model specified"`` message. Accepting either
+        # would let the test pass even if ``_resolve_grading_provider``
+        # were bypassed and the legacy branch returned — defeating the
+        # regression-guard purpose.
+        assert "model must be a non-empty string" in err
 
     def test_triggers_missing_trigger_tests_exits_1(self, capsys):
         """Non-dry-run with no trigger_tests on the spec must exit 1 with a
@@ -3517,6 +4116,31 @@ class TestCmdExtract:
         assert data["passed"] is True
         assert "results" in data
         assert len(data["results"]) == 2
+
+    def test_extract_output_uses_spec_harness_for_history(self, tmp_path):
+        """--output mode reads eval_spec.harness for the history record."""
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+
+        eval_spec = _make_eval_spec(sections=_make_sections(), harness="codex")
+        spec = _make_spec(eval_spec=eval_spec)
+        results = self._make_extraction_results(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+            patch("clauditor.cli.extract.history") as mock_history,
+        ):
+            rc = main(["extract", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+        mock_history.append_record.assert_called_once()
+        call_kwargs = mock_history.append_record.call_args.kwargs
+        assert call_kwargs["harness"] == "codex"
 
     def test_extract_failed(self, tmp_path):
         """Returns 1 when extraction grading fails."""
@@ -4715,6 +5339,8 @@ class TestCmdTrend:
                 mean_score=0.6 + i * 0.05,
                 metrics={"count": i + 1},
                 command="grade",
+                provider="anthropic",
+                harness="claude-code",
                 path=path,
             )
 
@@ -4820,6 +5446,8 @@ class TestCmdTrend:
             0.8,
             {},
             command="grade",
+            provider="anthropic",
+            harness="claude-code",
             path=path,
             iteration=1,
             workspace_path="ws/1",
@@ -4852,6 +5480,8 @@ class TestCmdTrendCommandFilter:
                 mean_score=0.6,
                 metrics={},
                 command="grade",
+                provider="anthropic",
+                harness="claude-code",
                 path=path,
             )
         for i in range(2):
@@ -4861,6 +5491,8 @@ class TestCmdTrendCommandFilter:
                 mean_score=None,
                 metrics={"skill": {"input_tokens": 100 + i}},
                 command="extract",
+                provider="anthropic",
+                harness="claude-code",
                 path=path,
             )
 
@@ -4934,6 +5566,8 @@ class TestCmdTrendCommandFilter:
             mean_score=0.7,
             metrics={},
             command="grade",
+            provider="anthropic",
+            harness="claude-code",
             path=path,
         )
         rc = main(
@@ -4963,6 +5597,8 @@ class TestCmdTrendDottedPath:
                 mean_score=0.7,
                 metrics={"grader": {"input_tokens": tok}},
                 command="grade",
+                provider="anthropic",
+                harness="claude-code",
                 path=path,
             )
         rc = main(["trend", "test-skill", "--metric", "grader.input_tokens"])
@@ -4975,6 +5611,49 @@ class TestCmdTrendDottedPath:
         assert "700" in out
         # stdout ends with the last data row — no trailing artifact (#106).
         assert "\t" in out.splitlines()[-1]
+
+    def test_non_numeric_metric_value_is_skipped(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Records whose dotted-path metric resolves to a non-numeric
+        value (e.g. a string) are silently skipped via the
+        ``except (TypeError, ValueError): continue`` branch in
+        ``cmd_trend``. Without this guard, a stray metric like
+        ``{"grader": {"input_tokens": "n/a"}}`` would crash trend on
+        ``float(v)``."""
+        from clauditor import history
+
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".clauditor" / "history.jsonl"
+        # Two records: one numeric, one stringly-typed
+        history.append_record(
+            skill="test-skill",
+            pass_rate=0.8,
+            mean_score=0.7,
+            metrics={"grader": {"input_tokens": 500}},
+            command="grade",
+            provider="anthropic",
+            harness="claude-code",
+            path=path,
+        )
+        history.append_record(
+            skill="test-skill",
+            pass_rate=0.8,
+            mean_score=0.7,
+            metrics={"grader": {"input_tokens": "n/a"}},
+            command="grade",
+            provider="anthropic",
+            harness="claude-code",
+            path=path,
+        )
+        rc = main(["trend", "test-skill", "--metric", "grader.input_tokens"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        # Only the numeric record renders; the "n/a" row is skipped.
+        assert len(data_lines) == 1
+        assert "500" in out
+        assert "n/a" not in out
 
 
 class TestCmdTrendListMetrics:
@@ -4998,6 +5677,8 @@ class TestCmdTrendListMetrics:
                 "duration_seconds": 2.5,
             },
             command="grade",
+            provider="anthropic",
+            harness="claude-code",
             path=path,
         )
         history.append_record(
@@ -5009,6 +5690,8 @@ class TestCmdTrendListMetrics:
                 "duration_seconds": 1.2,
             },
             command="extract",
+            provider="anthropic",
+            harness="claude-code",
             path=path,
         )
 
@@ -5070,6 +5753,8 @@ class TestCmdTrendListMetrics:
             mean_score=None,
             metrics={},
             command="grade",
+            provider="anthropic",
+            harness="claude-code",
             path=path,
         )
         rc = main(["trend", "test-skill", "--list-metrics"])
@@ -5096,6 +5781,965 @@ class TestCmdTrendMutuallyExclusive:
         monkeypatch.chdir(tmp_path)
         with pytest.raises(SystemExit):
             main(argv)
+
+
+class TestProviderConcreteChoice:
+    """``_provider_concrete_choice`` argparse type validator (#147 US-006).
+
+    DEC-007: rejects ``"auto"`` (distinct from ``_provider_choice`` which
+    accepts auto for the four-layer-precedence resolution). Trend has no
+    model/spec context to resolve auto against — it reads concrete
+    history records.
+    """
+
+    def test_accepts_anthropic(self):
+        from clauditor.cli import _provider_concrete_choice
+
+        assert _provider_concrete_choice("anthropic") == "anthropic"
+
+    def test_accepts_openai(self):
+        from clauditor.cli import _provider_concrete_choice
+
+        assert _provider_concrete_choice("openai") == "openai"
+
+    def test_rejects_auto(self):
+        from clauditor.cli import _provider_concrete_choice
+
+        with pytest.raises(argparse.ArgumentTypeError, match="anthropic"):
+            _provider_concrete_choice("auto")
+
+    def test_rejects_empty_string(self):
+        from clauditor.cli import _provider_concrete_choice
+
+        with pytest.raises(argparse.ArgumentTypeError):
+            _provider_concrete_choice("")
+
+    def test_rejects_typo(self):
+        from clauditor.cli import _provider_concrete_choice
+
+        with pytest.raises(argparse.ArgumentTypeError, match="openi"):
+            _provider_concrete_choice("openi")
+
+
+class TestHarnessConcreteChoice:
+    """``_harness_concrete_choice`` argparse type validator (#153 US-002).
+
+    DEC-006: rejects ``"auto"`` (distinct from ``_harness_choice`` which
+    accepts auto for the four-layer-precedence resolution). Trend reads
+    pre-resolved history records, so it has no model/spec context to
+    resolve auto against. Mirrors ``_provider_concrete_choice``.
+    """
+
+    def test_accepts_claude_code(self):
+        from clauditor.cli import _harness_concrete_choice
+
+        assert _harness_concrete_choice("claude-code") == "claude-code"
+
+    def test_accepts_codex(self):
+        from clauditor.cli import _harness_concrete_choice
+
+        assert _harness_concrete_choice("codex") == "codex"
+
+    def test_rejects_auto(self):
+        from clauditor.cli import _harness_concrete_choice
+
+        with pytest.raises(argparse.ArgumentTypeError, match="claude-code"):
+            _harness_concrete_choice("auto")
+
+    def test_rejects_unknown(self):
+        from clauditor.cli import _harness_concrete_choice
+
+        with pytest.raises(argparse.ArgumentTypeError, match="foo"):
+            _harness_concrete_choice("foo")
+
+
+class TestNormalizedProvider:
+    """Defense-in-depth helper guards malformed history records.
+
+    ``read_records`` already backfills missing keys for legacy v1
+    lines. ``_normalized_provider`` additionally handles a record that
+    carries ``provider: null`` / a stray int / a blank string — without
+    it, ``sorted({_normalized_provider(rec) for rec in records})``
+    could raise ``TypeError`` mid-sort and crash ``clauditor trend``
+    instead of yielding a clean exit code.
+    """
+
+    def test_valid_string_passes_through(self):
+        from clauditor.cli.trend import _normalized_provider
+
+        assert _normalized_provider({"provider": "openai"}) == "openai"
+        assert _normalized_provider({"provider": "anthropic"}) == "anthropic"
+
+    def test_missing_key_defaults_anthropic(self):
+        from clauditor.cli.trend import _normalized_provider
+
+        assert _normalized_provider({}) == "anthropic"
+
+    def test_none_defaults_anthropic(self):
+        from clauditor.cli.trend import _normalized_provider
+
+        assert _normalized_provider({"provider": None}) == "anthropic"
+
+    def test_blank_string_defaults_anthropic(self):
+        from clauditor.cli.trend import _normalized_provider
+
+        assert _normalized_provider({"provider": ""}) == "anthropic"
+        assert _normalized_provider({"provider": "   "}) == "anthropic"
+
+    def test_int_defaults_anthropic(self):
+        from clauditor.cli.trend import _normalized_provider
+
+        assert _normalized_provider({"provider": 1}) == "anthropic"
+
+    def test_bool_defaults_anthropic(self):
+        from clauditor.cli.trend import _normalized_provider
+
+        assert _normalized_provider({"provider": True}) == "anthropic"
+
+    def test_mixed_records_sort_without_typeerror(self):
+        """Regression: a malformed v2 record with ``provider: null``
+        next to normal string records does not raise ``TypeError`` when
+        ``sorted()`` walks the set."""
+        from clauditor.cli.trend import _normalized_provider
+
+        records = [
+            {"provider": "openai"},
+            {"provider": None},
+            {"provider": "anthropic"},
+            {"provider": 1},
+        ]
+        providers_seen = sorted(
+            {_normalized_provider(rec) for rec in records}
+        )
+        assert providers_seen == ["anthropic", "openai"]
+
+
+class TestNormalizedHarness:
+    """Defense-in-depth helper for the harness axis (#153 US-003).
+
+    Mirror of :class:`TestNormalizedProvider`. ``read_records`` already
+    backfills missing ``harness`` for legacy v1/v2 lines (#152 DEC-005);
+    ``_normalized_harness`` additionally guards against ``harness: null``,
+    a stray int, or a blank/whitespace-only string so a malformed mixed
+    history file cannot raise ``TypeError`` mid-sort and crash trend.
+    """
+
+    def test_valid_string_passes_through(self):
+        from clauditor.cli.trend import _normalized_harness
+
+        assert _normalized_harness({"harness": "claude-code"}) == "claude-code"
+        assert _normalized_harness({"harness": "codex"}) == "codex"
+
+    def test_missing_key_defaults_claude_code(self):
+        from clauditor.cli.trend import _normalized_harness
+
+        assert _normalized_harness({}) == "claude-code"
+
+    def test_none_defaults_claude_code(self):
+        from clauditor.cli.trend import _normalized_harness
+
+        assert _normalized_harness({"harness": None}) == "claude-code"
+
+    def test_blank_string_defaults_claude_code(self):
+        from clauditor.cli.trend import _normalized_harness
+
+        assert _normalized_harness({"harness": ""}) == "claude-code"
+        assert _normalized_harness({"harness": "   "}) == "claude-code"
+
+    def test_int_defaults_claude_code(self):
+        from clauditor.cli.trend import _normalized_harness
+
+        assert _normalized_harness({"harness": 1}) == "claude-code"
+
+    def test_mixed_records_sort_without_typeerror(self):
+        """Regression: a malformed record with ``harness: null`` next
+        to normal string records does not raise ``TypeError``."""
+        from clauditor.cli.trend import _normalized_harness
+
+        records = [
+            {"harness": "codex"},
+            {"harness": None},
+            {"harness": "claude-code"},
+            {"harness": 1},
+        ]
+        harnesses_seen = sorted(
+            {_normalized_harness(rec) for rec in records}
+        )
+        assert harnesses_seen == ["claude-code", "codex"]
+
+
+class TestCmdTrendProviderFilter:
+    """``clauditor trend --provider`` (#147 US-006).
+
+    Traces to DEC-003 (mixed-provider refusal exit 2), DEC-009 (filter
+    matching zero records exit 1), DEC-011 (refusal computed from full
+    filtered set, BEFORE ``--last`` slice).
+    """
+
+    def _seed_mixed(self, path, skill="test-skill"):
+        """Seed 3 anthropic + 2 openai grade records."""
+        from clauditor import history
+
+        for i in range(3):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness="claude-code",
+                path=path,
+            )
+        for i in range(2):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.8 + i * 0.05,
+                mean_score=0.7,
+                metrics={},
+                command="grade",
+                provider="openai",
+                harness="claude-code",
+                path=path,
+            )
+
+    def _seed_single(self, path, skill="test-skill", provider="anthropic", n=3):
+        from clauditor import history
+
+        for i in range(n):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider=provider,
+                harness="claude-code",
+                path=path,
+            )
+
+    def test_mixed_provider_history_refuses_exit_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Mixed-provider history without ``--provider`` → exit 2 (DEC-003).
+
+        Asserts the byte-stable lead-in (``"Mixed providers detected in
+        history for skill"``) is preserved after the #153 US-004 DEC-008
+        retrofit, AND the new ``--cross-provider`` opt-in suffix is
+        present.
+        """
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Byte-stable lead-in (DEC-008 — must not break older CI parsers).
+        assert "Mixed providers detected in history for skill" in err
+        assert "anthropic" in err
+        assert "openai" in err
+        assert "--provider" in err
+        # #153 US-004 DEC-008 retrofit: refusal now also names the
+        # ``--cross-provider`` opt-in flag.
+        assert "--cross-provider" in err
+
+    def test_provider_filter_renders_filtered_records(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--provider openai`` on mixed history filters to openai records."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--provider",
+                "openai",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        # Only the 2 openai records should appear.
+        assert len(data_lines) == 2
+
+    def test_provider_filter_anthropic_on_mixed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--provider anthropic`` on mixed history filters to anthropic."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--provider",
+                "anthropic",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        # Only the 3 anthropic records should appear.
+        assert len(data_lines) == 3
+
+    def test_provider_filter_empty_result_exits_1(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--provider openai`` on all-anthropic history → exit 1 (DEC-009)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_single(
+            tmp_path / ".clauditor" / "history.jsonl", provider="anthropic"
+        )
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--provider",
+                "openai",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "openai" in err
+        assert "no records" in err.lower() or "no record" in err.lower()
+
+    def test_single_provider_unchanged_behavior(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Single-provider history without ``--provider`` → renders TSV."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_single(tmp_path / ".clauditor" / "history.jsonl", n=3)
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        assert len(data_lines) == 3
+
+    def test_refusal_uses_full_filtered_history_not_last_slice(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """DEC-011: refusal computed BEFORE ``--last`` slice.
+
+        Seed 5 anthropic records, then 3 openai records (last 3). With
+        ``--last 3`` the trailing window is single-provider, but the
+        full filtered set is mixed — refusal must still fire.
+        """
+        from clauditor import history
+
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".clauditor" / "history.jsonl"
+        for i in range(5):
+            history.append_record(
+                skill="test-skill",
+                pass_rate=0.5 + i * 0.05,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness="claude-code",
+                path=path,
+            )
+        for i in range(3):
+            history.append_record(
+                skill="test-skill",
+                pass_rate=0.8 + i * 0.05,
+                mean_score=0.7,
+                metrics={},
+                command="grade",
+                provider="openai",
+                harness="claude-code",
+                path=path,
+            )
+
+        rc = main(
+            ["trend", "test-skill", "--metric", "pass_rate", "--last", "3"]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed providers" in err
+
+    def test_argparse_rejects_provider_auto(self, tmp_path, monkeypatch, capsys):
+        """``--provider auto`` rejected by argparse → exit 2 (validator)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_single(tmp_path / ".clauditor" / "history.jsonl")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "trend",
+                    "test-skill",
+                    "--metric",
+                    "pass_rate",
+                    "--provider",
+                    "auto",
+                ]
+            )
+        assert exc_info.value.code == 2
+
+    def test_legacy_records_default_to_anthropic(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """v1 history records (missing ``provider``) default to anthropic
+        — refusal does not fire when only legacy records exist."""
+        import json as _json
+
+        monkeypatch.chdir(tmp_path)
+        path = tmp_path / ".clauditor" / "history.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        # Write a v1 record (schema_version=1) lacking ``provider``;
+        # ``read_records`` defaults missing provider to "anthropic".
+        v1_rec = {
+            "schema_version": 1,
+            "command": "grade",
+            "ts": "2026-01-01T00:00:00+00:00",
+            "skill": "test-skill",
+            "pass_rate": 0.4,
+            "mean_score": 0.5,
+            "metrics": {},
+        }
+        with path.open("w", encoding="utf-8") as f:
+            f.write(_json.dumps(v1_rec) + "\n")
+
+        # v1 records are accepted by ``_check_schema_version`` (#147
+        # DEC-012 accept-list = {1, 2}); ``read_records`` defaults
+        # missing ``provider`` to ``"anthropic"`` so the trend
+        # refusal path does not fire.
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "\t0.4" in out
+
+
+class TestCmdTrendHarnessFilter:
+    """``clauditor trend --harness`` (#153 US-003).
+
+    Mirror of ``TestCmdTrendProviderFilter`` for the harness axis.
+    Traces to DEC-006/DEC-008 (mixed-harness refusal exit 2; refusal
+    message names ONLY ``--harness X`` filter — US-004 will retrofit
+    the ``--cross-harness`` suffix once that flag exists).
+    """
+
+    def _seed_mixed_harness(self, path, skill="test-skill"):
+        """Seed 3 claude-code + 2 codex grade records (same provider)."""
+        from clauditor import history
+
+        for i in range(3):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness="claude-code",
+                path=path,
+            )
+        for i in range(2):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.8 + i * 0.05,
+                mean_score=0.7,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness="codex",
+                path=path,
+            )
+
+    def _seed_single_harness(
+        self, path, skill="test-skill", harness="claude-code", n=3
+    ):
+        from clauditor import history
+
+        for i in range(n):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness=harness,
+                path=path,
+            )
+
+    def test_mixed_harness_history_refuses_exit_2(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Mixed-harness history without ``--harness`` → exit 2.
+
+        Asserts the byte-stable lead-in (``"Mixed harnesses detected in
+        history for skill"``) survives the #153 US-004 DEC-008 retrofit
+        AND the new ``--cross-harness`` opt-in suffix is present.
+        """
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Byte-stable lead-in (DEC-008 — must not break older CI parsers).
+        assert "Mixed harnesses detected in history for skill" in err
+        assert "claude-code" in err
+        assert "codex" in err
+        assert "--harness claude-code" in err
+        # #153 US-004 DEC-008 retrofit: refusal now also names the
+        # ``--cross-harness`` opt-in flag.
+        assert "--cross-harness" in err
+
+    def test_harness_filter_codex_renders_filtered_records(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` on mixed history filters to codex records."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--harness",
+                "codex",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        # Only the 2 codex records should appear.
+        assert len(data_lines) == 2
+
+    def test_harness_filter_claude_code_on_mixed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness claude-code`` on mixed history filters to claude-code."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--harness",
+                "claude-code",
+            ]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        data_lines = [ln for ln in out.splitlines() if "\t" in ln]
+        # Only the 3 claude-code records should appear.
+        assert len(data_lines) == 3
+
+    def test_harness_filter_empty_result_exits_1(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` on all-claude-code history → exit 1."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_single_harness(
+            tmp_path / ".clauditor" / "history.jsonl",
+            harness="claude-code",
+        )
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--harness",
+                "codex",
+            ]
+        )
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "codex" in err
+        assert "no records" in err.lower()
+
+    def test_harness_concrete_choice_rejects_auto(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness auto`` rejected by argparse → exit 2 (validator)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_single_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "trend",
+                    "test-skill",
+                    "--metric",
+                    "pass_rate",
+                    "--harness",
+                    "auto",
+                ]
+            )
+        assert exc_info.value.code == 2
+
+
+class TestCmdTrendCrossOptIn:
+    """``clauditor trend --cross-{harness,provider}`` opt-in flags (#153 US-004).
+
+    Traces to DEC-001 (per-axis mutex groups), DEC-002 (per-axis flags
+    strictly orthogonal), DEC-005 (WARNING format), DEC-008 (retrofit
+    existing provider + harness refusal-message suffixes to mention the
+    new opt-in), DEC-011 (multi-axis refusal: when one axis is
+    opt-in-flagged but the other is still mixed without its flag,
+    refuse and name the still-uncovered axis).
+    """
+
+    def _seed_mixed_provider(self, path, skill="test-skill"):
+        """Seed 3 anthropic + 2 openai grade records (same harness)."""
+        from clauditor import history
+
+        for i in range(3):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness="claude-code",
+                path=path,
+            )
+        for i in range(2):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.8 + i * 0.05,
+                mean_score=0.7,
+                metrics={},
+                command="grade",
+                provider="openai",
+                harness="claude-code",
+                path=path,
+            )
+
+    def _seed_mixed_harness(self, path, skill="test-skill"):
+        """Seed 3 claude-code + 2 codex grade records (same provider)."""
+        from clauditor import history
+
+        for i in range(3):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.5 + i * 0.1,
+                mean_score=0.6,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness="claude-code",
+                path=path,
+            )
+        for i in range(2):
+            history.append_record(
+                skill=skill,
+                pass_rate=0.8 + i * 0.05,
+                mean_score=0.7,
+                metrics={},
+                command="grade",
+                provider="anthropic",
+                harness="codex",
+                path=path,
+            )
+
+    def _seed_mixed_both(self, path, skill="test-skill"):
+        """Seed records mixed on BOTH axes (4 distinct combos).
+
+        Two anthropic+claude-code, two anthropic+codex, two
+        openai+claude-code, two openai+codex — so providers and
+        harnesses are each mixed independently.
+        """
+        from clauditor import history
+
+        combos = [
+            ("anthropic", "claude-code"),
+            ("anthropic", "codex"),
+            ("openai", "claude-code"),
+            ("openai", "codex"),
+        ]
+        score = 0.5
+        for provider, harness in combos:
+            for _ in range(2):
+                history.append_record(
+                    skill=skill,
+                    pass_rate=score,
+                    mean_score=0.6,
+                    metrics={},
+                    command="grade",
+                    provider=provider,
+                    harness=harness,
+                    path=path,
+                )
+                score += 0.05
+
+    def test_cross_provider_flag_allows_mixed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Mixed-provider history + ``--cross-provider`` → exit 0 + WARNING."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_provider(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--cross-provider",
+            ]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "WARNING: averaging across providers" in captured.err
+        # Stdout still renders the TSV.
+        data_lines = [ln for ln in captured.out.splitlines() if "\t" in ln]
+        assert len(data_lines) == 5
+
+    def test_cross_harness_flag_allows_mixed(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Mixed-harness history + ``--cross-harness`` → exit 0 + WARNING."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--cross-harness",
+            ]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "WARNING: averaging across harnesses" in captured.err
+        data_lines = [ln for ln in captured.out.splitlines() if "\t" in ln]
+        assert len(data_lines) == 5
+
+    def test_cross_provider_and_provider_filter_mutex_error(
+        self, tmp_path, monkeypatch
+    ):
+        """``--provider X --cross-provider`` → argparse mutex (exit 2)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_provider(tmp_path / ".clauditor" / "history.jsonl")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "trend",
+                    "test-skill",
+                    "--metric",
+                    "pass_rate",
+                    "--provider",
+                    "anthropic",
+                    "--cross-provider",
+                ]
+            )
+        assert exc_info.value.code == 2
+
+    def test_cross_harness_and_harness_filter_mutex_error(
+        self, tmp_path, monkeypatch
+    ):
+        """``--harness X --cross-harness`` → argparse mutex (exit 2)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(
+                [
+                    "trend",
+                    "test-skill",
+                    "--metric",
+                    "pass_rate",
+                    "--harness",
+                    "claude-code",
+                    "--cross-harness",
+                ]
+            )
+        assert exc_info.value.code == 2
+
+    def test_both_axes_mixed_only_cross_harness_refuses(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Both mixed + only ``--cross-harness`` → refuse provider (DEC-011)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_both(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--cross-harness",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Provider refusal still fires (DEC-011 — name the still-uncovered axis).
+        assert "Mixed providers detected in history for skill" in err
+        assert "--cross-provider" in err
+        # Harness refusal must NOT fire (axis was opted-in).
+        assert "Mixed harnesses detected in history" not in err
+
+    def test_both_axes_mixed_only_cross_provider_refuses(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Both mixed + only ``--cross-provider`` → refuse harness (DEC-011)."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_both(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--cross-provider",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Harness refusal still fires (DEC-011 — name the still-uncovered axis).
+        assert "Mixed harnesses detected in history for skill" in err
+        assert "--cross-harness" in err
+        # Provider refusal must NOT fire (axis was opted-in).
+        assert "Mixed providers detected in history" not in err
+
+    def test_both_axes_mixed_both_flags_succeeds_with_two_warnings(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Both axes mixed + both ``--cross-*`` flags → exit 0 + two WARNINGs."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_both(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--cross-provider",
+                "--cross-harness",
+            ]
+        )
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "WARNING: averaging across providers" in err
+        assert "WARNING: averaging across harnesses" in err
+
+    def test_provider_refusal_message_now_mentions_cross_provider(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """DEC-008 retrofit: provider refusal stderr names ``--cross-provider``."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_provider(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Byte-stable lead-in survives the retrofit.
+        assert "Mixed providers detected in history for skill" in err
+        # New suffix mentions the opt-in flag.
+        assert "--cross-provider" in err
+        assert "to allow averaging" in err
+
+    def test_harness_refusal_message_now_mentions_cross_harness(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """DEC-008 retrofit: harness refusal stderr names ``--cross-harness``."""
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_harness(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(["trend", "test-skill", "--metric", "pass_rate"])
+        assert rc == 2
+        err = capsys.readouterr().err
+        # Byte-stable lead-in survives the retrofit (US-003 substring).
+        assert "Mixed harnesses detected in history for skill" in err
+        # New suffix mentions the opt-in flag.
+        assert "--cross-harness" in err
+        assert "to allow averaging" in err
+
+    def test_mixed_axis_refusal_runs_before_last_slice(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Pin the pre-``--last`` invariant for the cross-axis path
+        (CodeRabbit PR #168 review).
+
+        The cross-axis check must operate on the FULL filtered set, not
+        the post-``--last`` slice. A regression that reordered the
+        ``--last`` cut above the cross-axis detection would let a user
+        with mixed history slip past the refusal by passing a small
+        ``--last`` window that happens to contain only one dimension
+        value. This test seeds 5 mixed-provider records and a ``--last
+        2`` window large enough to also be one-axis if the slice ran
+        first; the refusal must still fire because the full set is
+        mixed.
+        """
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_provider(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--last",
+                "2",
+            ]
+        )
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "Mixed providers detected in history for skill" in err
+
+    def test_cross_axis_opt_in_with_last_succeeds(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--cross-provider --last N`` produces a WARNING and proceeds.
+
+        Companion to ``test_mixed_axis_refusal_runs_before_last_slice``.
+        Verifies the WARNING fires before the slice runs (it sees the
+        full filtered set), and the slice still applies to the trend
+        rendering output.
+        """
+        monkeypatch.chdir(tmp_path)
+        self._seed_mixed_provider(tmp_path / ".clauditor" / "history.jsonl")
+
+        rc = main(
+            [
+                "trend",
+                "test-skill",
+                "--metric",
+                "pass_rate",
+                "--cross-provider",
+                "--last",
+                "2",
+            ]
+        )
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "WARNING: averaging across providers" in captured.err
+        # Stdout has at most --last data rows.
+        data_lines = [
+            line for line in captured.out.splitlines() if line.strip()
+        ]
+        assert len(data_lines) <= 2
 
 
 class TestCmdGradeHistory:
@@ -5126,8 +6770,52 @@ class TestCmdGradeHistory:
         assert record["skill"] == "test-skill"
         assert record["pass_rate"] == 1.0
         assert record["mean_score"] == 0.9
-        assert record["schema_version"] == 1
+        # #152 DEC-005: schema bumped to 3 with mandatory ``harness``.
+        assert record["schema_version"] == 3
         assert record["command"] == "grade"
+        # Default eval-spec uses anthropic; provider is threaded from
+        # the four-layer ``_resolve_grading_provider`` resolution.
+        assert record["provider"] == "anthropic"
+
+    def test_grade_appends_history_with_resolved_provider(
+        self, tmp_path, monkeypatch
+    ):
+        """Resolved grading provider lands in the history record (#147 US-005)."""
+        monkeypatch.chdir(tmp_path)
+        # Force OpenAI auth presence so the pre-call guard does not fire.
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key-for-test")
+
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output")
+
+        # Build a spec that explicitly pins ``grading_provider="openai"``
+        # so the four-layer resolver picks ``"openai"``.
+        eval_spec = _make_eval_spec(grading_provider="openai")
+        spec = _make_spec(eval_spec=eval_spec)
+        report = make_grading_report(passed=True, score=0.9)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--output", str(output_file),
+                    "--model", "gpt-5.4",
+                ]
+            )
+
+        assert rc == 0
+        history_path = tmp_path / ".clauditor" / "history.jsonl"
+        record = json.loads(history_path.read_text().splitlines()[0])
+        assert record["schema_version"] == 3
+        assert record["provider"] == "openai"
 
     def test_grade_history_records_metrics(self, tmp_path, monkeypatch):
         """cmd_grade records real bucketed metrics in history.jsonl."""
@@ -5384,8 +7072,10 @@ class TestCmdExtractHistory:
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["skill"] == "test-skill"
-        assert record["schema_version"] == 1
+        # #152 DEC-005: history schema bumped to 3 with mandatory harness.
+        assert record["schema_version"] == 3
         assert record["command"] == "extract"
+        assert record["provider"] == "anthropic"
         assert record["pass_rate"] is None
         assert record["mean_score"] is None
         metrics = record["metrics"]
@@ -5397,6 +7087,57 @@ class TestCmdExtractHistory:
         assert "quality" not in metrics
         assert "triggers" not in metrics
         assert metrics["total"]["total"] == 700
+
+    def test_extract_appends_history_with_resolved_provider(
+        self, tmp_path, monkeypatch
+    ):
+        """Resolved grading provider lands in extract history (#147 US-005)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key-for-test")
+
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output")
+
+        eval_spec = _make_eval_spec(
+            sections=_make_sections(),
+            grading_provider="openai",
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        results = AssertionSet(
+            results=[
+                AssertionResult(
+                    name="section:Results:count",
+                    passed=True,
+                    message="ok",
+                    kind="count",
+                )
+            ],
+            input_tokens=500,
+            output_tokens=200,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+        ):
+            rc = main(
+                [
+                    "extract",
+                    "skill.md",
+                    "--output", str(output_file),
+                    "--model", "gpt-5.4-mini",
+                ]
+            )
+
+        assert rc == 0
+        history_path = tmp_path / ".clauditor" / "history.jsonl"
+        record = json.loads(history_path.read_text().splitlines()[0])
+        assert record["schema_version"] == 3
+        assert record["provider"] == "openai"
 
     def test_extract_live_run_records_skill_and_grader_tokens(
         self, tmp_path, monkeypatch
@@ -5467,8 +7208,12 @@ class TestCmdValidateHistory:
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["skill"] == "test-skill"
-        assert record["schema_version"] == 1
+        # #152 DEC-005: history schema bumped to 3 with mandatory harness.
+        assert record["schema_version"] == 3
         assert record["command"] == "validate"
+        # Validate runs Layer 1 only; provider is the placeholder
+        # ``"anthropic"`` per #147 DEC-002 / DEC-012.
+        assert record["provider"] == "anthropic"
         # Layer 1 pass_rate is 1.0 (the "contains hello" assertion passes)
         assert record["pass_rate"] == 1.0
         assert record["mean_score"] is None
@@ -5546,7 +7291,9 @@ class TestCmdValidateWorkspace:
         assert not (skill_dir / "timing.json").exists()
 
         payload = json.loads(assertions_path.read_text())
-        assert payload["schema_version"] == 1
+        # #152 US-002 / B1: assertions.json bumped to v2 with top-level harness.
+        assert payload["schema_version"] == 2
+        assert payload["harness"] == "claude-code"
         assert payload["skill"] == "test-skill"
         assert payload["iteration"] == 1
         assert len(payload["runs"]) == 1
@@ -5911,8 +7658,19 @@ class TestCmdSuggest:
 
         captured = {}
 
-        async def _fake_propose(suggest_input, *, model=None, transport="auto"):
+        async def _fake_propose(
+            suggest_input,
+            *,
+            model=None,
+            transport="auto",
+            provider,
+        ):
+            # ``provider`` is required (no default) per CodeRabbit
+            # finding on PR #164: a default of ``"anthropic"`` would
+            # let the test pass even if ``main()`` stopped threading
+            # the new kwarg, weakening the regression guard.
             captured["source_iteration"] = suggest_input.source_iteration
+            captured["provider"] = provider
             return self._fake_report(source_iteration=suggest_input.source_iteration)
 
         with patch("clauditor.cli.suggest.propose_edits", new=_fake_propose):
@@ -5920,6 +7678,8 @@ class TestCmdSuggest:
 
         assert rc == 0
         assert captured["source_iteration"] == 1
+        # Default no-args path stamps anthropic per QG pass 2 of #146.
+        assert captured["provider"] == "anthropic"
 
     def test_with_transcripts_forwarded(self, tmp_path, monkeypatch):
         skill_dir = self._setup_failing_run(tmp_path, monkeypatch)
@@ -5931,8 +7691,16 @@ class TestCmdSuggest:
 
         captured = {}
 
-        async def _fake_propose(suggest_input, *, model=None, transport="auto"):
+        async def _fake_propose(
+            suggest_input,
+            *,
+            model=None,
+            transport="auto",
+            provider,
+        ):
+            # ``provider`` required per CodeRabbit finding on PR #164.
             captured["transcripts"] = suggest_input.transcript_events
+            captured["provider"] = provider
             return self._fake_report()
 
         with patch("clauditor.cli.suggest.propose_edits", new=_fake_propose):
@@ -5944,6 +7712,7 @@ class TestCmdSuggest:
         assert captured["transcripts"] is not None
         assert len(captured["transcripts"]) == 1
         assert len(captured["transcripts"][0]) == 1
+        assert captured["provider"] == "anthropic"
 
     @pytest.mark.parametrize(
         "report_overrides, expected_rc, expected_err_substrs",
@@ -6504,7 +8273,7 @@ class TestCmdValidateErrorSurfacingRegression:
         After, the first warning line is rendered as the base text and
         the interactive hint is appended.
         """
-        from clauditor.runner import _INTERACTIVE_HANG_WARNING
+        from clauditor._harnesses._claude_code import _INTERACTIVE_HANG_WARNING
 
         monkeypatch.chdir(tmp_path)
         (tmp_path / ".git").mkdir()
@@ -6571,7 +8340,7 @@ class TestCmdRunErrorSurfacingRegression:
         ``if result.error:`` guard silently suppressed it since
         ``result.error`` is ``None`` for the heuristic).
         """
-        from clauditor.runner import _INTERACTIVE_HANG_WARNING
+        from clauditor._harnesses._claude_code import _INTERACTIVE_HANG_WARNING
 
         mock_runner = MagicMock()
         result = make_skill_result(
@@ -6823,3 +8592,2030 @@ class TestResolveGraderTransport:
         captured = capsys.readouterr()
         assert "ERROR:" in captured.err
         assert "sdk" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# #145 US-009: ``check_provider_auth`` wiring on the 4 LLM-mediated CLI
+# commands. Each command (``grade``, ``extract``, ``triggers``) must:
+#   - resolve ``provider = eval_spec.grading_provider or "anthropic"``;
+#   - dispatch via ``check_provider_auth`` (catches both
+#     ``AnthropicAuthMissingError`` and ``OpenAIAuthMissingError``);
+#   - exit 2 with ``OPENAI_API_KEY`` mentioned in stderr when the spec
+#     declares ``grading_provider="openai"`` but no key is set.
+#   - keep working unchanged when ``grading_provider`` is ``None``
+#     (default Anthropic path).
+#
+# The ``propose-eval`` command is covered separately in
+# ``tests/test_cli_propose_eval.py`` — it has no ``eval_spec`` to
+# read ``grading_provider`` from (it's the eval-creation step) and is
+# hardcoded to ``provider="anthropic"`` for the proposer call.
+#
+# Traces to DEC-003, DEC-006 of ``plans/super/145-openai-provider.md``
+# and ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+# ---------------------------------------------------------------------------
+
+
+class TestCmdGradeProviderAuth:
+    """#145 US-009: ``cmd_grade`` resolves provider and dispatches auth."""
+
+    def _make_extraction_set(self):
+        return AssertionSet(
+            results=[
+                AssertionResult(
+                    name="contains hello",
+                    passed=True,
+                    message="ok",
+                    kind="contains",
+                ),
+            ]
+        )
+
+    def test_grade_with_openai_grading_provider_passes_when_key_set(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec with ``grading_provider="openai"`` and ``OPENAI_API_KEY`` set
+        → proceeds through the auth guard. Mocks the grader so the
+        test does not actually call OpenAI.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        # Pin a gpt-* model so the provider/model coherence check
+        # (CodeRabbit finding on PR #164) does not trip — without it,
+        # ``EvalSpec.grading_model`` defaults to ``"claude-sonnet-4-6"``
+        # which conflicts with provider="openai" until DEC-004b lands.
+        eval_spec = _make_eval_spec(
+            grading_provider="openai", grading_model="gpt-5.4"
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = make_grading_report(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+
+    def test_grade_with_openai_grading_provider_exits_2_when_key_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Spec with ``grading_provider="openai"`` and missing
+        ``OPENAI_API_KEY`` → exit 2 with stderr mentioning the env var.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        eval_spec = _make_eval_spec(
+            grading_provider="openai", grading_model="gpt-5.4"
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = make_grading_report(passed=True)
+
+        # The grader mock should never be reached; the auth guard fires
+        # before allocate_iteration / grade_quality is awaited.
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ) as mock_grade,
+        ):
+            rc = main(["grade", "skill.md", "--output", str(output_file)])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "OPENAI_API_KEY" in err
+        assert mock_grade.await_count == 0
+
+    def test_grade_with_default_anthropic_provider_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression check: spec with default ``grading_provider``
+        (post-#182 the default is ``"auto"``) still routes through
+        the Anthropic guard and proceeds when an ``ANTHROPIC_API_KEY``
+        is set. Auto-inference picks anthropic from the default
+        ``grading_model="claude-sonnet-4-6"`` resolver fallback.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        eval_spec = _make_eval_spec()
+        # DEC-001b of #146 (issue #182): default flipped to "auto".
+        assert eval_spec.grading_provider == "auto"
+        spec = _make_spec(eval_spec=eval_spec)
+        report = make_grading_report(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+
+
+class TestCmdExtractProviderAuth:
+    """#145 US-009: ``cmd_extract`` resolves provider and dispatches auth."""
+
+    def _make_extraction_set(self):
+        return AssertionSet(
+            results=[
+                AssertionResult(
+                    name="section:Results:count",
+                    passed=True,
+                    message="ok",
+                    kind="count",
+                ),
+            ]
+        )
+
+    def test_extract_with_openai_grading_provider_passes_when_key_set(
+        self, tmp_path, monkeypatch
+    ):
+        """Spec with ``grading_provider="openai"`` and ``OPENAI_API_KEY`` set
+        → proceeds through the auth guard.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+
+        eval_spec = _make_eval_spec(
+            sections=_make_sections(),
+            grading_provider="openai",
+            grading_model="gpt-5.4",
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        results = self._make_extraction_set()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+        ):
+            rc = main(["extract", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+
+    def test_extract_with_openai_grading_provider_exits_2_when_key_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Spec with ``grading_provider="openai"`` and missing
+        ``OPENAI_API_KEY`` → exit 2 with stderr mentioning the env var.
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+
+        eval_spec = _make_eval_spec(
+            sections=_make_sections(),
+            grading_provider="openai",
+            grading_model="gpt-5.4",
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        results = self._make_extraction_set()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ) as mock_extract,
+        ):
+            rc = main(["extract", "skill.md", "--output", str(output_file)])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "OPENAI_API_KEY" in err
+        assert mock_extract.await_count == 0
+
+    def test_extract_with_default_anthropic_provider_unchanged(
+        self, tmp_path, monkeypatch
+    ):
+        """Regression check: spec with default ``grading_provider``
+        (post-#146 the default is ``"auto"``) still routes through
+        the Anthropic guard once the resolver lands.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        # DEC-001b of #146 (issue #182): default flipped to "auto".
+        assert eval_spec.grading_provider == "auto"
+        spec = _make_spec(eval_spec=eval_spec)
+        results = self._make_extraction_set()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=results,
+            ),
+        ):
+            rc = main(["extract", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+
+
+class TestCmdTriggersProviderAuth:
+    """#145 US-009: ``cmd_triggers`` resolves provider and dispatches auth."""
+
+    def _make_trigger_report(self):
+        return TriggerReport(
+            skill_name="test-skill",
+            skill_description="A test skill",
+            model="claude-sonnet-4-6",
+            results=[
+                TriggerResult(
+                    query="find activities",
+                    expected_trigger=True,
+                    predicted_trigger=True,
+                    passed=True,
+                    confidence=0.95,
+                    reasoning="Matches skill intent",
+                ),
+            ],
+        )
+
+    def test_triggers_with_openai_grading_provider_passes_when_key_set(
+        self, monkeypatch
+    ):
+        """Spec with ``grading_provider="openai"`` and ``OPENAI_API_KEY`` set
+        → proceeds through the auth guard.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+        eval_spec = _make_eval_spec(
+            grading_provider="openai",
+            trigger_tests=TriggerTests(
+                should_trigger=["find activities"],
+                should_not_trigger=["weather today"],
+            ),
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_trigger_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.triggers.test_triggers",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["triggers", "skill.md"])
+
+        assert rc == 0
+
+    def test_triggers_with_openai_grading_provider_exits_2_when_key_missing(
+        self, monkeypatch, capsys
+    ):
+        """Spec with ``grading_provider="openai"`` and missing
+        ``OPENAI_API_KEY`` → exit 2 with stderr mentioning the env var.
+        """
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        eval_spec = _make_eval_spec(
+            grading_provider="openai",
+            trigger_tests=TriggerTests(
+                should_trigger=["find activities"],
+                should_not_trigger=["weather today"],
+            ),
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_trigger_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.triggers.test_triggers",
+                new_callable=AsyncMock,
+                return_value=report,
+            ) as mock_test_triggers,
+        ):
+            rc = main(["triggers", "skill.md"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "OPENAI_API_KEY" in err
+        assert mock_test_triggers.await_count == 0
+
+    def test_triggers_with_default_anthropic_provider_unchanged(
+        self, monkeypatch
+    ):
+        """Regression check: spec with default ``grading_provider``
+        (post-#146 the default is ``"auto"``) still routes through
+        the Anthropic guard once the resolver lands.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        eval_spec = _make_eval_spec(
+            trigger_tests=TriggerTests(
+                should_trigger=["find activities"],
+                should_not_trigger=["weather today"],
+            ),
+        )
+        # DEC-001b of #146 (issue #182): default flipped to "auto".
+        assert eval_spec.grading_provider == "auto"
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_trigger_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.triggers.test_triggers",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["triggers", "skill.md"])
+
+        assert rc == 0
+
+
+class TestExplicitAutoProviderHandling:
+    """Issue #182 / DEC-001b: ``--grading-provider auto`` with no model
+    falls back to anthropic (the subscription-first historical default).
+
+    Pre-#182 transitionally raised "provide grading_provider or
+    grading_model" — that hostile error fired on every pre-#146 spec
+    once the dataclass default flipped to ``"auto"``. Post-#182 the
+    resolver returns ``"anthropic"`` so byte-identical pre-#146
+    behavior is preserved.
+    """
+
+
+class _StopE2EError(Exception):
+    """Sentinel raised by mocks to short-circuit CLI flow at a captured point."""
+
+
+class TestProviderModelCoherence:
+    """Issue #182 fix + DEC-004b of #146: with the dataclass default for
+    ``EvalSpec.grading_model`` flipped to ``None``, ``--grading-provider
+    openai`` on a spec that omits ``grading_model`` succeeds — the
+    per-provider default from ``resolve_grading_model`` (``"gpt-5.4"``)
+    kicks in. The pre-flight coherence check at the CLI seams is
+    retired per the migration recipe step 5; the SDK call itself
+    surfaces an explicit-but-mismatching spec value as a clean 400.
+    """
+
+    def test_grade_provider_openai_with_default_spec_succeeds(
+        self, tmp_path, monkeypatch
+    ):
+        """``--grading-provider openai`` on a spec that omitted
+        ``grading_model`` succeeds — the per-provider default
+        ``"gpt-5.4"`` kicks in via ``resolve_grading_model``. This is
+        the precise paper cut #182 closes.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        eval_spec = _make_eval_spec()  # default grading_model is None post-#182
+        spec = _make_spec(eval_spec=eval_spec)
+        report = make_grading_report(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--grading-provider",
+                    "openai",
+                    "--output",
+                    str(output_file),
+                ]
+            )
+
+        assert rc == 0
+
+    def test_grade_provider_openai_with_explicit_gpt_model_succeeds(
+        self, tmp_path, monkeypatch
+    ):
+        """``--grading-provider openai --model gpt-5.4`` passes the
+        coherence check and reaches the grader mock.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("hello world")
+
+        eval_spec = _make_eval_spec()  # default grading_model="claude-sonnet-4-6"
+        spec = _make_spec(eval_spec=eval_spec)
+        report = make_grading_report(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--grading-provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--output",
+                    str(output_file),
+                ]
+            )
+
+        assert rc == 0
+
+    def test_extract_provider_openai_with_default_spec_succeeds(
+        self, tmp_path, monkeypatch
+    ):
+        """``extract --grading-provider openai`` on a spec with no
+        ``grading_model`` set succeeds — per-provider default kicks in.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+
+        eval_spec = _make_eval_spec(sections=_make_sections())
+        spec = _make_spec(eval_spec=eval_spec)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.grader.extract_and_grade",
+                new_callable=AsyncMock,
+                return_value=AssertionSet(results=[]),
+            ),
+        ):
+            rc = main(
+                [
+                    "extract",
+                    "skill.md",
+                    "--grading-provider",
+                    "openai",
+                    "--output",
+                    str(output_file),
+                ]
+            )
+
+        assert rc == 0
+
+    def test_compare_blind_provider_openai_with_default_spec_succeeds(
+        self, tmp_path, monkeypatch
+    ):
+        """``compare --blind --grading-provider openai`` on a spec with
+        no ``grading_model`` set succeeds — per-provider default kicks
+        in via ``resolve_grading_model``.
+        """
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        before, after = _write_pair(tmp_path)
+        eval_spec = _make_eval_spec(user_prompt="Write a hello world")
+        spec = _make_spec(eval_spec=eval_spec)
+        report = _make_blind_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.blind_compare",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(_blind_argv(before, after) + [
+                "--grading-provider", "openai"
+            ])
+
+        assert rc == 0
+
+    def test_extract_resolves_default_model_when_spec_grading_model_is_null(
+        self, tmp_path, monkeypatch
+    ):
+        """When ``args.model`` is None AND ``spec.grading_model`` is None
+        (explicit ``null`` per DEC-004a), extract.py:145-146 falls back
+        to ``resolve_grading_model(spec, provider)`` to pick the per-
+        provider default. Covers the ``if model is None`` branch.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("some skill output with results")
+        eval_spec = _make_eval_spec(sections=_make_sections(), grading_model=None)
+        spec = _make_spec(eval_spec=eval_spec)
+
+        captured: dict = {}
+
+        async def _fake_extract(*args, **kwargs):
+            captured["model"] = args[2] if len(args) > 2 else kwargs.get("model")
+            captured["provider"] = kwargs.get("provider")
+            # Raise after capturing to short-circuit extract.py before
+            # the unrelated downstream summary() call. The captured
+            # values still prove the model-resolution branch fired.
+            raise _StopE2EError("captured")
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch("clauditor.grader.extract_and_grade", new=_fake_extract),
+            pytest.raises(_StopE2EError),
+        ):
+            main(
+                [
+                    "extract", "skill.md",
+                    "--grading-provider", "anthropic",
+                    "--output", str(output_file),
+                ]
+            )
+
+        assert captured["model"] == "claude-sonnet-4-6"
+        assert captured["provider"] == "anthropic"
+
+    def test_triggers_resolves_default_model_when_spec_grading_model_is_null(
+        self, tmp_path, monkeypatch
+    ):
+        """Same shape for triggers.py:146-148 — falls back to
+        ``resolve_grading_model`` when both args.model and
+        spec.grading_model are None.
+        """
+        from clauditor.schemas import TriggerTests
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        eval_spec = _make_eval_spec(
+            grading_model=None,
+            trigger_tests=TriggerTests(
+                should_trigger=["x"],
+                should_not_trigger=["y"],
+            ),
+        )
+        spec = _make_spec(eval_spec=eval_spec)
+
+        captured: dict = {}
+
+        async def _fake_triggers(*args, **kwargs):
+            captured["model"] = args[1] if len(args) > 1 else kwargs.get("model")
+            captured["provider"] = kwargs.get("provider")
+            raise _StopE2EError("captured")
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch("clauditor.triggers.test_triggers", new=_fake_triggers),
+            pytest.raises(_StopE2EError),
+        ):
+            main(
+                [
+                    "triggers", "skill.md",
+                    "--grading-provider", "anthropic",
+                ]
+            )
+
+        assert captured["model"] == "claude-sonnet-4-6"
+        assert captured["provider"] == "anthropic"
+
+
+# ---------------------------------------------------------------------------
+# Shared CLI helpers: argparse-type validators + four-layer precedence
+# resolvers from src/clauditor/cli/__init__.py. Moved here from
+# tests/test_cli_init.py per CodeRabbit finding on PR #164 — the repo
+# convention is one test file per source module, and cli/__init__.py is
+# already covered by tests/test_cli.py.
+# ---------------------------------------------------------------------------
+
+
+class TestProviderChoice:
+    """Argparse type validator for the ``--grading-provider`` flag.
+
+    Mirrors ``TestTransportChoiceValidator`` elsewhere in this file.
+    """
+
+    @pytest.mark.parametrize("value", ["anthropic", "openai", "auto"])
+    def test_accepts_each_literal(self, value):
+        """Every accepted literal round-trips unchanged."""
+        from clauditor.cli import _provider_choice
+
+        assert _provider_choice(value) == value
+
+    @pytest.mark.parametrize(
+        "value", ["claude", "", "ANTHROPIC", "OpenAI", " auto", "gpt"]
+    )
+    def test_rejects_invalid(self, value):
+        """Anything outside the literal set raises ``ArgumentTypeError``.
+
+        argparse maps the ``ArgumentTypeError`` to exit 2 at parse
+        time per ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+        """
+        from clauditor.cli import _provider_choice
+
+        with pytest.raises(
+            argparse.ArgumentTypeError, match="must be one of"
+        ):
+            _provider_choice(value)
+
+    def test_signature_returns_str(self):
+        """The validator returns ``str``, matching argparse ``type=`` shape."""
+        from clauditor.cli import _provider_choice
+
+        result = _provider_choice("anthropic")
+        assert isinstance(result, str)
+        assert result == "anthropic"
+
+
+class _FakeEvalSpecForProviderResolver:
+    """Duck-typed eval-spec stand-in for ``_resolve_grading_provider`` tests.
+
+    The CLI helper reads ``grading_provider`` and ``grading_model``
+    via attribute access, so a tiny stub keeps tests independent of
+    the full :class:`EvalSpec` validator surface.
+    """
+
+    def __init__(
+        self,
+        *,
+        grading_provider: str | None = None,
+        grading_model: str | None = "claude-sonnet-4-6",
+    ) -> None:
+        self.grading_provider = grading_provider
+        self.grading_model = grading_model
+
+
+class TestResolveGradingProvider:
+    """Four-layer precedence for ``_resolve_grading_provider``.
+
+    DEC-001 / DEC-003 / DEC-007 of
+    ``plans/super/146-grading-provider-precedence.md``: CLI > env >
+    spec > default ``"auto"`` (which auto-infers from the effective
+    model). Whitespace-only env values normalize to ``None``.
+    """
+
+    def test_cli_wins_over_env_spec_default(self, monkeypatch):
+        """CLI flag wins even when env and spec also name a value."""
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "anthropic")
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider="openai")
+        eval_spec = _FakeEvalSpecForProviderResolver(grading_provider="anthropic")
+        result = _resolve_grading_provider(args, eval_spec)
+        assert result == "openai"
+
+    def test_env_wins_over_spec_and_default(self, monkeypatch):
+        """Env wins when CLI flag is unset."""
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "openai")
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None)
+        eval_spec = _FakeEvalSpecForProviderResolver(grading_provider="anthropic")
+        result = _resolve_grading_provider(args, eval_spec)
+        assert result == "openai"
+
+    def test_spec_wins_over_default(self, monkeypatch):
+        """Spec wins when CLI and env are both unset."""
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None)
+        eval_spec = _FakeEvalSpecForProviderResolver(grading_provider="openai")
+        result = _resolve_grading_provider(args, eval_spec)
+        assert result == "openai"
+
+    def test_default_auto_infers_anthropic_from_claude_model(
+        self, monkeypatch
+    ):
+        """Default ``"auto"`` + claude model → ``"anthropic"``."""
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None)
+        eval_spec = _FakeEvalSpecForProviderResolver(
+            grading_provider=None, grading_model="claude-sonnet-4-6"
+        )
+        result = _resolve_grading_provider(args, eval_spec)
+        assert result == "anthropic"
+
+    def test_auto_infers_openai_from_gpt_model(self, monkeypatch):
+        """``--grading-provider auto`` + gpt model → ``"openai"``."""
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider="auto")
+        eval_spec = _FakeEvalSpecForProviderResolver(
+            grading_provider=None, grading_model="gpt-5.4"
+        )
+        result = _resolve_grading_provider(args, eval_spec)
+        assert result == "openai"
+
+    def test_invalid_env_exits_2_with_stderr_message(
+        self, monkeypatch, capsys
+    ):
+        """Invalid ``CLAUDITOR_GRADING_PROVIDER`` value → SystemExit(2)."""
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "bogus")
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None)
+        with pytest.raises(SystemExit) as exc_info:
+            _resolve_grading_provider(args, None)
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "ERROR:" in captured.err
+        assert "bogus" in captured.err
+        assert "CLAUDITOR_GRADING_PROVIDER" in captured.err
+
+    def test_whitespace_env_treated_as_unset_falls_through_to_spec(
+        self, monkeypatch
+    ):
+        """Whitespace-only env value normalizes to ``None`` → spec wins."""
+        monkeypatch.setenv("CLAUDITOR_GRADING_PROVIDER", "   ")
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None)
+        eval_spec = _FakeEvalSpecForProviderResolver(grading_provider="openai")
+        result = _resolve_grading_provider(args, eval_spec)
+        # whitespace-only env → treated as None → spec wins
+        assert result == "openai"
+
+    def test_no_eval_spec_with_args_model_drives_auto_inference(
+        self, monkeypatch
+    ):
+        """No eval_spec but ``args.model`` set → used for auto-inference."""
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None, model="gpt-5.4")
+        result = _resolve_grading_provider(args, None)
+        assert result == "openai"
+
+    def test_no_eval_spec_no_model_auto_falls_back_to_anthropic(
+        self, monkeypatch
+    ):
+        """Default ``"auto"`` + no spec + no ``args.model`` → anthropic.
+
+        Post-#182 / DEC-001b: the pure resolver delegates to
+        ``infer_provider_from_model(None)``, which falls back to the
+        subscription-first historical default ``"anthropic"`` instead
+        of raising. Pre-#146 specs (no provider, no model) keep
+        grading against anthropic with byte-identical output to today.
+        """
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(grading_provider=None)
+        result = _resolve_grading_provider(args, None)
+        assert result == "anthropic"
+
+    def test_auto_with_args_model_takes_precedence_over_spec_grading_model(
+        self, monkeypatch
+    ):
+        """When both ``eval_spec.grading_model`` and ``args.model`` are
+        set, the operator's ``--model`` wins over the spec's
+        ``grading_model`` for auto-inference (QG pass 1 of #146 per
+        ``.claude/rules/spec-cli-precedence.md`` operator > author).
+        """
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace(
+            grading_provider="auto", model="gpt-5.4"
+        )
+        eval_spec = _FakeEvalSpecForProviderResolver(
+            grading_provider=None, grading_model="claude-sonnet-4-6"
+        )
+        result = _resolve_grading_provider(args, eval_spec)
+        # args.model="gpt-..." → "openai" wins over
+        # spec.grading_model="claude-..." → "anthropic".
+        assert result == "openai"
+
+    def test_missing_grading_provider_attr_on_args(self, monkeypatch):
+        """``args`` without a ``grading_provider`` attr falls through.
+
+        Pre-US-005, most CLI commands don't yet expose the
+        ``--grading-provider`` flag. The helper uses
+        ``getattr(args, "grading_provider", None)`` defensively so it
+        works on any ``Namespace`` shape.
+        """
+        monkeypatch.delenv("CLAUDITOR_GRADING_PROVIDER", raising=False)
+        from clauditor.cli import _resolve_grading_provider
+
+        args = argparse.Namespace()  # no grading_provider attr
+        eval_spec = _FakeEvalSpecForProviderResolver(grading_provider="openai")
+        result = _resolve_grading_provider(args, eval_spec)
+        assert result == "openai"
+
+
+class TestCLIHarnessFlag:
+    """#151 US-005: ``--harness {claude-code,codex,auto}`` argparse flag.
+
+    Each of the four skill-execution commands (``validate``, ``grade``,
+    ``capture``, ``run``) accepts ``--harness`` with the shared
+    ``_harness_choice`` validator. Invalid values exit 2 at argparse
+    time per ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    """
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            ["validate", "skill.md", "--harness", "bogus"],
+            ["grade", "skill.md", "--harness", "bogus"],
+            ["capture", "my-skill", "--harness", "bogus"],
+            ["run", "my-skill", "--harness", "bogus"],
+        ],
+    )
+    def test_invalid_harness_exits_2(self, cmd, capsys):
+        """Invalid ``--harness bogus`` rejected by argparse with exit 2."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(cmd)
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert "must be one of" in err or "invalid" in err.lower()
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            ["validate", "--help"],
+            ["grade", "--help"],
+            ["capture", "--help"],
+            ["run", "--help"],
+        ],
+    )
+    def test_four_commands_advertise_harness_in_help(self, cmd, capsys):
+        """Each of the four commands advertises ``--harness`` in help text."""
+        with pytest.raises(SystemExit) as exc_info:
+            main(cmd)
+        assert exc_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "--harness" in out
+
+
+class TestCmdValidateHarness:
+    """#151 US-005: ``cmd_validate`` resolves harness and dispatches Codex auth."""
+
+    def test_validate_with_harness_codex_passes_when_key_set(
+        self, tmp_path, monkeypatch
+    ):
+        """``--harness codex`` + ``CODEX_API_KEY`` set → live-run path
+        threads ``harness_name_override="codex"`` into ``spec.run``.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setenv("CODEX_API_KEY", "ck-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=1.5,
+        )
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--harness", "codex"])
+
+        assert rc == 0
+        spec.run.assert_called_once()
+        # DEC-013 / US-006: the resolved harness is threaded through.
+        kwargs = spec.run.call_args.kwargs
+        assert kwargs.get("harness_name_override") == "codex"
+
+    def test_validate_with_harness_codex_exits_2_when_keys_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` with both Codex env vars unset → exit 2
+        with stderr mentioning ``CODEX_API_KEY``. ``spec.run`` is never
+        invoked because the auth guard fires before subprocess launch.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(output="ignored")
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--harness", "codex"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "CODEX_API_KEY" in err
+        # Regression guard: stderr must NOT contain a doubled
+        # ``"ERROR: ERROR: "`` prefix. The Codex template already
+        # starts with ``"ERROR: "`` so the CLI handler must use
+        # ``print(str(exc), ...)`` (matches Anthropic / OpenAI
+        # auth-missing handlers), not ``f"ERROR: {exc}"``.
+        assert "ERROR: ERROR:" not in err
+        assert spec.run.call_count == 0
+
+
+class TestCmdGradeHarness:
+    """#151 US-005 / DEC-013: ``cmd_grade`` resolves harness, threads it
+    through to BOTH primary and baseline ``spec.run`` calls.
+    """
+
+    def test_grade_with_harness_codex_passes_when_key_set(
+        self, tmp_path, monkeypatch
+    ):
+        """``--harness codex`` + ``CODEX_API_KEY`` set → primary
+        ``spec.run`` is invoked with ``harness_name_override="codex"``.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CODEX_API_KEY", "ck-test")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=1.5,
+        )
+        report = make_grading_report(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--harness", "codex"])
+
+        assert rc == 0
+        assert spec.run.call_count >= 1
+        # Every primary/variance ``spec.run`` call gets the override.
+        for call in spec.run.call_args_list:
+            assert call.kwargs.get("harness_name_override") == "codex"
+
+    def test_grade_baseline_propagates_codex_harness_to_baseline_runner(
+        self, tmp_path, monkeypatch
+    ):
+        """DEC-013: ``--baseline --harness codex`` must use the same
+        Codex harness for both the primary and baseline arms (the A/B
+        comparison must isolate the variable).
+
+        The baseline arm calls ``baseline_runner.run_raw(...)`` rather
+        than ``spec.run(...)``. Verify ``construct_harness("codex")``
+        was invoked for the baseline phase — confirming the resolved
+        harness propagated to the without-skill arm.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.setenv("CODEX_API_KEY", "ck-test")
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="hello world output", duration_seconds=1.5,
+        )
+        # spec.runner mirrors the primary harness so the baseline path
+        # has a project_dir / timeout to copy into the override runner.
+        spec.runner = MagicMock()
+        spec.runner.project_dir = tmp_path
+        spec.runner.timeout = 300
+
+        report = make_grading_report(passed=True)
+        baseline_reports = MagicMock()
+        baseline_reports.grading_report = report
+        baseline_reports.skill_result = make_skill_result(
+            output="baseline output", duration_seconds=1.0,
+        )
+        baseline_reports.to_json_map = lambda: {}
+
+        # ``construct_harness`` is imported lazily inside
+        # ``_run_baseline_phase`` (deferred per
+        # ``.claude/rules/back-compat-shim-discipline.md`` Pattern 3),
+        # so the canonical patch seam is the source module.
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+            patch(
+                "clauditor._harnesses.construct_harness"
+            ) as mock_construct,
+            patch(
+                "clauditor.baseline.compute_baseline",
+                return_value=baseline_reports,
+            ),
+        ):
+            mock_construct.return_value = MagicMock()
+            rc = main(
+                ["grade", "skill.md", "--harness", "codex", "--baseline"]
+            )
+
+        # Tightened from ``rc in (0, 1)`` per CodeRabbit review feedback
+        # on PR #166: assert deterministic success (``rc == 0``) so a
+        # future regression in the baseline flow surfaces here rather
+        # than being masked by a permissive ladder. ``construct_harness``
+        # is also called inside ``SkillSpec.run`` (from US-006), but
+        # here ``spec.run`` is a mock so that path is bypassed; the
+        # codex call therefore only comes from the baseline arm.
+        assert rc == 0, f"baseline propagation regression: rc={rc}"
+        codex_calls = [
+            c for c in mock_construct.call_args_list
+            if c.args and c.args[0] == "codex"
+        ]
+        assert len(codex_calls) >= 1, (
+            "Baseline arm did not call construct_harness('codex'); "
+            "DEC-013 requires the resolved harness to propagate to "
+            "both arms."
+        )
+
+    def test_grade_with_harness_codex_exits_2_when_keys_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` with both Codex env vars unset → exit 2
+        with stderr mentioning ``CODEX_API_KEY``. ``allocate_iteration``
+        is never reached because the auth guard fires upstream.
+        """
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(output="ignored")
+        report = make_grading_report(passed=True)
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ) as mock_grade,
+        ):
+            rc = main(["grade", "skill.md", "--harness", "codex"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "CODEX_API_KEY" in err
+        # Regression guard: no doubled ``"ERROR: ERROR: "`` prefix.
+        assert "ERROR: ERROR:" not in err
+        assert spec.run.call_count == 0
+        assert mock_grade.await_count == 0
+
+
+class TestCmdCaptureClaudeBinPrecedence:
+    """CodeRabbit review feedback on PR #166: ``--claude-bin`` is an
+    explicit operator-intent signal that the operator wants the Claude
+    branch. Treat it as equivalent to pinning ``--harness=claude-code``
+    UNLESS the operator explicitly pinned ``--harness=codex``. Without
+    this guard, ``capture --claude-bin /custom/claude`` would auto-
+    resolve to ``codex`` (or hard-fail) when ``claude`` is not on PATH,
+    silently breaking back-compat for existing ``capture`` users.
+    """
+
+    def test_capture_claude_bin_forces_claude_code_branch(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--claude-bin /custom/claude`` without ``--harness`` should
+        resolve to the Claude branch even when the auto-resolver would
+        otherwise pick codex (e.g. ``claude`` not on PATH but ``codex``
+        is). The custom binary path threads through to the constructed
+        ``SkillRunner``.
+        """
+        monkeypatch.chdir(tmp_path)
+        # Override the autouse fixture: unset CLAUDITOR_HARNESS so the
+        # CLI flag layer is what drives precedence, NOT the env var.
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="captured output",
+            skill_name="my-skill",
+            duration_seconds=0.5,
+        )
+
+        with patch(
+            "clauditor.cli.capture.SkillRunner", return_value=mock_runner
+        ) as mock_runner_cls:
+            rc = main(
+                [
+                    "capture",
+                    "my-skill",
+                    "--claude-bin",
+                    "/custom/claude",
+                    "--out",
+                    str(tmp_path / "out.txt"),
+                ]
+            )
+
+        assert rc == 0
+        # SkillRunner constructed exactly once with the custom claude_bin.
+        assert mock_runner_cls.call_count == 1
+        kwargs = mock_runner_cls.call_args.kwargs
+        assert kwargs.get("claude_bin") == "/custom/claude"
+
+    def test_capture_explicit_harness_codex_still_wins_over_claude_bin(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """When the operator explicitly pins ``--harness=codex``, that
+        more-specific signal wins over ``--claude-bin``. The Codex auth
+        guard fires (with no Codex key set, exits 2). Defends the
+        precedence direction: explicit ``--harness`` > implicit
+        ``--claude-bin``.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with patch("clauditor.cli.capture.SkillRunner") as mock_runner_cls:
+            rc = main(
+                [
+                    "capture",
+                    "my-skill",
+                    "--harness",
+                    "codex",
+                    "--claude-bin",
+                    "/custom/claude",
+                    "--out",
+                    str(tmp_path / "out.txt"),
+                ]
+            )
+
+        # Codex auth missing → exit 2; SkillRunner never constructed.
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "CODEX_API_KEY" in err
+        assert mock_runner_cls.call_count == 0
+
+
+class TestCmdCaptureHarness:
+    """#151 US-005: ``cmd_capture`` resolves harness via three-layer
+    precedence (no spec layer) and dispatches Codex auth.
+    """
+
+    def test_capture_with_harness_codex_exits_2_when_keys_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` with both Codex env vars unset → exit 2
+        with stderr mentioning ``CODEX_API_KEY``. ``SkillRunner`` is
+        never constructed because the guard fires upstream.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with patch("clauditor.cli.capture.SkillRunner") as mock_runner_cls:
+            rc = main(
+                ["capture", "my-skill", "--harness", "codex", "--out",
+                 str(tmp_path / "out.txt")]
+            )
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "CODEX_API_KEY" in err
+        # Regression guard: no doubled ``"ERROR: ERROR: "`` prefix.
+        assert "ERROR: ERROR:" not in err
+        assert mock_runner_cls.call_count == 0
+
+    def test_capture_with_harness_codex_constructs_codex_harness(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` + ``CODEX_API_KEY`` set →
+        ``SkillRunner`` is constructed via ``construct_harness("codex")``
+        (the non-default branch in ``cmd_capture``). Sibling to the
+        ``cmd_run`` codex-success test; covers the
+        ``runner = SkillRunner(harness=construct_harness(...))`` line
+        that the keys-missing test cannot reach.
+        """
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("CODEX_API_KEY", "ck-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="codex captured", skill_name="my-skill",
+            duration_seconds=0.7,
+        )
+
+        with patch(
+            "clauditor.cli.capture.SkillRunner", return_value=mock_runner
+        ) as mock_runner_cls:
+            rc = main(
+                [
+                    "capture",
+                    "my-skill",
+                    "--harness",
+                    "codex",
+                    "--out",
+                    str(tmp_path / "out.txt"),
+                ]
+            )
+
+        assert rc == 0
+        # SkillRunner constructed exactly once with a CodexHarness via
+        # the non-default branch.
+        assert mock_runner_cls.call_count == 1
+        kwargs = mock_runner_cls.call_args.kwargs
+        assert isinstance(kwargs["harness"], CodexHarness)
+
+
+class TestCmdRunHarness:
+    """#151 US-005: ``cmd_run`` resolves harness via three-layer
+    precedence (no spec layer) and dispatches Codex auth.
+    """
+
+    def test_run_with_harness_codex_exits_2_when_keys_missing(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` with both Codex env vars unset → exit 2
+        with stderr mentioning ``CODEX_API_KEY``. ``SkillRunner`` is
+        never constructed.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        with patch("clauditor.cli.run.SkillRunner") as mock_runner_cls:
+            rc = main(["run", "my-skill", "--harness", "codex"])
+
+        assert rc == 2
+        err = capsys.readouterr().err
+        assert "CODEX_API_KEY" in err
+        # Regression guard: no doubled ``"ERROR: ERROR: "`` prefix.
+        assert "ERROR: ERROR:" not in err
+        assert mock_runner_cls.call_count == 0
+
+    def test_run_with_harness_codex_constructs_codex_harness(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """``--harness codex`` + ``CODEX_API_KEY`` set →
+        ``SkillRunner`` is constructed with a ``CodexHarness`` instance.
+        """
+        from clauditor._harnesses._codex import CodexHarness
+
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("CODEX_API_KEY", "ck-test")
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="codex output", skill_name="my-skill",
+            duration_seconds=1.0,
+        )
+
+        with patch(
+            "clauditor.cli.run.SkillRunner", return_value=mock_runner
+        ) as mock_runner_cls:
+            rc = main(["run", "my-skill", "--harness", "codex"])
+
+        assert rc == 0
+        # SkillRunner constructed exactly once with a CodexHarness.
+        assert mock_runner_cls.call_count == 1
+        kwargs = mock_runner_cls.call_args.kwargs
+        assert isinstance(kwargs["harness"], CodexHarness)
+
+    def test_run_codex_no_api_key_preserves_openai_api_key(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """Copilot review feedback on PR #166: ``run --harness codex
+        --no-api-key`` must NOT strip ``OPENAI_API_KEY`` from the
+        subprocess env. Stripping it would launch the Codex subprocess
+        without usable auth even though ``check_codex_auth`` accepted
+        it from ``os.environ``. ``--no-api-key`` is intended to strip
+        Anthropic auth (subscription auth path); Codex auth env vars
+        must be preserved.
+        """
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai")
+        monkeypatch.delenv("CODEX_API_KEY", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
+
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="codex output", skill_name="my-skill",
+            duration_seconds=1.0,
+        )
+
+        with patch(
+            "clauditor.cli.run.SkillRunner", return_value=mock_runner
+        ):
+            rc = main(["run", "my-skill", "--harness", "codex", "--no-api-key"])
+
+        assert rc == 0
+        # The env_override threaded through to runner.run must preserve
+        # OPENAI_API_KEY so the codex subprocess still has auth.
+        env_override = mock_runner.run.call_args.kwargs.get("env")
+        assert env_override is not None
+        assert env_override.get("OPENAI_API_KEY") == "sk-openai"
+        # Anthropic auth IS still stripped (Codex doesn't need it).
+        assert "ANTHROPIC_API_KEY" not in env_override
+
+
+class TestCmdGradeWritesContextJson:
+    """#154 US-004: ``cmd_grade`` writes a per-iteration ``context.json``
+    sidecar inside the staging block (DEC-001, DEC-002, DEC-005, DEC-007,
+    DEC-008)."""
+
+    def _make_grading_report(self, model="claude-sonnet-4-6"):
+        return make_grading_report(passed=True, score=0.9, model=model)
+
+    def _spec_with_live_run(self, eval_spec=None, *, harness_metadata=None):
+        """Build a spec whose ``run()`` returns a real :class:`SkillResult`
+        carrying a populated ``harness_metadata`` (the harness contract
+        from #154 DEC-007 / DEC-008)."""
+        if eval_spec is None:
+            eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        if harness_metadata is None:
+            harness_metadata = {
+                "model": "claude-sonnet-4-6",
+                "system_prompt_source": "skill_md",
+            }
+        spec.run.return_value = make_skill_result(
+            output="primary output containing hello",
+            stream_events=[
+                {"type": "assistant", "text": "primary output containing hello"}
+            ],
+            input_tokens=10,
+            output_tokens=5,
+            duration_seconds=0.5,
+            harness_metadata=harness_metadata,
+        )
+        return spec
+
+    def test_anthropic_default_path(self, tmp_path, monkeypatch):
+        """Live grade run writes ``context.json`` populated with the
+        resolved harness, provider, and model fields."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = self._make_grading_report(model="claude-sonnet-4-6")
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        assert payload["harness"] == "claude-code"
+        assert payload["provider"] == "anthropic"
+        assert payload["model_runner"] == "claude-sonnet-4-6"
+        assert payload["model_grader"] == "claude-sonnet-4-6"
+        assert payload["system_prompt_source"] == "skill_md"
+        assert payload["sandbox_mode"] is None
+        # #169 US-005: ``cost_usd`` is now computed via
+        # ``compute_iteration_cost_usd``. The default
+        # ``make_grading_report`` token counts are 0/0, so the cost
+        # is exactly ``0.0`` for a known model. ``reasoning_tokens``
+        # remains a DEC-001 placeholder (#170 will populate).
+        assert payload["cost_usd"] == 0.0
+        assert payload["reasoning_tokens"] is None
+
+    def test_openai_provider_path(self, tmp_path, monkeypatch):
+        """``--grading-provider openai --model gpt-5.4`` stamps
+        ``provider="openai"`` and ``model_grader="gpt-5.4"`` on the
+        sidecar, while the runner-side fields stay rooted in
+        ``harness_metadata`` (which describes the skill subprocess,
+        not the grader call)."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+        spec = self._spec_with_live_run()
+        report = self._make_grading_report(model="gpt-5.4")
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(
+                [
+                    "grade",
+                    "skill.md",
+                    "--grading-provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                ]
+            )
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        assert payload["provider"] == "openai"
+        assert payload["model_grader"] == "gpt-5.4"
+        # Runner-side fields come from harness_metadata, untouched by
+        # the grader provider axis.
+        assert payload["harness"] == "claude-code"
+        assert payload["model_runner"] == "claude-sonnet-4-6"
+        assert payload["system_prompt_source"] == "skill_md"
+
+    def test_first_key_is_schema_version(self, tmp_path, monkeypatch):
+        """Per ``.claude/rules/json-schema-version.md`` the first
+        top-level key on disk is ``schema_version``."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = self._make_grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        payload = json.loads(context_path.read_text())
+        assert next(iter(payload.keys())) == "schema_version"
+        assert payload["schema_version"] == 1
+
+    def test_grade_command_writes_reasoning_tokens_to_context_json(
+        self, tmp_path, monkeypatch
+    ):
+        """#170 US-005: a graded run whose ``GradingReport`` carries
+        ``reasoning_tokens=50`` lands the same value on
+        ``context.json``. Mirrors the ``model_grader`` threading
+        pattern."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = make_grading_report(
+            passed=True,
+            score=0.9,
+            model="claude-sonnet-4-6",
+            reasoning_tokens=50,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        assert payload["reasoning_tokens"] == 50
+
+    def test_grade_command_writes_zero_reasoning_tokens_to_context_json(
+        self, tmp_path, monkeypatch
+    ):
+        """#170 DEC-002: ``reasoning_tokens=0`` is a real value (the
+        model didn't reason on this call) and MUST land on disk as
+        ``0``, NOT collapse to ``null`` via a truthiness coercion at
+        the sidecar-write seam. Distinguishing ``0`` (measured zero)
+        from ``None`` (couldn't measure) is the whole point of the
+        ``int | None`` axis."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = make_grading_report(
+            passed=True,
+            score=0.9,
+            model="claude-sonnet-4-6",
+            reasoning_tokens=0,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        assert payload["reasoning_tokens"] == 0
+        # Distinct from ``None`` — the JSON value is the integer 0,
+        # not the JSON ``null`` literal.
+        assert payload["reasoning_tokens"] is not None
+
+    def test_grade_command_writes_null_reasoning_tokens_when_none(
+        self, tmp_path, monkeypatch
+    ):
+        """#170 US-005: a graded run whose ``GradingReport`` carries
+        ``reasoning_tokens=None`` (no grader call surfaced a count)
+        lands ``"reasoning_tokens": null`` on disk — distinct from
+        ``0`` per DEC-003."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = make_grading_report(
+            passed=True,
+            score=0.9,
+            model="claude-sonnet-4-6",
+            reasoning_tokens=None,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        assert payload["reasoning_tokens"] is None
+
+    def test_captured_output_mode_skips_context_sidecar(
+        self, tmp_path, monkeypatch
+    ):
+        """``--output`` mode (no subprocess, no real harness) skips
+        the ``context.json`` write because there is no
+        ``harness_metadata`` to populate the runner-side fields from."""
+        monkeypatch.chdir(tmp_path)
+        output_file = tmp_path / "output.txt"
+        output_file.write_text("captured text")
+
+        eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        report = self._make_grading_report()
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md", "--output", str(output_file)])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        # Captured-text mode has no real run; context sidecar is not
+        # written (the runner-side fields cannot be populated).
+        assert not context_path.exists()
+
+
+class TestCmdGradeContextCostUsd:
+    """#169 US-005: ``cmd_grade`` writes a non-null ``cost_usd`` on
+    ``context.json`` when every grader-call lookup hits the rate
+    table. Unknown models null the whole iteration per DEC-002
+    all-or-nothing. L2 + L3 cost composition is summed via
+    :func:`compute_iteration_cost_usd`.
+    """
+
+    def _spec_with_live_run(
+        self, eval_spec=None, *, harness_metadata=None
+    ):
+        if eval_spec is None:
+            eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        if harness_metadata is None:
+            harness_metadata = {
+                "model": "claude-sonnet-4-6",
+                "system_prompt_source": "skill_md",
+            }
+        spec.run.return_value = make_skill_result(
+            output="primary output containing hello",
+            stream_events=[
+                {"type": "assistant", "text": "primary output containing hello"}
+            ],
+            input_tokens=10,
+            output_tokens=5,
+            duration_seconds=0.5,
+            harness_metadata=harness_metadata,
+        )
+        return spec
+
+    def test_known_model_writes_non_null_cost_usd(self, tmp_path, monkeypatch):
+        """Known (provider, model) lookup → non-null ``cost_usd`` equal
+        to ``estimate_cost`` of the same token counts."""
+        from clauditor._providers._pricing import estimate_cost
+
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = make_grading_report(
+            passed=True,
+            score=0.9,
+            model="claude-sonnet-4-6",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        payload = json.loads(context_path.read_text())
+        expected_cost = estimate_cost(
+            "anthropic", "claude-sonnet-4-6", 1000, 500
+        )
+        assert expected_cost is not None
+        assert payload["cost_usd"] == expected_cost
+
+    def test_unknown_model_writes_null_cost_usd(self, tmp_path, monkeypatch):
+        """Unknown model lookup → ``cost_usd: null`` per DEC-002
+        all-or-nothing semantics."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._spec_with_live_run()
+        report = make_grading_report(
+            passed=True,
+            score=0.9,
+            model="claude-fake-1",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=report,
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        payload = json.loads(context_path.read_text())
+        assert payload["cost_usd"] is None
+
+    def test_l2_l3_composition_uses_side_effect_mock(
+        self, tmp_path, monkeypatch
+    ):
+        """L2 + L3 cost composition: when sections are declared, both
+        the extraction and grading reports contribute to ``cost_usd``.
+
+        Per ``.claude/rules/mock-side-effect-for-distinct-calls.md``,
+        use ``side_effect=[v_l2, v_l3]`` so the two ``estimate_cost``
+        calls return DISTINCT values. A shared ``return_value`` would
+        silently zero out the addition under test (one call's value
+        canceling against itself).
+        """
+        from clauditor.grader import ExtractionReport, FieldExtractionResult
+
+        monkeypatch.chdir(tmp_path)
+        sectioned_spec = _make_eval_spec(
+            sections=[
+                SectionRequirement(
+                    name="Venues",
+                    tiers=[
+                        TierRequirement(
+                            label="primary",
+                            min_entries=0,
+                            fields=[
+                                FieldRequirement(
+                                    name="venue_name",
+                                    required=True,
+                                    id="venues.primary.venue_name.v1",
+                                ),
+                            ],
+                        ),
+                    ],
+                ),
+            ],
+        )
+        spec = self._spec_with_live_run(eval_spec=sectioned_spec)
+        grading_report = make_grading_report(
+            passed=True,
+            score=0.9,
+            model="claude-sonnet-4-6",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+        extraction_report = ExtractionReport(
+            skill_name="test-skill",
+            # Match the literal _PRICING_TABLE key for the L2 model so
+            # a future maintainer removing the ``estimate_cost`` mock
+            # below (e.g. to exercise the real rate-card lookup) sees
+            # the L2 cost compute correctly rather than silently
+            # nullifying the iteration's ``cost_usd`` per DEC-002.
+            model="claude-haiku-4-5",
+            results=[
+                FieldExtractionResult(
+                    field_id="venues.primary.venue_name.v1",
+                    field_name="venue_name",
+                    section="Venues",
+                    tier="primary",
+                    entry_index=0,
+                    required=True,
+                    presence_passed=True,
+                    format_passed=None,
+                    evidence="Cafe Foo",
+                ),
+            ],
+            input_tokens=200,
+            output_tokens=100,
+        )
+
+        # CRITICAL: side_effect=[v_l2, v_l3] (NOT return_value=v).
+        # ``compute_iteration_cost_usd`` calls ``estimate_cost`` twice
+        # — once for L3 (grading), then once for L2 (extraction). A
+        # shared return_value would silently zero out the addition
+        # under test.
+        with (
+            patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
+            patch(
+                "clauditor.quality_grader.grade_quality",
+                new_callable=AsyncMock,
+                return_value=grading_report,
+            ),
+            patch(
+                "clauditor.grader.extract_and_report",
+                new_callable=AsyncMock,
+                return_value=extraction_report,
+            ),
+            patch(
+                "clauditor._providers._pricing.estimate_cost",
+                side_effect=[0.0045, 0.0015],
+            ),
+        ):
+            rc = main(["grade", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        payload = json.loads(context_path.read_text())
+        # 0.0045 (L3) + 0.0015 (L2) == 0.0060.
+        assert payload["cost_usd"] == pytest.approx(0.0060)
+
+
+class TestCmdValidateWritesContextJson:
+    """#154 US-004: ``cmd_validate`` writes a per-iteration
+    ``context.json`` sidecar with grader fields stamped ``None``
+    (validate has no Layer 3)."""
+
+    def _live_spec(self, *, harness_metadata=None):
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        if harness_metadata is None:
+            harness_metadata = {
+                "model": "claude-sonnet-4-6",
+                "system_prompt_source": "skill_md",
+            }
+        spec.run.return_value = make_skill_result(
+            output="hello world output",
+            duration_seconds=1.5,
+            input_tokens=100,
+            output_tokens=50,
+            stream_events=[
+                {"type": "system", "session_id": "abc"},
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "hi"}]},
+                },
+            ],
+            harness_metadata=harness_metadata,
+        )
+        return spec
+
+    def test_default_path(self, tmp_path, monkeypatch):
+        """``cmd_validate`` writes ``context.json`` with grader fields
+        ``None`` (no Layer 3) and runner fields populated from
+        ``harness_metadata``."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._live_spec()
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        # Validate has no Layer 3 grading; provider/model_grader/cost
+        # are all None.
+        assert payload["provider"] is None
+        assert payload["model_grader"] is None
+        assert payload["cost_usd"] is None
+        assert payload["reasoning_tokens"] is None
+        # Runner-side fields populated from harness_metadata.
+        assert payload["harness"] == "claude-code"
+        assert payload["model_runner"] == "claude-sonnet-4-6"
+        assert payload["system_prompt_source"] == "skill_md"
+        assert payload["sandbox_mode"] is None
+
+    def test_first_key_is_schema_version(self, tmp_path, monkeypatch):
+        """Per ``.claude/rules/json-schema-version.md`` the first
+        top-level key on disk is ``schema_version``."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._live_spec()
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        payload = json.loads(context_path.read_text())
+        assert next(iter(payload.keys())) == "schema_version"
+        assert payload["schema_version"] == 1
+
+    def test_codex_harness_carries_sandbox_mode(self, tmp_path, monkeypatch):
+        """Under a Codex harness, ``sandbox_mode`` lands on disk."""
+        monkeypatch.chdir(tmp_path)
+        # Pin codex auth + harness selection. The autouse fixture
+        # stubs ``shutil.which`` to None so the auto-resolver would
+        # otherwise refuse to pick codex; pin the env-var layer
+        # explicitly to override the autouse default.
+        monkeypatch.setenv("CODEX_API_KEY", "sk-codex")
+        monkeypatch.setenv("CLAUDITOR_HARNESS", "codex")
+
+        spec = self._live_spec(
+            harness_metadata={
+                "model": "gpt-5-codex",
+                "system_prompt_source": "agents_md",
+                "sandbox_mode": "workspace-write",
+            }
+        )
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        payload = json.loads(context_path.read_text())
+        assert payload["harness"] == "codex"
+        assert payload["model_runner"] == "gpt-5-codex"
+        assert payload["system_prompt_source"] == "agents_md"
+        assert payload["sandbox_mode"] == "workspace-write"
+
+    def test_validate_command_writes_null_reasoning_tokens_to_context_json(
+        self, tmp_path, monkeypatch
+    ):
+        """#170 US-005 / DEC-008: validate has no LLM grader call, so
+        ``reasoning_tokens`` is structurally ``None`` on the
+        ``context.json`` sidecar."""
+        monkeypatch.chdir(tmp_path)
+        spec = self._live_spec()
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        assert payload["reasoning_tokens"] is None
+
+
+class TestCmdValidateContextCostUsd:
+    """#169 US-006: ``cmd_validate`` writes ``cost_usd: null`` in
+    ``context.json`` regardless of ``grading_provider`` /
+    ``grading_model`` declared in the spec.
+
+    Validate runs L1 assertions only — it never invokes the grader,
+    so there is no per-pair cost to record. Per DEC-001 (#169 grader-
+    only scope), this is a regression-only story: production code in
+    ``src/clauditor/cli/validate.py`` is unchanged. These tests pin
+    that ``cost_usd`` stays ``None`` even when grader fields are set
+    in the spec.
+    """
+
+    def _live_spec(self, *, eval_spec=None, harness_metadata=None):
+        if eval_spec is None:
+            eval_spec = _make_eval_spec()
+        spec = _make_spec(eval_spec=eval_spec)
+        if harness_metadata is None:
+            harness_metadata = {
+                "model": "claude-sonnet-4-6",
+                "system_prompt_source": "skill_md",
+            }
+        spec.run.return_value = make_skill_result(
+            output="hello world output",
+            duration_seconds=1.5,
+            input_tokens=100,
+            output_tokens=50,
+            stream_events=[
+                {"type": "system", "session_id": "abc"},
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "text", "text": "hi"}]},
+                },
+            ],
+            harness_metadata=harness_metadata,
+        )
+        return spec
+
+    def test_validate_writes_null_cost_usd(self, tmp_path, monkeypatch):
+        """Default validate flow: ``cost_usd`` is ``None`` because the
+        grader never runs."""
+        monkeypatch.chdir(tmp_path)
+        # Build an eval spec with NO grading_provider set; grading_model
+        # has the conftest default but is irrelevant to validate.
+        spec = self._live_spec(eval_spec=_make_eval_spec())
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        # Validate runs L1 only — no grader, so cost is None.
+        assert payload["cost_usd"] is None
+        # Sibling grader fields also None for the same reason.
+        assert payload["provider"] is None
+        assert payload["model_grader"] is None
+
+    def test_validate_writes_null_cost_usd_even_for_known_provider_in_spec(
+        self, tmp_path, monkeypatch
+    ):
+        """Even when the spec declares ``grading_provider`` and
+        ``grading_model`` (a known-pair that has pricing in #169),
+        validate still writes ``cost_usd: null`` because no grader call
+        happens during validate."""
+        monkeypatch.chdir(tmp_path)
+        eval_spec = _make_eval_spec(
+            grading_provider="anthropic",
+            grading_model="claude-sonnet-4-6",
+        )
+        spec = self._live_spec(eval_spec=eval_spec)
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md"])
+
+        assert rc == 0
+        context_path = (
+            tmp_path / ".clauditor" / "iteration-1" / "test-skill" / "context.json"
+        )
+        assert context_path.is_file()
+        payload = json.loads(context_path.read_text())
+        # Even with grader fields declared in the spec, validate does
+        # not call the grader — cost stays None.
+        assert payload["cost_usd"] is None
+        # Provider/model_grader stay None too (no Layer 3 in validate).
+        assert payload["provider"] is None
+        assert payload["model_grader"] is None

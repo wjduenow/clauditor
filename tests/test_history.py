@@ -114,11 +114,16 @@ class TestAppendAndRead:
     def test_round_trip(self, tmp_path):
         path = tmp_path / "history.jsonl"
         append_record(
-            "skill-a", 0.8, 0.75, {"foo": 1}, command="grade", path=path
+            "skill-a", 0.8, 0.75, {"foo": 1},
+            command="grade", provider="anthropic", harness="claude-code", path=path
         )
-        append_record("skill-b", 0.5, None, {}, command="grade", path=path)
         append_record(
-            "skill-a", 0.9, 0.85, {"foo": 2}, command="grade", path=path
+            "skill-b", 0.5, None, {},
+            command="grade", provider="anthropic", harness="claude-code", path=path
+        )
+        append_record(
+            "skill-a", 0.9, 0.85, {"foo": 2},
+            command="grade", provider="anthropic", harness="claude-code", path=path
         )
 
         all_records = read_records(path=path)
@@ -137,7 +142,10 @@ class TestAppendAndRead:
 
     def test_append_creates_parent_dir(self, tmp_path):
         path = tmp_path / "nested" / "dir" / "history.jsonl"
-        append_record("s", 1.0, 1.0, {}, command="grade", path=path)
+        append_record(
+            "s", 1.0, 1.0, {},
+            command="grade", provider="anthropic", harness="claude-code", path=path
+        )
         assert path.exists()
         assert len(read_records(path=path)) == 1
 
@@ -148,10 +156,16 @@ class TestAppendAndRead:
 
     def test_corrupt_line_skipped_with_warning(self, tmp_path, capsys):
         path = tmp_path / "history.jsonl"
-        append_record("s", 0.5, 0.5, {}, command="grade", path=path)
+        append_record(
+            "s", 0.5, 0.5, {},
+            command="grade", provider="anthropic", harness="claude-code", path=path
+        )
         with path.open("a", encoding="utf-8") as f:
             f.write("{not valid json\n")
-        append_record("s", 0.7, 0.7, {}, command="grade", path=path)
+        append_record(
+            "s", 0.7, 0.7, {},
+            command="grade", provider="anthropic", harness="claude-code", path=path
+        )
 
         records = read_records(path=path)
         assert len(records) == 2
@@ -161,11 +175,14 @@ class TestAppendAndRead:
     def test_append_record_requires_command(self, tmp_path):
         path = tmp_path / "history.jsonl"
         with pytest.raises(TypeError):
-            append_record("s", 1.0, 1.0, {}, path=path)  # type: ignore[call-arg]
+            append_record("s", 1.0, 1.0, {}, provider="anthropic", path=path)  # type: ignore[call-arg]
 
     def test_schema_version_written(self, tmp_path):
         path = tmp_path / "history.jsonl"
-        append_record("s", 1.0, 1.0, {"k": 1}, command="grade", path=path)
+        append_record(
+            "s", 1.0, 1.0, {"k": 1},
+            command="grade", provider="anthropic", harness="claude-code", path=path
+        )
         records = read_records(path=path)
         assert records[0]["schema_version"] == SCHEMA_VERSION
         assert records[0]["command"] == "grade"
@@ -176,15 +193,20 @@ class TestAppendAndRead:
         path = tmp_path / "history.jsonl"
         with pytest.raises(ValueError, match="command must be one of"):
             append_record(
-                "s", 1.0, 1.0, {}, command="bogus", path=path  # type: ignore[arg-type]
+                "s", 1.0, 1.0, {},
+                command="bogus", provider="anthropic", harness="claude-code", path=path  # type: ignore[arg-type]
             )
         with pytest.raises(ValueError):
             append_record(
-                "s", 1.0, 1.0, {}, command="GRADE", path=path  # type: ignore[arg-type]
+                "s", 1.0, 1.0, {},
+                command="GRADE", provider="anthropic", harness="claude-code", path=path  # type: ignore[arg-type]
             )
         # Valid values still work.
         for cmd in ("grade", "extract", "validate"):
-            append_record("s", None, None, {}, command=cmd, path=path)
+            append_record(
+                "s", None, None, {},
+                command=cmd, provider="anthropic", harness="claude-code", path=path
+            )
         assert len(read_records(path=path)) == 3
 
 
@@ -199,6 +221,8 @@ class TestAppendRecordShape:
             0.8,
             {"k": 1},
             command="grade",
+            provider="anthropic",
+            harness="claude-code",
             path=path,
             iteration=3,
             workspace_path=".clauditor/iteration-3/foo",
@@ -212,14 +236,330 @@ class TestAppendRecordShape:
 
     def test_append_defaults_none(self, tmp_path):
         path = tmp_path / "history.jsonl"
-        append_record("s", 1.0, 1.0, {}, command="grade", path=path)
+        append_record(
+            "s", 1.0, 1.0, {},
+            command="grade", provider="anthropic", harness="claude-code", path=path
+        )
         rec = read_records(path=path)[0]
         assert rec["iteration"] is None
         assert rec["workspace_path"] is None
 
 
+class TestProviderField:
+    """v3 schema: ``provider`` required on append, defaulted on v1 reads (#147)."""
+
+    def test_append_record_writes_provider_field(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        append_record(
+            "skill-a", 0.8, 0.7, {},
+            command="grade", provider="openai", harness="claude-code",
+            path=path,
+        )
+        records = read_records(path=path)
+        assert len(records) == 1
+        rec = records[0]
+        assert rec["schema_version"] == SCHEMA_VERSION
+        assert rec["provider"] == "openai"
+
+    def test_append_record_requires_provider_kwarg(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(TypeError):
+            # missing required keyword-only ``provider``
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", harness="claude-code", path=path,  # type: ignore[call-arg]
+            )
+
+    def test_append_record_rejects_blank_provider(self, tmp_path):
+        """Defense-in-depth: ``provider=""`` is unresolvable. CLI seam
+        is supposed to plumb a resolved provider; rejecting blanks here
+        prevents future callers from corrupting trend/audit grouping
+        with an unresolvable empty bucket."""
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(ValueError, match="provider"):
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", provider="", harness="claude-code",
+                path=path,
+            )
+
+    def test_append_record_rejects_whitespace_provider(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(ValueError, match="provider"):
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", provider="   ", harness="claude-code",
+                path=path,
+            )
+
+    def test_append_record_rejects_auto(self, tmp_path):
+        """``"auto"`` is the unresolved sentinel — the CLI's
+        ``_resolve_grading_provider`` is responsible for collapsing it
+        to a concrete provider. Reject it here so a future caller that
+        bypasses the resolver cannot persist the sentinel."""
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(ValueError, match="auto"):
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", provider="auto", harness="claude-code",
+                path=path,
+            )
+
+    def test_append_record_rejects_non_string_provider(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(ValueError, match="provider"):
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", provider=1,  # type: ignore[arg-type]
+                harness="claude-code",
+                path=path,
+            )
+
+    def test_read_records_legacy_v1_defaults_provider_to_anthropic(
+        self, tmp_path
+    ):
+        import json as _json
+
+        path = tmp_path / "history.jsonl"
+        v1_record = {
+            "schema_version": 1,
+            "command": "grade",
+            "ts": "2026-01-01T00:00:00+00:00",
+            "skill": "skill-a",
+            "pass_rate": 0.5,
+            "mean_score": 0.6,
+            "metrics": {},
+            "iteration": 1,
+            "workspace_path": "ws/1",
+        }
+        path.write_text(_json.dumps(v1_record) + "\n")
+
+        records = read_records(path=path)
+        assert len(records) == 1
+        assert records[0]["schema_version"] == 1
+        # Defaulted on read so downstream consumers can rely on the field.
+        assert records[0]["provider"] == "anthropic"
+
+    def test_read_records_preserves_provider(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        append_record(
+            "skill-a", 0.9, 0.8, {},
+            command="grade", provider="openai", harness="claude-code",
+            path=path,
+        )
+
+        records = read_records(path=path)
+        assert len(records) == 1
+        assert records[0]["schema_version"] == SCHEMA_VERSION
+        assert records[0]["provider"] == "openai"
+
+    def test_read_records_mixed_v1_current_lines(self, tmp_path):
+        import json as _json
+
+        path = tmp_path / "history.jsonl"
+        # Hand-write a v1 line, then append a v3 line via the writer.
+        v1_record = {
+            "schema_version": 1,
+            "command": "grade",
+            "ts": "2026-01-01T00:00:00+00:00",
+            "skill": "skill-a",
+            "pass_rate": 0.5,
+            "mean_score": 0.6,
+            "metrics": {},
+            "iteration": 1,
+            "workspace_path": "ws/1",
+        }
+        path.write_text(_json.dumps(v1_record) + "\n")
+        append_record(
+            "skill-a", 0.9, 0.8, {},
+            command="grade", provider="openai", harness="claude-code",
+            path=path,
+        )
+
+        records = read_records(path=path)
+        assert len(records) == 2
+        # v1: defaulted provider
+        assert records[0]["schema_version"] == 1
+        assert records[0]["provider"] == "anthropic"
+        # current version: preserved provider
+        assert records[1]["schema_version"] == SCHEMA_VERSION
+        assert records[1]["provider"] == "openai"
+
+
+class TestHarnessField:
+    """v3 schema: ``harness`` required on append, defaulted on v1/v2 reads.
+
+    Mirrors the post-#147 ``provider`` shape; #152 DEC-005.
+    """
+
+    def test_v3_writes_harness_field(self, tmp_path):
+        """A v3 record contains the resolved harness name verbatim."""
+        path = tmp_path / "history.jsonl"
+        append_record(
+            "skill-a", 0.8, 0.7, {},
+            command="grade", provider="anthropic", harness="codex",
+            path=path,
+        )
+        records = read_records(path=path)
+        assert len(records) == 1
+        rec = records[0]
+        assert rec["schema_version"] == 3
+        assert rec["harness"] == "codex"
+
+    def test_harness_keyword_required(self, tmp_path):
+        """Calling ``append_record`` without ``harness=`` raises TypeError."""
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(TypeError):
+            # missing required keyword-only ``harness``
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", provider="anthropic",  # type: ignore[call-arg]
+                path=path,
+            )
+
+    def test_harness_blank_rejected(self, tmp_path):
+        """Defense-in-depth: ``harness=""`` is unresolvable.
+
+        Mirror of provider validation — the CLI seam plumbs a resolved
+        harness name; rejecting blanks here prevents future callers from
+        corrupting trend/audit grouping with an unresolvable empty bucket.
+        """
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(ValueError, match="harness"):
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", provider="anthropic", harness="",
+                path=path,
+            )
+
+    def test_harness_whitespace_rejected(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(ValueError, match="harness"):
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", provider="anthropic", harness="   ",
+                path=path,
+            )
+
+    def test_harness_auto_rejected(self, tmp_path):
+        """``"auto"`` is the unresolved sentinel — the CLI's
+        ``_resolve_harness`` is responsible for collapsing it to a
+        concrete harness. Reject it here so a future caller that
+        bypasses the resolver cannot persist the sentinel.
+        """
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(ValueError, match="auto"):
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", provider="anthropic", harness="auto",
+                path=path,
+            )
+
+    def test_harness_non_string_rejected(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        with pytest.raises(ValueError, match="harness"):
+            append_record(
+                "skill-a", 0.8, 0.7, {},
+                command="grade", provider="anthropic",
+                harness=1,  # type: ignore[arg-type]
+                path=path,
+            )
+
+
+class TestReadRecordsLegacyHarnessDefault:
+    """Legacy v1/v2 records default missing ``harness`` to ``"claude-code"`` on read."""
+
+    def test_v1_legacy_defaults_harness_to_claude_code(self, tmp_path):
+        import json as _json
+
+        path = tmp_path / "history.jsonl"
+        v1_record = {
+            "schema_version": 1,
+            "command": "grade",
+            "ts": "2026-01-01T00:00:00+00:00",
+            "skill": "skill-a",
+            "pass_rate": 0.5,
+            "mean_score": 0.6,
+            "metrics": {},
+            "iteration": 1,
+            "workspace_path": "ws/1",
+        }
+        path.write_text(_json.dumps(v1_record) + "\n")
+
+        records = read_records(path=path)
+        assert len(records) == 1
+        assert records[0]["schema_version"] == 1
+        # Defaulted on read so downstream consumers can rely on the field.
+        assert records[0]["harness"] == "claude-code"
+
+    def test_v2_legacy_defaults_harness_to_claude_code(self, tmp_path):
+        """v2 record without ``harness`` key defaults to ``"claude-code"`` on read."""
+        import json as _json
+
+        path = tmp_path / "history.jsonl"
+        v2_record = {
+            "schema_version": 2,
+            "command": "grade",
+            "ts": "2026-01-01T00:00:00+00:00",
+            "skill": "skill-a",
+            "pass_rate": 0.5,
+            "mean_score": 0.6,
+            "metrics": {},
+            "iteration": 2,
+            "workspace_path": "ws/2",
+            "provider": "openai",
+        }
+        path.write_text(_json.dumps(v2_record) + "\n")
+
+        records = read_records(path=path)
+        assert len(records) == 1
+        assert records[0]["schema_version"] == 2
+        assert records[0]["provider"] == "openai"
+        assert records[0]["harness"] == "claude-code"
+
+    def test_v3_round_trip(self, tmp_path):
+        """Write a v3 record, read it back; harness is preserved verbatim."""
+        path = tmp_path / "history.jsonl"
+        append_record(
+            "skill-a", 0.9, 0.8, {},
+            command="grade", provider="anthropic", harness="codex",
+            path=path,
+        )
+        records = read_records(path=path)
+        assert len(records) == 1
+        assert records[0]["schema_version"] == 3
+        assert records[0]["harness"] == "codex"
+
+    def test_v3_explicit_harness_not_overwritten(self, tmp_path):
+        """Explicit ``harness`` on v3 records is preserved (no legacy default)."""
+        import json as _json
+
+        path = tmp_path / "history.jsonl"
+        v3_record = {
+            "schema_version": 3,
+            "command": "grade",
+            "ts": "2026-01-01T00:00:00+00:00",
+            "skill": "skill-a",
+            "pass_rate": 0.9,
+            "mean_score": 0.8,
+            "metrics": {},
+            "iteration": 3,
+            "workspace_path": "ws/3",
+            "provider": "openai",
+            "harness": "codex",
+        }
+        path.write_text(_json.dumps(v3_record) + "\n")
+
+        records = read_records(path=path)
+        assert len(records) == 1
+        assert records[0]["harness"] == "codex"
+
+
 class TestSchemaVersionEnforcement:
-    """read_records hard-requires schema_version=3 (DEC-003)."""
+    """read_records accepts {1, 2, 3}; rejects all other versions.
+
+    Per #147 DEC-012 (added v2) and #152 DEC-005 (added v3).
+    """
 
     def test_wrong_version_skipped_with_warning(self, tmp_path, capsys):
         import json as _json
@@ -240,7 +580,7 @@ class TestSchemaVersionEnforcement:
         assert len(records) == 0
         err = capsys.readouterr().err
         assert "schema_version=99" in err
-        assert f"expected {SCHEMA_VERSION}" in err
+        assert "expected one of [1, 2, 3]" in err
 
     def test_missing_version_skipped_with_warning(self, tmp_path, capsys):
         import json as _json
@@ -259,12 +599,14 @@ class TestSchemaVersionEnforcement:
         assert len(records) == 0
         err = capsys.readouterr().err
         assert "schema_version=None" in err
-        assert f"expected {SCHEMA_VERSION}" in err
+        assert "expected one of [1, 2, 3]" in err
 
     def test_valid_record_passes(self, tmp_path, capsys):
         path = tmp_path / "history.jsonl"
         append_record(
-            "skill-a", 0.9, 0.85, {}, command="grade", path=path,
+            "skill-a", 0.9, 0.85, {},
+            command="grade", provider="anthropic", harness="claude-code",
+            path=path,
             iteration=2, workspace_path="ws/2",
         )
 
@@ -291,6 +633,8 @@ class TestSchemaVersionEnforcement:
             "metrics": {},
             "iteration": None,
             "workspace_path": None,
+            "provider": "anthropic",
+            "harness": "claude-code",
         }
         lines = [
             _json.dumps(bad),
@@ -318,6 +662,8 @@ def _concurrent_writer(args):
         None,
         {"i": idx},
         command="grade",
+        provider="anthropic",
+        harness="claude-code",
         path=Path(path_str),
         iteration=idx,
         workspace_path=f"ws/{idx}",
@@ -388,6 +734,8 @@ class TestFileLockFallback:
                 mean_score=0.9,
                 metrics={},
                 command="grade",
+                provider="anthropic",
+                harness="claude-code",
                 path=path,
                 iteration=1,
                 workspace_path=".clauditor/iteration-1/foo",

@@ -59,6 +59,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="(US-006) directory to write audit reports",
     )
+    p_audit.add_argument(
+        "--verbose",
+        action="store_true",
+        help=(
+            "(#154 US-005) include per-iteration context.json fields "
+            "in stdout/markdown output (JSON output always includes them)"
+        ),
+    )
 
 
 def cmd_audit(args: argparse.Namespace) -> int:
@@ -89,9 +97,11 @@ def cmd_audit(args: argparse.Namespace) -> int:
         return 2
 
     clauditor_dir = resolve_clauditor_dir()
-    records, skipped = load_iterations(
+    records, skipped, iteration_contexts = load_iterations(
         args.skill, last=args.last, clauditor_dir=clauditor_dir
     )
+
+    verbose = bool(getattr(args, "verbose", False))
 
     if skipped:
         print(
@@ -134,6 +144,7 @@ def cmd_audit(args: argparse.Namespace) -> int:
                 iterations_analyzed=iterations_analyzed,
                 thresholds=thresholds,
                 timestamp=timestamp,
+                iteration_contexts=iteration_contexts,
             )
             print(json.dumps(payload, indent=2))
         else:
@@ -160,6 +171,8 @@ def cmd_audit(args: argparse.Namespace) -> int:
                             iterations_analyzed=iterations_analyzed,
                             thresholds=thresholds,
                             timestamp=timestamp,
+                            iteration_contexts=iteration_contexts,
+                            verbose=verbose,
                         ),
                         encoding="utf-8",
                     )
@@ -172,7 +185,13 @@ def cmd_audit(args: argparse.Namespace) -> int:
                         file=sys.stderr,
                     )
                     return 2
-                print(render_stdout_table(verdicts))
+                print(
+                    render_stdout_table(
+                        verdicts,
+                        iteration_contexts=iteration_contexts,
+                        verbose=verbose,
+                    )
+                )
                 print(f"\nReport written to {report_path}")
     except Exception as exc:  # pragma: no cover - defensive
         print(f"clauditor audit: error rendering report: {exc}", file=sys.stderr)

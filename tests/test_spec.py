@@ -306,6 +306,10 @@ class TestRun:
         runner = mock_runner(output="explicit output")
         spec = SkillSpec.from_file(skill_path, runner=runner)
         result = spec.run(args="--custom flag")
+        # US-004 of issue #150: ``system_prompt`` is auto-derived from
+        # the skill body when ``EvalSpec.system_prompt`` is unset; for
+        # ``tmp_skill_file``'s default content there is no frontmatter
+        # so the entire content is the body.
         runner.run.assert_called_once_with(
             "run-skill",
             "--custom flag",
@@ -313,6 +317,7 @@ class TestRun:
             allow_hang_heuristic=True,
             timeout=None,
             env=None,
+            system_prompt=skill_path.read_text(encoding="utf-8"),
         )
         assert result.output == "explicit output"
 
@@ -328,6 +333,7 @@ class TestRun:
             allow_hang_heuristic=True,
             timeout=None,
             env=None,
+            system_prompt=skill_path.read_text(encoding="utf-8"),
         )
 
     def test_run_uses_empty_string_when_no_eval_no_args(
@@ -344,6 +350,7 @@ class TestRun:
             allow_hang_heuristic=True,
             timeout=None,
             env=None,
+            system_prompt=skill_path.read_text(encoding="utf-8"),
         )
 
 
@@ -428,7 +435,7 @@ class TestEvaluateFailureClassification:
         # interactive-hang signal the fixture doesn't expose directly.
         # Import the canonical string so a future rename propagates here
         # instead of leaving this test silently out of sync.
-        from clauditor.runner import _INTERACTIVE_HANG_WARNING
+        from clauditor._harnesses._claude_code import _INTERACTIVE_HANG_WARNING
 
         hang_warning = _INTERACTIVE_HANG_WARNING
         runner.run.return_value = SkillResult(
@@ -669,6 +676,7 @@ class TestOutputFilesResolutionWithStagedInputs:
             allow_hang_heuristic=True,
             timeout=None,
             env=None,
+            system_prompt=None,
         ):
             assert cwd == run_dir / "inputs"
             (cwd / "cleaned.csv").write_text(cleaned_text)
@@ -1081,3 +1089,429 @@ class TestExampleEvalSpec:
             "example eval spec must not contain legacy 'value' keys; "
             "use per-type semantic keys (needle/pattern/length/count)"
         )
+
+
+# ---------------------------------------------------------------------------
+# US-004 of issue #150: ``SkillSpec.run`` resolves ``system_prompt`` and
+# threads it to ``SkillRunner.run``. Explicit ``EvalSpec.system_prompt``
+# wins; otherwise the body of ``SKILL.md`` (post-frontmatter) is auto-
+# derived. I/O failures during auto-derivation are wrapped in a friendly
+# ``RuntimeError`` that names skill + path with the original exception
+# chained via ``__cause__``.
+# ---------------------------------------------------------------------------
+
+
+class TestSystemPromptResolution:
+    """``SkillSpec.run`` computes the effective ``system_prompt`` and
+    threads it through ``self.runner.run(...)``.
+
+    Uses :class:`MockHarness` (substituted via ``SkillRunner(harness=...)``)
+    so the assertion can read ``MockHarness.build_prompt_calls`` rather
+    than reaching into a ``MagicMock`` call_args.
+    """
+
+    @staticmethod
+    def _build_runner_with_mock_harness(project_dir):
+        from clauditor._harnesses._mock import MockHarness
+        from clauditor.runner import SkillRunner
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir=project_dir, harness=mock)
+        return runner, mock
+
+    def test_skill_spec_run_auto_derives_system_prompt_from_body(
+        self, tmp_skill_file
+    ):
+        """No explicit ``EvalSpec.system_prompt`` → auto-derive from
+        ``SKILL.md`` body (post-frontmatter)."""
+        body = "# Skill\n\nThis is the body content used as system prompt.\n"
+        content = "---\nname: prompt-skill\n---\n" + body
+        skill_path = tmp_skill_file("prompt-skill", content=content)
+        runner, mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        spec.run("args here")
+
+        assert len(mock.build_prompt_calls) == 1
+        assert mock.build_prompt_calls[-1]["system_prompt"] == body
+
+    def test_skill_spec_run_explicit_eval_spec_system_prompt_wins(
+        self, tmp_skill_file
+    ):
+        """When ``EvalSpec.system_prompt`` is set, it wins over the body."""
+        content = "---\nname: prompt-skill\n---\nBODY"
+        eval_data = {
+            "skill_name": "prompt-skill",
+            "test_args": "",
+            "assertions": [],
+            "system_prompt": "EXPLICIT",
+        }
+        skill_path, _ = tmp_skill_file(
+            "prompt-skill", content=content, eval_data=eval_data
+        )
+        runner, mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        spec.run()
+
+        assert mock.build_prompt_calls[-1]["system_prompt"] == "EXPLICIT"
+
+    def test_skill_spec_run_no_system_prompt_when_eval_spec_explicitly_empty_body(
+        self, tmp_skill_file
+    ):
+        """SKILL.md body is empty (frontmatter only) → auto-derive yields
+        ``""``; the empty value threads through verbatim. Documents the
+        edge case rather than masking it."""
+        # Frontmatter only, no body. ``parse_frontmatter`` returns
+        # ``""`` for the body.
+        content = "---\nname: prompt-skill\n---\n"
+        skill_path = tmp_skill_file("prompt-skill", content=content)
+        runner, mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        spec.run()
+
+        assert mock.build_prompt_calls[-1]["system_prompt"] == ""
+
+    def test_skill_spec_run_missing_skill_md_raises_friendly_error(
+        self, tmp_path
+    ):
+        """``skill_path`` points at a non-existent file → ``RuntimeError``
+        with skill_name + path; ``__cause__`` is ``FileNotFoundError``.
+
+        Uses the direct ``SkillSpec(...)`` constructor (not ``from_file``,
+        which itself raises on missing files) so the auto-derive branch
+        in ``run`` is the surface under test.
+        """
+        missing_path = tmp_path / "missing-skill.md"
+        runner, _mock = self._build_runner_with_mock_harness(tmp_path)
+        spec = SkillSpec(skill_path=missing_path, eval_spec=None, runner=runner)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            spec.run()
+
+        msg = str(exc_info.value)
+        assert spec.skill_name in msg
+        assert str(missing_path) in msg
+        assert isinstance(exc_info.value.__cause__, FileNotFoundError)
+
+    def test_skill_spec_run_malformed_frontmatter_raises_friendly_error(
+        self, tmp_skill_file
+    ):
+        """Malformed frontmatter (no closing ``---``) → ``parse_frontmatter``
+        raises ``ValueError``; ``RuntimeError`` wraps it with skill_name
+        + path; ``__cause__`` is the original ``ValueError``."""
+        # Opening ``---`` with no closing delimiter is the canonical
+        # ValueError case in ``parse_frontmatter``.
+        content = "---\nname: bad-skill\n# missing closing delimiter\n"
+        skill_path = tmp_skill_file("bad-skill", content=content)
+        runner, _mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            spec.run()
+
+        msg = str(exc_info.value)
+        assert spec.skill_name in msg
+        assert str(skill_path) in msg
+        assert isinstance(exc_info.value.__cause__, ValueError)
+
+
+class TestSkillSpecRunSystemPromptSource:
+    """US-003 of #154 (DEC-003 / DEC-008 / DEC-009): ``SkillSpec.run``
+    resolves the system prompt across three tiers and stamps the
+    resolved label into ``SkillResult.harness_metadata
+    ["system_prompt_source"]``.
+
+    Order:
+      1. Explicit ``EvalSpec.system_prompt`` set → ``"explicit"``.
+      2. AGENTS.md found via :func:`resolve_agents_md` (skill-dir then
+         project-root) → ``"agents_md"``.
+      3. Auto-derive from SKILL.md body (post-frontmatter) →
+         ``"skill_md"``.
+
+    Uses :class:`MockHarness` to drive a real :class:`SkillRunner` so
+    we observe both the system-prompt thread-through AND the
+    harness_metadata stamp on the returned result.
+    """
+
+    @staticmethod
+    def _build_runner_with_mock_harness(project_dir):
+        from clauditor._harnesses._mock import MockHarness
+        from clauditor.runner import SkillRunner
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir=project_dir, harness=mock)
+        return runner, mock
+
+    def test_explicit_eval_spec_wins_over_agents_md(self, tmp_skill_file):
+        """Both ``EvalSpec.system_prompt`` AND an AGENTS.md present →
+        explicit content wins, source stamped ``"explicit"``."""
+        content = "---\nname: prompt-skill\n---\nBODY"
+        eval_data = {
+            "skill_name": "prompt-skill",
+            "test_args": "",
+            "assertions": [],
+            "system_prompt": "EXPLICIT",
+        }
+        skill_path, _ = tmp_skill_file(
+            "prompt-skill", content=content, eval_data=eval_data
+        )
+        # AGENTS.md sits next to the legacy-layout skill file.
+        (skill_path.parent / "AGENTS.md").write_text("# agents")
+        runner, mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        result = spec.run()
+
+        assert mock.build_prompt_calls[-1]["system_prompt"] == "EXPLICIT"
+        assert result.harness_metadata["system_prompt_source"] == "explicit"
+
+    def test_agents_md_wins_over_skill_md_body(self, tmp_skill_file):
+        """No explicit, AGENTS.md present (skill-dir tier) → AGENTS.md
+        content used as system prompt, source stamped ``"agents_md"``."""
+        body = "# Skill\n\nBody content.\n"
+        content = "---\nname: prompt-skill\n---\n" + body
+        skill_path = tmp_skill_file("prompt-skill", content=content)
+        agents_text = "# AGENTS\n\nProject-level agent instructions.\n"
+        (skill_path.parent / "AGENTS.md").write_text(agents_text)
+        runner, mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        result = spec.run()
+
+        assert mock.build_prompt_calls[-1]["system_prompt"] == agents_text
+        assert result.harness_metadata["system_prompt_source"] == "agents_md"
+
+    def test_falls_through_to_skill_md_when_agents_md_absent(
+        self, tmp_skill_file
+    ):
+        """No explicit, no AGENTS.md → auto-derive from SKILL.md body,
+        source stamped ``"skill_md"``."""
+        body = "# Skill\n\nThis is the body.\n"
+        content = "---\nname: prompt-skill\n---\n" + body
+        skill_path = tmp_skill_file("prompt-skill", content=content)
+        runner, mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        result = spec.run()
+
+        assert mock.build_prompt_calls[-1]["system_prompt"] == body
+        assert result.harness_metadata["system_prompt_source"] == "skill_md"
+
+    def test_harness_metadata_carries_source_label(self, tmp_skill_file):
+        """Every successful run stamps a non-empty source label into
+        ``harness_metadata["system_prompt_source"]``."""
+        content = "---\nname: prompt-skill\n---\nBODY"
+        skill_path = tmp_skill_file("prompt-skill", content=content)
+        runner, _mock = self._build_runner_with_mock_harness(skill_path.parent)
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        result = spec.run()
+
+        assert "system_prompt_source" in result.harness_metadata
+        assert result.harness_metadata["system_prompt_source"] in {
+            "explicit",
+            "agents_md",
+            "skill_md",
+        }
+
+
+class TestSkillSpecRunHarnessOverride:
+    """US-006 / DEC-004 of #151: ``SkillSpec.run`` accepts a
+    keyword-only ``harness_name_override: str | None``. When non-
+    ``None``, materialize a fresh :class:`SkillRunner` with the named
+    harness (constructed via
+    :func:`clauditor._harnesses.construct_harness`) and use it for
+    this call. When ``None``, ``self.runner`` is used as-is.
+
+    Tests construct a real :class:`SkillRunner` carrying a
+    :class:`MockHarness` so we can observe which harness ended up
+    handling ``invoke``. The override path must NOT mutate
+    ``self.runner`` — the spec's own runner stays bound to its
+    original harness.
+    """
+
+    @staticmethod
+    def _build_runner_with_mock_harness(project_dir):
+        from clauditor._harnesses._mock import MockHarness
+        from clauditor.runner import SkillRunner
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir=project_dir, harness=mock)
+        return runner, mock
+
+    def test_no_override_uses_existing_runner(
+        self, tmp_skill_file, mock_runner
+    ):
+        """Override omitted → ``self.runner`` is the one called."""
+        skill_path = tmp_skill_file("override-skill")
+        runner = mock_runner(output="from-existing-runner")
+        spec = SkillSpec.from_file(skill_path, runner=runner)
+
+        result = spec.run(args="--arg")
+
+        # The spec's own runner is the only one called.
+        runner.run.assert_called_once()
+        # Identity check: ``self.runner`` is unchanged.
+        assert spec.runner is runner
+        assert result.output == "from-existing-runner"
+
+    def test_override_constructs_codex_harness(
+        self, tmp_skill_file
+    ):
+        """``harness_name_override="codex"`` → fresh ``SkillRunner``
+        wired with a :class:`CodexHarness`. The spec's own runner is
+        NOT mutated (still has the original harness)."""
+        from clauditor._harnesses import _codex as _codex_mod
+
+        skill_path = tmp_skill_file("override-skill")
+        runner, original_mock = self._build_runner_with_mock_harness(
+            skill_path.parent
+        )
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+
+        # Patch ``SkillRunner`` *within* the spec module so we can
+        # observe the construction call AND avoid actually invoking
+        # the codex subprocess.
+        with patch("clauditor.spec.SkillRunner") as mock_runner_cls:
+            constructed = mock_runner_cls.return_value
+            constructed.run.return_value = SkillResult(
+                output="from-override",
+                exit_code=0,
+                skill_name="override-skill",
+                args="",
+            )
+            spec.run(harness_name_override="codex")
+
+        # The spec module constructed exactly one fresh runner with
+        # the override harness.
+        assert mock_runner_cls.call_count == 1
+        kwargs = mock_runner_cls.call_args.kwargs
+        assert isinstance(kwargs["harness"], _codex_mod.CodexHarness)
+        # Project dir + timeout mirrored from the original runner.
+        assert kwargs["project_dir"] == runner.project_dir
+        assert kwargs["timeout"] == runner.timeout
+
+        # The fresh runner is what handled the call — not the
+        # original.
+        constructed.run.assert_called_once()
+        # Original runner's harness is untouched (no mutation).
+        assert spec.runner is runner
+        assert spec.runner.harness is original_mock
+
+    def test_override_constructs_claude_code_harness(
+        self, tmp_skill_file
+    ):
+        """``harness_name_override="claude-code"`` → fresh ``SkillRunner``
+        wired with a :class:`ClaudeCodeHarness`."""
+        from clauditor._harnesses import _claude_code as _claude_code_mod
+
+        skill_path = tmp_skill_file("override-skill")
+        runner, _original_mock = self._build_runner_with_mock_harness(
+            skill_path.parent
+        )
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+
+        with patch("clauditor.spec.SkillRunner") as mock_runner_cls:
+            constructed = mock_runner_cls.return_value
+            constructed.run.return_value = SkillResult(
+                output="from-override",
+                exit_code=0,
+                skill_name="override-skill",
+                args="",
+            )
+            spec.run(harness_name_override="claude-code")
+
+        assert mock_runner_cls.call_count == 1
+        kwargs = mock_runner_cls.call_args.kwargs
+        assert isinstance(
+            kwargs["harness"], _claude_code_mod.ClaudeCodeHarness
+        )
+
+    def test_override_invalid_name_propagates_value_error(
+        self, tmp_skill_file
+    ):
+        """Unknown harness name → ``construct_harness`` raises
+        ``ValueError``; ``SkillSpec.run`` does NOT swallow or reshape
+        it. The CLI wrapper (US-004) handles its own validation
+        upstream."""
+        skill_path = tmp_skill_file("override-skill")
+        runner, _original_mock = self._build_runner_with_mock_harness(
+            skill_path.parent
+        )
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+
+        with pytest.raises(ValueError) as exc_info:
+            spec.run(harness_name_override="bogus")
+
+        msg = str(exc_info.value)
+        assert "bogus" in msg
+
+    def test_override_auto_propagates_value_error(
+        self, tmp_skill_file
+    ):
+        """``"auto"`` is rejected by ``construct_harness`` — callers
+        must resolve auto via ``resolve_harness`` BEFORE calling
+        ``spec.run``. The error propagates unchanged."""
+        skill_path = tmp_skill_file("override-skill")
+        runner, _original_mock = self._build_runner_with_mock_harness(
+            skill_path.parent
+        )
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+
+        with pytest.raises(ValueError) as exc_info:
+            spec.run(harness_name_override="auto")
+
+        msg = str(exc_info.value)
+        assert "auto" in msg
+        assert "resolve_harness" in msg
+
+    def test_same_harness_override_reuses_existing_runner(
+        self, tmp_skill_file
+    ):
+        """CodeRabbit / Copilot review feedback on PR #166: when the
+        override matches the harness already wired into ``self.runner``,
+        ``SkillSpec.run`` MUST reuse that runner rather than construct a
+        fresh one. Constructing a fresh runner via ``construct_harness``
+        would silently swap out custom harness configuration (notably
+        the pytest plugin's ``--clauditor-claude-bin`` value carried on
+        the existing ``ClaudeCodeHarness.claude_bin``).
+        """
+        from clauditor._harnesses._claude_code import ClaudeCodeHarness
+        from clauditor.runner import SkillRunner
+
+        skill_path = tmp_skill_file("override-skill")
+        # Build a runner with a custom-binary ClaudeCodeHarness — this
+        # simulates the pytest plugin's ``--clauditor-claude-bin``.
+        custom_harness = ClaudeCodeHarness(claude_bin="/custom/claude")
+        runner = SkillRunner(
+            project_dir=skill_path.parent, harness=custom_harness
+        )
+        spec = SkillSpec(skill_path=skill_path, eval_spec=None, runner=runner)
+
+        # Patch SkillRunner construction in spec.py to FAIL the test
+        # if the same-harness branch ever falls through to construction.
+        with patch("clauditor.spec.SkillRunner") as mock_runner_cls:
+            mock_runner_cls.side_effect = AssertionError(
+                "spec.run constructed a fresh SkillRunner when it should "
+                "have reused the existing same-harness runner"
+            )
+            # Patch the runner's invoke flow so the test doesn't shell
+            # out — return a canned SkillResult by patching the harness
+            # invoke method on the existing runner.
+            with patch.object(runner, "run") as mock_run:
+                mock_run.return_value = SkillResult(
+                    output="from-existing-runner",
+                    exit_code=0,
+                    skill_name="override-skill",
+                    args="",
+                )
+                spec.run(harness_name_override="claude-code")
+
+        # No new SkillRunner was constructed (would have raised).
+        assert mock_runner_cls.call_count == 0
+        # The original harness (with its custom claude_bin) is still
+        # the one wired into spec.runner.
+        assert spec.runner.harness is custom_harness
+        assert spec.runner.harness.claude_bin == "/custom/claude"

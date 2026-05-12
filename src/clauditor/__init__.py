@@ -2,6 +2,7 @@
 
 from clauditor.asserters import SkillAsserter, assert_from
 from clauditor.assertions import AssertionResult, AssertionSet
+from clauditor.context import IterationContext
 from clauditor.runner import SkillResult, SkillRunner
 from clauditor.schemas import (
     EvalSpec,
@@ -20,6 +21,7 @@ __all__ = [
     "FieldRequirement",
     "GradingReport",
     "GradingResult",
+    "IterationContext",
     "SectionRequirement",
     "TierRequirement",
     "SkillAsserter",

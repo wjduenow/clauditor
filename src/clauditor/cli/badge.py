@@ -39,6 +39,7 @@ from clauditor.badge import (
     build_markdown_image,
     compute_badge,
     discover_iteration,
+    load_iteration_context,
     load_iteration_sidecars,
 )
 from clauditor.cli import _positive_int
@@ -698,6 +699,12 @@ def cmd_badge(args: argparse.Namespace) -> int:
             skill_name=skill_name,
         )
 
+    # #154 US-006 (DEC-006): read the per-iteration context.json
+    # (when present) and stamp it onto the extension. Absent /
+    # malformed file → context = None silently — the badge still
+    # writes successfully.
+    context = load_iteration_context(iter_skill_dir)
+
     badge = compute_badge(
         assertions=sidecars.assertions,
         grading=sidecars.grading,
@@ -707,6 +714,7 @@ def cmd_badge(args: argparse.Namespace) -> int:
         generated_at=_now_iso_z(),
         label=args.label,
         style_overrides=style_overrides,
+        context=context,
     )
 
     # DEC-021 sibling to DEC-001: if the badge came out lightgrey with

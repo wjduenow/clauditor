@@ -23,19 +23,13 @@ from anthropic import (
 )
 
 from clauditor._anthropic import (
-    AnthropicAuthMissingError,
     AnthropicHelperError,
     AnthropicResult,
     ClaudeCLIError,
     _body_excerpt,
     _classify_invoke_result,
-    _compute_backoff,
-    _compute_retry_decision,
     _extract_result,
-    announce_implicit_no_api_key,
     call_anthropic,
-    check_any_auth_available,
-    check_api_key_only,
     resolve_transport,
 )
 
@@ -177,6 +171,56 @@ class TestExtractResult:
         result = _extract_result(resp)
         assert result.raw_message is resp
 
+    def test_anthropic_reasoning_tokens_always_none(self) -> None:
+        """Drift-guard (#170 US-003 / DEC-001): the Anthropic backend's
+        ``_extract_result`` MUST stamp ``reasoning_tokens=None`` on
+        every successful response, regardless of usage shape.
+
+        ``anthropic.types.Usage`` carries no separately-billed
+        reasoning-token field — for extended-thinking models the
+        thinking tokens are already included in ``output_tokens``.
+        Honest ``None`` is the only correct representation, distinct
+        from ``0`` (which would assert "the call ran but used zero
+        reasoning tokens"). A future contributor copy-pasting the
+        OpenAI-side wiring (``reasoning_tokens=usage.something``)
+        would silently break this contract; this test catches the
+        regression at the construction site."""
+        usage = MagicMock(input_tokens=10, output_tokens=5)
+        resp = _mock_response(usage=usage)
+        result = _extract_result(resp)
+        assert result.reasoning_tokens is None
+        # Defense in depth: confirm the rest of the projection still
+        # works so a regression that nulled every field would not be
+        # mistaken for the reasoning_tokens=None contract holding.
+        assert result.input_tokens == 10
+        assert result.output_tokens == 5
+
+    def test_anthropic_reasoning_tokens_none_for_thinking_style_response(
+        self,
+    ) -> None:
+        """Drift-guard (#170 US-003 / DEC-001): a response that
+        includes a thinking-block-shaped content block (extended-
+        thinking models — Opus 4.x, Sonnet 4.x with
+        ``thinking={"type":"enabled",...}``) MUST still surface
+        ``reasoning_tokens=None``. The Anthropic SDK does not split
+        thinking tokens out of ``output_tokens``; we cannot honestly
+        report a separate count, so the field stays ``None`` even
+        when a thinking block is visibly present in ``content``."""
+        thinking_block = MagicMock(spec=["type"])
+        thinking_block.type = "thinking"
+        text_block = MagicMock(type="text", text="final answer")
+        # ``output_tokens`` here ALREADY INCLUDES the thinking-block
+        # tokens per the Anthropic API contract — there is no
+        # ``thinking_tokens`` key on ``usage`` to subtract or expose.
+        usage = MagicMock(input_tokens=20, output_tokens=150)
+        resp = _mock_response(blocks=[thinking_block, text_block], usage=usage)
+        result = _extract_result(resp)
+        assert result.reasoning_tokens is None
+        # Sanity: the text block still surfaces; the thinking block
+        # is filtered out by the ``type == "text"`` check.
+        assert result.response_text == "final answer"
+        assert result.text_blocks == ["final answer"]
+
 
 class TestBodyExcerpt:
     def test_none_body(self) -> None:
@@ -216,54 +260,6 @@ class TestBodyExcerpt:
         exc = MagicMock()
         exc.body = Bad()
         assert _body_excerpt(exc) == "<unrenderable body>"
-
-
-class TestRandUniformDefault:
-    def test_default_path_returns_value_in_range(self) -> None:
-        # Most tests patch _rand_uniform; this one exercises the real
-        # implementation so the stdlib-random wrapper itself is
-        # covered. A few samples pin the contract: values stay inside
-        # the requested closed interval.
-        from clauditor._anthropic import _rand_uniform
-
-        for _ in range(10):
-            val = _rand_uniform(-0.25, 0.25)
-            assert -0.25 <= val <= 0.25
-
-
-class TestComputeBackoff:
-    def test_delay_grows_exponentially(self) -> None:
-        # With zero jitter, delays are 1, 2, 4 seconds.
-        with patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
-        ):
-            assert _compute_backoff(0) == pytest.approx(1.0)
-            assert _compute_backoff(1) == pytest.approx(2.0)
-            assert _compute_backoff(2) == pytest.approx(4.0)
-
-    def test_positive_jitter_extends_delay(self) -> None:
-        # Max positive jitter (0.25) → base * 1.25
-        with patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.25
-        ):
-            assert _compute_backoff(0) == pytest.approx(1.25)
-            assert _compute_backoff(2) == pytest.approx(5.0)
-
-    def test_negative_jitter_shortens_delay(self) -> None:
-        # Max negative jitter (-0.25) → base * 0.75
-        with patch(
-            "clauditor._anthropic._rand_uniform", return_value=-0.25
-        ):
-            assert _compute_backoff(0) == pytest.approx(0.75)
-            assert _compute_backoff(1) == pytest.approx(1.5)
-
-    def test_delay_never_negative(self) -> None:
-        # Pathological jitter that tries to push delay negative is
-        # floored at 0.
-        with patch(
-            "clauditor._anthropic._rand_uniform", return_value=-100.0
-        ):
-            assert _compute_backoff(0) == 0.0
 
 
 class TestCallAnthropicSuccess:
@@ -332,9 +328,9 @@ class TestCallAnthropicRateLimit:
         with patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="api")
@@ -366,9 +362,9 @@ class TestCallAnthropicRateLimit:
         with patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="api")
         assert result.response_text == "recovered"
@@ -390,9 +386,9 @@ class TestCallAnthropicRateLimit:
         with patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform",
+            "clauditor._providers._retry._rand_uniform",
             side_effect=[0.25, -0.25, 0.25],
         ):
             with pytest.raises(AnthropicHelperError):
@@ -422,9 +418,9 @@ class TestCallAnthropicServerError:
         with patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="api")
@@ -446,9 +442,9 @@ class TestCallAnthropicServerError:
         with patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="api")
         assert result.response_text == "recovered"
@@ -467,7 +463,7 @@ class TestCallAnthropicClientError:
         with patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="api")
@@ -486,7 +482,7 @@ class TestCallAnthropicClientError:
         with patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="api")
@@ -506,7 +502,7 @@ class TestCallAnthropicClientError:
         with patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="api")
@@ -527,7 +523,7 @@ class TestCallAnthropicClientError:
         with patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="api")
@@ -549,9 +545,9 @@ class TestCallAnthropicConnectionError:
         with patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="api")
@@ -570,9 +566,9 @@ class TestCallAnthropicConnectionError:
         with patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="api")
         assert result.response_text == "got it"
@@ -626,7 +622,7 @@ class TestCallAnthropicTypeError:
         with patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="api")
@@ -660,7 +656,7 @@ class TestCallAnthropicTypeError:
         with patch(
             "anthropic.AsyncAnthropic", side_effect=_raise_at_construct
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="api")
@@ -674,233 +670,9 @@ class TestCallAnthropicTypeError:
         assert sdk_text in str(exc_info.value.__cause__)
 
 
-def _patch_which(monkeypatch: pytest.MonkeyPatch, path: str | None) -> None:
-    """Pin ``shutil.which("claude")`` to a deterministic value.
-
-    The autouse ``_force_api_transport_in_tests`` fixture in
-    ``tests/conftest.py`` patches ``shutil.which`` on
-    ``clauditor._anthropic`` to return ``None``. Tests that exercise
-    the CLI-available branch of :func:`check_any_auth_available`
-    override that with an explicit path.
-    """
-    import clauditor._anthropic as _anthropic
-
-    monkeypatch.setattr(
-        _anthropic.shutil, "which", lambda name: path
-    )
-
-
-class TestCheckAnyAuthAvailable:
-    """Unit tests for the relaxed pre-flight auth guard (US-005 / DEC-008).
-
-    Pins DEC-008 of ``plans/super/86-claude-cli-transport.md`` (relax
-    the pre-flight guard to accept either ``ANTHROPIC_API_KEY`` or a
-    ``claude`` CLI binary on PATH) and DEC-015 (error-message copy
-    committed with four test-asserted durable substrings:
-    ``ANTHROPIC_API_KEY``, ``Claude Pro``, ``console.anthropic.com``,
-    ``claude CLI``).
-    """
-
-    def test_key_present_cli_absent_passes(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-        _patch_which(monkeypatch, None)
-        assert check_any_auth_available("grade") is None
-
-    def test_key_absent_cli_present_passes(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        _patch_which(monkeypatch, "/usr/local/bin/claude")
-        assert check_any_auth_available("grade") is None
-
-    def test_both_present_passes(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-        _patch_which(monkeypatch, "/usr/local/bin/claude")
-        assert check_any_auth_available("grade") is None
-
-    def test_both_absent_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        _patch_which(monkeypatch, None)
-        with pytest.raises(AnthropicAuthMissingError) as exc_info:
-            check_any_auth_available("grade")
-        message = str(exc_info.value)
-        # DEC-015 four durable anchors.
-        assert "ANTHROPIC_API_KEY" in message
-        assert "Claude Pro" in message
-        assert "console.anthropic.com" in message
-        assert "claude CLI" in message
-        # DEC-011 command-name interpolation preserved.
-        assert "clauditor grade" in message
-
-    def test_empty_string_key_no_cli_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
-        _patch_which(monkeypatch, None)
-        with pytest.raises(AnthropicAuthMissingError):
-            check_any_auth_available("grade")
-
-    def test_whitespace_only_key_no_cli_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "   \t\n")
-        _patch_which(monkeypatch, None)
-        with pytest.raises(AnthropicAuthMissingError):
-            check_any_auth_available("grade")
-
-    def test_empty_string_key_cli_present_passes(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """CLI presence overrides an empty-string API key."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
-        _patch_which(monkeypatch, "/usr/local/bin/claude")
-        assert check_any_auth_available("grade") is None
-
-    def test_whitespace_only_key_cli_present_passes(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """CLI presence overrides a whitespace-only API key."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "   ")
-        _patch_which(monkeypatch, "/usr/local/bin/claude")
-        assert check_any_auth_available("grade") is None
-
-    def test_auth_token_only_no_cli_still_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """DEC-001 (#83) preserved: only ANTHROPIC_API_KEY counts for the key branch."""
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "some-token")
-        _patch_which(monkeypatch, None)
-        with pytest.raises(AnthropicAuthMissingError):
-            check_any_auth_available("grade")
-
-    def test_key_whitespace_surrounded_no_cli_accepted(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Non-empty value with surrounding whitespace counts as present."""
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "  sk-test  ")
-        _patch_which(monkeypatch, None)
-        assert check_any_auth_available("grade") is None
-
-    def test_cmd_name_interpolation_compare_blind(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """``compare --blind`` is the only multi-word cmd_name; interpolation works."""
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        _patch_which(monkeypatch, None)
-        with pytest.raises(AnthropicAuthMissingError) as exc_info:
-            check_any_auth_available("compare --blind")
-        assert "clauditor compare --blind" in str(exc_info.value)
-
-    def test_cmd_name_interpolation_propose_eval(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        _patch_which(monkeypatch, None)
-        with pytest.raises(AnthropicAuthMissingError) as exc_info:
-            check_any_auth_available("propose-eval")
-        assert "clauditor propose-eval" in str(exc_info.value)
-
-
-class TestCheckApiKeyOnly:
-    """Unit tests for the strict API-key-only pre-flight guard (US-005 / DEC-009).
-
-    Pins DEC-009 of ``plans/super/86-claude-cli-transport.md``: pytest
-    fixtures stay stricter than the CLI by default. The strict variant
-    only accepts ``ANTHROPIC_API_KEY``; CLI presence does not help.
-    """
-
-    def test_key_present_passes_regardless_of_cli(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-        _patch_which(monkeypatch, None)
-        assert check_api_key_only("grader") is None
-
-    def test_key_present_cli_also_present_passes(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-        _patch_which(monkeypatch, "/usr/local/bin/claude")
-        assert check_api_key_only("grader") is None
-
-    def test_key_absent_cli_present_still_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """DEC-009: strict variant does NOT accept CLI as a fallback."""
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        _patch_which(monkeypatch, "/usr/local/bin/claude")
-        with pytest.raises(AnthropicAuthMissingError) as exc_info:
-            check_api_key_only("grader")
-        message = str(exc_info.value)
-        # Preserves #83 DEC-012's three durable anchors.
-        assert "ANTHROPIC_API_KEY" in message
-        assert "Claude Pro" in message
-        assert "console.anthropic.com" in message
-        # Mentions the opt-in escape hatch so users know how to enable
-        # CLI transport in fixture mode.
-        assert "CLAUDITOR_FIXTURE_ALLOW_CLI" in message
-        # Command-name interpolation.
-        assert "clauditor grader" in message
-
-    def test_key_empty_string_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
-        with pytest.raises(AnthropicAuthMissingError):
-            check_api_key_only("grader")
-
-
 # ---------------------------------------------------------------------------
 # US-003 (#86): CLI transport in call_anthropic
 # ---------------------------------------------------------------------------
-
-
-class TestComputeRetryDecision:
-    """Pure helper extracted per DEC-005 retry parity.
-
-    Shared by SDK and CLI transport branches so a failure with the
-    same category retries the same number of times regardless of
-    which transport produced it.
-    """
-
-    def test_rate_limit_retries_up_to_three_times(self) -> None:
-        assert _compute_retry_decision("rate_limit", 0) == "retry"
-        assert _compute_retry_decision("rate_limit", 1) == "retry"
-        assert _compute_retry_decision("rate_limit", 2) == "retry"
-
-    def test_rate_limit_raises_after_third_retry(self) -> None:
-        assert _compute_retry_decision("rate_limit", 3) == "raise"
-
-    def test_auth_never_retries(self) -> None:
-        assert _compute_retry_decision("auth", 0) == "raise"
-        assert _compute_retry_decision("auth", 5) == "raise"
-
-    def test_api_retries_once_then_raises(self) -> None:
-        assert _compute_retry_decision("api", 0) == "retry"
-        assert _compute_retry_decision("api", 1) == "raise"
-
-    def test_connection_retries_once_then_raises(self) -> None:
-        assert _compute_retry_decision("connection", 0) == "retry"
-        assert _compute_retry_decision("connection", 1) == "raise"
-
-    def test_transport_retries_once_then_raises(self) -> None:
-        assert _compute_retry_decision("transport", 0) == "retry"
-        assert _compute_retry_decision("transport", 1) == "raise"
-
-    def test_unknown_category_raises(self) -> None:
-        """Defensive default: an unknown category is not retried."""
-        assert _compute_retry_decision("mystery", 0) == "raise"
-
-    def test_empty_string_category_raises(self) -> None:
-        """Defensive default: empty-string category is not retried."""
-        assert _compute_retry_decision("", 0) == "raise"
 
 
 # ---------------------------------------------------------------------------
@@ -936,7 +708,7 @@ class TestCallViaClaudeCli:
     Every test explicitly passes ``transport="cli"`` so it routes through
     the subprocess branch regardless of whether the test host has
     ``claude`` on PATH. Subprocess mocked at the
-    ``clauditor.runner.subprocess.Popen`` seam (same pattern as
+    ``clauditor._harnesses._claude_code.subprocess.Popen`` seam (same pattern as
     tests/test_runner.py). _sleep patched so retry waits cost zero
     wallclock.
     """
@@ -946,9 +718,9 @@ class TestCallViaClaudeCli:
         fake = _make_cli_success_popen("hello from cli")
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ):
             result = await call_anthropic(
                 "some prompt", model="claude-sonnet-4-6", transport="cli"
@@ -967,10 +739,31 @@ class TestCallViaClaudeCli:
         fake = _make_cli_success_popen(
             "ok", input_tokens=123, output_tokens=45
         )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = await call_anthropic("p", model="m", transport="cli")
         assert result.input_tokens == 123
         assert result.output_tokens == 45
+
+    @pytest.mark.asyncio
+    async def test_cli_transport_reasoning_tokens_always_none(self) -> None:
+        """Drift-guard (#170 US-003 / DEC-001): the CLI-transport
+        success path MUST also stamp ``reasoning_tokens=None``. The
+        ``claude -p`` subprocess output stream-json carries no
+        separately-billed reasoning-token field; even if the parent
+        model is an extended-thinking variant, the projected
+        ``InvokeResult.output_tokens`` already includes thinking
+        tokens. Honest ``None`` parity with the SDK branch is the
+        only correct shape."""
+        fake = _make_cli_success_popen("ok", input_tokens=7, output_tokens=11)
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
+            result = await call_anthropic("p", model="m", transport="cli")
+        assert result.reasoning_tokens is None
 
     @pytest.mark.asyncio
     async def test_rate_limit_retries_up_to_three_times(self) -> None:
@@ -985,11 +778,11 @@ class TestCallViaClaudeCli:
         ]
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=fakes
+            "clauditor._harnesses._claude_code.subprocess.Popen", side_effect=fakes
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(ClaudeCLIError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
@@ -1011,11 +804,11 @@ class TestCallViaClaudeCli:
         ]
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=fakes
+            "clauditor._harnesses._claude_code.subprocess.Popen", side_effect=fakes
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="cli")
         assert result.response_text == "recovered"
@@ -1028,9 +821,9 @@ class TestCallViaClaudeCli:
         fake = _make_cli_error_popen("401 Unauthorized: invalid api key")
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ):
             with pytest.raises(ClaudeCLIError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
@@ -1052,11 +845,11 @@ class TestCallViaClaudeCli:
         ]
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=fakes
+            "clauditor._harnesses._claude_code.subprocess.Popen", side_effect=fakes
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(ClaudeCLIError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
@@ -1073,11 +866,11 @@ class TestCallViaClaudeCli:
         ]
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=fakes
+            "clauditor._harnesses._claude_code.subprocess.Popen", side_effect=fakes
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="cli")
         assert result.response_text == "recovered"
@@ -1088,12 +881,12 @@ class TestCallViaClaudeCli:
         """Binary missing → ``transport`` category → 1 retry then raise."""
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             side_effect=FileNotFoundError,
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(ClaudeCLIError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
@@ -1130,13 +923,13 @@ class TestCallViaClaudeCli:
             f.poll = lambda: None
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=fakes
+            "clauditor._harnesses._claude_code.subprocess.Popen", side_effect=fakes
         ), patch(
-            "clauditor.runner.threading.Timer", _ImmediateTimer
+            "clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(ClaudeCLIError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
@@ -1159,11 +952,12 @@ class TestCallViaClaudeCli:
 
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=_popen_factory
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            side_effect=_popen_factory
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="cli")
         assert result.response_text == "recovered after transport"
@@ -1177,7 +971,7 @@ class TestCallViaClaudeCli:
         class _BrokenPopen:
             def __init__(self) -> None:
                 # Only malformed lines. No ``result`` message, no
-                # assistant text. ``_invoke_claude_cli`` will emit
+                # assistant text. ``ClaudeCodeHarness.invoke`` will emit
                 # warnings + return exit_code=0 with empty output.
                 self.stdout = io.StringIO(
                     "this is not json\nneither is this\n"
@@ -1202,11 +996,11 @@ class TestCallViaClaudeCli:
         fakes = [_BrokenPopen(), _make_cli_success_popen("healed")]
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=fakes
+            "clauditor._harnesses._claude_code.subprocess.Popen", side_effect=fakes
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             result = await call_anthropic("p", model="m", transport="cli")
         assert result.response_text == "healed"
@@ -1222,7 +1016,7 @@ class TestCallViaClaudeCli:
         monkeypatch.setenv("PATH", "/usr/bin")
         mock_popen = MagicMock()
         mock_popen.return_value = _make_cli_success_popen("ok")
-        with patch("clauditor.runner.subprocess.Popen", mock_popen):
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen", mock_popen):
             await call_anthropic("p", model="m", transport="cli")
         call_kwargs = mock_popen.call_args.kwargs
         env = call_kwargs["env"]
@@ -1239,7 +1033,10 @@ class TestCallViaClaudeCli:
         catches CLI-transport failures transparently.
         """
         fake = _make_cli_error_popen("401 Unauthorized")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             with pytest.raises(AnthropicHelperError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
         assert isinstance(exc_info.value, ClaudeCLIError)
@@ -1252,7 +1049,10 @@ class TestCallViaClaudeCli:
         provider's stream-json ``result`` text."""
         secret_leak = "secret-provider-text-should-not-appear-in-message"
         fake = _make_cli_error_popen(f"401 Unauthorized: {secret_leak}")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             with pytest.raises(ClaudeCLIError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
         msg = str(exc_info.value)
@@ -1277,7 +1077,10 @@ class TestCallViaClaudeCli:
                 "apiKeySource": "none",
             },
         )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             await call_anthropic(
                 "p",
                 model="m",
@@ -1312,7 +1115,10 @@ class TestCallViaClaudeCli:
                 "apiKeySource": "none",
             },
         )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             await call_anthropic("p", model="m", transport="cli")
         captured = capsys.readouterr()
         matching = [
@@ -1343,7 +1149,10 @@ class TestAnthropicResultFields:
     @pytest.mark.asyncio
     async def test_source_is_cli_under_cli_transport(self) -> None:
         fake = _make_cli_success_popen("cli-path")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = await call_anthropic(
                 "p", model="m", transport="cli"
             )
@@ -1358,7 +1167,7 @@ class TestAnthropicResultFields:
         with patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ), patch(
-            "clauditor._anthropic._monotonic",
+            "clauditor._providers._anthropic._monotonic",
             side_effect=[100.0, 101.5],
         ):
             result = await call_anthropic(
@@ -1370,9 +1179,9 @@ class TestAnthropicResultFields:
     async def test_duration_seconds_populated_under_cli(self) -> None:
         fake = _make_cli_success_popen("cli")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ), patch(
-            "clauditor._anthropic._monotonic",
+            "clauditor._providers._anthropic._monotonic",
             side_effect=[10.0, 12.25],
         ):
             result = await call_anthropic(
@@ -1391,14 +1200,14 @@ class TestAutoTransportResolution:
         # Reset the one-shot announcement flag so this test sees a
         # fresh process from the stderr-announcement perspective.
         monkeypatch.setattr(
-            "clauditor._anthropic._announced_cli_transport", False
+            "clauditor._providers._anthropic._announced_cli_transport", False
         )
         fake = _make_cli_success_popen("cli-picked")
         with patch(
-            "clauditor._anthropic.shutil.which",
+            "clauditor._providers._anthropic.shutil.which",
             return_value="/usr/local/bin/claude",
         ), patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ):
             result = await call_anthropic(
                 "p", model="m", transport="auto"
@@ -1413,7 +1222,7 @@ class TestAutoTransportResolution:
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=resp)
         with patch(
-            "clauditor._anthropic.shutil.which", return_value=None
+            "clauditor._providers._anthropic.shutil.which", return_value=None
         ), patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ):
@@ -1431,7 +1240,7 @@ class TestAutoTransportResolution:
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=resp)
         with patch(
-            "clauditor._anthropic.shutil.which",
+            "clauditor._providers._anthropic.shutil.which",
             return_value="/usr/local/bin/claude",
         ) as which_mock, patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
@@ -1453,14 +1262,14 @@ class TestAutoTransportResolution:
         silent fallback to the SDK path."""
         sleep_mock = AsyncMock()
         with patch(
-            "clauditor._anthropic.shutil.which", return_value=None
+            "clauditor._providers._anthropic.shutil.which", return_value=None
         ), patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             side_effect=FileNotFoundError,
         ), patch(
-            "clauditor._anthropic._sleep", sleep_mock
+            "clauditor._providers._anthropic._sleep", sleep_mock
         ), patch(
-            "clauditor._anthropic._rand_uniform", return_value=0.0
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
         ):
             with pytest.raises(ClaudeCLIError) as exc_info:
                 await call_anthropic("p", model="m", transport="cli")
@@ -1476,7 +1285,7 @@ class TestStderrAnnouncement:
     ) -> None:
         """Every test starts with the one-shot flag set to False."""
         monkeypatch.setattr(
-            "clauditor._anthropic._announced_cli_transport", False
+            "clauditor._providers._anthropic._announced_cli_transport", False
         )
 
     @pytest.mark.asyncio
@@ -1485,10 +1294,10 @@ class TestStderrAnnouncement:
     ) -> None:
         fake = _make_cli_success_popen("ok")
         with patch(
-            "clauditor._anthropic.shutil.which",
+            "clauditor._providers._anthropic.shutil.which",
             return_value="/usr/local/bin/claude",
         ), patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ):
             await call_anthropic("p", model="m", transport="auto")
         captured = capsys.readouterr()
@@ -1505,10 +1314,11 @@ class TestStderrAnnouncement:
         fake1 = _make_cli_success_popen("ok1")
         fake2 = _make_cli_success_popen("ok2")
         with patch(
-            "clauditor._anthropic.shutil.which",
+            "clauditor._providers._anthropic.shutil.which",
             return_value="/usr/local/bin/claude",
         ), patch(
-            "clauditor.runner.subprocess.Popen", side_effect=[fake1, fake2]
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            side_effect=[fake1, fake2]
         ):
             await call_anthropic("p1", model="m", transport="auto")
             # Drain the first emission before the second call.
@@ -1528,7 +1338,10 @@ class TestStderrAnnouncement:
         """DEC-019: explicit ``transport="cli"`` never announces
         (no surprise; caller chose it)."""
         fake = _make_cli_success_popen("ok")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             await call_anthropic("p", model="m", transport="cli")
         captured = capsys.readouterr()
         assert (
@@ -1561,7 +1374,7 @@ class TestStderrAnnouncement:
         mock_client = AsyncMock()
         mock_client.messages.create = AsyncMock(return_value=resp)
         with patch(
-            "clauditor._anthropic.shutil.which", return_value=None
+            "clauditor._providers._anthropic.shutil.which", return_value=None
         ), patch(
             "anthropic.AsyncAnthropic", return_value=mock_client
         ):
@@ -1571,77 +1384,6 @@ class TestStderrAnnouncement:
             "clauditor: using Claude CLI transport"
             not in captured.err
         )
-
-
-class TestAnnounceImplicitNoApiKey:
-    """DEC-003 / DEC-009 / DEC-011 (#95 US-002): one-shot stderr notice
-    emitted when ``--transport cli`` strips ``ANTHROPIC_API_KEY`` /
-    ``ANTHROPIC_AUTH_TOKEN`` from the skill subprocess env.
-
-    Parallel to :class:`TestStderrAnnouncement` — same autouse-reset
-    pattern; same one-shot-per-process contract.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _reset_announcement_flag(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Every test starts with the one-shot flag set to False."""
-        monkeypatch.setattr(
-            "clauditor._anthropic._announced_implicit_no_api_key", False
-        )
-
-    def test_first_call_emits_announcement(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        announce_implicit_no_api_key()
-        captured = capsys.readouterr()
-        from clauditor._anthropic import _IMPLICIT_NO_API_KEY_ANNOUNCEMENT
-
-        assert _IMPLICIT_NO_API_KEY_ANNOUNCEMENT in captured.err
-
-    def test_second_call_silent(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        announce_implicit_no_api_key()
-        # Drain the first emission.
-        capsys.readouterr()
-        announce_implicit_no_api_key()
-        captured = capsys.readouterr()
-        assert captured.err == ""
-
-    def test_constant_names_both_env_vars(self) -> None:
-        """Prose-presence check — both env-var names must appear so
-        users know which variables got stripped."""
-        from clauditor._anthropic import _IMPLICIT_NO_API_KEY_ANNOUNCEMENT
-
-        assert "ANTHROPIC_API_KEY" in _IMPLICIT_NO_API_KEY_ANNOUNCEMENT
-        assert "ANTHROPIC_AUTH_TOKEN" in _IMPLICIT_NO_API_KEY_ANNOUNCEMENT
-
-    def test_constant_names_escape_hatch(self) -> None:
-        """DEC-011: users must see the explicit-opt-out path."""
-        from clauditor._anthropic import _IMPLICIT_NO_API_KEY_ANNOUNCEMENT
-
-        assert "--transport api" in _IMPLICIT_NO_API_KEY_ANNOUNCEMENT
-
-    def test_autouse_fixture_resets_flag_between_tests_first_half(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """First test of a pair — proves first-call emission works."""
-        announce_implicit_no_api_key()
-        captured = capsys.readouterr()
-        assert captured.err != ""
-
-    def test_autouse_fixture_resets_flag_between_tests_second_half(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """Second test of the pair — if the autouse fixture did not
-        reset the flag, this test would see silence (the flag would
-        still be ``True`` from the first test). Seeing an emission
-        here proves the fixture reset works."""
-        announce_implicit_no_api_key()
-        captured = capsys.readouterr()
-        assert captured.err != ""
 
 
 class TestResolveTransport:
@@ -1790,3 +1532,475 @@ class TestResolveTransportInternal:
             ValueError, match=r"Unknown transport 'sdk'"
         ):
             _resolve_transport(cast("str", "sdk"))  # type: ignore[arg-type]
+
+
+class TestModelResult:
+    """Regression tests for the #144 US-002 ``AnthropicResult`` →
+    ``ModelResult`` rename + ``provider`` field addition.
+
+    Traces to DEC-006 of ``plans/super/144-providers-call-model.md``:
+    ``ModelResult`` carries a ``provider: Literal["anthropic", "openai"]``
+    field (default ``"anthropic"``) so the future ``call_model``
+    dispatcher (US-003) can stamp the originating backend on every
+    result. The legacy name ``AnthropicResult`` stays as a back-compat
+    alias — same class object, same identity invariant.
+    """
+
+    def test_model_result_provider_default(self) -> None:
+        """A ``ModelResult`` constructed without ``provider`` defaults
+        to ``"anthropic"`` so every pre-#144 caller stays unchanged."""
+        from clauditor._providers._anthropic import ModelResult
+
+        result = ModelResult(response_text="ok")
+        assert result.provider == "anthropic"
+
+    def test_anthropic_result_alias_identity(self) -> None:
+        """``AnthropicResult`` is the same class object as
+        ``ModelResult`` — ``is`` returns True. Defining it as a
+        separate subclass would break ``isinstance`` ladders for
+        callers that imported one name vs the other."""
+        from clauditor._providers._anthropic import (
+            AnthropicResult,
+            ModelResult,
+        )
+
+        assert AnthropicResult is ModelResult
+
+    def test_anthropic_result_alias_identity_via_shim(self) -> None:
+        """The shim re-export of ``AnthropicResult`` is the same class
+        object as ``ModelResult`` from the canonical location."""
+        from clauditor._anthropic import (
+            AnthropicResult as ShimAnthropicResult,
+        )
+        from clauditor._providers._anthropic import ModelResult
+
+        assert ShimAnthropicResult is ModelResult
+
+    def test_call_anthropic_still_works_via_shim(self) -> None:
+        """``from clauditor._anthropic import call_anthropic`` resolves
+        to a callable. Per #144 US-007 (DEC-004), the shim's
+        ``call_anthropic`` is a thin deprecation-wrapper around
+        :func:`clauditor._providers.call_model`, NOT the same callable
+        object as :func:`clauditor._providers.call_anthropic` — so the
+        old ``is`` identity invariant intentionally no longer holds.
+        What we DO require is that both names resolve to callables and
+        the shim wrapper still produces a ``ModelResult`` when invoked.
+        """
+        from clauditor._anthropic import call_anthropic as shim_call
+        from clauditor._providers import call_anthropic as canonical_call
+
+        assert callable(shim_call)
+        assert callable(canonical_call)
+        # The shim wrapper is a fresh function defined in the shim
+        # module; the canonical name resolves to the
+        # ``_providers/_anthropic.py`` body. Identity intentionally
+        # does NOT hold post-US-007.
+        assert shim_call is not canonical_call
+
+    def test_provider_field_accepts_openai(self) -> None:
+        """Forward-compat: a ``ModelResult`` can be constructed with
+        ``provider="openai"`` ahead of the #145 OpenAI backend
+        landing. The dataclass does not validate the literal at
+        runtime (Python's ``Literal`` is type-hint only); that's
+        fine — the dispatcher in #145 will be the gatekeeper."""
+        from clauditor._providers._anthropic import ModelResult
+
+        result = ModelResult(response_text="ok", provider="openai")
+        assert result.provider == "openai"
+
+    def test_reasoning_tokens_default_none(self) -> None:
+        """A ``ModelResult`` constructed without ``reasoning_tokens``
+        defaults to ``None`` so every pre-#170 caller stays unchanged.
+
+        The field is nullable from day one (DEC-001 / DEC-002 of
+        ``plans/super/170-reasoning-tokens-capture.md``): null means
+        "the provider did not surface a reasoning-token count" (no
+        thinking block, transport that strips it, etc.) rather than
+        the misleading "0 reasoning tokens were used"."""
+        from clauditor._providers._anthropic import ModelResult
+
+        result = ModelResult(response_text="ok")
+        assert result.reasoning_tokens is None
+
+    def test_reasoning_tokens_kwarg(self) -> None:
+        """``reasoning_tokens=`` is keyword-settable to a non-negative
+        int. Per DEC-001 of #170 the **Anthropic backend itself
+        unconditionally hardcodes this field to ``None``** (the SDK
+        has no separately-billed thinking-token surface today —
+        thinking tokens are folded into ``output_tokens``); this
+        test pins only the dataclass field carrier shape so callers
+        and the OpenAI backend (which DOES populate it) can rely on
+        the field being settable to an int."""
+        from clauditor._providers._anthropic import ModelResult
+
+        result = ModelResult(response_text="ok", reasoning_tokens=42)
+        assert result.reasoning_tokens == 42
+
+
+class TestCallModel:
+    """Regression tests for the #144 US-003 ``call_model`` dispatcher.
+
+    Traces to DEC-001 (signature does not include ``subject``) of
+    ``plans/super/144-providers-call-model.md`` and #145 US-005
+    (``provider="openai"`` dispatches to
+    :func:`clauditor._providers._openai.call_openai`; the prior
+    ``NotImplementedError`` placeholder from #144 DEC-002 was
+    replaced).
+    """
+
+    @pytest.mark.asyncio
+    async def test_call_model_routes_anthropic_to_call_anthropic(
+        self,
+    ) -> None:
+        """``call_model(provider="anthropic", ...)`` delegates to
+        :func:`call_anthropic` with the same kwargs."""
+        from clauditor._providers import ModelResult, call_model
+
+        canned = ModelResult(response_text="ok", provider="anthropic")
+        with patch(
+            "clauditor._providers._anthropic.call_anthropic",
+            new=AsyncMock(return_value=canned),
+        ) as mock_call:
+            result = await call_model(
+                "the prompt",
+                provider="anthropic",
+                model="claude-3-5-haiku-latest",
+                transport="api",
+                max_tokens=4096,
+            )
+
+        mock_call.assert_awaited_once_with(
+            "the prompt",
+            model="claude-3-5-haiku-latest",
+            transport="api",
+            max_tokens=4096,
+        )
+        assert result is canned
+
+    @pytest.mark.asyncio
+    async def test_call_model_anthropic_returns_model_result(self) -> None:
+        """The dispatcher returns the ``ModelResult`` produced by
+        :func:`call_anthropic` unchanged."""
+        from clauditor._providers import ModelResult, call_model
+
+        canned = ModelResult(
+            response_text="ok",
+            provider="anthropic",
+            source="api",
+            input_tokens=12,
+            output_tokens=34,
+        )
+        with patch(
+            "clauditor._providers._anthropic.call_anthropic",
+            new=AsyncMock(return_value=canned),
+        ):
+            result = await call_model(
+                "the prompt",
+                provider="anthropic",
+                model="claude-3-5-haiku-latest",
+            )
+
+        assert isinstance(result, ModelResult)
+        assert result.provider == "anthropic"
+        assert result.source == "api"
+        assert result.input_tokens == 12
+        assert result.output_tokens == 34
+
+    @pytest.mark.asyncio
+    async def test_call_model_dispatches_to_openai(self) -> None:
+        """#145 US-005: ``provider="openai"`` delegates to
+        :func:`clauditor._providers._openai.call_openai` with the
+        forwarded kwargs. Patches the canonical module path per
+        ``.claude/rules/back-compat-shim-discipline.md`` Pattern 3."""
+        from clauditor._providers import ModelResult, call_model
+
+        canned = ModelResult(
+            response_text="ok",
+            provider="openai",
+            source="api",
+            input_tokens=7,
+            output_tokens=11,
+        )
+        with patch(
+            "clauditor._providers._openai.call_openai",
+            new=AsyncMock(return_value=canned),
+        ) as mock_call:
+            result = await call_model(
+                "hi",
+                provider="openai",
+                model="gpt-5.4",
+            )
+
+        mock_call.assert_awaited_once_with(
+            "hi",
+            model="gpt-5.4",
+            transport="auto",
+            max_tokens=4096,
+        )
+        assert result is canned
+        assert result.provider == "openai"
+
+    @pytest.mark.asyncio
+    async def test_call_model_propagates_openai_helper_error(self) -> None:
+        """#145 US-005: an :class:`OpenAIHelperError` raised inside
+        :func:`call_openai` propagates verbatim through the
+        dispatcher — the dispatcher must NOT swallow or wrap it."""
+        from clauditor._providers import OpenAIHelperError, call_model
+
+        with patch(
+            "clauditor._providers._openai.call_openai",
+            new=AsyncMock(side_effect=OpenAIHelperError("simulated")),
+        ):
+            with pytest.raises(OpenAIHelperError, match="simulated"):
+                await call_model(
+                    "hi",
+                    provider="openai",
+                    model="gpt-5.4",
+                )
+
+    def test_call_model_signature_does_not_include_subject(self) -> None:
+        """DEC-001 guard: ``call_model`` MUST NOT carry a ``subject``
+        parameter. ``subject`` is Claude-Code-CLI-specific and does
+        not generalize across providers."""
+        import inspect
+
+        from clauditor._providers import call_model
+
+        sig = inspect.signature(call_model)
+        assert "subject" not in sig.parameters
+
+    def test_call_model_in_providers_all(self) -> None:
+        """``call_model`` is exported from
+        :mod:`clauditor._providers`'s ``__all__``."""
+        import clauditor._providers as providers
+
+        assert "call_model" in providers.__all__
+
+    @pytest.mark.asyncio
+    async def test_call_model_unknown_provider_raises_value_error(
+        self,
+    ) -> None:
+        """An unknown ``provider`` value (neither ``"anthropic"`` nor
+        ``"openai"``) raises :class:`ValueError` at the dispatcher
+        boundary so callers see a crisp pre-call error rather than
+        a deeper ``AttributeError`` later."""
+        from clauditor._providers import call_model
+
+        with pytest.raises(ValueError, match="unknown provider"):
+            await call_model(
+                "the prompt",
+                provider="vertex",  # type: ignore[arg-type]
+                model="claude-3-5-haiku-latest",
+            )
+
+    def test_call_model_importable_via_shim(self) -> None:
+        """``from clauditor._anthropic import call_model`` resolves
+        to the same callable as the canonical
+        ``clauditor._providers.call_model`` (transitional re-export
+        per US-003)."""
+        from clauditor._anthropic import call_model as shim_call_model
+        from clauditor._providers import call_model as canonical_call_model
+
+        assert shim_call_model is canonical_call_model
+
+
+class TestGraderImportsTargetProviders:
+    """#144 US-005: the six grader call sites import ``call_model``
+    from :mod:`clauditor._providers` (not ``clauditor._anthropic``).
+
+    Production grep-regression: after US-005 no production module
+    under ``src/clauditor/`` (excluding ``_providers/`` and the
+    deprecated shim ``_anthropic.py`` itself) imports from
+    ``clauditor._anthropic``. US-006 will further tighten this to
+    the CLI / pytest_plugin import sites; this test pins the US-005
+    grader invariant.
+    """
+
+    def test_grader_modules_do_not_import_from_anthropic_shim(self) -> None:
+        import re
+        from pathlib import Path
+
+        # The five grader modules touched in US-005.
+        targets = [
+            Path("src/clauditor/grader.py"),
+            Path("src/clauditor/quality_grader.py"),
+            Path("src/clauditor/triggers.py"),
+            Path("src/clauditor/propose_eval.py"),
+            Path("src/clauditor/suggest.py"),
+        ]
+        # Resolve relative to the repo root (tests run from repo root
+        # via ``pytest``).
+        repo_root = Path(__file__).resolve().parent.parent
+        pattern = re.compile(r"from\s+clauditor\._anthropic\b")
+
+        offenders: list[str] = []
+        for rel in targets:
+            full = repo_root / rel
+            text = full.read_text(encoding="utf-8")
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                if pattern.search(line):
+                    offenders.append(f"{rel}:{lineno}: {line.strip()}")
+
+        assert not offenders, (
+            "Grader call sites must import from clauditor._providers "
+            "(US-005 acceptance criterion). Offenders:\n"
+            + "\n".join(offenders)
+        )
+
+
+class TestNoProductionImportsFromAnthropicShim:
+    """#144 US-006 grep-regression: zero production-code files under
+    ``src/clauditor/`` import from ``clauditor._anthropic``, except
+    the shim itself (``src/clauditor/_anthropic.py``).
+
+    Strengthens the US-005 grader-only invariant
+    (:class:`TestGraderImportsTargetProviders`) to cover the entire
+    production tree: the six LLM-mediated CLI commands, the pytest
+    plugin's three fixture sites, and any other `clauditor._anthropic`
+    consumer must now route through ``clauditor._providers``. The only
+    exempt file is the shim itself, which exists to re-export for
+    one-release back-compat.
+    """
+
+    def test_no_production_imports_from_anthropic_shim(self) -> None:
+        import re
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parent.parent
+        src_root = repo_root / "src" / "clauditor"
+        # Exempt: the shim itself (re-exports for back-compat), and
+        # the canonical ``_providers/`` package (defines the symbols
+        # the shim re-exports; may reference the shim path in
+        # docstrings / comments per DEC-005).
+        shim_path = (src_root / "_anthropic.py").resolve()
+        providers_root = (src_root / "_providers").resolve()
+        pattern = re.compile(r"from\s+clauditor\._anthropic\b")
+
+        offenders: list[str] = []
+        for py_path in src_root.rglob("*.py"):
+            resolved = py_path.resolve()
+            if resolved == shim_path:
+                continue
+            if providers_root in resolved.parents:
+                continue
+            text = py_path.read_text(encoding="utf-8")
+            for lineno, line in enumerate(text.splitlines(), start=1):
+                if pattern.search(line):
+                    rel = py_path.relative_to(repo_root)
+                    offenders.append(f"{rel}:{lineno}: {line.strip()}")
+
+        assert not offenders, (
+            "Production code under src/clauditor/ must import from "
+            "clauditor._providers (US-006 acceptance criterion); the "
+            "back-compat shim ``clauditor._anthropic`` is the only "
+            "exempt file. Offenders:\n" + "\n".join(offenders)
+        )
+
+
+class TestCallAnthropicBaseErrorCatchAll:
+    """Bare base ``anthropic.AnthropicError`` catch-all (US-004 of #162).
+
+    Pins DEC-003 (message format ``f"API request failed:
+    {type(exc).__name__}"`` — class name only, no ``str(exc)`` per the
+    post-merge security tightening: this branch handles unknown SDK
+    error shapes by definition, so we cannot assume the SDK's
+    ``__str__`` is well-behaved; diagnostic content is preserved on
+    ``__cause__``), DEC-005 (two tests: catch-all wraps + ordering
+    regression), and DEC-008 (the catch-all test MUST construct an
+    ``AnthropicError`` instance NOT in any typed branch's hierarchy —
+    otherwise the test passes via the typed branch and the catch-all
+    is dead code).
+    """
+
+    @pytest.mark.asyncio
+    async def test_bare_anthropic_error_wraps_to_helper_error(self) -> None:
+        # DEC-008: define a one-line subclass guaranteed NOT to match
+        # any typed branch (RateLimitError, APIStatusError,
+        # AuthenticationError, PermissionDeniedError,
+        # APIConnectionError, TypeError). This proves the catch-all
+        # branch is exercised — using a bare AnthropicError() also
+        # works since AnthropicError itself is not in any typed
+        # branch's hierarchy, but the explicit subclass is more
+        # robust against future SDK changes that might promote
+        # AnthropicError to a typed alias.
+        from anthropic import AnthropicError
+
+        class _UnknownAnthropicError(AnthropicError):
+            pass
+
+        # Use a payload that would be considered sensitive (simulates
+        # a hypothetical future SDK error type echoing prompt text).
+        # The catch-all message MUST NOT surface this content — it
+        # only names the exception class.
+        sdk_text = "user prompt fragment: SECRET_TOKEN abc123 " + "x" * 600
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(
+            side_effect=_UnknownAnthropicError(sdk_text)
+        )
+        sleep_mock = AsyncMock()
+        with patch(
+            "anthropic.AsyncAnthropic", return_value=mock_client
+        ), patch(
+            "clauditor._providers._anthropic._sleep", sleep_mock
+        ):
+            with pytest.raises(AnthropicHelperError) as exc_info:
+                await call_anthropic("p", model="m", transport="api")
+        msg = str(exc_info.value)
+        # DEC-003 (post-merge security tightening): message format is
+        # exactly ``API request failed: <ClassName>`` — class name
+        # only, no SDK message content.
+        assert msg.startswith("API request failed:")
+        assert "_UnknownAnthropicError" in msg
+        # Security: NONE of the SDK's ``str(exc)`` content reaches the
+        # user-facing message. Even a single-char prefix from the
+        # untrusted payload would be a regression.
+        assert "user prompt fragment" not in msg
+        assert "SECRET_TOKEN" not in msg
+        assert sdk_text not in msg
+        assert sdk_text[:50] not in msg
+        # Not retried: without category info, the catch-all cannot
+        # make a sound retry decision.
+        assert mock_client.messages.create.await_count == 1
+        assert sleep_mock.await_count == 0
+        # Diagnostic content preserved on ``__cause__`` — debuggers
+        # can introspect the original exception (full ``str(exc)``
+        # available via ``str(exc_info.value.__cause__)``).
+        assert isinstance(exc_info.value.__cause__, _UnknownAnthropicError)
+        assert isinstance(exc_info.value.__cause__, AnthropicError)
+        assert "SECRET_TOKEN" in str(exc_info.value.__cause__)
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_subclass_routes_to_specific_branch_not_catch_all(
+        self,
+    ) -> None:
+        # DEC-005 ordering regression: ``RateLimitError`` is a
+        # subclass of ``AnthropicError``, so without correct branch
+        # ordering the bare catch-all would swallow it. Exhaust the
+        # rate-limit retries and assert the message indicates the
+        # rate-limit-specific branch (NOT the generic catch-all
+        # phrasing) and the retry count proves the rate-limit
+        # ladder applied.
+        errors = [
+            _make_rate_limit_error(body={"attempt": i}) for i in range(4)
+        ]
+        mock_client = AsyncMock()
+        mock_client.messages.create = AsyncMock(side_effect=errors)
+        sleep_mock = AsyncMock()
+        with patch(
+            "anthropic.AsyncAnthropic", return_value=mock_client
+        ), patch(
+            "clauditor._providers._anthropic._sleep", sleep_mock
+        ), patch(
+            "clauditor._providers._retry._rand_uniform", return_value=0.0
+        ):
+            with pytest.raises(AnthropicHelperError) as exc_info:
+                await call_anthropic("p", model="m", transport="api")
+        msg = str(exc_info.value)
+        # Rate-limit-specific branch fired: message says "rate
+        # limit", NOT the generic catch-all "API request failed:".
+        assert "rate limit" in msg.lower()
+        assert "429" in msg
+        assert not msg.startswith("API request failed:")
+        # The rate-limit ladder applied: 4 attempts (initial + 3
+        # retries) per RATE_LIMIT_MAX_RETRIES=3.
+        assert mock_client.messages.create.await_count == 4

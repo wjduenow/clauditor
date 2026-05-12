@@ -176,29 +176,34 @@ async def classify_query(
     expected: bool,
     model: str,
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> TriggerResult:
     """Classify a single query using the LLM.
 
-    Sends a prompt to the LLM via the centralized ``call_anthropic``
-    helper (bead ``clauditor-24h.3``) and parses the response to
-    determine whether the query would trigger the skill. Retry /
-    rate-limit / auth-error handling lives inside the helper — this
-    function just awaits the result and projects it onto
-    :class:`TriggerResult`.
+    Sends a prompt to the LLM via the centralized
+    :func:`clauditor._providers.call_model` dispatcher (#144 US-005)
+    and parses the response to determine whether the query would
+    trigger the skill. Retry / rate-limit / auth-error handling lives
+    inside the dispatcher's anthropic backend — this function just
+    awaits the result and projects it onto :class:`TriggerResult`.
     """
-    from clauditor._anthropic import AnthropicHelperError, call_anthropic
+    from clauditor._providers import (
+        AnthropicHelperError,
+        OpenAIHelperError,
+        call_model,
+    )
 
     prompt = build_trigger_prompt(skill_name, description, query)
 
     try:
-        result = await call_anthropic(
+        result = await call_model(
             prompt,
+            provider=provider,
             model=model,
-            max_tokens=1024,
             transport=transport,
-            subject="triggers judge",
+            max_tokens=1024,
         )
-    except AnthropicHelperError as exc:
+    except (AnthropicHelperError, OpenAIHelperError) as exc:
         # Graceful degradation: a single API failure (auth, 5xx
         # exhaustion, network) must not abort the entire trigger batch
         # in ``test_triggers``. ``passed=False`` always — an API error
@@ -247,15 +252,28 @@ async def classify_query(
 
 
 async def test_triggers(
-    eval_spec: EvalSpec, model: str = "claude-sonnet-4-6", transport: str = "auto"
+    eval_spec: EvalSpec,
+    model: str = "claude-sonnet-4-6",
+    transport: str = "auto",
+    *,
+    provider: str = "anthropic",
 ) -> TriggerReport:
     """Run trigger precision testing for all queries in an eval spec.
 
     Classifies all should_trigger and should_not_trigger queries in
     parallel via asyncio.gather, then returns a TriggerReport with
-    precision, recall, and accuracy metrics. The Anthropic SDK is
-    accessed through :func:`clauditor._anthropic.call_anthropic` inside
-    :func:`classify_query`; retry / error handling lives in the helper.
+    precision, recall, and accuracy metrics. Each per-query call routes
+    through :func:`clauditor._providers.call_model` (the multi-provider
+    dispatcher) inside :func:`classify_query`; retry / error handling
+    lives in the per-provider backend (``call_anthropic`` /
+    ``call_openai``).
+
+    ``provider`` is resolved at the CLI / fixture seam per #146 US-006
+    (and #182 / DEC-001b — the four-layer resolver handles the auto
+    default + subscription-first anthropic fallback) and threaded into
+    every per-query :func:`classify_query` call. Default ``"anthropic"``
+    preserves back-compat for direct callers (mainly tests); production
+    callers always pass an explicit value.
     """
     if eval_spec.trigger_tests is None:
         return TriggerReport(
@@ -279,6 +297,7 @@ async def test_triggers(
             expected=expected,
             model=model,
             transport=transport,
+            provider=provider,
         )
         for q, expected in queries
     ]

@@ -20,6 +20,7 @@ from clauditor.audit import (
     render_stdout_table,
 )
 from clauditor.cli import main as cli_main
+from clauditor.context import IterationContext
 
 # --------------------------------------------------------------------------- #
 # Fixture helper                                                               #
@@ -165,7 +166,7 @@ class TestLoadIterations:
                 for i in range(1, 6)
             },
         )
-        records, skipped = load_iterations(
+        records, skipped, _ctx = load_iterations(
             "skillX", last=3, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -182,7 +183,7 @@ class TestLoadIterations:
                 3: {"l1": [{"id": "a", "passed": False}]},
             },
         )
-        records, skipped = load_iterations(
+        records, skipped, _ctx = load_iterations(
             "s", last=10, clauditor_dir=clauditor_dir
         )
         assert skipped == 1
@@ -200,7 +201,7 @@ class TestLoadIterations:
                 },
             },
         )
-        records, skipped = load_iterations(
+        records, skipped, _ctx = load_iterations(
             "s", last=10, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -209,7 +210,7 @@ class TestLoadIterations:
         assert records[0].id == "a"
 
     def test_returns_empty_when_no_data(self, tmp_path: Path) -> None:
-        records, skipped = load_iterations(
+        records, skipped, _ctx = load_iterations(
             "s", last=10, clauditor_dir=tmp_path / ".clauditor"
         )
         assert records == []
@@ -228,7 +229,7 @@ class TestLoadIterations:
                 },
             },
         )
-        records, _ = load_iterations(
+        records, _, _ctx = load_iterations(
             "s", last=10, clauditor_dir=clauditor_dir
         )
         with_skill = [r for r in records if r.with_skill]
@@ -248,7 +249,7 @@ class TestLoadIterations:
                 },
             },
         )
-        records, _ = load_iterations(
+        records, _, _ctx = load_iterations(
             "s", last=10, clauditor_dir=clauditor_dir
         )
         layers = {r.layer for r in records}
@@ -283,7 +284,7 @@ class TestLoadIterations:
         (skill_dir / "extraction.json").write_text(
             json.dumps(extraction, indent=2) + "\n"
         )
-        records, _ = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
+        records, _, _ctx = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
         l2 = [r for r in records if r.layer == "L2"]
         assert len(l2) == 1
         assert l2[0].passed is True
@@ -301,7 +302,7 @@ class TestAggregate:
             for i in range(1, 5)
         ]
         agg = aggregate(records)
-        entry = agg[("L1", "a")]
+        entry = agg[("claude-code", "anthropic", "L1", "a")]
         assert entry.total_with_runs == 4
         assert entry.with_fails == 1
         assert entry.with_pass_rate == 0.75
@@ -316,7 +317,7 @@ class TestAggregate:
             IterationRecord(2, "L1", "a", passed=True, with_skill=False),
         ]
         agg = aggregate(records)
-        entry = agg[("L1", "a")]
+        entry = agg[("claude-code", "anthropic", "L1", "a")]
         assert entry.with_pass_rate == 1.0
         assert entry.baseline_pass_rate == 0.5
         assert entry.discrimination == pytest.approx(0.5)
@@ -326,7 +327,7 @@ class TestAggregate:
             IterationRecord(1, "L1", "a", passed=True, with_skill=True),
         ]
         agg = aggregate(records)
-        assert agg[("L1", "a")].discrimination is None
+        assert agg[("claude-code", "anthropic", "L1", "a")].discrimination is None
 
     def test_groups_by_layer_and_id(self) -> None:
         records = [
@@ -334,10 +335,10 @@ class TestAggregate:
             IterationRecord(1, "L3", "shared", passed=False, with_skill=True),
         ]
         agg = aggregate(records)
-        assert ("L1", "shared") in agg
-        assert ("L3", "shared") in agg
-        assert agg[("L1", "shared")].with_pass_rate == 1.0
-        assert agg[("L3", "shared")].with_pass_rate == 0.0
+        assert ("claude-code", "anthropic", "L1", "shared") in agg
+        assert ("claude-code", "anthropic", "L3", "shared") in agg
+        assert agg[("claude-code", "anthropic", "L1", "shared")].with_pass_rate == 1.0
+        assert agg[("claude-code", "anthropic", "L3", "shared")].with_pass_rate == 0.0
 
 
 # --------------------------------------------------------------------------- #
@@ -429,7 +430,11 @@ def _agg(
 
 class TestApplyThresholds:
     def test_threshold_flags_100_percent_pass(self) -> None:
-        aggs = {("L1", "a"): _agg(with_runs=20, with_fails=0)}
+        aggs = {
+            ("claude-code", "anthropic", "L1", "a"): _agg(
+                with_runs=20, with_fails=0
+            )
+        }
         verdicts = apply_thresholds(
             aggs, min_fail_rate=0.0, min_discrimination=0.05
         )
@@ -439,7 +444,11 @@ class TestApplyThresholds:
 
     def test_threshold_flags_zero_failures(self) -> None:
         # 100% pass is the priority reason, but zero-failures still in reasons.
-        aggs = {("L1", "a"): _agg(with_runs=5, with_fails=0)}
+        aggs = {
+            ("claude-code", "anthropic", "L1", "a"): _agg(
+                with_runs=5, with_fails=0
+            )
+        }
         verdicts = apply_thresholds(
             aggs, min_fail_rate=0.0, min_discrimination=0.05
         )
@@ -450,7 +459,7 @@ class TestApplyThresholds:
     ) -> None:
         # With-rate 0.8, baseline 0.78 → discrimination 0.02 < 0.05
         aggs = {
-            ("L1", "a"): _agg(
+            ("claude-code", "anthropic", "L1", "a"): _agg(
                 with_runs=10,
                 with_fails=2,
                 baseline_runs=50,
@@ -465,7 +474,7 @@ class TestApplyThresholds:
     def test_threshold_passes_discriminating_assertion(self) -> None:
         # with 0.75 pass, baseline 0.25 pass → 0.5 discrimination, keeps.
         aggs = {
-            ("L1", "a"): _agg(
+            ("claude-code", "anthropic", "L1", "a"): _agg(
                 with_runs=4,
                 with_fails=1,
                 baseline_runs=4,
@@ -481,7 +490,11 @@ class TestApplyThresholds:
     def test_threshold_override_via_cli_args(self) -> None:
         # 95% pass, not 100%; default 0.0 min_fail_rate wouldn't flag,
         # but 0.1 min_fail_rate (threshold 0.9) flags it.
-        aggs = {("L1", "a"): _agg(with_runs=20, with_fails=1)}
+        aggs = {
+            ("claude-code", "anthropic", "L1", "a"): _agg(
+                with_runs=20, with_fails=1
+            )
+        }
         lax = apply_thresholds(
             aggs, min_fail_rate=0.0, min_discrimination=0.05
         )
@@ -504,7 +517,10 @@ class TestRenderers:
             baseline_fails=9,
         )
         return apply_thresholds(
-            {("L1", "always_pass"): flagged, ("L2", "sometimes"): kept},
+            {
+                ("claude-code", "anthropic", "L1", "always_pass"): flagged,
+                ("claude-code", "anthropic", "L2", "sometimes"): kept,
+            },
             min_fail_rate=0.0,
             min_discrimination=0.05,
         )
@@ -542,18 +558,27 @@ class TestRenderers:
             thresholds={"last": 20, "min_fail_rate": 0.0},
             timestamp="20260101T000000Z",
         )
+        # US-004 (#147): bumped to schema_version 2 + ``providers_seen``.
+        # US-006 (#152): bumped to schema_version 3 + ``harnesses_seen``.
+        # #154 US-005 / DEC-005: bumped to schema_version 4 with new
+        # ``iteration_contexts`` array (always emitted).
         assert set(payload.keys()) == {
             "schema_version",
             "skill",
             "timestamp",
             "iterations",
             "thresholds",
+            "providers_seen",
+            "harnesses_seen",
             "assertions",
+            "iteration_contexts",
         }
-        assert payload["schema_version"] == 1
+        assert payload["schema_version"] == 4
         assert isinstance(payload["assertions"], list)
         first = payload["assertions"][0]
         for key in (
+            "harness",
+            "provider",
             "layer",
             "id",
             "with_runs",
@@ -711,8 +736,15 @@ class TestCmdAuditExitCode:
 
 
 class TestSchemaVersion:
-    def test_audit_render_json_has_schema_version_1(self) -> None:
-        """FIX-7 (#25): audit JSON payloads carry ``schema_version``."""
+    def test_audit_render_json_has_schema_version_4(self) -> None:
+        """US-004 (#147): audit JSON output bumped from v1 to v2 to
+        signal the new ``provider`` per-assertion field + top-level
+        ``providers_seen`` array (DEC-005, DEC-010 of #147).
+        US-006 (#152): bumped to v3 to signal the new ``harness``
+        per-assertion field + top-level ``harnesses_seen`` array
+        (DEC-010 of #152).
+        #154 US-005 / DEC-005: bumped to v4 to signal the new
+        top-level ``iteration_contexts`` array."""
         payload = render_json(
             [],
             skill="s",
@@ -720,7 +752,110 @@ class TestSchemaVersion:
             thresholds={"last": 20},
             timestamp="t",
         )
-        assert payload["schema_version"] == 1
+        assert payload["schema_version"] == 4
+
+
+class TestIsAcceptedVersion:
+    """US-002 (#147): pure helper :func:`_is_accepted_version` answers
+    ``1 <= version <= MAX_SCHEMA_VERSION[base]`` per DEC-008. Tests
+    pin the v1..v3 acceptance for grading/extraction sidecars and the
+    v1-only acceptance for assertions.json, plus the v4-rejection
+    branch and the unknown-filename ``KeyError`` contract.
+    """
+
+    def test_is_accepted_version_grading_json_accepts_1_2_3_4_5(self) -> None:
+        # #170 US-004 / US-006 bumped grading.json from v4 → v5 with
+        # the ``reasoning_tokens`` field.
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("grading.json", 1) is True
+        assert _is_accepted_version("grading.json", 2) is True
+        assert _is_accepted_version("grading.json", 3) is True
+        assert _is_accepted_version("grading.json", 4) is True
+        assert _is_accepted_version("grading.json", 5) is True
+
+    def test_is_accepted_version_grading_json_rejects_6(self) -> None:
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("grading.json", 6) is False
+
+    def test_is_accepted_version_extraction_json_accepts_1_2_3_4_5(self) -> None:
+        # #170 US-004 / US-006 bumped extraction.json from v4 → v5 with
+        # the ``reasoning_tokens`` field.
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("extraction.json", 1) is True
+        assert _is_accepted_version("extraction.json", 2) is True
+        assert _is_accepted_version("extraction.json", 3) is True
+        assert _is_accepted_version("extraction.json", 4) is True
+        assert _is_accepted_version("extraction.json", 5) is True
+
+    def test_is_accepted_version_extraction_json_rejects_6(self) -> None:
+        # #170 US-004 / US-006 bumped extraction.json from v4 → v5. The
+        # next un-accepted version is now 6.
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("extraction.json", 6) is False
+
+    def test_is_accepted_version_assertions_json_accepts_1_and_2(self) -> None:
+        """#152 US-002: assertions.json bumped 1 → 2 with top-level
+        ``harness`` field. v3+ still rejected.
+        """
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("assertions.json", 1) is True
+        assert _is_accepted_version("assertions.json", 2) is True
+        assert _is_accepted_version("assertions.json", 3) is False
+
+    def test_is_accepted_version_rejects_zero_and_negative(self) -> None:
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("grading.json", 0) is False
+        assert _is_accepted_version("grading.json", -1) is False
+
+    def test_is_accepted_version_rejects_non_int(self) -> None:
+        """Non-int values (None from a missing key, stringly-typed
+        values, bool sneaking through as int subclass) all return
+        False, so :func:`_check_schema_version` produces a clean
+        warning rather than crashing."""
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("grading.json", None) is False
+        assert _is_accepted_version("grading.json", "1") is False
+        # bool is an int subclass in Python — guard explicitly.
+        assert _is_accepted_version("grading.json", True) is False
+        assert _is_accepted_version("grading.json", False) is False
+
+    def test_is_accepted_version_baseline_prefix_strips_correctly(self) -> None:
+        """``baseline_grading.json`` shares acceptance with
+        ``grading.json`` (the loader treats baseline sidecars as the
+        same family)."""
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("baseline_grading.json", 3) is True
+        assert _is_accepted_version("baseline_extraction.json", 3) is True
+        assert _is_accepted_version("baseline_assertions.json", 1) is True
+        # #152 US-002: assertions.json now accepts v2 (harness field).
+        assert _is_accepted_version("baseline_assertions.json", 2) is True
+        assert _is_accepted_version("baseline_assertions.json", 3) is False
+        # #152 US-004: grading.json now accepts v4 (harness field).
+        assert _is_accepted_version("baseline_grading.json", 4) is True
+        # #170 US-006: grading.json now accepts v5 (reasoning_tokens
+        # field). v6 still rejected.
+        assert _is_accepted_version("baseline_grading.json", 5) is True
+        assert _is_accepted_version("baseline_grading.json", 6) is False
+
+    def test_is_accepted_version_unknown_filename_raises_key_error(
+        self,
+    ) -> None:
+        """Unknown filename → ``KeyError``. Per DEC-008 / US-002
+        acceptance criterion 3, the helper does not silently fall
+        through; the loader is expected to call with one of the three
+        known sidecar names."""
+        from clauditor.audit import _is_accepted_version
+
+        with pytest.raises(KeyError):
+            _is_accepted_version("unknown.json", 1)
 
 
 class TestAuditLegacyCompat:
@@ -801,7 +936,7 @@ class TestAuditLegacyCompat:
         self._write_grading_sidecar(
             skill_dir, version=1, transport_source=None
         )
-        records, skipped = load_iterations(
+        records, skipped, _ctx = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -820,7 +955,7 @@ class TestAuditLegacyCompat:
         self._write_extraction_sidecar(
             skill_dir, version=1, transport_source=None
         )
-        records, skipped = load_iterations(
+        records, skipped, _ctx = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -839,7 +974,7 @@ class TestAuditLegacyCompat:
         self._write_grading_sidecar(
             skill_dir, version=2, transport_source="cli"
         )
-        records, skipped = load_iterations(
+        records, skipped, _ctx = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -857,7 +992,7 @@ class TestAuditLegacyCompat:
         self._write_extraction_sidecar(
             skill_dir, version=2, transport_source="cli"
         )
-        records, skipped = load_iterations(
+        records, skipped, _ctx = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
@@ -874,49 +1009,260 @@ class TestAuditLegacyCompat:
         self._write_grading_sidecar(
             skill_dir, version=2, transport_source="api"
         )
-        records, skipped = load_iterations(
+        records, skipped, _ctx = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert skipped == 0
         assert len(records) == 1
 
-    def test_grading_unknown_schema_version_still_skipped(
-        self, tmp_path: Path,
-        capsys: pytest.CaptureFixture,
+    def test_loads_v3_grading_with_transport_source_api(
+        self, tmp_path: Path
     ) -> None:
-        """A grading.json with ``schema_version=3`` (unknown) must be
-        skipped with a stderr warning."""
+        """US-002 (#147): a v3 grading.json (with ``provider_source``
+        added by US-001) loads cleanly through the
+        ``MAX_SCHEMA_VERSION``-driven loader."""
         clauditor_dir = tmp_path / ".clauditor"
         skill_dir = clauditor_dir / "iteration-1" / "s"
         self._write_grading_sidecar(
             skill_dir, version=3, transport_source="api"
         )
-        records, skipped = load_iterations(
+        records, skipped, _ctx = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
-        assert records == []
-        assert skipped == 1
-        err = capsys.readouterr().err
-        assert "schema_version=3" in err
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L3"
+        assert records[0].id == "quality"
 
-    def test_extraction_unknown_schema_version_still_skipped(
-        self, tmp_path: Path,
-        capsys: pytest.CaptureFixture,
+    def test_loads_v3_extraction_with_transport_source_api(
+        self, tmp_path: Path
     ) -> None:
-        """An extraction.json with ``schema_version=3`` (unknown) must
-        be skipped with a stderr warning."""
+        """US-002 (#147): a v3 extraction.json loads cleanly."""
         clauditor_dir = tmp_path / ".clauditor"
         skill_dir = clauditor_dir / "iteration-1" / "s"
         self._write_extraction_sidecar(
             skill_dir, version=3, transport_source="api"
         )
-        records, skipped = load_iterations(
+        records, skipped, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L2"
+
+    def test_grading_unknown_schema_version_still_skipped(
+        self, tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """A grading.json with ``schema_version=6`` (out of accepted
+        range 1..5 post-#170 US-006 / DEC-008 of #147) must be skipped
+        with a stderr warning."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        self._write_grading_sidecar(
+            skill_dir, version=6, transport_source="api"
+        )
+        records, skipped, _ctx = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert records == []
         assert skipped == 1
         err = capsys.readouterr().err
-        assert "schema_version=3" in err
+        assert "schema_version=6" in err
+
+    def test_extraction_unknown_schema_version_still_skipped(
+        self, tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """An extraction.json with ``schema_version=6`` (out of accepted
+        range 1..5 — #170 US-006 bumped the max to 5) must be skipped
+        with a stderr warning."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        self._write_extraction_sidecar(
+            skill_dir, version=6, transport_source="api"
+        )
+        records, skipped, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert records == []
+        assert skipped == 1
+        err = capsys.readouterr().err
+        assert "schema_version=6" in err
+
+    def test_baseline_sidecar_v6_skipped_with_baseline_prefix_stripped(
+        self, tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """A ``baseline_grading.json`` with v6 must be skipped with the
+        same warning as canonical ``grading.json`` (post-#170 grading
+        max is 5). Exercises the ``base.startswith("baseline_")``
+        branch in ``_check_schema_version`` so the rejection-path's
+        ``MAX_SCHEMA_VERSION[base]`` lookup uses the family's max
+        rather than crashing on an unknown ``baseline_*`` key."""
+        import json
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        payload = {
+            "schema_version": 6,
+            "skill_name": "s",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "api",
+            "results": [],
+        }
+        (skill_dir / "baseline_grading.json").write_text(
+            json.dumps(payload)
+        )
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert records == []
+        err = capsys.readouterr().err
+        assert "schema_version=6" in err
+
+    # ----------------------------------------------------------------- #
+    # #170 US-006: v5 grading/extraction sidecars (with reasoning_tokens)
+    # ----------------------------------------------------------------- #
+
+    def test_loads_v5_grading_with_reasoning_tokens(
+        self, tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """#170 US-006: a v5 grading.json sidecar (with
+        ``reasoning_tokens: 42``) loads cleanly through the audit
+        reader, NOT warn-and-skipped. Audit aggregation does not
+        consume the field (per data-model review: per-iteration, not
+        per-record), but the loader must accept the schema version."""
+        import json
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        payload = {
+            "schema_version": 5,
+            "skill_name": "s",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "api",
+            "provider_source": "anthropic",
+            "harness": "claude-code",
+            "reasoning_tokens": 42,
+            "results": [
+                {
+                    "id": "quality",
+                    "criterion": "is good",
+                    "passed": True,
+                    "score": 0.9,
+                    "evidence": "e",
+                    "reasoning": "r",
+                },
+            ],
+        }
+        (skill_dir / "grading.json").write_text(json.dumps(payload))
+        records, skipped, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L3"
+        assert records[0].id == "quality"
+        assert records[0].passed is True
+        # No stderr warning (the v5 was accepted, not warn-and-skipped).
+        err = capsys.readouterr().err
+        assert "schema_version" not in err
+
+    def test_loads_v5_extraction_with_reasoning_tokens(
+        self, tmp_path: Path,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """#170 US-006: a v5 extraction.json sidecar (with
+        ``reasoning_tokens: 17``) loads cleanly through the audit
+        reader, NOT warn-and-skipped."""
+        import json
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        payload = {
+            "schema_version": 5,
+            "skill_name": "s",
+            "model": "haiku",
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "parse_errors": [],
+            "transport_source": "api",
+            "provider_source": "anthropic",
+            "harness": "claude-code",
+            "reasoning_tokens": 17,
+            "fields": {
+                "v1": [
+                    {
+                        "field_name": "a",
+                        "section": "Venues",
+                        "tier": "primary",
+                        "entry_index": 0,
+                        "required": True,
+                        "passed": True,
+                        "presence_passed": True,
+                        "format_passed": None,
+                        "evidence": "v",
+                    },
+                ],
+            },
+        }
+        (skill_dir / "extraction.json").write_text(json.dumps(payload))
+        records, skipped, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L2"
+        # No stderr warning (the v5 was accepted, not warn-and-skipped).
+        err = capsys.readouterr().err
+        assert "schema_version" not in err
+
+    def test_loads_v4_grading_no_reasoning_tokens_defaults_none(
+        self, tmp_path: Path,
+    ) -> None:
+        """#170 US-006: a legacy v4 grading.json (no
+        ``reasoning_tokens``) still loads cleanly. The default-on-read
+        contract (``GradingReport.from_json`` returns
+        ``reasoning_tokens=None``) keeps pre-#170 history readable."""
+        import json
+
+        from clauditor.quality_grader import GradingReport
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        payload = {
+            "schema_version": 4,
+            "skill_name": "s",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "api",
+            "provider_source": "anthropic",
+            "harness": "claude-code",
+            "results": [
+                {
+                    "id": "quality",
+                    "criterion": "is good",
+                    "passed": True,
+                    "score": 0.9,
+                    "evidence": "e",
+                    "reasoning": "r",
+                },
+            ],
+        }
+        (skill_dir / "grading.json").write_text(json.dumps(payload))
+        records, skipped, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        # Verify the from_json default-on-read contract: a v4 sidecar
+        # parsed through GradingReport.from_json yields
+        # reasoning_tokens=None.
+        report = GradingReport.from_json(
+            (skill_dir / "grading.json").read_text()
+        )
+        assert report.reasoning_tokens is None
 
 
 class TestCmdAuditInvalidSkillName:
@@ -989,26 +1335,32 @@ class TestAuditL3StableId:
         data["results"][0]["criterion"] = "Totally different wording"
         gj.write_text(json.dumps(data))
 
-        records, _ = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
+        records, _, _ctx = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
         l3 = [r for r in records if r.layer == "L3"]
         assert len(l3) == 2
         assert {r.id for r in l3} == {"quality"}
         agg = aggregate(records)
-        assert ("L3", "quality") in agg
+        assert ("claude-code", "anthropic", "L3", "quality") in agg
         # One pass, one fail → 0.5 with_pass_rate.
-        assert agg[("L3", "quality")].with_pass_rate == pytest.approx(0.5)
+        assert agg[
+            ("claude-code", "anthropic", "L3", "quality")
+        ].with_pass_rate == pytest.approx(0.5)
 
     def test_loader_skips_unknown_schema_version(
         self, tmp_path: Path
     ) -> None:
-        """FIX-11: loaders must skip sidecars with unknown schema_version."""
+        """FIX-11: loaders must skip sidecars with unknown schema_version.
+
+        #152 US-002: assertions.json now accepts v2 (top-level
+        ``harness`` field), so the unknown-version probe uses v3.
+        """
         clauditor_dir = tmp_path / ".clauditor"
         skill_dir = clauditor_dir / "iteration-1" / "s"
         skill_dir.mkdir(parents=True)
         (skill_dir / "assertions.json").write_text(
             json.dumps(
                 {
-                    "schema_version": 2,
+                    "schema_version": 3,
                     "runs": [
                         {
                             "results": [
@@ -1027,7 +1379,7 @@ class TestAuditL3StableId:
                 }
             )
         )
-        records, skipped = load_iterations(
+        records, skipped, _ctx = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert records == []
@@ -1046,7 +1398,7 @@ class TestAuditL3StableId:
         skill_dir = clauditor_dir / "iteration-1" / "s"
         skill_dir.mkdir(parents=True)
         (skill_dir / "assertions.json").write_text("{not valid json")
-        records, skipped = load_iterations(
+        records, skipped, _ctx = load_iterations(
             "s", last=5, clauditor_dir=clauditor_dir
         )
         assert records == []
@@ -1073,7 +1425,7 @@ class TestAuditL3StableId:
                 }
             )
         )
-        records, _ = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
+        records, _, _ctx = load_iterations("s", last=5, clauditor_dir=clauditor_dir)
         assert [r for r in records if r.layer == "L3"] == []
 
 
@@ -1091,7 +1443,7 @@ class TestFix12Fix13:
             baseline_pass_rate=None,
         )
         verdicts = apply_thresholds(
-            {("L1", "a|b"): agg},
+            {("claude-code", "anthropic", "L1", "a|b"): agg},
             min_fail_rate=0.0,
             min_discrimination=0.05,
         )
@@ -1129,8 +1481,8 @@ class TestFix12Fix13:
         )
         verdicts = apply_thresholds(
             {
-                ("L1", "live"): primary_only,
-                ("L1", "stale"): baseline_only,
+                ("claude-code", "anthropic", "L1", "live"): primary_only,
+                ("claude-code", "anthropic", "L1", "stale"): baseline_only,
             },
             min_fail_rate=0.0,
             min_discrimination=0.05,
@@ -1152,3 +1504,2150 @@ class TestAuditAggregateDataclass:
             baseline_pass_rate=0.0,
         )
         assert agg.discrimination == 1.0
+
+
+# --------------------------------------------------------------------------- #
+# US-003 (#147): provider dimension on IterationRecord/AuditAggregate         #
+# --------------------------------------------------------------------------- #
+
+
+def _write_grading_v3(
+    skill_dir: Path,
+    *,
+    rid: str,
+    passed: bool,
+    provider_source: str | None,
+) -> None:
+    """Write a v3 grading.json sidecar with optional ``provider_source``.
+
+    Helper for US-003 mixed-provider tests. ``provider_source=None``
+    omits the field on disk so the loader exercises the v2-style
+    default-to-anthropic branch even on a v3-marked sidecar.
+    """
+    payload: dict = {
+        "schema_version": 3,
+        "skill_name": "s",
+        "model": "claude-sonnet-4-6",
+        "results": [
+            {
+                "id": rid,
+                "criterion": rid,
+                "passed": passed,
+                "score": 1.0 if passed else 0.0,
+                "evidence": "",
+                "reasoning": "",
+            },
+        ],
+    }
+    if provider_source is not None:
+        payload["provider_source"] = provider_source
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "grading.json").write_text(
+        json.dumps(payload, indent=2)
+    )
+
+
+def _write_extraction_v3(
+    skill_dir: Path,
+    *,
+    field_id: str,
+    passed: bool,
+    provider_source: str | None,
+) -> None:
+    payload: dict = {
+        "schema_version": 3,
+        "skill_name": "s",
+        "model": "haiku",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "parse_errors": [],
+        "fields": {
+            field_id: [
+                {
+                    "field_name": field_id,
+                    "section": "s",
+                    "tier": "primary",
+                    "entry_index": 0,
+                    "required": True,
+                    "passed": passed,
+                    "presence_passed": passed,
+                    "format_passed": None,
+                    "evidence": "",
+                },
+            ],
+        },
+    }
+    if provider_source is not None:
+        payload["provider_source"] = provider_source
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "extraction.json").write_text(
+        json.dumps(payload, indent=2)
+    )
+
+
+class TestProviderDimension:
+    """US-003 (#147): ``IterationRecord``/``AuditAggregate`` carry
+    ``provider``; aggregation groups by ``(provider, layer, id)`` so
+    mixed-provider history splits cleanly. Pre-#147 history (v1/v2
+    sidecars without ``provider_source``) defaults the provider to
+    ``"anthropic"`` per DEC-001.
+    """
+
+    def test_iteration_record_defaults_provider_to_anthropic(self) -> None:
+        rec = IterationRecord(
+            iteration=1,
+            layer="L3",
+            id="x",
+            passed=True,
+            with_skill=True,
+        )
+        assert rec.provider == "anthropic"
+
+    def test_iteration_record_explicit_provider(self) -> None:
+        rec = IterationRecord(
+            iteration=1,
+            layer="L3",
+            id="x",
+            passed=True,
+            with_skill=True,
+            provider="openai",
+        )
+        assert rec.provider == "openai"
+
+    def test_records_from_grading_reads_provider_source(
+        self, tmp_path: Path
+    ) -> None:
+        """A v3 grading.json with ``provider_source: "openai"`` produces
+        records whose ``provider`` field is ``"openai"``."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_grading_v3(
+            skill_dir,
+            rid="quality",
+            passed=True,
+            provider_source="openai",
+        )
+        records, skipped, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L3"
+        assert records[0].id == "quality"
+        assert records[0].provider == "openai"
+
+    def test_records_from_grading_v2_defaults_provider_to_anthropic(
+        self, tmp_path: Path
+    ) -> None:
+        """A v3 grading.json with no ``provider_source`` field defaults
+        the record's provider to ``"anthropic"`` (matching legacy v1/v2
+        reads)."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_grading_v3(
+            skill_dir,
+            rid="quality",
+            passed=True,
+            provider_source=None,
+        )
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].provider == "anthropic"
+
+    def test_records_from_extraction_reads_provider_source(
+        self, tmp_path: Path
+    ) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_extraction_v3(
+            skill_dir,
+            field_id="f1",
+            passed=True,
+            provider_source="openai",
+        )
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].layer == "L2"
+        assert records[0].provider == "openai"
+
+    def test_records_from_assertions_uses_anthropic_placeholder(
+        self, tmp_path: Path
+    ) -> None:
+        """DEC-002 (#147): L1 records always carry
+        ``provider="anthropic"`` regardless of which provider produced
+        the underlying skill output. Assertions sidecars stay at v1."""
+        clauditor_dir = _make_iteration_fixture(
+            tmp_path,
+            "s",
+            {
+                1: {"l1": [{"id": "has_header", "passed": True}]},
+            },
+        )
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        l1 = [r for r in records if r.layer == "L1"]
+        assert len(l1) >= 1
+        for r in l1:
+            assert r.provider == "anthropic"
+
+    def test_aggregate_groups_by_provider_layer_id(self) -> None:
+        """Mixed-provider records with the same (layer, id) split into
+        two distinct aggregates keyed on (anthropic, L3, x) and
+        (openai, L3, x)."""
+        records = [
+            IterationRecord(
+                1, "L3", "x", passed=True, with_skill=True,
+                provider="anthropic",
+            ),
+            IterationRecord(
+                2, "L3", "x", passed=False, with_skill=True,
+                provider="anthropic",
+            ),
+            IterationRecord(
+                3, "L3", "x", passed=True, with_skill=True,
+                provider="openai",
+            ),
+            IterationRecord(
+                4, "L3", "x", passed=True, with_skill=True,
+                provider="openai",
+            ),
+        ]
+        agg = aggregate(records)
+        assert ("claude-code", "anthropic", "L3", "x") in agg
+        assert ("claude-code", "openai", "L3", "x") in agg
+        assert agg[("claude-code", "anthropic", "L3", "x")].with_pass_rate == 0.5
+        assert agg[("claude-code", "openai", "L3", "x")].with_pass_rate == 1.0
+        assert agg[("claude-code", "anthropic", "L3", "x")].provider == "anthropic"
+        assert agg[("claude-code", "openai", "L3", "x")].provider == "openai"
+
+    def test_aggregate_single_provider_history_unchanged_shape(
+        self,
+    ) -> None:
+        """Single-provider history continues to render the single
+        bucket (default ``"anthropic"`` provider)."""
+        records = [
+            IterationRecord(1, "L1", "a", passed=True, with_skill=True),
+            IterationRecord(2, "L1", "a", passed=False, with_skill=True),
+        ]
+        agg = aggregate(records)
+        assert list(agg.keys()) == [("claude-code", "anthropic", "L1", "a")]
+        assert agg[("claude-code", "anthropic", "L1", "a")].with_pass_rate == 0.5
+
+    def test_apply_thresholds_consumes_three_tuple_key(self) -> None:
+        """``apply_thresholds`` must unpack the new 3-tuple key without
+        raising and must propagate ``provider`` into the resulting
+        ``AuditVerdict``."""
+        aggs = {
+            ("claude-code", "openai", "L3", "x"): AuditAggregate(
+                layer="L3",
+                id="x",
+                total_with_runs=20,
+                with_fails=0,
+                with_pass_rate=1.0,
+                total_baseline_runs=0,
+                baseline_fails=0,
+                baseline_pass_rate=None,
+                provider="openai",
+            ),
+        }
+        verdicts = apply_thresholds(
+            aggs, min_fail_rate=0.0, min_discrimination=0.05
+        )
+        assert len(verdicts) == 1
+        assert verdicts[0].provider == "openai"
+        assert verdicts[0].verdict == Verdict.FLAG_ALWAYS_PASS
+
+    def test_apply_thresholds_sorts_provider_first(self) -> None:
+        """Sort order: provider, then layer, then id. Anthropic
+        ``("L3", "x")`` renders before openai ``("L3", "x")``."""
+        anthropic_agg = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+        )
+        openai_agg = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="openai",
+        )
+        aggs = {
+            ("claude-code", "openai", "L3", "x"): openai_agg,
+            ("claude-code", "anthropic", "L3", "x"): anthropic_agg,
+        }
+        verdicts = apply_thresholds(
+            aggs, min_fail_rate=0.0, min_discrimination=0.05
+        )
+        assert [v.provider for v in verdicts] == ["anthropic", "openai"]
+
+    def test_mixed_provider_end_to_end_two_aggregates(
+        self, tmp_path: Path
+    ) -> None:
+        """End-to-end: two iteration dirs, one with provider_source
+        anthropic and one with openai, share the same (layer, id) but
+        produce two distinct aggregates."""
+        clauditor_dir = tmp_path / ".clauditor"
+        _write_grading_v3(
+            clauditor_dir / "iteration-1" / "s",
+            rid="x",
+            passed=True,
+            provider_source="anthropic",
+        )
+        _write_grading_v3(
+            clauditor_dir / "iteration-2" / "s",
+            rid="x",
+            passed=True,
+            provider_source="openai",
+        )
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        agg = aggregate(records)
+        assert ("claude-code", "anthropic", "L3", "x") in agg
+        assert ("claude-code", "openai", "L3", "x") in agg
+        assert len(agg) == 2
+
+    def test_v2_sidecar_defaults_provider_to_anthropic(
+        self, tmp_path: Path
+    ) -> None:
+        """A v2 grading.json (no ``provider_source`` field on disk) →
+        records default ``provider="anthropic"`` so pre-#147 history
+        renders identically to today (acceptance criterion 5)."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        # v2 shape: schema_version=2 + transport_source, no provider_source.
+        payload = {
+            "schema_version": 2,
+            "skill_name": "s",
+            "model": "claude-sonnet-4-6",
+            "transport_source": "api",
+            "results": [
+                {
+                    "id": "x",
+                    "criterion": "x",
+                    "passed": True,
+                    "score": 1.0,
+                    "evidence": "",
+                    "reasoning": "",
+                },
+            ],
+        }
+        (skill_dir / "grading.json").write_text(json.dumps(payload))
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].provider == "anthropic"
+        agg = aggregate(records)
+        assert ("claude-code", "anthropic", "L3", "x") in agg
+
+
+class TestProviderOrDefault:
+    """Defense-in-depth helper guards malformed v3 sidecars.
+
+    A v3 ``grading.json`` / ``extraction.json`` is supposed to carry a
+    string ``provider_source``, but the loader cannot trust hand-edited
+    or future-bumped sidecars. ``_provider_or_default`` is the single
+    coercion seam — these tests pin its branches so a regression that
+    re-admits non-strings into ``IterationRecord``/``AuditAggregate``
+    keys cannot land silently.
+    """
+
+    def test_valid_string_passes_through(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default("openai") == "openai"
+        assert _provider_or_default("anthropic") == "anthropic"
+
+    def test_none_falls_back_to_anthropic(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default(None) == "anthropic"
+
+    def test_empty_string_falls_back(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default("") == "anthropic"
+
+    def test_whitespace_only_falls_back(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default("   ") == "anthropic"
+
+    def test_int_falls_back(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default(1) == "anthropic"
+        assert _provider_or_default(0) == "anthropic"
+
+    def test_bool_falls_back(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default(True) == "anthropic"
+        assert _provider_or_default(False) == "anthropic"
+
+    def test_list_falls_back(self) -> None:
+        from clauditor.audit import _provider_or_default
+        assert _provider_or_default([]) == "anthropic"
+        assert _provider_or_default(["openai"]) == "anthropic"
+
+    def test_malformed_provider_source_in_grading_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        """End-to-end: a v3 grading.json with ``provider_source: 1``
+        loads cleanly with ``provider="anthropic"`` rather than raising
+        ``TypeError`` during aggregation."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        payload = {
+            "schema_version": 3,
+            "skill_name": "s",
+            "model": "claude-sonnet-4-6",
+            "provider_source": 1,
+            "results": [
+                {
+                    "id": "x",
+                    "criterion": "x",
+                    "passed": True,
+                    "score": 1.0,
+                    "evidence": "",
+                    "reasoning": "",
+                },
+            ],
+        }
+        (skill_dir / "grading.json").write_text(json.dumps(payload))
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].provider == "anthropic"
+        agg = aggregate(records)
+        assert ("claude-code", "anthropic", "L3", "x") in agg
+
+
+class TestRenderProviderColumn:
+    """US-004 (#147): the three audit render paths surface provider.
+
+    - ``render_stdout_table`` adds a leftmost ``PROVIDER`` column.
+    - ``render_markdown`` adds a leftmost ``| provider |`` column.
+    - ``render_json`` bumps to schema_version 2; each ``assertions[]``
+      entry carries ``provider``; top-level ``providers_seen`` is sorted
+      alphabetically.
+    Sort order across all three: ``(provider, layer, id)``.
+
+    Traces to: DEC-004, DEC-005, DEC-010.
+    """
+
+    def _mixed_verdicts(self) -> list[AuditVerdict]:
+        """Two aggregates sharing ``(L3, x)`` under different providers,
+        plus an ``(L1, ant_only)`` under anthropic only."""
+        ant_l3 = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=10,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+        )
+        openai_l3 = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=10,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="openai",
+        )
+        ant_l1 = AuditAggregate(
+            layer="L1",
+            id="ant_only",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+        )
+        return apply_thresholds(
+            {
+                ("claude-code", "openai", "L3", "x"): openai_l3,
+                ("claude-code", "anthropic", "L3", "x"): ant_l3,
+                ("claude-code", "anthropic", "L1", "ant_only"): ant_l1,
+            },
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+
+    def _single_provider_verdicts(self) -> list[AuditVerdict]:
+        """Single-provider history: only anthropic rows."""
+        ant = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+        )
+        return apply_thresholds(
+            {("claude-code", "anthropic", "L3", "x"): ant},
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+
+    def test_render_json_v2_schema_version_first_key(self) -> None:
+        """Acceptance criterion 1: ``schema_version`` is the first key
+        and equals 4 (DEC-005 of #147 + DEC-010 of #152 + #154 US-005
+        DEC-005 bump for ``iteration_contexts``)."""
+        payload = render_json(
+            self._single_provider_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        first_key = next(iter(payload.keys()))
+        assert first_key == "schema_version"
+        assert payload["schema_version"] == 4
+
+    def test_render_json_v2_includes_provider_per_assertion(self) -> None:
+        """Acceptance criterion 2: every ``assertions[]`` entry carries
+        ``provider``."""
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=10,
+            thresholds={"last": 10},
+            timestamp="t",
+        )
+        assert len(payload["assertions"]) == 3
+        for entry in payload["assertions"]:
+            assert "provider" in entry
+            assert entry["provider"] in {"anthropic", "openai"}
+
+    def test_render_json_v2_includes_providers_seen_sorted(self) -> None:
+        """Acceptance criteria 3 + 5: ``providers_seen`` is at the top
+        level, sorted alphabetically; mixed history yields
+        ``["anthropic", "openai"]``."""
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=10,
+            thresholds={"last": 10},
+            timestamp="t",
+        )
+        assert "providers_seen" in payload
+        assert payload["providers_seen"] == ["anthropic", "openai"]
+
+    def test_render_json_v2_providers_seen_sorted_not_insertion_order(
+        self,
+    ) -> None:
+        """Stronger sort guard: feed providers whose alphabetical order
+        differs from insertion order. ``["anthropic", "openai"]`` is
+        tautological (already alphabetical = insertion order on
+        CPython sets), so a regression that returned ``list(set(...))``
+        would still pass that test. This pins true alphabetical sort.
+        """
+        agg_factory = lambda layer, rid, prov: AuditAggregate(  # noqa: E731
+            layer=layer,
+            id=rid,
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider=prov,
+        )
+        verdicts = apply_thresholds(
+            {
+                ("claude-code", "zebra", "L3", "x"):
+                    agg_factory("L3", "x", "zebra"),
+                ("claude-code", "openai", "L3", "x"):
+                    agg_factory("L3", "x", "openai"),
+                ("claude-code", "alpha", "L3", "x"):
+                    agg_factory("L3", "x", "alpha"),
+                ("claude-code", "anthropic", "L3", "x"):
+                    agg_factory("L3", "x", "anthropic"),
+            },
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+        payload = render_json(
+            verdicts,
+            skill="s",
+            iterations_analyzed=10,
+            thresholds={"last": 10},
+            timestamp="t",
+        )
+        assert payload["providers_seen"] == [
+            "alpha",
+            "anthropic",
+            "openai",
+            "zebra",
+        ]
+
+    def test_render_json_v2_single_provider_seen(self) -> None:
+        """Acceptance criterion 4: single-provider history →
+        ``providers_seen == ["anthropic"]``."""
+        payload = render_json(
+            self._single_provider_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        assert payload["providers_seen"] == ["anthropic"]
+
+    def test_render_json_v2_empty_providers_seen_when_no_verdicts(
+        self,
+    ) -> None:
+        """Edge case: zero verdicts → empty ``providers_seen``."""
+        payload = render_json(
+            [],
+            skill="s",
+            iterations_analyzed=0,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        assert payload["providers_seen"] == []
+        assert payload["assertions"] == []
+
+    def test_render_json_assertions_sorted_by_provider_layer_id(
+        self,
+    ) -> None:
+        """``assertions[]`` is sorted by ``(provider, layer, id)`` so
+        anthropic rows render before openai, then by layer, then id."""
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=10,
+            thresholds={"last": 10},
+            timestamp="t",
+        )
+        keys = [
+            (e["provider"], e["layer"], e["id"])
+            for e in payload["assertions"]
+        ]
+        assert keys == sorted(keys)
+        # Concretely: anthropic L1 < anthropic L3 < openai L3.
+        assert keys == [
+            ("anthropic", "L1", "ant_only"),
+            ("anthropic", "L3", "x"),
+            ("openai", "L3", "x"),
+        ]
+
+    def test_render_stdout_table_has_provider_column(self) -> None:
+        """Acceptance criterion 6: ``PROVIDER`` column header + one row
+        per ``(provider, layer, id)``.
+
+        US-006 (#152): ``HARNESS`` is now the leftmost column;
+        ``PROVIDER`` follows. L1 rows render the PROVIDER cell as the
+        em-dash placeholder per DEC-008, so only L2/L3 rows surface
+        the actual provider string.
+        """
+        table = render_stdout_table(self._mixed_verdicts())
+        # Header has HARNESS as the leftmost column, PROVIDER second.
+        first_line = table.splitlines()[0]
+        assert first_line.startswith("HARNESS")
+        assert "PROVIDER" in first_line
+        assert first_line.index("HARNESS") < first_line.index("PROVIDER")
+        # Anthropic appears in L3 row (provider cell) and openai in
+        # the openai L3 row. The L1 anthropic row renders ``—`` in the
+        # provider cell, so the substring ``anthropic`` only surfaces
+        # on the anthropic L3 row.
+        assert "anthropic" in table
+        assert "openai" in table
+
+    def test_render_stdout_table_sorted_provider_layer_id(self) -> None:
+        """Anthropic rows render before openai; layer + id within."""
+        table = render_stdout_table(self._mixed_verdicts())
+        body_lines = [
+            line
+            for line in table.splitlines()
+            if line and not line.startswith(("HARNESS", "-"))
+        ]
+        # The anthropic L1 row should come before the anthropic L3 row,
+        # which should come before the openai L3 row. L1 row's provider
+        # cell is the em-dash placeholder so identify it by id.
+        ant_l1_idx = next(
+            i for i, ln in enumerate(body_lines) if "ant_only" in ln
+        )
+        openai_idx = next(
+            i for i, ln in enumerate(body_lines) if "openai" in ln
+        )
+        assert ant_l1_idx < openai_idx
+
+    def test_render_markdown_has_provider_column(self) -> None:
+        """Acceptance criterion 7: per-layer markdown table has
+        ``| provider |`` after ``| harness |`` (US-006 of #152
+        widened the leftmost column to harness).
+        """
+        md = render_markdown(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=10,
+            thresholds={"last": 10},
+            timestamp="t",
+        )
+        assert "| harness | provider |" in md
+        # Header column ordering: harness < provider < id.
+        header_line = next(
+            line for line in md.splitlines()
+            if line.startswith("| harness |")
+        )
+        assert header_line.index("harness") < header_line.index("provider")
+        assert header_line.index("provider") < header_line.index("id")
+
+    def test_render_markdown_renders_provider_value_in_row(self) -> None:
+        """Mixed-provider markdown surfaces both ``anthropic`` and
+        ``openai`` in row cells under L3 detail. L1 rows render
+        provider as ``—`` per DEC-008 so the L1 detail section is
+        intentionally not asserted on for provider strings.
+        """
+        md = render_markdown(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=10,
+            thresholds={"last": 10},
+            timestamp="t",
+        )
+        # L3 detail surfaces both providers in backtick-quoted cells.
+        l3_section = md.split("## L3 detail", 1)[1]
+        assert "`anthropic`" in l3_section
+        assert "`openai`" in l3_section
+
+    def test_render_stdout_table_truncates_long_provider(self) -> None:
+        """Provider column is ~11 chars wide; longer strings are
+        truncated to keep the column-aligned layout.
+
+        US-006 (#152): the leftmost column is now HARNESS (also
+        ~11 chars wide); PROVIDER is the second column. Truncation
+        applies to both columns.
+        """
+        long_provider_agg = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="a" * 30,
+        )
+        verdicts = apply_thresholds(
+            {("claude-code", "a" * 30, "L3", "x"): long_provider_agg},
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+        table = render_stdout_table(verdicts)
+        body = table.splitlines()[2]
+        # Leftmost is HARNESS column (claude-code, 11 chars), then space,
+        # then PROVIDER column truncated to 11 a's, then space.
+        assert body.startswith("claude-code ")
+        # Provider cell starts at position 12 with 11 a's.
+        assert body[12:23] == "a" * 11
+        assert body[23] == " "
+
+
+# --------------------------------------------------------------------------- #
+# US-005 (#152) — harness dimension                                            #
+# --------------------------------------------------------------------------- #
+
+
+def _write_assertions_v2(
+    skill_dir: Path,
+    *,
+    rid: str,
+    passed: bool,
+    harness: str | None,
+) -> None:
+    """Write an assertions.json with optional v2 ``harness`` field.
+
+    When ``harness`` is None, emit a v1 sidecar (no ``harness`` key) so
+    the loader's default-on-read branch fires.
+    """
+    payload: dict = {
+        "schema_version": 2 if harness is not None else 1,
+        "skill": "s",
+        "iteration": 1,
+        "runs": [
+            {
+                "run": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "results": [
+                    {
+                        "id": rid,
+                        "name": rid,
+                        "passed": passed,
+                        "message": "",
+                        "kind": "custom",
+                        "evidence": None,
+                        "raw_data": None,
+                    },
+                ],
+            },
+        ],
+    }
+    if harness is not None:
+        payload["harness"] = harness
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "assertions.json").write_text(
+        json.dumps(payload, indent=2)
+    )
+
+
+def _write_grading_v4(
+    skill_dir: Path,
+    *,
+    rid: str,
+    passed: bool,
+    harness: str | None,
+    provider_source: str = "anthropic",
+) -> None:
+    """Write a v4 grading.json with optional ``harness`` field."""
+    payload: dict = {
+        "schema_version": 4 if harness is not None else 3,
+        "skill_name": "s",
+        "model": "claude-sonnet-4-6",
+        "provider_source": provider_source,
+        "results": [
+            {
+                "id": rid,
+                "criterion": rid,
+                "passed": passed,
+                "score": 1.0 if passed else 0.0,
+                "evidence": "",
+                "reasoning": "",
+            },
+        ],
+    }
+    if harness is not None:
+        payload["harness"] = harness
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "grading.json").write_text(
+        json.dumps(payload, indent=2)
+    )
+
+
+def _write_extraction_v4(
+    skill_dir: Path,
+    *,
+    field_id: str,
+    passed: bool,
+    harness: str | None,
+    provider_source: str = "anthropic",
+) -> None:
+    """Write a v4 extraction.json with optional ``harness`` field."""
+    payload: dict = {
+        "schema_version": 4 if harness is not None else 3,
+        "skill_name": "s",
+        "model": "haiku",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "parse_errors": [],
+        "provider_source": provider_source,
+        "fields": {
+            field_id: [
+                {
+                    "field_name": field_id,
+                    "section": "s",
+                    "tier": "primary",
+                    "entry_index": 0,
+                    "required": True,
+                    "passed": passed,
+                    "presence_passed": passed,
+                    "format_passed": None,
+                    "evidence": "",
+                },
+            ],
+        },
+    }
+    if harness is not None:
+        payload["harness"] = harness
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "extraction.json").write_text(
+        json.dumps(payload, indent=2)
+    )
+
+
+class TestHarnessOrDefault:
+    """US-005 (#152): defense-in-depth helper guards malformed sidecars
+    that store ``harness`` as a non-string. Mirrors the
+    ``_provider_or_default`` shape — same defensive contract, same
+    ``"claude-code"`` default per DEC-006.
+    """
+
+    def test_valid_string_passes_through(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default("claude-code") == "claude-code"
+        assert _harness_or_default("codex") == "codex"
+
+    def test_none_falls_back_to_claude_code(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default(None) == "claude-code"
+
+    def test_empty_string_falls_back(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default("") == "claude-code"
+
+    def test_whitespace_only_falls_back(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default("   ") == "claude-code"
+
+    def test_int_falls_back(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default(1) == "claude-code"
+        assert _harness_or_default(0) == "claude-code"
+
+    def test_bool_falls_back(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default(True) == "claude-code"
+        assert _harness_or_default(False) == "claude-code"
+
+    def test_list_falls_back(self) -> None:
+        from clauditor.audit import _harness_or_default
+        assert _harness_or_default([]) == "claude-code"
+        assert _harness_or_default(["codex"]) == "claude-code"
+
+
+class TestDetectMixedDimension:
+    """US-001 (#153): pure helper for cross-axis comparability.
+
+    ``detect_mixed_dimension`` consumes a list of dict records and
+    returns ``(is_mixed, sorted_unique_values)`` for the named
+    dimension, defensively coercing missing/non-string/None values via
+    the existing ``_provider_or_default`` / ``_harness_or_default``
+    helpers (DEC-010). No I/O, no side effects, never raises.
+
+    Traces to: DEC-010, ``pure-compute-vs-io-split.md``.
+    """
+
+    def test_single_value_not_mixed(self) -> None:
+        from clauditor.audit import detect_mixed_dimension
+        records = [{"provider": "anthropic"}, {"provider": "anthropic"}]
+        is_mixed, values = detect_mixed_dimension(
+            records, dimension="provider"
+        )
+        assert is_mixed is False
+        assert values == ["anthropic"]
+
+    def test_mixed_sorts_and_dedupes(self) -> None:
+        from clauditor.audit import detect_mixed_dimension
+        records = [{"provider": "openai"}, {"provider": "anthropic"}]
+        is_mixed, values = detect_mixed_dimension(
+            records, dimension="provider"
+        )
+        assert is_mixed is True
+        assert values == ["anthropic", "openai"]
+
+    def test_missing_key_defaults_anthropic(self) -> None:
+        from clauditor.audit import detect_mixed_dimension
+        records = [{"provider": "openai"}, {}]
+        is_mixed, values = detect_mixed_dimension(
+            records, dimension="provider"
+        )
+        assert is_mixed is True
+        assert values == ["anthropic", "openai"]
+
+    def test_non_string_values_coerced_safely(self) -> None:
+        from clauditor.audit import detect_mixed_dimension
+        records = [
+            {"provider": "  "},
+            {"provider": None},
+            {"provider": 42},
+        ]
+        is_mixed, values = detect_mixed_dimension(
+            records, dimension="provider"
+        )
+        assert is_mixed is False
+        assert values == ["anthropic"]
+
+    def test_harness_mirror(self) -> None:
+        from clauditor.audit import detect_mixed_dimension
+        records = [{"harness": "codex"}, {"harness": "claude-code"}]
+        is_mixed, values = detect_mixed_dimension(
+            records, dimension="harness"
+        )
+        assert is_mixed is True
+        assert values == ["claude-code", "codex"]
+
+    def test_empty_input(self) -> None:
+        from clauditor.audit import detect_mixed_dimension
+        is_mixed, values = detect_mixed_dimension([], dimension="provider")
+        assert is_mixed is False
+        assert values == []
+
+
+class TestHarnessDimension:
+    """US-005 (#152): ``IterationRecord`` / ``AuditAggregate`` carry
+    ``harness``; aggregation groups by 4-tuple
+    ``(harness, provider, layer, id)`` so mixed-harness history splits
+    cleanly. Pre-#152 history (v1 assertions, v3 grading/extraction
+    without ``harness``) defaults to ``"claude-code"`` per DEC-006.
+    """
+
+    def test_iteration_record_defaults_harness_to_claude_code(self) -> None:
+        rec = IterationRecord(
+            iteration=1,
+            layer="L3",
+            id="x",
+            passed=True,
+            with_skill=True,
+        )
+        assert rec.harness == "claude-code"
+
+    def test_iteration_record_explicit_harness(self) -> None:
+        rec = IterationRecord(
+            iteration=1,
+            layer="L3",
+            id="x",
+            passed=True,
+            with_skill=True,
+            harness="codex",
+        )
+        assert rec.harness == "codex"
+
+    def test_audit_aggregate_defaults_harness_to_claude_code(self) -> None:
+        agg = AuditAggregate(
+            layer="L3",
+            id="x",
+            total_with_runs=1,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+        )
+        assert agg.harness == "claude-code"
+
+    def test_grouping_splits_on_harness(self) -> None:
+        """Load-bearing: same ``(provider, layer, id)`` under different
+        harnesses produces TWO distinct ``AuditAggregate`` buckets keyed
+        on ``(claude-code, anthropic, L3, x)`` and
+        ``(codex, anthropic, L3, x)``.
+        """
+        records = [
+            IterationRecord(
+                1, "L3", "x", passed=True, with_skill=True,
+                provider="anthropic", harness="claude-code",
+            ),
+            IterationRecord(
+                2, "L3", "x", passed=False, with_skill=True,
+                provider="anthropic", harness="claude-code",
+            ),
+            IterationRecord(
+                3, "L3", "x", passed=True, with_skill=True,
+                provider="anthropic", harness="codex",
+            ),
+            IterationRecord(
+                4, "L3", "x", passed=True, with_skill=True,
+                provider="anthropic", harness="codex",
+            ),
+        ]
+        agg = aggregate(records)
+        assert ("claude-code", "anthropic", "L3", "x") in agg
+        assert ("codex", "anthropic", "L3", "x") in agg
+        assert (
+            agg[("claude-code", "anthropic", "L3", "x")].with_pass_rate
+            == 0.5
+        )
+        assert (
+            agg[("codex", "anthropic", "L3", "x")].with_pass_rate == 1.0
+        )
+        assert (
+            agg[("claude-code", "anthropic", "L3", "x")].harness
+            == "claude-code"
+        )
+        assert agg[("codex", "anthropic", "L3", "x")].harness == "codex"
+
+    def test_aggregate_single_harness_history_unchanged_shape(self) -> None:
+        """Single-harness history continues to render the single
+        bucket (default ``"claude-code"`` harness)."""
+        records = [
+            IterationRecord(1, "L1", "a", passed=True, with_skill=True),
+            IterationRecord(2, "L1", "a", passed=False, with_skill=True),
+        ]
+        agg = aggregate(records)
+        assert list(agg.keys()) == [
+            ("claude-code", "anthropic", "L1", "a"),
+        ]
+        assert agg[
+            ("claude-code", "anthropic", "L1", "a")
+        ].with_pass_rate == 0.5
+
+
+class TestRecordsFromAssertionsHarness:
+    """US-005 (#152): assertions.json bumped to v2 with ``harness`` field.
+    Records read from v2 sidecars carry the harness; v1 reads default
+    to ``"claude-code"`` per DEC-006.
+    """
+
+    def test_reads_harness_from_v2_sidecar(self, tmp_path: Path) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_assertions_v2(
+            skill_dir, rid="has_header", passed=True, harness="codex"
+        )
+        records, skipped, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert skipped == 0
+        assert len(records) == 1
+        assert records[0].layer == "L1"
+        assert records[0].harness == "codex"
+
+    def test_defaults_harness_for_v1_legacy(self, tmp_path: Path) -> None:
+        """A v1 assertions.json (no ``harness`` field) defaults to
+        ``"claude-code"`` per DEC-006."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_assertions_v2(
+            skill_dir, rid="has_header", passed=True, harness=None
+        )
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].harness == "claude-code"
+
+    def test_malformed_harness_in_v2_sidecar_falls_back(
+        self, tmp_path: Path
+    ) -> None:
+        """A v2 assertions.json with ``harness: 1`` (non-string) loads
+        cleanly with ``harness="claude-code"`` rather than propagating
+        a non-string into ``IterationRecord`` keys."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        skill_dir.mkdir(parents=True)
+        payload: dict = {
+            "schema_version": 2,
+            "skill": "s",
+            "iteration": 1,
+            "harness": 1,
+            "runs": [
+                {
+                    "run": 0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "results": [
+                        {
+                            "id": "x",
+                            "name": "x",
+                            "passed": True,
+                            "message": "",
+                            "kind": "custom",
+                            "evidence": None,
+                            "raw_data": None,
+                        },
+                    ],
+                },
+            ],
+        }
+        (skill_dir / "assertions.json").write_text(json.dumps(payload))
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].harness == "claude-code"
+
+
+class TestRecordsFromExtractionHarness:
+    """US-005 (#152): extraction.json bumped to v4 with ``harness``.
+    Records read from v4 sidecars carry the harness; v1/v2/v3 reads
+    default to ``"claude-code"``.
+    """
+
+    def test_reads_harness_from_v4_sidecar(self, tmp_path: Path) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_extraction_v4(
+            skill_dir, field_id="f1", passed=True, harness="codex"
+        )
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].layer == "L2"
+        assert records[0].harness == "codex"
+
+    def test_defaults_harness_for_v3_legacy(self, tmp_path: Path) -> None:
+        """A v3 extraction.json (no ``harness`` field) defaults to
+        ``"claude-code"`` per DEC-006."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_extraction_v4(
+            skill_dir, field_id="f1", passed=True, harness=None
+        )
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].harness == "claude-code"
+
+
+class TestRecordsFromGradingHarness:
+    """US-005 (#152): grading.json bumped to v4 with ``harness``."""
+
+    def test_reads_harness_from_v4_sidecar(self, tmp_path: Path) -> None:
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_grading_v4(
+            skill_dir, rid="quality", passed=True, harness="codex"
+        )
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].layer == "L3"
+        assert records[0].harness == "codex"
+
+    def test_defaults_harness_for_v3_legacy(self, tmp_path: Path) -> None:
+        """A v3 grading.json (no ``harness`` field) defaults to
+        ``"claude-code"`` per DEC-006."""
+        clauditor_dir = tmp_path / ".clauditor"
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_grading_v4(
+            skill_dir, rid="quality", passed=True, harness=None
+        )
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert records[0].harness == "claude-code"
+
+
+class TestApplyThresholdsFourTupleKeys:
+    """US-005 (#152): ``apply_thresholds`` consumes the new 4-tuple
+    ``(harness, provider, layer, id)`` aggregate dict key without
+    raising and propagates ``harness`` into the resulting
+    ``AuditVerdict``.
+    """
+
+    def test_handles_four_tuple_keys(self) -> None:
+        aggs = {
+            ("codex", "openai", "L3", "x"): AuditAggregate(
+                layer="L3",
+                id="x",
+                total_with_runs=20,
+                with_fails=0,
+                with_pass_rate=1.0,
+                total_baseline_runs=0,
+                baseline_fails=0,
+                baseline_pass_rate=None,
+                provider="openai",
+                harness="codex",
+            ),
+        }
+        verdicts = apply_thresholds(
+            aggs, min_fail_rate=0.0, min_discrimination=0.05
+        )
+        assert len(verdicts) == 1
+        assert verdicts[0].provider == "openai"
+        assert verdicts[0].verdict == Verdict.FLAG_ALWAYS_PASS
+
+    def test_mixed_harness_end_to_end(self, tmp_path: Path) -> None:
+        """End-to-end: two iteration dirs, one with harness=claude-code
+        and one with harness=codex, sharing the same (provider, layer,
+        id) but producing two distinct aggregates."""
+        clauditor_dir = tmp_path / ".clauditor"
+        _write_grading_v4(
+            clauditor_dir / "iteration-1" / "s",
+            rid="x",
+            passed=True,
+            harness="claude-code",
+        )
+        _write_grading_v4(
+            clauditor_dir / "iteration-2" / "s",
+            rid="x",
+            passed=True,
+            harness="codex",
+        )
+        records, _, _ctx = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        agg = aggregate(records)
+        assert ("claude-code", "anthropic", "L3", "x") in agg
+        assert ("codex", "anthropic", "L3", "x") in agg
+        assert len(agg) == 2
+
+
+class TestRenderStdoutTableHarness:
+    """US-006 (#152): ``render_stdout_table`` adds a leftmost ``HARNESS``
+    column. L1 rows render PROVIDER cell as ``"—"`` (em-dash, U+2014)
+    placeholder per DEC-008; L2/L3 keep the real provider value.
+    The HARNESS cell is real for every layer (L1 included) since the
+    skill subprocess is harnessed by definition.
+    Traces to: DEC-008, DEC-009.
+    """
+
+    def _mixed_verdicts(self) -> list[AuditVerdict]:
+        """One L1 row (claude-code/anthropic) + one L3 row (codex/openai)."""
+        l1 = AuditAggregate(
+            layer="L1",
+            id="has_header",
+            total_with_runs=10,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+            harness="claude-code",
+        )
+        l3 = AuditAggregate(
+            layer="L3",
+            id="quality",
+            total_with_runs=10,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="openai",
+            harness="codex",
+        )
+        return apply_thresholds(
+            {
+                ("claude-code", "anthropic", "L1", "has_header"): l1,
+                ("codex", "openai", "L3", "quality"): l3,
+            },
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+
+    def test_includes_harness_column_leftmost(self) -> None:
+        """Header order: HARNESS is the first column, then PROVIDER."""
+        table = render_stdout_table(self._mixed_verdicts())
+        header = table.splitlines()[0]
+        assert header.startswith("HARNESS")
+        assert "HARNESS" in header
+        assert "PROVIDER" in header
+        assert header.index("HARNESS") < header.index("PROVIDER")
+
+    def test_l1_row_shows_em_dash_for_provider(self) -> None:
+        """L1 row's PROVIDER cell is ``"—"`` (U+2014), not ``"anthropic"``.
+        L2/L3 rows keep the real provider value.
+        """
+        table = render_stdout_table(self._mixed_verdicts())
+        body_lines = [
+            line
+            for line in table.splitlines()
+            if line and not line.startswith(("HARNESS", "-"))
+        ]
+        l1_line = next(line for line in body_lines if "has_header" in line)
+        # L1 row: PROVIDER cell shows em-dash, not 'anthropic'.
+        assert "—" in l1_line  # em-dash present
+        assert "anthropic" not in l1_line  # placeholder NOT shown
+        l3_line = next(line for line in body_lines if "quality" in line)
+        # L3 row keeps the real provider value.
+        assert "openai" in l3_line
+
+    def test_l1_row_shows_real_harness(self) -> None:
+        """L1 row's HARNESS cell is the actual value, NOT em-dash."""
+        table = render_stdout_table(self._mixed_verdicts())
+        body_lines = [
+            line
+            for line in table.splitlines()
+            if line and not line.startswith(("HARNESS", "-"))
+        ]
+        l1_line = next(line for line in body_lines if "has_header" in line)
+        # HARNESS cell shows real value, not em-dash.
+        assert l1_line.startswith("claude-code")
+        l3_line = next(line for line in body_lines if "quality" in line)
+        assert l3_line.startswith("codex")
+
+
+class TestRenderMarkdownHarness:
+    """US-006 (#152): ``render_markdown`` per-layer detail tables get a
+    ``| harness |`` column added before the existing ``| provider |``
+    column. L1 detail table renders provider as ``"—"`` em-dash.
+    Traces to: DEC-008, DEC-009.
+    """
+
+    def _mixed_verdicts(self) -> list[AuditVerdict]:
+        l1 = AuditAggregate(
+            layer="L1",
+            id="has_header",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+            harness="claude-code",
+        )
+        l3 = AuditAggregate(
+            layer="L3",
+            id="quality",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="openai",
+            harness="codex",
+        )
+        return apply_thresholds(
+            {
+                ("claude-code", "anthropic", "L1", "has_header"): l1,
+                ("codex", "openai", "L3", "quality"): l3,
+            },
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+
+    def test_per_layer_table_includes_harness_column(self) -> None:
+        """Per-layer markdown detail tables show ``| harness | provider |``
+        with harness BEFORE provider in the header row.
+        """
+        md = render_markdown(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        # Header has harness before provider.
+        assert "| harness |" in md
+        header_line = next(
+            line for line in md.splitlines()
+            if line.startswith("| harness |")
+        )
+        assert header_line.index("harness") < header_line.index("provider")
+
+    def test_l1_row_renders_em_dash_for_provider_in_markdown(self) -> None:
+        """L1 markdown row renders provider cell as ``—`` (em-dash);
+        L2/L3 keep the real provider value.
+        """
+        md = render_markdown(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        # Find the L1 detail section.
+        l1_section = md.split("## L1 detail", 1)[1].split("## L", 1)[0]
+        # L1 row's provider cell is em-dash, not 'anthropic'.
+        assert "—" in l1_section
+        # The provider 'anthropic' string should NOT appear inside an
+        # L1 row backtick cell. (The header line itself doesn't contain
+        # 'anthropic', so checking the row body is sufficient.)
+        l1_data_lines = [
+            line
+            for line in l1_section.splitlines()
+            if line.startswith("| `claude-code`")
+        ]
+        assert len(l1_data_lines) == 1
+        assert "anthropic" not in l1_data_lines[0]
+
+
+class TestRenderJsonHarnessV3:
+    """US-006 (#152): ``render_json`` bumps ``schema_version`` to add
+    top-level ``harnesses_seen[]`` (sorted, deduped), and each
+    ``assertions[]`` entry gains a ``"harness": str`` field. L1 entries
+    keep ``"provider": "anthropic"`` placeholder in JSON output (the
+    em-dash is stdout/markdown-only per DEC-008). #154 US-005 / DEC-005
+    further bumped the audit-output ``schema_version`` from 3 to 4
+    when the new top-level ``iteration_contexts`` array landed; the
+    harness invariants tested in this class are unchanged.
+    Traces to: DEC-008, DEC-010 (#152) + DEC-005 (#154 US-005).
+    """
+
+    def _mixed_verdicts(self) -> list[AuditVerdict]:
+        l1 = AuditAggregate(
+            layer="L1",
+            id="has_header",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+            harness="claude-code",
+        )
+        l3 = AuditAggregate(
+            layer="L3",
+            id="quality",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="openai",
+            harness="codex",
+        )
+        return apply_thresholds(
+            {
+                ("claude-code", "anthropic", "L1", "has_header"): l1,
+                ("codex", "openai", "L3", "quality"): l3,
+            },
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+
+    def test_schema_version_4(self) -> None:
+        """First key is ``schema_version: 4`` (post-#154 bump)."""
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        first_key = next(iter(payload.keys()))
+        assert first_key == "schema_version"
+        assert payload["schema_version"] == 4
+
+    def test_includes_harnesses_seen_array(self) -> None:
+        """Top-level ``harnesses_seen`` is a sorted, deduped list."""
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        assert "harnesses_seen" in payload
+        assert payload["harnesses_seen"] == ["claude-code", "codex"]
+
+    def test_harnesses_seen_sorted_not_insertion_order(self) -> None:
+        """Stronger sort guard: feed harnesses whose alphabetical order
+        differs from insertion order so a regression that returned
+        ``list(set(...))`` would be caught.
+        """
+        agg_factory = lambda harness: AuditAggregate(  # noqa: E731
+            layer="L3",
+            id="x",
+            total_with_runs=5,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+            provider="anthropic",
+            harness=harness,
+        )
+        verdicts = apply_thresholds(
+            {
+                ("zebra", "anthropic", "L3", "x"): agg_factory("zebra"),
+                ("codex", "anthropic", "L3", "x"): agg_factory("codex"),
+                ("alpha", "anthropic", "L3", "x"): agg_factory("alpha"),
+                ("claude-code", "anthropic", "L3", "x"):
+                    agg_factory("claude-code"),
+            },
+            min_fail_rate=0.0,
+            min_discrimination=0.05,
+        )
+        payload = render_json(
+            verdicts,
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        assert payload["harnesses_seen"] == [
+            "alpha",
+            "claude-code",
+            "codex",
+            "zebra",
+        ]
+
+    def test_per_entry_harness_field(self) -> None:
+        """Each ``assertions[]`` entry has a ``"harness"`` field."""
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        assert len(payload["assertions"]) == 2
+        for entry in payload["assertions"]:
+            assert "harness" in entry
+            assert entry["harness"] in {"claude-code", "codex"}
+
+    def test_l1_entry_keeps_anthropic_placeholder_in_json(self) -> None:
+        """JSON output keeps ``"provider": "anthropic"`` for L1 (the
+        em-dash is stdout/markdown only per DEC-008).
+        """
+        payload = render_json(
+            self._mixed_verdicts(),
+            skill="s",
+            iterations_analyzed=5,
+            thresholds={"last": 5},
+            timestamp="t",
+        )
+        l1_entry = next(
+            entry for entry in payload["assertions"]
+            if entry["layer"] == "L1"
+        )
+        assert l1_entry["provider"] == "anthropic"
+        assert l1_entry["harness"] == "claude-code"
+
+
+def _write_context_sidecar(
+    skill_dir: Path,
+    *,
+    schema_version: int = 1,
+    harness: str = "claude-code",
+    provider: str | None = "anthropic",
+    model_runner: str = "claude-sonnet-4-6",
+    model_grader: str | None = "claude-sonnet-4-6",
+    system_prompt_source: str = "explicit",
+    sandbox_mode: str | None = "workspace-write",
+    reasoning_tokens: int | None = None,
+    cost_usd: float | None = None,
+) -> None:
+    """Helper for #154 US-005 tests — write a context.json fixture."""
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": schema_version,
+        "harness": harness,
+        "provider": provider,
+        "model_runner": model_runner,
+        "model_grader": model_grader,
+        "system_prompt_source": system_prompt_source,
+        "sandbox_mode": sandbox_mode,
+        "reasoning_tokens": reasoning_tokens,
+        "cost_usd": cost_usd,
+    }
+    (skill_dir / "context.json").write_text(
+        json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+    )
+
+
+class TestMaxSchemaVersion:
+    """#154 US-005 / DEC-010: ``context.json`` registered at v1 in the
+    canonical ``MAX_SCHEMA_VERSION`` map.
+
+    #170 US-006: ``grading.json`` and ``extraction.json`` bumped 4 → 5
+    with the nullable ``reasoning_tokens`` field. ``assertions.json``
+    and ``context.json`` are NOT bumped (L1 makes no LLM call;
+    ``context.json`` is always-v1 by design).
+    """
+
+    def test_context_json_registered_at_v1(self) -> None:
+        from clauditor.audit import MAX_SCHEMA_VERSION, _is_accepted_version
+
+        assert MAX_SCHEMA_VERSION["context.json"] == 1
+        assert _is_accepted_version("context.json", 1) is True
+
+    def test_context_json_v999_rejected(self) -> None:
+        from clauditor.audit import _is_accepted_version
+
+        assert _is_accepted_version("context.json", 999) is False
+        assert _is_accepted_version("context.json", 2) is False
+
+    def test_audit_max_schema_version_grading_is_5(self) -> None:
+        """#170 US-006: ``grading.json`` accepts v5 (reasoning_tokens
+        field added by US-004)."""
+        from clauditor.audit import MAX_SCHEMA_VERSION
+
+        assert MAX_SCHEMA_VERSION["grading.json"] == 5
+
+    def test_audit_max_schema_version_extraction_is_5(self) -> None:
+        """#170 US-006: ``extraction.json`` accepts v5 (reasoning_tokens
+        field added by US-004)."""
+        from clauditor.audit import MAX_SCHEMA_VERSION
+
+        assert MAX_SCHEMA_VERSION["extraction.json"] == 5
+
+    def test_audit_max_schema_version_context_unchanged_at_1(self) -> None:
+        """#170 US-006: ``context.json`` stays at v1 (always-v1 by
+        design — nullable fields ship from day one)."""
+        from clauditor.audit import MAX_SCHEMA_VERSION
+
+        assert MAX_SCHEMA_VERSION["context.json"] == 1
+
+    def test_audit_max_schema_version_assertions_unchanged_at_2(self) -> None:
+        """#170 US-006: ``assertions.json`` stays at v2 (L1 makes no
+        LLM call → no reasoning tokens to record)."""
+        from clauditor.audit import MAX_SCHEMA_VERSION
+
+        assert MAX_SCHEMA_VERSION["assertions.json"] == 2
+
+class TestReadContext:
+    """#154 US-005 / DEC-011: pure helper that reads + schema-validates
+    ``context.json``. Returns ``IterationContext`` on success, ``None``
+    on every failure mode (missing file silently; schema/validation
+    errors with stderr warning)."""
+
+    def test_returns_iteration_context_for_valid_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        from clauditor.audit import _read_context
+
+        skill_dir = tmp_path / "skill"
+        _write_context_sidecar(
+            skill_dir,
+            harness="codex",
+            provider="openai",
+            model_runner="gpt-5.4",
+            model_grader=None,
+            system_prompt_source="agents_md",
+            sandbox_mode="read-only",
+            reasoning_tokens=42,
+            cost_usd=0.0123,
+        )
+        ctx = _read_context(skill_dir)
+        assert ctx is not None
+        assert ctx.harness == "codex"
+        assert ctx.provider == "openai"
+        assert ctx.model_runner == "gpt-5.4"
+        assert ctx.model_grader is None
+        assert ctx.system_prompt_source == "agents_md"
+        assert ctx.sandbox_mode == "read-only"
+        assert ctx.reasoning_tokens == 42
+        assert ctx.cost_usd == pytest.approx(0.0123)
+
+    def test_returns_none_on_missing_file_silent(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        from clauditor.audit import _read_context
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        # No context.json written.
+        assert _read_context(skill_dir) is None
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
+
+    def test_returns_none_with_stderr_warning_on_schema_mismatch(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        from clauditor.audit import _read_context
+
+        skill_dir = tmp_path / "skill"
+        _write_context_sidecar(skill_dir, schema_version=999)
+        result = _read_context(skill_dir)
+        assert result is None
+        captured = capsys.readouterr()
+        assert "context.json" in captured.err
+        assert "999" in captured.err
+
+    def test_returns_none_on_malformed_json(self, tmp_path: Path) -> None:
+        from clauditor.audit import _read_context
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        (skill_dir / "context.json").write_text("{ this is not json")
+        assert _read_context(skill_dir) is None
+
+    def test_returns_none_on_hard_validator_failure(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture
+    ) -> None:
+        """``IterationContext.from_dict`` raises ``ValueError`` for an
+        unknown ``harness`` literal (per US-001 hard-validators).
+        ``_read_context`` translates that to ``None`` plus a stderr
+        warning rather than propagating."""
+        from clauditor.audit import _read_context
+
+        skill_dir = tmp_path / "skill"
+        _write_context_sidecar(skill_dir, harness="not-a-real-harness")
+        assert _read_context(skill_dir) is None
+        captured = capsys.readouterr()
+        assert "context.json" in captured.err
+        assert "malformed payload" in captured.err
+
+    def test_returns_none_when_top_level_is_not_dict(
+        self, tmp_path: Path
+    ) -> None:
+        """A JSON file containing a list/scalar at the top level is
+        rejected without raising — defensive read posture per
+        ``stream-json-schema.md``."""
+        from clauditor.audit import _read_context
+
+        skill_dir = tmp_path / "skill"
+        skill_dir.mkdir()
+        (skill_dir / "context.json").write_text("[1, 2, 3]")
+        assert _read_context(skill_dir) is None
+
+class TestRenderJsonContext:
+    """#154 US-005 / DEC-005: ``render_json`` always emits
+    ``iteration_contexts`` (no ``--verbose`` gate on JSON output)."""
+
+    def _verdicts(self) -> list[AuditVerdict]:
+        agg = AuditAggregate(
+            layer="L1",
+            id="a",
+            total_with_runs=2,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+        )
+        return [AuditVerdict(layer="L1", id="a", verdict=Verdict.KEEP, aggregate=agg)]
+
+    def test_always_includes_iteration_contexts_key(self) -> None:
+        payload = render_json(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=0,
+            thresholds={"last": 20},
+            timestamp="t",
+        )
+        assert "iteration_contexts" in payload
+        assert payload["iteration_contexts"] == []
+
+    def test_legacy_iteration_emits_null_context(self) -> None:
+        contexts: dict[int, IterationContext | None] = {3: None}
+        payload = render_json(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=1,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts=contexts,
+        )
+        assert payload["iteration_contexts"] == [
+            {"iteration": 3, "context": None}
+        ]
+
+    def test_populated_context_serializes_full_field_set(
+        self, tmp_path: Path
+    ) -> None:
+        skill_dir = tmp_path / "skill"
+        _write_context_sidecar(
+            skill_dir,
+            harness="codex",
+            provider="openai",
+            model_runner="gpt-5.4",
+            model_grader="gpt-5.4",
+            system_prompt_source="explicit",
+            sandbox_mode="workspace-write",
+            reasoning_tokens=100,
+            cost_usd=0.5,
+        )
+        from clauditor.audit import _read_context
+
+        ctx = _read_context(skill_dir)
+        payload = render_json(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=1,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts={5: ctx},
+        )
+        assert payload["iteration_contexts"] == [
+            {
+                "iteration": 5,
+                "context": {
+                    "harness": "codex",
+                    "provider": "openai",
+                    "model_runner": "gpt-5.4",
+                    "model_grader": "gpt-5.4",
+                    "system_prompt_source": "explicit",
+                    "sandbox_mode": "workspace-write",
+                    "reasoning_tokens": 100,
+                    "cost_usd": 0.5,
+                },
+            }
+        ]
+
+    def test_iteration_contexts_sorted_descending(
+        self, tmp_path: Path
+    ) -> None:
+        contexts: dict[int, IterationContext | None] = {1: None, 5: None, 3: None}
+        payload = render_json(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=3,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts=contexts,
+        )
+        nums = [entry["iteration"] for entry in payload["iteration_contexts"]]
+        assert nums == [5, 3, 1]
+
+class TestRenderMarkdownVerbose:
+    """#154 US-005 / DEC-005: ``render_markdown`` emits a
+    per-iteration ``## Per-iteration context`` section ONLY under
+    ``verbose=True``."""
+
+    def _verdicts(self) -> list[AuditVerdict]:
+        agg = AuditAggregate(
+            layer="L1",
+            id="a",
+            total_with_runs=1,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+        )
+        return [AuditVerdict(layer="L1", id="a", verdict=Verdict.KEEP, aggregate=agg)]
+
+    def _make_ctx(self) -> IterationContext:
+        return IterationContext(
+            harness="codex",
+            provider="openai",
+            model_runner="gpt-5.4",
+            model_grader="gpt-5.4",
+            system_prompt_source="agents_md",
+            sandbox_mode="read-only",
+            reasoning_tokens=42,
+            cost_usd=0.01,
+        )
+
+    def test_per_iteration_block_under_verbose(self) -> None:
+        markdown = render_markdown(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=1,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts={7: self._make_ctx()},
+            verbose=True,
+        )
+        assert "## Per-iteration context" in markdown
+        assert "### Iteration 7" in markdown
+        assert "harness" in markdown
+        assert "codex" in markdown
+        assert "gpt-5.4" in markdown
+        assert "agents_md" in markdown
+
+    def test_no_block_without_verbose(self) -> None:
+        markdown = render_markdown(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=1,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts={7: self._make_ctx()},
+            verbose=False,
+        )
+        assert "Per-iteration context" not in markdown
+        assert "Iteration 7" not in markdown
+
+    def test_no_block_when_contexts_dict_is_none(self) -> None:
+        markdown = render_markdown(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=1,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts=None,
+            verbose=True,
+        )
+        assert "Per-iteration context" not in markdown
+
+    def test_legacy_only_iterations_skipped_under_verbose(self) -> None:
+        """Iterations with ``context = None`` (pre-#154) do NOT
+        produce an ``### Iteration N`` block — verbose markdown stays
+        readable."""
+        markdown = render_markdown(
+            self._verdicts(),
+            skill="s",
+            iterations_analyzed=1,
+            thresholds={"last": 20},
+            timestamp="t",
+            iteration_contexts={3: None},
+            verbose=True,
+        )
+        assert "Per-iteration context" not in markdown
+        assert "Iteration 3" not in markdown
+
+class TestRenderStdoutTableVerbose:
+    """#154 US-005 / DEC-005: ``render_stdout_table`` emits a per-
+    iteration ``Context for iteration N:`` block ONLY under
+    ``verbose=True``."""
+
+    def _verdicts(self) -> list[AuditVerdict]:
+        agg = AuditAggregate(
+            layer="L1",
+            id="a",
+            total_with_runs=1,
+            with_fails=0,
+            with_pass_rate=1.0,
+            total_baseline_runs=0,
+            baseline_fails=0,
+            baseline_pass_rate=None,
+        )
+        return [AuditVerdict(layer="L1", id="a", verdict=Verdict.KEEP, aggregate=agg)]
+
+    def _make_ctx(self) -> IterationContext:
+        return IterationContext(
+            harness="claude-code",
+            provider="anthropic",
+            model_runner="claude-sonnet-4-6",
+            model_grader="claude-sonnet-4-6",
+            system_prompt_source="explicit",
+            sandbox_mode="workspace-write",
+        )
+
+    def test_per_iteration_block_under_verbose(self) -> None:
+        out = render_stdout_table(
+            self._verdicts(),
+            iteration_contexts={3: self._make_ctx()},
+            verbose=True,
+        )
+        assert "Context for iteration 3:" in out
+        assert "harness: claude-code" in out
+        assert "provider: anthropic" in out
+        assert "system_prompt_source: explicit" in out
+
+    def test_no_block_without_verbose(self) -> None:
+        out = render_stdout_table(
+            self._verdicts(),
+            iteration_contexts={3: self._make_ctx()},
+            verbose=False,
+        )
+        assert "Context for iteration" not in out
+
+    def test_legacy_only_iterations_skipped_under_verbose(self) -> None:
+        out = render_stdout_table(
+            self._verdicts(),
+            iteration_contexts={3: None, 1: None},
+            verbose=True,
+        )
+        assert "Context for iteration" not in out
+
+class TestAggregateUnchanged:
+    """#154 DEC-011 regression guard: ``IterationRecord`` does NOT carry
+    a ``context`` field. Context lives parallel to records, attached at
+    render time only."""
+
+    def test_iteration_record_has_no_context_field(self) -> None:
+        import dataclasses
+
+        names = {f.name for f in dataclasses.fields(IterationRecord)}
+        assert "context" not in names
+        # Sanity check that we still own the existing fields so the
+        # test does not become vacuous if the dataclass is renamed.
+        assert {"iteration", "layer", "id", "passed"}.issubset(names)
+
+class TestLoadIterationsContextDict:
+    """#154 US-005 / DEC-011: ``load_iterations`` returns a
+    ``dict[int, IterationContext | None]`` parallel to the records."""
+
+    def test_returns_context_for_iteration_with_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        clauditor_dir = _make_iteration_fixture(
+            tmp_path,
+            "s",
+            {1: {"l1": [{"id": "a", "passed": True}]}},
+        )
+        skill_dir = clauditor_dir / "iteration-1" / "s"
+        _write_context_sidecar(
+            skill_dir,
+            harness="codex",
+            provider="openai",
+            model_runner="gpt-5.4",
+            model_grader=None,
+            system_prompt_source="agents_md",
+            sandbox_mode="read-only",
+        )
+        records, _, contexts = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert len(records) == 1
+        assert 1 in contexts
+        ctx = contexts[1]
+        assert ctx is not None
+        assert ctx.harness == "codex"
+
+    def test_returns_none_for_iteration_without_sidecar(
+        self, tmp_path: Path
+    ) -> None:
+        """Pre-#154 iterations (no ``context.json`` on disk) map to
+        ``None`` in the contexts dict so renderers can emit a uniform
+        shape."""
+        clauditor_dir = _make_iteration_fixture(
+            tmp_path,
+            "s",
+            {1: {"l1": [{"id": "a", "passed": True}]}},
+        )
+        _, _, contexts = load_iterations(
+            "s", last=5, clauditor_dir=clauditor_dir
+        )
+        assert contexts == {1: None}
+
+class TestCmdAuditVerboseFlag:
+    """#154 US-005 argparse smoke test: ``--verbose`` is a valid flag
+    on ``clauditor audit``."""
+
+    def test_verbose_flag_accepted(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".git").mkdir()
+        clauditor_dir = _make_iteration_fixture(
+            project,
+            "my_skill",
+            {1: {"l1": [{"id": "a", "passed": True}]}},
+        )
+        skill_dir = clauditor_dir / "iteration-1" / "my_skill"
+        _write_context_sidecar(skill_dir)
+        monkeypatch.chdir(project)
+        rc = cli_main(["audit", "my_skill", "--verbose"])
+        # --verbose is accepted; ``always_pass`` flagging still drives
+        # the exit code.
+        assert rc in (0, 1)
+        out = capsys.readouterr().out
+        assert "Context for iteration 1:" in out
+
+    def test_verbose_emits_per_iteration_block_in_json(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture,
+    ) -> None:
+        """JSON output emits ``iteration_contexts`` regardless of the
+        ``--verbose`` flag (per DEC-005 — JSON consumers should not
+        need a flag for a stable field)."""
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".git").mkdir()
+        clauditor_dir = _make_iteration_fixture(
+            project,
+            "my_skill",
+            {1: {"l1": [{"id": "a", "passed": True}]}},
+        )
+        skill_dir = clauditor_dir / "iteration-1" / "my_skill"
+        _write_context_sidecar(skill_dir)
+        monkeypatch.chdir(project)
+        rc = cli_main(["audit", "my_skill", "--json"])
+        assert rc in (0, 1)
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        assert "iteration_contexts" in payload
+        assert any(
+            entry["iteration"] == 1 and entry["context"] is not None
+            for entry in payload["iteration_contexts"]
+        )

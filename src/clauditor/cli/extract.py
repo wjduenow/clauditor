@@ -8,9 +8,10 @@ import sys
 from pathlib import Path
 
 from clauditor import history
-from clauditor._anthropic import (
+from clauditor._providers import (
     AnthropicAuthMissingError,
-    check_any_auth_available,
+    OpenAIAuthMissingError,
+    check_provider_auth,
 )
 
 
@@ -18,7 +19,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``extract`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _transport_choice
+    from clauditor.cli import _provider_choice, _transport_choice
 
     p_extract = subparsers.add_parser(
         "extract", help="Layer 2: LLM schema extraction"
@@ -56,6 +57,18 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "'auto'."
         ),
     )
+    p_extract.add_argument(
+        "--grading-provider",
+        type=_provider_choice,
+        default=None,
+        choices=("anthropic", "openai", "auto"),
+        help=(
+            "Override the grading provider: 'anthropic', 'openai', or "
+            "'auto' (infer from grading_model). Four-layer precedence: "
+            "this flag > CLAUDITOR_GRADING_PROVIDER env > "
+            "EvalSpec.grading_provider > default 'auto'."
+        ),
+    )
 
 
 def cmd_extract(args: argparse.Namespace) -> int:
@@ -83,26 +96,58 @@ def cmd_extract(args: argparse.Namespace) -> int:
         print("ERROR: No sections defined in eval spec", file=sys.stderr)
         return 1
 
-    model = args.model or "claude-haiku-4-5-20251001"
+    # Provider-aware model defaulting: if the user didn't pass
+    # ``--model`` and the spec didn't set ``grading_model``, the model
+    # falls through to ``resolve_grading_model(spec.eval_spec,
+    # provider)`` once we've resolved the provider below. For the
+    # ``--dry-run`` preview we surface whatever pinning exists; an
+    # unresolved value renders as ``<auto, resolved from provider>``
+    # because the dry-run preview does not consult the provider yet
+    # (the auth guard hasn't fired).
+    model = args.model or spec.eval_spec.grading_model
 
     # --dry-run: print prompt and exit
     if args.dry_run:
         from clauditor.grader import build_extraction_prompt
 
         prompt = build_extraction_prompt(spec.eval_spec)
-        print(f"Model: {model}")
+        print(f"Model: {model or '<auto, resolved from provider>'}")
         print(f"Prompt:\n{prompt}")
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
-    # ANTHROPIC_API_KEY nor the claude CLI binary is available. Guard
-    # lands AFTER --dry-run (dry-run is a cost-free preview — no API
-    # call, no key needed) and BEFORE extract_and_grade.
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005/US-006:
+    # fail fast when the provider's required auth is missing. Provider
+    # is resolved via the four-layer ``_resolve_grading_provider``
+    # helper (CLI flag > CLAUDITOR_GRADING_PROVIDER env >
+    # EvalSpec.grading_provider > default "auto" with auto-inference
+    # from grading_model), so OpenAI-graded skills get an OpenAI-key-
+    # required guard. Guard lands AFTER --dry-run (dry-run is a
+    # cost-free preview — no API call, no key needed) and BEFORE
+    # extract_and_grade. Distinct ``except`` branches per
+    # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    #
+    # The resolved provider is threaded down through the
+    # ``extract_and_grade`` call below per #146 US-006.
+    from clauditor.cli import _resolve_grading_provider
+
+    provider = _resolve_grading_provider(args, spec.eval_spec)
     try:
-        check_any_auth_available("extract")
+        check_provider_auth(provider, "extract")
     except AnthropicAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    except OpenAIAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    # Now that provider is resolved, pick a per-provider default
+    # model when neither the user nor the spec supplied one. Post-#182
+    # (DEC-004b default-flip), an omitted ``grading_model`` loads as
+    # ``None`` and the per-provider default kicks in here. An
+    # explicit-but-mismatching spec value surfaces as a clean SDK 400.
+    if model is None:
+        from clauditor._providers import resolve_grading_model
+        model = resolve_grading_model(spec.eval_spec, provider)
 
     # Get output
     skill_result = None
@@ -142,7 +187,13 @@ def cmd_extract(args: argparse.Namespace) -> int:
     from clauditor.grader import extract_and_grade
 
     results = asyncio.run(
-        extract_and_grade(output, spec.eval_spec, model, transport=grader_transport)
+        extract_and_grade(
+            output,
+            spec.eval_spec,
+            model,
+            transport=grader_transport,
+            provider=provider,
+        )
     )
 
     # Record history (US-005). Extract does not compute Layer 3
@@ -163,6 +214,23 @@ def cmd_extract(args: argparse.Namespace) -> int:
         duration_seconds=skill_duration,
         grader=grader_tokens,
     )
+    # #152 US-007: ``harness`` is a mandatory keyword on
+    # ``append_record``. When the skill ran live (no ``--output``), read
+    # the harness off the ``SkillResult`` populated by US-001. When the
+    # output was pre-captured, use ``eval_spec.harness`` when it pins a
+    # concrete harness (not ``"auto"``), otherwise fall back to
+    # ``"claude-code"`` (the default). The spec field is the best
+    # available signal for pre-captured output; the captured file itself
+    # carries no harness provenance.
+    if skill_result is not None:
+        harness_name = getattr(skill_result, "harness", "claude-code")
+    elif (
+        spec.eval_spec is not None
+        and spec.eval_spec.harness not in ("auto", None)
+    ):
+        harness_name = spec.eval_spec.harness
+    else:
+        harness_name = "claude-code"
     try:
         history.append_record(
             skill=spec.skill_name,
@@ -170,6 +238,8 @@ def cmd_extract(args: argparse.Namespace) -> int:
             mean_score=None,
             metrics=metrics_dict,
             command="extract",
+            provider=provider,
+            harness=harness_name,
         )
     except Exception as e:  # pragma: no cover - defensive
         print(f"WARNING: failed to append history: {e}", file=sys.stderr)

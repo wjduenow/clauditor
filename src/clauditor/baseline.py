@@ -31,6 +31,7 @@ __all__ = [
 ]
 
 _SCHEMA_VERSION = 1
+_ASSERTIONS_SCHEMA_VERSION = 2  # #152 US-002: assertions.json carries `harness`
 
 
 @dataclass
@@ -71,8 +72,15 @@ class BaselineReports:
         files["baseline.json"] = json.dumps(meta, indent=2) + "\n"
 
         # baseline_assertions.json — Layer 1
+        # #152 US-002 / B2: bump v1 -> v2 with top-level harness so the
+        # baseline arm of `clauditor grade --baseline --harness codex`
+        # records the codex baseline output honestly. Without this the
+        # audit reader's `_harness_or_default` would silently default
+        # the missing field to "claude-code" and group codex baseline
+        # data under the wrong harness key.
         assertions_payload = {
-            "schema_version": _SCHEMA_VERSION,
+            "schema_version": _ASSERTIONS_SCHEMA_VERSION,
+            "harness": self.skill_result.harness,
             "skill": self.skill_name,
             "iteration": self.iteration,
             **self.assertion_set.to_json(),
@@ -98,6 +106,7 @@ def compute_baseline(
     skill_name: str,
     iteration: int,
     model: str,
+    provider: str = "anthropic",
 ) -> BaselineReports:
     """Compute all baseline grading layers from an already-run result.
 
@@ -105,6 +114,10 @@ def compute_baseline(
     spec, runs L1 assertions synchronously, and awaits L2/L3 grading via
     ``asyncio.run``. Returns a :class:`BaselineReports` dataclass — no
     file I/O, no subprocess invocation, no stderr output.
+
+    ``provider`` is resolved at the CLI seam per #146 US-006 and
+    threaded into the L2/L3 orchestrator calls. Default
+    ``"anthropic"`` preserves back-compat for direct callers.
 
     Parameters are keyword-only to match the codebase convention and keep
     call sites readable.
@@ -122,6 +135,8 @@ def compute_baseline(
                 baseline_text,
                 eval_spec,
                 skill_name=skill_name,
+                provider=provider,
+                harness=skill_result.harness,
             )
         )
 
@@ -132,6 +147,8 @@ def compute_baseline(
             eval_spec,
             model,
             thresholds=eval_spec.grade_thresholds,
+            provider=provider,
+            harness=skill_result.harness,
         )
     )
 

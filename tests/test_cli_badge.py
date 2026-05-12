@@ -247,7 +247,7 @@ class TestCmdBadgeNoIteration:
         assert "clauditor" not in shields
         # Extension sidecar: full telemetry.
         ext = json.loads(ext_target.read_text())
-        assert ext["schema_version"] == 1
+        assert ext["schema_version"] == 2
         assert ext["iteration"] is None
 
     def test_emits_dec021_warning(
@@ -350,7 +350,7 @@ class TestCmdBadgeNoIteration:
         assert json.loads(target.read_text())["color"] == "lightgrey"
         # Extension file was overwritten with fresh content.
         ext = json.loads(ext_target.read_text())
-        assert ext["schema_version"] == 1
+        assert ext["schema_version"] == 2
         assert ext["skill_name"] == "demo"
 
 
@@ -1313,3 +1313,122 @@ class TestDispatcherWiring:
             "--verbose",
         ):
             assert flag in out
+
+
+# ---------------------------------------------------------------------------
+# US-006 — context.json read at badge generation time.
+#
+# Traces to DEC-006 of ``plans/super/154-context-sidecar.md``.
+# ---------------------------------------------------------------------------
+
+
+def _write_context_sidecar(iter_skill_dir: Path) -> None:
+    """Write a fully-populated ``context.json`` under ``iter_skill_dir``.
+
+    Uses :meth:`IterationContext.to_json` so the on-disk shape matches
+    the writer's actual output (no hand-rolled JSON drift).
+    """
+    from clauditor.context import IterationContext
+
+    ctx = IterationContext(
+        harness="claude-code",
+        provider="anthropic",
+        model_runner="claude-sonnet-4-6",
+        model_grader="claude-sonnet-4-6",
+        system_prompt_source="agents_md",
+        sandbox_mode="workspace-write",
+        reasoning_tokens=None,
+        cost_usd=None,
+    )
+    (iter_skill_dir / "context.json").write_text(ctx.to_json())
+
+
+class TestCmdBadgeReadsLatestContext:
+    """DEC-006: badge writer reads the latest iteration's context.json
+    and threads it onto the extension. Absent file → context omitted.
+    Shields.io payload is unchanged in either case.
+    """
+
+    def test_extension_carries_context_when_present(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """``context.json`` exists → extension JSON contains the context block."""
+        skill_md = _write_skill(tmp_path)
+        iter_skill_dir = _setup_iteration(tmp_path, 1)
+        _write_context_sidecar(iter_skill_dir)
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(["badge", str(skill_md)])
+        assert rc == 0
+
+        ext_target = tmp_path / ".clauditor" / "badges" / "demo.clauditor.json"
+        ext = json.loads(ext_target.read_text())
+        assert ext["schema_version"] == 2
+        assert "context" in ext
+        assert ext["context"]["harness"] == "claude-code"
+        assert ext["context"]["provider"] == "anthropic"
+        assert ext["context"]["model_runner"] == "claude-sonnet-4-6"
+        assert ext["context"]["system_prompt_source"] == "agents_md"
+        assert ext["context"]["sandbox_mode"] == "workspace-write"
+
+    def test_extension_context_omitted_when_absent(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """No ``context.json`` on disk → extension omits the context block."""
+        skill_md = _write_skill(tmp_path)
+        _setup_iteration(tmp_path, 1)
+        # No _write_context_sidecar() call.
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(["badge", str(skill_md)])
+        assert rc == 0
+
+        ext_target = tmp_path / ".clauditor" / "badges" / "demo.clauditor.json"
+        ext = json.loads(ext_target.read_text())
+        assert ext["schema_version"] == 2
+        assert "context" not in ext
+
+    def test_shields_payload_unchanged_with_context_present(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Context presence does NOT alter the shields.io ``<skill>.json``.
+
+        Per ``.claude/rules/dual-version-external-schema-embed.md``,
+        shields.io strictly validates its endpoint schema and rejects
+        unknown top-level keys with an ``invalid properties: <key>``
+        SVG response. The context block lives only in the sibling
+        extension file, never in the shields.io payload.
+        """
+        skill_md = _write_skill(tmp_path)
+        iter_skill_dir = _setup_iteration(tmp_path, 1)
+        _write_context_sidecar(iter_skill_dir)
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(["badge", str(skill_md)])
+        assert rc == 0
+
+        target = tmp_path / ".clauditor" / "badges" / "demo.json"
+        shields = json.loads(target.read_text())
+        # Minimal four-field shape — no context, no clauditor key.
+        assert set(shields.keys()) == {"schemaVersion", "label", "message", "color"}
+        assert "context" not in shields
+        assert "clauditor" not in shields
+
+    def test_extension_context_omitted_when_context_json_malformed(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Malformed ``context.json`` → context omitted; badge still writes."""
+        skill_md = _write_skill(tmp_path)
+        iter_skill_dir = _setup_iteration(tmp_path, 1)
+        (iter_skill_dir / "context.json").write_text("{not valid json")
+        monkeypatch.chdir(tmp_path)
+
+        rc = main(["badge", str(skill_md)])
+        # Must still succeed — a broken context sidecar must not abort
+        # the whole badge command.
+        assert rc == 0
+
+        ext_target = tmp_path / ".clauditor" / "badges" / "demo.clauditor.json"
+        ext = json.loads(ext_target.read_text())
+        assert ext["schema_version"] == 2
+        assert "context" not in ext

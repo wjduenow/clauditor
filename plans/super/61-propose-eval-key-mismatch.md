@@ -411,6 +411,69 @@ concerns resolved as DEC-006/007/008. Scope includes a bounded
 repair-retry loop (Q4=B+C) which adds ~40 lines to the
 orchestrator and two new test cases.
 
+**US-007 (Patterns & Memory) — 2026-05-02** — Evaluated three
+candidates for `.claude/rules/` codification or `docs/` updates;
+all three deferred because the territory is already covered.
+Defaulted to deferral per the bead's guidance ("only add a new
+rule if there's a genuinely novel pattern not yet captured").
+
+- **Candidate 1 — `ASSERTION_TYPE_REQUIRED_KEYS` as a "single
+  source of truth across handler + validator + prompt" pattern**:
+  **DEFERRED** — already covered by four rules acting in
+  composition. `constant-with-type-info.md` codifies the
+  `dict[type, KeySpec]` + `field_types` + `_require_*_keys`
+  validator shape (with the explicit canonical-implementation
+  anchor `ASSERTION_TYPE_REQUIRED_KEYS`). `per-type-drift-hints.md`
+  codifies the sibling `_ASSERTION_DRIFT_HINTS` table.
+  `eval-spec-stable-ids.md` codifies the companion `_require_id`
+  uniqueness validator. `pre-llm-contract-hard-validate.md`
+  codifies the prompt-side invariant + parser-side enforcement
+  (the "3-way" angle's prompt → validator leg). No new rule
+  would add a pattern not already captured; a fifth near-
+  duplicate rule would invite drift. The post-#67 reshaping
+  (per-type semantic keys: `needle`, `pattern`, `length`,
+  `count`) is documented inside `constant-with-type-info.md`
+  and `per-type-drift-hints.md` directly.
+
+- **Candidate 2 — Bounded repair-retry pattern for LLM
+  invariant violations**: **DEFERRED** — single-caller pattern
+  today. `propose_eval.py`'s one-shot repair-retry
+  (`_AttemptResult` / `_single_propose_attempt` /
+  `propose_eval`) is the only instance in the codebase. Other
+  LLM-mediated commands (`grade_quality`, `blind_compare`,
+  `suggest`, `extract_and_grade`, trigger judges) currently
+  hand-fail on validation errors and let the CLI route to
+  exit-2 — they do NOT retry. Per the rule-quality gate in
+  `pure-compute-vs-io-split.md` ("more than one caller" or "a
+  generalizable trap not yet captured"), codifying a single-
+  use pattern as a rule is premature. When a second caller
+  appears (a future rubric critic with an invariant-fail
+  retry, a regeneration-on-low-score loop in
+  `quality_grader`, or a section-extraction repair pass in
+  `grader.py`), extract the pattern at THAT point with both
+  callers visible — the second use case will sharpen what
+  the rule should prescribe (token-budget-cap policy, repair-
+  prompt builder shape, single-pass vs N-pass cap, never-
+  raise contract scope). Until then, the canonical shape
+  lives in `propose_eval.py`'s `propose_eval` orchestrator
+  with DEC-004/006/007 references; a future second caller
+  can grep for "repair-retry" + `_AttemptResult` to find it.
+
+- **Candidate 3 — `docs/eval-spec-reference.md` "valid keys
+  per assertion type" section**: **DEFERRED — already exists**.
+  Lines 119-158 of `docs/eval-spec-reference.md` (the
+  `## Assertion types and per-type keys` section, post-#67)
+  already render the full per-type table with required keys,
+  optional keys, integer-vs-string note, "did you mean?"
+  hint reference, and a one-of-each example block. No README
+  teaser changes needed (the existing teaser already points
+  at `eval-spec-reference.md`). No edit required.
+
+Net: zero new `.claude/rules/*.md` files, zero `docs/` edits,
+one Session Notes update (this entry). Acceptance criterion
+satisfied via path (c) — explicit evaluation + one-line
+deferral note per candidate.
+
 ## Detailed Breakdown (Stories)
 
 Ordering: data (constant) → loader validator → prompt update →

@@ -15,6 +15,159 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **Codex auth pre-flight refuses ChatGPT-mode credentials (#177, PR #181).**
+  `check_codex_auth` now examines `~/.codex/auth.json` (or
+  `$CODEX_HOME/auth.json` when set) and refuses pre-flight when the file
+  declares `auth_mode == "chatgpt"`, regardless of whether
+  `CODEX_API_KEY` / `OPENAI_API_KEY` is exported. Rationale: the codex
+  subprocess reads `auth.json` and routes via ChatGPT in that mode,
+  rejecting every model server-side with `"The 'gpt-5-codex' model is
+  not supported when using Codex with a ChatGPT account."` The pre-flight
+  refusal fails fast with an actionable `CodexAuthMissingError` pointing
+  at `codex login --with-api-key`, rather than letting users burn a
+  subprocess + API round-trip on a guaranteed-to-fail call.
+
+  Auth.json reads are failure-open per DEC-005 — a missing, unreadable,
+  malformed, or oversize (> 1 MB) `auth.json` falls through to the
+  existing env-var / PATH-on-disk checks. Parsed content (tokens,
+  account ids) is never serialized to sidecars, logs, or error
+  messages per DEC-014.
+
+  **Supersedes #175 DECs 001, 002, 003, 004, 008, and 009** (see the
+  cross-link table in `plans/super/177-codex-auth-mode-conflict.md`).
+  The #175 plan doc stays historical; the refinement trail lives in
+  the #177 plan.
+
+  **Migration:** users with `~/.codex/auth.json` in chatgpt-mode should
+  run `codex login --with-api-key` to re-materialize the credentials
+  file in API-key mode. Users who never logged in via the ChatGPT flow
+  are unaffected.
+
+- **`clauditor_runner` is now a factory fixture (#155).** Pytest fixtures
+  cannot accept call-site kwargs; only factory fixtures can. To support
+  the new `harness=` operator-intent kwarg, `clauditor_runner` was
+  converted from a value fixture to a factory.
+
+  **Migration:**
+
+  ```python
+  # Before
+  def test_my_skill(clauditor_runner):
+      runner = clauditor_runner          # value fixture
+      result = runner.run("my-skill")
+
+  # After
+  def test_my_skill(clauditor_runner):
+      runner = clauditor_runner()        # factory — call it
+      result = runner.run("my-skill")
+  ```
+
+  No deprecation shim ships — pre-1.0 accepts the hard break (same
+  precedent as the `SkillResult.assert_*` → `SkillAsserter` migration in
+  v0.1.0). See [`docs/pytest-plugin.md#parametrizing-harness--provider`](docs/pytest-plugin.md#parametrizing-harness--provider).
+
+### Added
+
+- **Pytest fixtures: `harness` × `provider` parametrization (#155).** The
+  pytest plugin gained two new CLI options and four new factory kwargs so
+  a single test can sweep across `{claude-code, codex} × {anthropic, openai}`
+  without changing skill or eval-spec files.
+  - **New pytest CLI options:**
+    - `--clauditor-harness {claude-code, codex, auto}` — overrides the
+      harness used by `clauditor_runner` session-wide. (Note:
+      `clauditor_spec` honors only `EvalSpec.harness` — set `harness:`
+      in `eval.json` for per-skill author preference.)
+    - `--clauditor-grading-provider {anthropic, openai, auto}` — overrides
+      the grading provider used by `clauditor_grader`,
+      `clauditor_blind_compare`, and `clauditor_triggers` session-wide.
+  - **New factory kwargs (operator-intent, top of precedence stack):**
+    - `clauditor_runner(harness=...)` — pin harness for this runner.
+    - `clauditor_grader(skill, eval_path, output, *, provider=..., model=...)`
+      — both new factory kwargs. (Pre-#155 the fixture only consulted
+      the `--clauditor-model` pytest option; the kwarg layer is new.)
+    - `clauditor_blind_compare(skill, output_a, output_b, eval_path, *, provider=..., model=...)`
+      — both new.
+    - `clauditor_triggers(skill, eval_path, *, provider=..., model=...)`
+      — both new.
+  - **Operator-intent precedence (highest → lowest):** factory kwarg >
+    pytest CLI option > env var (`CLAUDITOR_HARNESS`,
+    `CLAUDITOR_GRADING_PROVIDER`) > spec field (`EvalSpec.harness`,
+    `EvalSpec.grading_provider`) > default `"auto"`. Mirrors the CLI seam
+    exactly per `.claude/rules/spec-cli-precedence.md`.
+  - **Eager `check_codex_auth` from `clauditor_runner` and `clauditor_spec`.**
+    When the resolved harness is `"codex"`, both factories fire
+    `check_codex_auth` before returning the runner / wrapped spec; missing
+    auth raises `CodexAuthMissingError` (a sibling of `Exception`, NOT a
+    subclass of `AnthropicAuthMissingError` / `OpenAIAuthMissingError`)
+    so callers route on a structural `except` ladder rather than
+    substring-matching error text.
+  - **Asymmetry note.** There is intentionally no
+    `CLAUDITOR_FIXTURE_ALLOW_OPENAI` env var (DEC-001 of #155). The
+    existing `CLAUDITOR_FIXTURE_ALLOW_CLI=1` opts into a *relaxed*
+    Anthropic guard (accepts subscription auth via the `claude` CLI on
+    PATH); OpenAI has no CLI-fallback / subscription analog (per #145
+    DEC-002), so there is nothing to opt into. See
+    [`docs/pytest-plugin.md`](docs/pytest-plugin.md) for the full
+    documentation including a `pytest.mark.parametrize` worked example.
+- **`EvalSpec.system_prompt: str | None = None` field (#150).** Mirrors
+  `user_prompt`'s shape and validation: optional at load time, when set
+  must be a non-empty, non-whitespace string (`EvalSpec.from_file`
+  rejects empty strings, whitespace-only strings, and non-string
+  values). When unset, clauditor auto-derives the system prompt from
+  the `SKILL.md` body (post-frontmatter, via `parse_frontmatter`) at
+  `SkillSpec.run` time. Explicit `EvalSpec.system_prompt` wins over
+  the auto-derived `SKILL.md` body. Auto-derive failures (missing
+  file, malformed frontmatter) raise a `RuntimeError` naming the
+  skill and path. Frontmatter `system_prompt:` keys inside `SKILL.md`
+  are NOT supported (DEC-003) — the body is the auto-derive source.
+  See [`docs/eval-spec-reference.md#system-prompt`](docs/eval-spec-reference.md#system-prompt).
+- **`Harness.build_prompt(skill_name, args, *, system_prompt) -> str`
+  protocol method (#150).** Third member of the cross-harness
+  `Harness` protocol (alongside `invoke` and `strip_auth_keys`). Each
+  harness owns its identity-to-prompt strategy: `ClaudeCodeHarness`
+  keeps the slash-command synthesis (`f"/{skill_name} {args}"`, or
+  `f"/{skill_name}"` when args is empty) and ignores `system_prompt`
+  because the `claude -p` CLI has no separate system-prompt channel;
+  `MockHarness` records `(skill_name, args, system_prompt)` on
+  `build_prompt_calls` for test assertions and returns a deterministic
+  stub that surfaces all three inputs. The forthcoming `CodexHarness`
+  (#149) will consume `system_prompt` as the system message. See
+  [`docs/architecture.md#3-harness-protocol`](docs/architecture.md#3-harness-protocol).
+- **`SkillRunner.run(..., system_prompt=...)` keyword-only kwarg
+  (#150).** Threads the resolved `system_prompt` from `SkillSpec.run`
+  to the harness's `build_prompt`. Keyword-only and placed last so it
+  cannot collide positionally with the existing `cwd` / `env` /
+  `timeout` kwargs. `SkillSpec.run` resolves the effective value once
+  (explicit `EvalSpec.system_prompt` > auto-derived `SKILL.md` body)
+  and threads the resolved string through this kwarg.
+
+### Changed
+
+- **Codex subprocess error mapping: chatgpt-mode rejection classified as
+  `"auth"` (#177, PR #181).** When the pre-flight refusal is bypassed
+  (e.g. `~/.codex/auth.json` is created / mutated after the pre-flight
+  check, or a sandboxed CI environment skips the parser), the codex
+  subprocess emits the server-side rejection string
+  `"The 'gpt-5-codex' model is not supported when using Codex with a
+  ChatGPT account."` `_classify_codex_failure` now classifies this as
+  `error_category = "auth"` rather than `"api"`, matching the actual
+  failure mode (credentials are pointing at the wrong auth surface).
+  No sidecar schema bump per DEC-011 — new `Literal` values inside an
+  existing field are additive.
+
+- **Codex CLI-on-PATH announcement body reworded (#177, PR #181).**
+  `_CODEX_CLI_ON_PATH_ANNOUNCEMENT` no longer mentions "the ChatGPT-login
+  flow"; the post-#177 body describes codex resolving credentials from
+  `~/.codex/auth.json` in API-key mode. Three durable substrings remain
+  pinned by tests: `"codex"`, `"PATH"`, `"~/.codex/auth.json"`. The
+  announcement fires under the narrowed condition that the PATH branch
+  is the load-bearing acceptance signal (env vars unset, codex on PATH,
+  and `auth.json` is absent or declares `auth_mode != "chatgpt"`); the
+  chatgpt-mode refusal raises `CodexAuthMissingError` and does not fire
+  the announcement (the exception is the user signal).
+
 ## [0.1.1] - 2026-04-26
 
 ### Added

@@ -6,11 +6,16 @@ import argparse
 import sys
 from pathlib import Path
 
+from clauditor._harnesses import construct_harness
+from clauditor._harnesses._claude_code import env_without_api_key
+from clauditor._providers import (
+    CodexAuthMissingError,
+    check_codex_auth,
+)
 from clauditor.capture_provenance import write_capture_provenance
 from clauditor.runner import (
     SkillRunner,
     env_with_sync_tasks,
-    env_without_api_key,
 )
 
 
@@ -18,7 +23,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``capture`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int
+    from clauditor.cli import _harness_choice, _positive_int
 
     p_capture = subparsers.add_parser(
         "capture",
@@ -76,6 +81,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     p_capture.add_argument(
+        "--harness",
+        type=_harness_choice,
+        default=None,
+        choices=("claude-code", "codex", "auto"),
+        help=(
+            "Override the harness selection: 'claude-code' (Anthropic "
+            "Claude CLI), 'codex' (OpenAI Codex CLI), or 'auto' (prefer "
+            "claude-code when available). Three-layer precedence (no "
+            "spec layer): this flag > CLAUDITOR_HARNESS env > default "
+            "'auto'."
+        ),
+    )
+    p_capture.add_argument(
         "skill_args",
         nargs="*",
         help="Arguments to pass to the skill (put after `--`)",
@@ -93,7 +111,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
 
     # Shared helper lives in ``clauditor.cli`` (package __init__). Import
     # lazily to avoid a circular import at module load.
-    from clauditor.cli import _render_skill_error
+    from clauditor.cli import _render_skill_error, _resolve_harness
 
     skill_name = args.skill.lstrip("/")
     skill_args = " ".join(args.skill_args) if args.skill_args else ""
@@ -107,11 +125,65 @@ def cmd_capture(args: argparse.Namespace) -> int:
             f"{out_path.stem}-{stamp}{out_path.suffix}"
         )
 
-    runner = SkillRunner(claude_bin=args.claude_bin or "claude")
+    # #151 US-005 / DEC-006 / DEC-012: resolve harness via the four-layer
+    # precedence helper (CLI flag > CLAUDITOR_HARNESS env > default
+    # "auto"; no eval spec for capture). Fail fast if the resolved
+    # harness is "codex" and Codex auth is missing. ``capture`` has no
+    # provider-grader axis, so harness auth is the only pre-call check.
+    #
+    # ``--claude-bin`` precedence (CodeRabbit review feedback on PR
+    # #166): when the operator explicitly passed ``--claude-bin``, they
+    # have signalled intent to run Claude Code. Treat that as
+    # equivalent to pinning ``--harness=claude-code`` UNLESS they
+    # explicitly pinned ``--harness=codex`` (in which case the
+    # explicit ``--harness`` wins — operator-intent layers are siblings,
+    # but ``--harness`` is the more specific knob). Without this guard,
+    # ``capture --claude-bin /custom/claude`` would silently auto-resolve
+    # to ``codex`` (or hard-fail with "neither claude nor codex on PATH")
+    # whenever ``claude`` was not on PATH, even though the operator
+    # supplied a custom Claude binary.
+    if (
+        getattr(args, "claude_bin", None) is not None
+        and getattr(args, "harness", None) != "codex"
+    ):
+        # Force the claude-code branch by pinning ``args.harness`` BEFORE
+        # the resolver fires. Argparse normalizes the attribute, so
+        # rewriting it here is structural — ``_resolve_harness`` reads
+        # ``args.harness`` first and that value will now be
+        # ``"claude-code"``.
+        args.harness = "claude-code"
+    harness_name = _resolve_harness(args, None)
+    if harness_name == "codex":
+        try:
+            check_codex_auth("capture")
+        except CodexAuthMissingError as exc:
+            # Template already starts with "ERROR: " — print verbatim
+            # to avoid a doubled "ERROR: ERROR: " prefix (matches the
+            # AnthropicAuthMissingError / OpenAIAuthMissingError
+            # handlers in cli/grade.py).
+            print(str(exc), file=sys.stderr)
+            return 2
+
+    # When the resolved harness is the default ``claude-code``, preserve
+    # the historical ``--claude-bin`` override path so existing call
+    # sites are unaffected. For non-default harnesses, ``--claude-bin``
+    # is silently ignored (Codex has its own CLI binary). Constructing
+    # via ``construct_harness`` for non-default reuses the dispatcher
+    # logic and keeps the wiring uniform with ``SkillSpec.run``.
+    if harness_name == "claude-code":
+        runner = SkillRunner(claude_bin=args.claude_bin or "claude")
+    else:
+        runner = SkillRunner(harness=construct_harness(harness_name))
     # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags through
     # to the runner. Defaults are both None (today's behavior).
+    #
+    # ``harness_name`` is threaded into ``env_without_api_key`` so the
+    # codex branch preserves ``OPENAI_API_KEY`` (Copilot review feedback
+    # on PR #166): otherwise ``--no-api-key`` would launch the Codex
+    # subprocess without usable auth even though :func:`check_codex_auth`
+    # accepted it.
     env_override: dict[str, str] | None = (
-        env_without_api_key()
+        env_without_api_key(harness_name=harness_name)
         if getattr(args, "no_api_key", False)
         else None
     )

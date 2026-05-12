@@ -44,7 +44,7 @@ for raw_line in proc.stdout:
         # treated as success so older CLI builds that omit the field
         # still parse cleanly. The canonical keyword classifier +
         # 4 KB truncation lives in
-        # ``src/clauditor/runner.py::_classify_result_message``.
+        # ``src/clauditor/_harnesses/_claude_code.py::_classify_result_message``.
         if msg.get("is_error") is True:
             err_text, err_category = _classify_result_message(msg)
             if err_text is not None:
@@ -114,9 +114,9 @@ if not saw_result:
 
 ## Canonical implementation
 
-`src/clauditor/runner.py::SkillRunner._invoke` — the `for raw_line in
-proc.stdout` loop. The error-classification helper
-`src/clauditor/runner.py::_classify_result_message` is the pure
+`src/clauditor/_harnesses/_claude_code.py::ClaudeCodeHarness.invoke` — the
+`for raw_line in proc.stdout` loop. The error-classification helper
+`src/clauditor/_harnesses/_claude_code.py::_classify_result_message` is the pure
 counterpart: given a result-message dict it returns
 `(error_text, error_category)` with the 4 KB truncation and the
 ordered keyword classifier (`rate_limit` before `auth` before `api`).

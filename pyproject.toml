@@ -26,7 +26,7 @@ classifiers = [
     "Topic :: Software Development :: Quality Assurance",
 ]
 
-dependencies = ["anthropic>=0.40.0"]
+dependencies = ["anthropic>=0.40.0", "openai>=1.66.0"]
 
 [project.optional-dependencies]
 grader = []  # backward compat — anthropic is now a default dependency
@@ -34,6 +34,7 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.4.0",
     "anthropic>=0.40.0",
+    "openai>=1.66.0",
 ]
 
 [project.scripts]
@@ -99,6 +100,7 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.4.0",
     "anthropic>=0.40.0",
+    "openai>=1.66.0",
     "mkdocs-material>=9.0",
     "mkdocs-include-markdown-plugin>=6.0",
 ]

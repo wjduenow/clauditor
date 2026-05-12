@@ -264,13 +264,13 @@ The #63 runner-error-surfacing work introduced three new pure
 helpers that each sit at a natural "plain types at the boundary"
 seam, testable in isolation without subprocess or SDK mocks:
 
-- `src/clauditor/runner.py::_classify_result_message(msg: dict)
+- `src/clauditor/_harnesses/_claude_code.py::_classify_result_message(msg: dict)
   -> tuple[str | None, str | None]` — consumes a stream-json
   `result` message dict, returns `(error_text, error_category)`.
   Strict `is True` check on `is_error`; 4 KB soft cap on the
   `result` string; keyword-priority classification (`rate_limit`
-  before `auth` before `api`). `_invoke` calls it once per run.
-- `src/clauditor/runner.py::_detect_interactive_hang(stream_events:
+  before `auth` before `api`). `ClaudeCodeHarness.invoke` calls it once per run.
+- `src/clauditor/_harnesses/_claude_code.py::_detect_interactive_hang(stream_events:
   list[dict], final_text: str) -> bool` — gated on
   `num_turns==1 + stop_reason=="end_turn"` AND either a trailing
   `?` in the final text OR an `AskUserQuestion` `tool_use` block
@@ -298,10 +298,10 @@ Why the split mattered specifically here:
 - **Two parsers + one renderer, one seam each**: the parser-side
   pure helpers (`_classify_result_message`,
   `_detect_interactive_hang`) are called from deep inside
-  `_invoke`'s streaming loop; embedding their logic inline would
+  `ClaudeCodeHarness.invoke`'s streaming loop; embedding their logic inline would
   have required subprocess-level mocking to reach the error
   branches. With the extraction, the branches are reachable
-  from in-memory tests and the `_invoke` wiring is narrow
+  from in-memory tests and the `ClaudeCodeHarness.invoke` wiring is narrow
   enough to review at a glance.
 - **Render-precedence has exactly one audit site**: the
   stream-json-wins-over-stderr ordering from DEC-001, the
@@ -321,6 +321,395 @@ Traces to bead `clauditor-cha.11` (US-011) of
 `.claude/rules/stream-json-schema.md` codifies the defensive
 stream-json-parsing contract the two parser-side helpers
 honor.
+
+### Seventh anchor (Codex helper composition)
+
+The #149 CodexHarness work introduced four pure helpers that
+collectively drive the harness's failure-classification, advisory-
+detection, and stderr-redaction surface — each at a natural "plain
+types at the boundary" seam, testable without `subprocess.Popen`
+mocks or live `codex exec` invocations:
+
+- `src/clauditor/_harnesses/_codex.py::_classify_codex_failure(message:
+  str | None) -> tuple[str, Literal["rate_limit", "auth", "api"]]`
+  — consumes a raw failure string (Codex surfaces text on
+  `turn.failed.error.message` per-turn and on top-level `error.message`
+  for stream-fatal errors, NOT one stream-event dict like Claude).
+  Returns `(truncated_text, category)`; closed Literal stays closed
+  per DEC-007 of `plans/super/149-codex-harness.md`. 4 KB truncation
+  with classification preserved across the cap. `CodexHarness.invoke`
+  calls it from both the `turn.failed` and top-level `error` arms.
+- `src/clauditor/_harnesses/_codex.py::_detect_codex_dropped_events(
+  stream_events: list[dict]) -> int` — sums the leading integer on
+  Lagged-synthetic `item.completed` events (`item.type == "error"`,
+  message matches `<N> events were dropped...`). Defensive read posture
+  per `.claude/rules/stream-json-schema.md`: every malformed/missing-
+  field branch degrades to 0 without raising. Wired post-parse-loop
+  to surface a `dropped-events:` advisory warning (DEC-018) without
+  setting `error_category`.
+- `src/clauditor/_harnesses/_codex.py::_detect_codex_truncated_output(
+  stream_events: list[dict], last_message_text: str) -> bool` —
+  returns True when no `agent_message` items appeared but the
+  `--output-last-message` tempfile is non-empty. Surfaces the
+  `last-message-empty:` advisory warning per DEC-018 and triggers
+  the DEC-005 fallback that promotes the tempfile content into
+  `InvokeResult.output`.
+- `src/clauditor/_harnesses/_codex.py::_filter_stderr(stderr_text:
+  str) -> str` — hybrid redact-then-cap pipeline per DEC-013:
+  per-line regex redaction of bare `sk-...` tokens and `Bearer ...`
+  prefixes, then per-line substring redaction against
+  `_AUTH_LEAK_PATTERNS`, then 8 KB byte cap (cap last so a redacted
+  line that lands inside the cap is still safely redacted). Pure +
+  non-mutating per `.claude/rules/non-mutating-scrub.md`.
+
+All four tested directly via dedicated test classes
+(`TestClassifyCodexFailure`, `TestDetectCodexDroppedEvents`,
+`TestDetectCodexTruncatedOutput`, `TestFilterStderr`) that pass
+plain strings/dicts and assert on the return value — no
+`patch("subprocess.Popen")`, no `_FakeCodexPopen`, no Codex CLI on
+PATH. Every keyword-priority edge case (rate_limit before auth
+before api per DEC-007), every Lagged-event count parse branch,
+every redaction pattern, every truncation-boundary check is a
+one-line construction away.
+
+The async `CodexHarness.invoke` wrapper that wires these four
+helpers is the canonical thin-orchestrator shape: argv assembly,
+TemporaryDirectory + drainer-thread + watchdog setup, NDJSON parse
+loop, post-parse advisory pass, then `InvokeResult` construction.
+None of the verdict logic, classification logic, or redaction
+logic lives inside `invoke`; all four pure helpers stay at the
+boundary.
+
+Why the split mattered specifically here:
+
+- **Two distinct error surfaces, one classifier**: Codex emits
+  errors via two different shapes (per-turn `turn.failed.error` and
+  stream-fatal top-level `error`). A single
+  `_classify_codex_failure` taking the raw message string keeps
+  the dispatch site simple — `invoke` reads the message from
+  whichever event arrived and hands it to one classifier. An inline
+  classifier-per-arm would have produced two near-identical keyword
+  ladders that drift over time.
+- **Advisory vs failure separation enforced structurally**: the
+  two `_detect_codex_*` advisory helpers return primitive types
+  (int, bool); they cannot accidentally set `error_category` or
+  down-classify `succeeded_cleanly`. The orchestrator translates
+  their returns into `warnings: list[str]` entries with the DEC-018
+  prefixes (`dropped-events:`, `last-message-empty:`). A future
+  contributor extending the advisory surface gets a structurally-
+  enforced "advisory means warning, not failure" guarantee.
+- **Stderr redaction is the load-bearing security boundary**:
+  `_filter_stderr` is the last line of defense before stderr text
+  is appended to `SkillResult.warnings` and persisted to sidecars.
+  Keeping it pure + tested independently lets the redaction-pattern
+  set evolve (e.g. adding new key shapes) without re-validating the
+  surrounding subprocess plumbing.
+
+Traces to bead `clauditor-cif.1` (US-001) of
+`plans/super/149-codex-harness.md`. Convention rules: C2 (this
+rule) and C4 (`monotonic-time-indirection.md` for the `_monotonic`
+alias). Companion rules: `.claude/rules/non-mutating-scrub.md`
+(the `_filter_stderr` non-mutating contract),
+`.claude/rules/stream-json-schema.md` (the defensive parse-loop
+shape the orchestrator uses around the four helpers),
+`.claude/rules/harness-protocol-shape.md` (lists CodexHarness as
+the second non-mock canonical implementation).
+
+### Eighth anchor (cross-axis mixed-dimension detection)
+
+`src/clauditor/audit.py::detect_mixed_dimension` — pure helper
+introduced in #153 to drive the cross-axis comparability refusal
+on both `trend` and `compare`. Signature: `(records: list[dict],
+*, dimension: Literal["harness", "provider"]) -> tuple[bool,
+list[str]]`. Sibling of the per-axis coercers
+`_provider_or_default` (audit.py:91) and `_harness_or_default`
+(audit.py:108); reuses them as the dispatch table so coercion
+semantics for non-string / blank / `None` records cannot drift
+between caller commands. No I/O, never raises.
+
+Two callers, both thin orchestrators:
+
+- `src/clauditor/cli/trend.py::cmd_trend` — calls
+  `detect_mixed_dimension` once per axis on the full filtered
+  set BEFORE the `--last` slice, collects refusal messages from
+  both axes into a list, and prints them together at exit 2 if
+  any axis is mixed without an opt-in (DEC-011 multi-axis
+  refusal). Per-axis WARNINGs for opt-in flags fire only after
+  every axis has cleared its refusal check.
+- `src/clauditor/cli/compare.py::cmd_compare` — calls
+  `detect_mixed_dimension` on a 2-element list (the two
+  compared inputs' metadata dicts) inside the `before_kind ==
+  "grade.json" and after_kind == "grade.json"` gate. Per
+  DEC-003, `.txt` capture pairs silent-skip — the helper is
+  never called when metadata is unavailable.
+
+Tests: `tests/test_audit.py::TestDetectMixedDimension` (line
+2277) — six unit tests on the pure helper. No `tmp_path`, no
+subprocess mocks, no fixtures beyond inline list literals. Each
+edge case (single-value, mixed, missing key, non-string,
+harness mirror, empty input) is one assertion away.
+
+Why the split mattered specifically here:
+
+- **One seam, two commands**: `trend` averages over many
+  records; `compare` deltas exactly two. Both must reject mixed-
+  axis aggregation with byte-identical message lead-ins
+  (`"Mixed <plural> detected"`) and identical coercion
+  semantics. Routing both through the same pure helper makes
+  this structural — a future change to coercion (e.g. adding
+  whitespace-stripping or case normalization) propagates
+  uniformly.
+- **Tests trivially cover the malformed-record paths**: the
+  fourth test case (whitespace-only / `None` / non-string
+  values default safely) is impossible to write cleanly when
+  the detection logic is inlined inside `cmd_trend` or
+  `cmd_compare` — those entry points require iteration-dir
+  fixtures and full history files. The pure helper accepts
+  `[{"provider": "  "}, {"provider": None}, {"provider": 42}]`
+  as a single inline literal.
+- **Future axes plug in without orchestrator churn**: when
+  `transport_source` (or any other stack-identity dimension)
+  joins as a third axis, the pure helper gains one Literal
+  member and one dispatch-table entry; the orchestrator code
+  in `cmd_trend` / `cmd_compare` extends by one
+  `detect_mixed_dimension(records, dimension="transport_source")`
+  call. The `.claude/rules/cross-axis-comparability-refusal.md`
+  rule codifies the full extension recipe.
+
+Traces to DEC-010 of `plans/super/153-cross-axis-comparability.md`.
+Companion rule: `.claude/rules/cross-axis-comparability-refusal.md`
+(the per-axis refusal+filter+opt-in shape this helper drives).
+
+### Ninth anchor (pricing-table cost estimation)
+
+`src/clauditor/_providers/_pricing.py` — pure-compute module
+introduced in #169 to back the `cost_usd` field on
+`IterationContext`. Sibling shape to `_providers/_retry.py`: a
+small pure-compute module living inside the `_providers` package
+without being a `call_model` consumer. Two helpers, both pure:
+
+- **`estimate_cost(provider, model, input_tokens, output_tokens,
+  reasoning_tokens=None) -> float | None`** — pure dict-lookup
+  + arithmetic. Validates input types up front (raises
+  `ValueError` on contract violation: non-string provider/model,
+  bool / non-`int` / negative tokens), looks up the rate card in
+  `_PRICING_TABLE`, and computes
+  `(input * input_per_mtok + (output + reasoning) * output_per_mtok)
+  / 1_000_000`. Returns `None` cleanly on unknown
+  `(provider, model)` pairs so callers can write `cost_usd: null`
+  without raising. Reasoning tokens are folded into the effective
+  output count and billed at the model's output rate per the
+  provider research notes (see the module docstring's
+  reasoning-tokens contract).
+- **`compute_iteration_cost_usd(grading_report, extraction_report,
+  provider) -> float | None`** — pure composition helper. Sums
+  Layer 2 + Layer 3 grader-call cost from the already-computed
+  report dataclasses (`GradingReport`, `ExtractionReport`). Per
+  DEC-002 of #169 the helper is **all-or-nothing**: any internal
+  `estimate_cost` returning `None` → composition returns `None`
+  rather than partial cost. A "roughly right" partial estimate
+  is silently wrong for budgeting and trend reads, so
+  null-on-any-miss is the safe default. `extraction_report=None`
+  contributes `0.0` to the sum (that is NOT a lookup miss — it
+  is a genuine "no Layer-2 call happened" signal).
+
+Both helpers satisfy the rule's pure-compute contract at the
+**return-value layer**: their returned cost is a deterministic
+function of the inputs, with no network I/O, no file I/O, and no
+subprocess. The one documented exception is the announcement
+family — `estimate_cost` may emit one-shot
+`print(..., file=sys.stderr)` notices via
+`announce_pricing_table_stale_if_old` and `announce_unknown_model`,
+each of which mutates a module-level flag/set on first fire and
+no-ops on subsequent calls. The notices belong to the
+"implicit-coupling announcements" family documented in
+`.claude/rules/centralized-sdk-call.md` and never affect the
+returned cost. Tests reset the module-level flags via autouse
+fixtures, so the deterministic-return-value contract is observable
+in isolation while the announcement side-effects are exercised by
+their own dedicated test classes.
+
+Two callers today:
+
+- `src/clauditor/cli/grade.py::_write_context_sidecar` — the
+  production seam. Uses `compute_iteration_cost_usd` to populate
+  `IterationContext.cost_usd` during workspace staging per
+  `.claude/rules/sidecar-during-staging.md`. The CLI seam owns
+  provider resolution and the surrounding I/O (sidecar
+  serialization, atomic publication); the pure helper just sums.
+- `tests/test_providers_pricing.py` (52 tests) and
+  `tests/test_cli.py::TestCmdGradeContextCostUsd` — exercise
+  both functions directly with plain-dataclass fixtures, no
+  `tmp_path`, no subprocess mocks. Every contract-violation
+  branch (non-string provider, bool token, negative count, both
+  L2 / L3 lookup-miss permutations) is reachable via inline
+  arguments.
+
+Why the split mattered specifically here:
+
+- **Two helpers, one pure module**:
+  `compute_iteration_cost_usd` concentrates Layer 2 + Layer 3
+  dispatch and all-or-nothing aggregation logic in one testable
+  seam — per-layer cost dispatch, lookup-miss propagation, and
+  the null-on-any-miss rule that defends `cost_usd`'s sidecar
+  contract. Inlining at the call site
+  (`_write_context_sidecar`) would have spread the per-layer
+  dispatch + the all-or-nothing rule across the I/O layer, where
+  future refactors are likely to drift them. The pure helper
+  keeps the policy in one place even though there is only one
+  production caller today.
+- **Sidecar-shape contract**: `cost_usd` is a persisted field on
+  `context.json` whose shape is part of the always-v1 contract
+  (see `.claude/rules/json-schema-version.md` "New sidecar
+  family — `context.json` (#154)"). The pure-helper boundary
+  defends that contract: bug fixes to the cost arithmetic (e.g.
+  if a future ticket adds cache-token rates) land inside
+  `estimate_cost` and propagate to every caller, with no
+  per-call-site duplication that could ship a divergent shape on
+  disk.
+- **Borderline-case threshold**: the rule's existing one-caller
+  threshold says "don't extract a pure helper just to satisfy
+  the rule." The pricing module qualifies for extraction
+  because it (a) produces a sidecar field whose shape is part of
+  `context.json`'s contract, and (b) has non-trivial resolution
+  logic (provider/model dispatch + reasoning-tokens-at-output-
+  rate folding) that would otherwise duplicate at the call site.
+  A simpler "compute one number from one number" helper would
+  not earn extraction.
+
+Traces to bead `clauditor-60x.8` (US-008) of
+`plans/super/169-pricing-cost-estimator.md`. Companion rules:
+`.claude/rules/multi-provider-dispatch.md` "Provider-dispatch
+shape extends to non-auth lookups (#169)" (the structural-
+routing invariant `estimate_cost` preserves —
+lookup-miss→`None` vs contract-violation→`ValueError`),
+`.claude/rules/centralized-sdk-call.md` "Implicit-coupling
+announcements — an emerging family" (the two pricing-coupled
+announcement members `_announced_pricing_table_stale` and
+`_announced_unknown_models` that fire from inside
+`estimate_cost`), `.claude/rules/json-schema-version.md` "New
+sidecar family — `context.json` (#154)" (the always-v1 sidecar
+field this module populates).
+
+### Tenth anchor (defensive SDK extraction + nullable-aware aggregation)
+
+The #170 `reasoning_tokens` work introduced two pure helpers that
+together codify the **defensive-extract → nullable-aware-sum**
+pipeline shape: a per-provider extractor that maps a raw SDK
+shape to `int | None` with a load-bearing `bool`-guard, and a
+chain-level aggregator that distinguishes "no source surfaced a
+count" (all-None → None) from "sources surfaced zero" (mixed or
+all-int → real sum). The two helpers live in different modules
+(provider-side vs report-side) but solve a coupled concern; both
+are unit-testable in isolation without `AsyncMock`, subprocess
+patches, or any SDK import:
+
+- `src/clauditor/_providers/_openai.py::_extract_reasoning_tokens(usage:
+  Any) -> int | None` — defensive read of
+  `usage.output_tokens_details.reasoning_tokens`. Returns the
+  integer (including `0` — preserved as a real "model didn't
+  reason" signal per DEC-002 of `#170`); returns `None` for
+  `usage is None`, missing nested attribute, missing field,
+  non-int value, `bool` value (the guard), or any
+  attribute-access exception. The bool-vs-int guard precedes
+  the `isinstance(value, int)` check per
+  `.claude/rules/constant-with-type-info.md` because Python's
+  `isinstance(True, int)` returns `True` — without the explicit
+  `isinstance(value, bool) → return None` arm, a future SDK
+  surfacing `reasoning_tokens=True` would silently coerce to
+  `1`. Anthropic does NOT get an analogous helper: per DEC-001
+  the SDK has no separately-billed reasoning-token field, so
+  the construction site at
+  `src/clauditor/_providers/_anthropic.py::_extract_result`
+  hardcodes `reasoning_tokens=None` with an inline comment
+  citing the rationale. The asymmetry is structural ("when the
+  SDK doesn't expose it, return None — don't approximate"),
+  not an oversight.
+- `src/clauditor/quality_grader.py::_sum_optional_reasoning_tokens(values:
+  list[int | None]) -> int | None` — chain-level aggregator
+  that filters out `None`s and returns `sum(present) if present
+  else None`. The semantic teaching is novel: a single `None`
+  component does NOT poison a sum that has at least one real
+  value (`[None, 42]` → `42`, NOT `0` and NOT `None`), and an
+  all-`None` chain stays `None` rather than collapsing to `0`.
+  This preserves the provider-attribution distinction across
+  the multi-call grader chain — variance reps, parse-retry
+  attempts, blind-compare's two parallel calls, mixed
+  Anthropic+OpenAI grader pairs all aggregate cleanly. The
+  `or None` shorthand on an empty `present` list collapses the
+  empty-sum-equals-zero foot-gun. Per DEC-003 of #170.
+
+Both tested directly via dedicated test classes
+(`TestExtractReasoningTokens` in `tests/test_providers_openai.py`,
+`TestSumOptionalReasoningTokens` in
+`tests/test_quality_grader.py`) that pass plain `MagicMock` /
+list literals and assert on the return value — no `AsyncMock`,
+no `patch("subprocess.Popen")`, no Responses-API stubs. Every
+edge case (missing attribute, `0`-vs-`None`, bool guard, mixed
+all-None / mixed-non-None / all-int chains) is one inline
+assertion away.
+
+The orchestrator-side wiring is the canonical thin shape:
+`grader.py::extract_and_grade` and `quality_grader.py::grade_quality`
+each collect per-attempt `ModelResult.reasoning_tokens` into a
+list (`reasoning_attempts.append(api_result.reasoning_tokens)`),
+then hand the list to `_sum_optional_reasoning_tokens(...)` for
+the final report field. None of the verdict logic, coercion
+discipline, or aggregation semantics live inside the
+orchestrator; both helpers stay at the boundary.
+
+Why the split mattered specifically here:
+
+- **One bool-guard, one place per provider**: had the bool guard
+  been inlined at every `ModelResult` construction site (one per
+  provider × one per code path × one per retry branch), it
+  would have drifted within weeks. Centralizing it inside
+  `_extract_reasoning_tokens` means a future SDK shape change
+  edits one helper, and every call path inherits the fix.
+- **The `0`-vs-`None` distinction survives all aggregation
+  layers**: the per-call extractor preserves `0`, and the
+  chain-level aggregator preserves the all-None→None semantic.
+  Together they thread an honest signal from the SDK boundary
+  through to `IterationContext.reasoning_tokens` without any
+  layer collapsing the distinction. A future audit/trend
+  consumer can compare "no reasoning-capable call ran" against
+  "reasoning-capable calls ran but model used zero tokens"
+  cleanly.
+- **Symmetric reader-side bool-guard in
+  `from_json`**: the same defensive pattern applies on the
+  on-disk read side. Both `GradingReport.from_json` and
+  `ExtractionReport.from_json` carry a parallel
+  `if raw_reasoning is None or isinstance(raw_reasoning, bool):
+  reasoning_tokens = None` branch per the
+  `.claude/rules/json-schema-version.md` "Schema version bumps
+  for #170" subsection. The on-disk JSON boundary is a
+  serialize-then-parse roundtrip; a malformed sidecar with
+  `"reasoning_tokens": true` would otherwise coerce to `1` on
+  the way back in. Symmetric guards on both sides of the I/O
+  boundary keep the discipline structural.
+- **Future nullable-token-style fields plug in trivially**:
+  `#169` (`cost_usd: float | None`) shipped using the same shape —
+  per-provider defensive extractor (with a parallel `bool`/`int`
+  guard, since Python's `bool` is a subclass of `int` — NOT of
+  `float` — and `True`/`False` therefore pass any broad numeric
+  check like `isinstance(x, (int, float))` without an explicit
+  bool guard ahead of the int/float check), chain-level
+  `_sum_optional_cost_usd` aggregator with the same
+  all-None-stays-None semantic. The Ninth anchor (pricing-table
+  cost estimation) above documents how `#169` applied this
+  recipe; this Tenth anchor codifies the recipe itself so future
+  nullable-token fields inherit it without rediscovering.
+
+Traces to DEC-001, DEC-002, DEC-003, DEC-006 of
+`plans/super/170-reasoning-tokens-capture.md`. Companion rules:
+`.claude/rules/centralized-sdk-call.md` (the asymmetric per-
+provider population that `_extract_reasoning_tokens` lives
+inside),
+`.claude/rules/json-schema-version.md` (the schema-bump and
+loader-side-bool-guard contract that mirrors the writer-side
+discipline this anchor codifies),
+`.claude/rules/constant-with-type-info.md` (the bool-vs-int
+discipline this helper enforces at the SDK boundary).
 
 ## When this rule applies
 

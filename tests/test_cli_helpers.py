@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import argparse
 
+import pytest
+
 
 class TestShouldStripApiKeyForSkillSubprocess:
     """Regression tests for ``should_strip_api_key_for_skill_subprocess``.
@@ -121,3 +123,299 @@ class TestShouldStripApiKeyForSkillSubprocess:
 
         args = argparse.Namespace()  # no transport attribute at all
         assert should_strip_api_key_for_skill_subprocess(args) is False
+
+
+class TestHarnessChoice:
+    """Tests for the ``_harness_choice`` argparse type validator.
+
+    Sibling to :class:`TestTransportChoice` patterns in ``test_cli.py``.
+    Traces to DEC-002 / DEC-011 of
+    ``plans/super/151-harness-precedence.md``.
+    """
+
+    @pytest.mark.parametrize("value", ["claude-code", "codex", "auto"])
+    def test_accepts_each_valid_literal(self, value):
+        """Each of the three valid literals returns unchanged."""
+        from clauditor.cli import _harness_choice
+
+        assert _harness_choice(value) == value
+
+    @pytest.mark.parametrize(
+        "value", ["claude", "openai", "", "Claude-Code", " codex", "anthropic"]
+    )
+    def test_rejects_invalid_value(self, value):
+        """Anything outside the three-literal set raises
+        ``ArgumentTypeError`` with a "must be one of" message.
+        argparse maps this to exit 2 at parse time.
+        """
+        from clauditor.cli import _harness_choice
+
+        with pytest.raises(
+            argparse.ArgumentTypeError, match="must be one of"
+        ):
+            _harness_choice(value)
+
+
+class TestResolveHarness:
+    """Tests for the ``_resolve_harness`` four-layer precedence wrapper.
+
+    Sibling to :class:`TestResolveGraderTransport` in ``test_cli.py``.
+    Patches the canonical seam ``clauditor._providers.resolve_harness``
+    and the announcement helper
+    ``clauditor._providers._auth.announce_auto_codex_harness`` per
+    ``.claude/rules/back-compat-shim-discipline.md`` Pattern 3.
+
+    Traces to DEC-002 / DEC-006 / DEC-007 / DEC-011 of
+    ``plans/super/151-harness-precedence.md``.
+    """
+
+    def test_cli_value_passed_through(self, monkeypatch):
+        """``args.harness`` is forwarded to the pure resolver as
+        ``cli_override``. This is an integration sanity check —
+        the pure resolver decides precedence; the wrapper just
+        plumbs through."""
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+        captured: dict = {}
+
+        def fake_resolve(cli, env, spec):
+            captured["cli"] = cli
+            captured["env"] = env
+            captured["spec"] = spec
+            return ("codex", None)
+
+        monkeypatch.setattr(
+            "clauditor._providers.resolve_harness", fake_resolve
+        )
+        from clauditor.cli import _resolve_harness
+
+        args = argparse.Namespace(harness="codex")
+        result = _resolve_harness(args, None)
+        assert result == "codex"
+        assert captured["cli"] == "codex"
+        assert captured["env"] is None
+        assert captured["spec"] is None
+
+    def test_env_value_read_when_cli_unset(self, monkeypatch):
+        """When ``args.harness`` is None, env is forwarded to the
+        pure resolver as ``env_override``."""
+        monkeypatch.setenv("CLAUDITOR_HARNESS", "codex")
+        captured: dict = {}
+
+        def fake_resolve(cli, env, spec):
+            captured["cli"] = cli
+            captured["env"] = env
+            captured["spec"] = spec
+            return ("codex", None)
+
+        monkeypatch.setattr(
+            "clauditor._providers.resolve_harness", fake_resolve
+        )
+        from clauditor.cli import _resolve_harness
+
+        args = argparse.Namespace(harness=None)
+        result = _resolve_harness(args, None)
+        assert result == "codex"
+        assert captured["cli"] is None
+        assert captured["env"] == "codex"
+
+    def test_whitespace_only_env_normalizes_to_none(self, monkeypatch):
+        """``CLAUDITOR_HARNESS='   '`` is treated as unset (passed as
+        ``None`` to the pure resolver)."""
+        monkeypatch.setenv("CLAUDITOR_HARNESS", "   ")
+        captured: dict = {}
+
+        def fake_resolve(cli, env, spec):
+            captured["env"] = env
+            return ("claude-code", None)
+
+        monkeypatch.setattr(
+            "clauditor._providers.resolve_harness", fake_resolve
+        )
+        from clauditor.cli import _resolve_harness
+
+        args = argparse.Namespace(harness=None)
+        _resolve_harness(args, None)
+        assert captured["env"] is None
+
+    def test_spec_value_read_when_cli_and_env_unset(self, monkeypatch):
+        """When CLI + env are both unset, ``eval_spec.harness`` is
+        forwarded as ``spec_value``."""
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+        captured: dict = {}
+
+        def fake_resolve(cli, env, spec):
+            captured["spec"] = spec
+            return ("codex", None)
+
+        monkeypatch.setattr(
+            "clauditor._providers.resolve_harness", fake_resolve
+        )
+        from clauditor.cli import _resolve_harness
+
+        eval_spec = argparse.Namespace(harness="codex")
+        args = argparse.Namespace(harness=None)
+        result = _resolve_harness(args, eval_spec)
+        assert result == "codex"
+        assert captured["spec"] == "codex"
+
+    def test_eval_spec_none_falls_through_cleanly(self, monkeypatch):
+        """``eval_spec=None`` (e.g. ``cli/run.py`` path) does not
+        raise. ``spec_value`` is forwarded as ``None``."""
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+        captured: dict = {}
+
+        def fake_resolve(cli, env, spec):
+            captured["spec"] = spec
+            return ("claude-code", None)
+
+        monkeypatch.setattr(
+            "clauditor._providers.resolve_harness", fake_resolve
+        )
+        from clauditor.cli import _resolve_harness
+
+        args = argparse.Namespace(harness=None)
+        result = _resolve_harness(args, None)
+        assert result == "claude-code"
+        assert captured["spec"] is None
+
+    def test_args_without_harness_attr_falls_back_to_none(
+        self, monkeypatch
+    ):
+        """``args`` missing ``harness`` attribute → ``cli=None``.
+
+        Defensive: ``getattr(args, "harness", None)`` so call sites
+        that have not yet registered ``--harness`` (e.g. cli/run.py
+        before US-005) still work.
+        """
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+        captured: dict = {}
+
+        def fake_resolve(cli, env, spec):
+            captured["cli"] = cli
+            return ("claude-code", None)
+
+        monkeypatch.setattr(
+            "clauditor._providers.resolve_harness", fake_resolve
+        )
+        from clauditor.cli import _resolve_harness
+
+        args = argparse.Namespace()  # no `harness` attribute
+        result = _resolve_harness(args, None)
+        assert result == "claude-code"
+        assert captured["cli"] is None
+
+    def test_value_error_routes_to_systemexit_2(
+        self, monkeypatch, capsys
+    ):
+        """``ValueError`` from the pure resolver → stderr ``ERROR:``
+        line + ``SystemExit(2)`` per
+        ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+        """
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+
+        def fake_resolve(cli, env, spec):
+            raise ValueError("harness=auto: neither claude nor codex on PATH")
+
+        monkeypatch.setattr(
+            "clauditor._providers.resolve_harness", fake_resolve
+        )
+        from clauditor.cli import _resolve_harness
+
+        args = argparse.Namespace(harness=None)
+        with pytest.raises(SystemExit) as exc_info:
+            _resolve_harness(args, None)
+        assert exc_info.value.code == 2
+        captured = capsys.readouterr()
+        assert "ERROR:" in captured.err
+        assert "neither claude nor codex" in captured.err
+
+    def test_announce_fired_when_auto_resolved_to_codex(
+        self, monkeypatch
+    ):
+        """When the pure resolver returns
+        ``auto_resolved_to == "codex"``, the wrapper fires
+        ``announce_auto_codex_harness`` BEFORE returning."""
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+
+        def fake_resolve(cli, env, spec):
+            return ("codex", "codex")
+
+        announce_calls: list[int] = []
+
+        def fake_announce():
+            announce_calls.append(1)
+
+        monkeypatch.setattr(
+            "clauditor._providers.resolve_harness", fake_resolve
+        )
+        monkeypatch.setattr(
+            "clauditor._providers._auth.announce_auto_codex_harness",
+            fake_announce,
+        )
+        from clauditor.cli import _resolve_harness
+
+        args = argparse.Namespace(harness=None)
+        result = _resolve_harness(args, None)
+        assert result == "codex"
+        assert announce_calls == [1]
+
+    def test_announce_not_fired_when_auto_resolved_to_claude_code(
+        self, monkeypatch
+    ):
+        """When the auto branch picks ``"claude-code"`` (i.e.
+        ``auto_resolved_to is None`` per the pure resolver's
+        contract), no announcement fires."""
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+
+        def fake_resolve(cli, env, spec):
+            return ("claude-code", None)
+
+        announce_calls: list[int] = []
+
+        def fake_announce():
+            announce_calls.append(1)
+
+        monkeypatch.setattr(
+            "clauditor._providers.resolve_harness", fake_resolve
+        )
+        monkeypatch.setattr(
+            "clauditor._providers._auth.announce_auto_codex_harness",
+            fake_announce,
+        )
+        from clauditor.cli import _resolve_harness
+
+        args = argparse.Namespace(harness=None)
+        result = _resolve_harness(args, None)
+        assert result == "claude-code"
+        assert announce_calls == []
+
+    def test_announce_not_fired_when_explicit_codex(
+        self, monkeypatch
+    ):
+        """When an explicit non-``"auto"`` value at any layer
+        selects ``codex`` (``auto_resolved_to is None``), the
+        announcement does NOT fire — operators who pin a harness
+        accept the binary-availability responsibility silently."""
+        monkeypatch.delenv("CLAUDITOR_HARNESS", raising=False)
+
+        def fake_resolve(cli, env, spec):
+            return ("codex", None)
+
+        announce_calls: list[int] = []
+
+        def fake_announce():
+            announce_calls.append(1)
+
+        monkeypatch.setattr(
+            "clauditor._providers.resolve_harness", fake_resolve
+        )
+        monkeypatch.setattr(
+            "clauditor._providers._auth.announce_auto_codex_harness",
+            fake_announce,
+        )
+        from clauditor.cli import _resolve_harness
+
+        args = argparse.Namespace(harness="codex")
+        result = _resolve_harness(args, None)
+        assert result == "codex"
+        assert announce_calls == []

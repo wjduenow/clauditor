@@ -10,18 +10,23 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from clauditor import history
-from clauditor._anthropic import (
+from clauditor._harnesses._claude_code import env_without_api_key
+from clauditor._providers import (
     AnthropicAuthMissingError,
+    CodexAuthMissingError,
+    OpenAIAuthMissingError,
     announce_implicit_no_api_key,
-    check_any_auth_available,
+    check_codex_auth,
+    check_provider_auth,
 )
+from clauditor._providers._pricing import compute_iteration_cost_usd
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.benchmark import Benchmark, compute_benchmark
+from clauditor.context import IterationContext
 from clauditor.paths import resolve_clauditor_dir
 from clauditor.runner import (
     SkillResult,
     env_with_sync_tasks,
-    env_without_api_key,
 )
 from clauditor.spec import SkillSpec
 from clauditor.workspace import (
@@ -32,11 +37,13 @@ from clauditor.workspace import (
 )
 
 if TYPE_CHECKING:
+    from clauditor.grader import ExtractionReport
     from clauditor.quality_grader import GradingReport, VarianceReport
 
 
 def _resolve_grade_env_override(
     args: argparse.Namespace,
+    harness_name: str | None = None,
 ) -> tuple[dict[str, str] | None, bool]:
     """Decide the skill-subprocess env override and notice-firing bit.
 
@@ -58,6 +65,13 @@ def _resolve_grade_env_override(
 
     Whitespace-only env values are treated as absent (matching
     :func:`clauditor._anthropic._api_key_is_set`).
+
+    ``harness_name`` (Copilot review feedback on PR #166): threaded
+    into :func:`env_without_api_key` so the codex branch preserves
+    ``OPENAI_API_KEY`` (otherwise ``--no-api-key`` or the
+    ``--transport cli`` implicit-strip coupling would launch the Codex
+    subprocess without usable auth even though :func:`check_codex_auth`
+    accepted it from ``os.environ``).
     """
     from clauditor.cli import should_strip_api_key_for_skill_subprocess
 
@@ -70,7 +84,7 @@ def _resolve_grade_env_override(
     auth_token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
     key_was_present = bool(api_key.strip() or auth_token.strip())
     env_override = (
-        env_without_api_key()
+        env_without_api_key(harness_name=harness_name)
         if (explicit_strip or implicit_strip)
         else None
     )
@@ -82,7 +96,13 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``grade`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int, _transport_choice, _unit_float
+    from clauditor.cli import (
+        _harness_choice,
+        _positive_int,
+        _provider_choice,
+        _transport_choice,
+        _unit_float,
+    )
 
     p_grade = subparsers.add_parser(
         "grade", help="Run Layer 3 quality grading against a skill's output"
@@ -229,6 +249,31 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "key is present — pass --transport api to keep the key.)"
         ),
     )
+    p_grade.add_argument(
+        "--grading-provider",
+        type=_provider_choice,
+        default=None,
+        choices=("anthropic", "openai", "auto"),
+        help=(
+            "Override the grading provider: 'anthropic', 'openai', or "
+            "'auto' (infer from grading_model). Four-layer precedence: "
+            "this flag > CLAUDITOR_GRADING_PROVIDER env > "
+            "EvalSpec.grading_provider > default 'auto'."
+        ),
+    )
+    p_grade.add_argument(
+        "--harness",
+        type=_harness_choice,
+        default=None,
+        choices=("claude-code", "codex", "auto"),
+        help=(
+            "Override the harness selection: 'claude-code' (Anthropic "
+            "Claude CLI), 'codex' (OpenAI Codex CLI), or 'auto' (prefer "
+            "claude-code when available). Four-layer precedence: this "
+            "flag > CLAUDITOR_HARNESS env > EvalSpec.harness > default "
+            "'auto'."
+        ),
+    )
 
 
 def _load_and_validate_grade_args(
@@ -306,28 +351,100 @@ def cmd_grade(args: argparse.Namespace) -> int:
         if filter_rc != 0:
             return filter_rc
 
-    model = args.model or spec.eval_spec.grading_model
-
-    # --dry-run: print prompt and exit
+    # --dry-run: print prompt and exit. Model resolution for the
+    # preview uses the eval spec's value verbatim (no provider-aware
+    # default) — the dry-run path is cost-free and an unset
+    # ``grading_model`` simply prints ``None``.
     if args.dry_run:
         from clauditor.quality_grader import build_grading_prompt
 
+        preview_model = (
+            args.model
+            or spec.eval_spec.grading_model
+            or "<auto, resolved from provider>"
+        )
         prompt = build_grading_prompt(spec.eval_spec)
-        print(f"Model: {model}")
+        print(f"Model: {preview_model}")
         print(f"Prompt:\n{prompt}")
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
-    # ANTHROPIC_API_KEY nor the claude CLI binary is available. Guard
-    # lands AFTER --dry-run (dry-run is a cost-free preview — no API
-    # call, no key needed) and BEFORE allocate_iteration so we do not
-    # leave an abandoned iteration-N-tmp/ staging dir behind when the
-    # guard fires.
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005/US-006:
+    # fail fast when the provider's required auth is missing. Provider
+    # is resolved via the four-layer ``_resolve_grading_provider``
+    # helper (CLI flag > CLAUDITOR_GRADING_PROVIDER env >
+    # EvalSpec.grading_provider > default "auto" with auto-inference
+    # from grading_model), so OpenAI-graded skills get an OpenAI-key-
+    # required guard. Guard lands AFTER --dry-run (dry-run is a
+    # cost-free preview — no API call, no key needed) and BEFORE
+    # allocate_iteration so we do not leave an abandoned
+    # iteration-N-tmp/ staging dir behind when the guard fires.
+    # Distinct ``except`` branches per
+    # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    #
+    # The resolved provider is threaded down through every grader
+    # entry point per #146 US-006 (orchestrators no longer re-read
+    # ``eval_spec.grading_provider``).
+    from clauditor.cli import _resolve_grading_provider, _resolve_harness
+
+    provider = _resolve_grading_provider(args, spec.eval_spec)
     try:
-        check_any_auth_available("grade")
+        check_provider_auth(provider, "grade")
     except AnthropicAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    except OpenAIAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    # #151 US-005 / DEC-006 / DEC-012: resolve harness via the four-layer
+    # precedence helper, then fail fast if the resolved harness is
+    # "codex" and Codex auth is missing. Auth-check ordering: provider
+    # auth FIRST (already above) so a missing ANTHROPIC_API_KEY for
+    # grading is reported before a missing CODEX_API_KEY for execution;
+    # harness auth SECOND. Both fire when applicable. Guard lands BEFORE
+    # allocate_iteration so we do not leave an abandoned
+    # iteration-N-tmp/ staging dir behind when the guard fires. Skipped
+    # when the entire run is captured-text (``--output`` AND no
+    # ``--variance`` AND no ``--baseline``) because no subprocess fires
+    # — the auto-resolve PATH check would otherwise be a hostile UX
+    # regression for the captured-output workflow.
+    needs_subprocess = (
+        not args.output
+        or bool(args.variance)
+        or bool(getattr(args, "baseline", False))
+    )
+    if needs_subprocess:
+        harness_name: str | None = _resolve_harness(args, spec.eval_spec)
+        if harness_name == "codex":
+            try:
+                check_codex_auth("grade")
+            except CodexAuthMissingError as exc:
+                # Template already starts with "ERROR: " — print verbatim
+                # to avoid a doubled "ERROR: ERROR: " prefix (matches the
+                # AnthropicAuthMissingError / OpenAIAuthMissingError
+                # handlers in cli/grade.py).
+                print(str(exc), file=sys.stderr)
+                return 2
+    else:
+        harness_name = None
+
+    # #146 US-006 / DEC-004 / issue #182: pick the per-provider default
+    # model when the spec's ``grading_model`` is unset (post-DEC-004b
+    # default-flip, an omitted ``grading_model`` loads as ``None``).
+    # ``args.model`` (if the operator passed ``--model``) always wins;
+    # otherwise the pure helper picks ``"claude-sonnet-4-6"`` for
+    # anthropic or ``"gpt-5.4"`` for openai based on the resolved
+    # provider. An explicit-but-mismatching spec value (e.g. spec
+    # pinned ``grading_model: "claude-sonnet-4-6"`` and operator
+    # passed ``--grading-provider openai``) surfaces as a clean SDK
+    # 400 with the right blame — no pre-flight guard needed now that
+    # the unset-spec paper cut is gone.
+    if args.model:
+        model = args.model
+    else:
+        from clauditor._providers import resolve_grading_model
+
+        model = resolve_grading_model(spec.eval_spec, provider)
 
     # Allocate the iteration workspace early so that a collision
     # (--iteration N already exists) fails before we make any LLM calls.
@@ -354,6 +471,8 @@ def cmd_grade(args: argparse.Namespace) -> int:
             args=args,
             spec=spec,
             model=model,
+            provider=provider,
+            harness_name=harness_name,
             clauditor_dir=clauditor_dir,
             workspace=workspace,
         )
@@ -436,6 +555,7 @@ def _run_skill_variants(
     spec: SkillSpec,
     workspace: IterationWorkspace,
     n_variance: int,
+    harness_name: str | None,
 ) -> tuple[
     list[tuple[str, list[dict]]],
     list[SkillResult | None],
@@ -468,7 +588,9 @@ def _run_skill_variants(
     # Copilot feedback on duplication). Traces to DEC-001, DEC-003,
     # DEC-006, DEC-007, DEC-008, DEC-009 of
     # plans/super/95-subscription-auth-flag.md.
-    env_override, should_announce = _resolve_grade_env_override(args)
+    env_override, should_announce = _resolve_grade_env_override(
+        args, harness_name=harness_name
+    )
     if should_announce:
         announce_implicit_no_api_key()
     timeout_override = getattr(args, "timeout", None)
@@ -505,6 +627,7 @@ def _run_skill_variants(
             timeout_override=timeout_override,
             env_override=env_override,
             sync_tasks_override=sync_tasks_override,
+            harness_name_override=harness_name,
         )
         if not primary_skill_result.succeeded_cleanly:
             print(
@@ -537,6 +660,7 @@ def _run_skill_variants(
             timeout_override=timeout_override,
             env_override=env_override,
             sync_tasks_override=sync_tasks_override,
+            harness_name_override=harness_name,
         )
         if not variance_result.succeeded_cleanly:
             print(
@@ -622,6 +746,8 @@ def _write_workspace_sidecars(
     reports: list[GradingReport],
     model: str,
     transport: str = "auto",
+    provider: str = "anthropic",
+    harness_name: str | None = None,
 ) -> Benchmark | None:
     """Write grading/assertions/extraction/baseline/benchmark sidecars.
 
@@ -646,6 +772,62 @@ def _write_workspace_sidecars(
         primary_report.to_json(), encoding="utf-8"
     )
 
+    # #169 US-005: run Layer 2 extraction (when sections declared)
+    # BEFORE writing context.json so ``compute_iteration_cost_usd``
+    # can sum L2 + L3 grader-call cost. Extraction was previously
+    # written after context.json; reordering preserves the
+    # sidecar-during-staging contract — both writes still land
+    # before ``workspace.finalize()``.
+    extraction_report: ExtractionReport | None = None
+    if spec.eval_spec.sections:
+        # #152 US-003: pass the harness that produced the underlying
+        # skill output so the sidecar honestly records which harness
+        # produced the text being extracted. Falls back to
+        # ``"claude-code"`` (the ``ExtractionReport.harness`` default)
+        # for ``--output`` mode where every entry of
+        # ``skill_results`` is ``None``.
+        harness_for_extraction = "claude-code"
+        for sr in skill_results:
+            if sr is not None:
+                harness_for_extraction = sr.harness
+                break
+        extraction_report = _write_extraction_sidecar(
+            skill_dir,
+            primary_text,
+            spec,
+            model,
+            transport=transport,
+            provider=provider,
+            harness=harness_for_extraction,
+        )
+
+    # #154 US-004 / DEC-007 / DEC-008: write the per-iteration
+    # comparability sidecar inside the staging block. Skip in
+    # captured-text mode (``--output`` without variance/baseline)
+    # where ``harness_name`` is ``None`` and there is no real
+    # ``SkillResult`` to read ``harness_metadata`` from.
+    primary_skill_result = skill_results[0] if skill_results else None
+    if harness_name is not None and primary_skill_result is not None:
+        _write_context_sidecar(
+            skill_dir=skill_dir,
+            harness_name=harness_name,
+            provider=provider,
+            primary_skill_result=primary_skill_result,
+            model_grader=primary_report.model,
+            primary_report=primary_report,
+            extraction_report=extraction_report,
+        )
+
+    # #152 US-002: stamp the harness on assertions.json. Single harness
+    # per command invocation (DEC-S2=A), so we read it from the first
+    # SkillResult — which has been populated from ``Harness.name`` since
+    # US-001. In ``--output`` mode there is no SkillResult; fall back to
+    # the resolved ``harness_name`` (or its default of ``"claude-code"``)
+    # so the field is always present.
+    if skill_results and skill_results[0] is not None:
+        assertions_harness = skill_results[0].harness
+    else:
+        assertions_harness = harness_name or "claude-code"
     _write_assertions_sidecar(
         args=args,
         spec=spec,
@@ -654,10 +836,8 @@ def _write_workspace_sidecars(
         run_outputs=run_outputs,
         verbose=verbose,
         no_transcript=no_transcript,
+        harness=assertions_harness,
     )
-
-    if spec.eval_spec.sections:
-        _write_extraction_sidecar(skill_dir, primary_text, spec, transport=transport)
 
     if getattr(args, "baseline", False):
         # Mirror the primary arm's env/timeout wiring so --no-api-key
@@ -670,7 +850,9 @@ def _write_workspace_sidecars(
         # lockstep by construction. The ``should_announce`` return is
         # deliberately ignored here — the primary arm already fired the
         # notice (and the helper is idempotent per US-002 regardless).
-        env_override, _ = _resolve_grade_env_override(args)
+        env_override, _ = _resolve_grade_env_override(
+            args, harness_name=harness_name
+        )
         # Tier 1.5 of GitHub #103: when --sync-tasks fires, the
         # baseline arm must also run synchronously so the delta
         # compares like-for-like. spec.runner.run_raw (used by the
@@ -687,11 +869,71 @@ def _write_workspace_sidecars(
             skill_results=skill_results,
             reports=reports,
             model=model,
+            provider=provider,
             env_override=env_override,
             timeout_override=timeout_override,
+            harness_name=harness_name,
         )
 
     return None
+
+
+def _write_context_sidecar(
+    *,
+    skill_dir: Path,
+    harness_name: str,
+    provider: str,
+    primary_skill_result: SkillResult,
+    model_grader: str | None,
+    primary_report: GradingReport,
+    extraction_report: ExtractionReport | None,
+) -> None:
+    """Write per-iteration comparability metadata as ``context.json``.
+
+    #154 US-004. Reads the runner-side fields from the primary
+    :class:`SkillResult`'s ``harness_metadata`` per the harness contract
+    (DEC-007, DEC-008): ``model`` and ``system_prompt_source`` are
+    UNGUARDED subscripts — a missing key surfaces a contract violation
+    immediately. ``sandbox_mode`` IS optional (only Codex populates it)
+    so it uses ``.get(...)``.
+
+    #169 US-005: ``cost_usd`` is computed via
+    :func:`compute_iteration_cost_usd`, which sums L2 + L3 grader-call
+    cost via per-provider rate-card lookups. Returns ``None`` (writing
+    ``cost_usd: null``) when any internal lookup misses, per DEC-002
+    all-or-nothing semantics.
+
+    #170 US-005: ``reasoning_tokens`` is threaded from the primary
+    :class:`GradingReport` (sum-of-non-None semantics across grader
+    attempts; see DEC-003 of
+    ``plans/super/170-reasoning-tokens-capture.md``). ``None`` means
+    "no provider call surfaced a reasoning-token count" — distinct
+    from ``0``.
+
+    Runs inside the workspace staging block per
+    ``.claude/rules/sidecar-during-staging.md``; the caller's
+    ``try/except → workspace.abort()`` envelope ensures a failed write
+    never publishes a partial iteration.
+    """
+    context = IterationContext(
+        harness=harness_name,
+        provider=provider,
+        model_runner=primary_skill_result.harness_metadata["model"],
+        model_grader=model_grader,
+        system_prompt_source=primary_skill_result.harness_metadata[
+            "system_prompt_source"
+        ],
+        sandbox_mode=primary_skill_result.harness_metadata.get("sandbox_mode"),
+        cost_usd=compute_iteration_cost_usd(
+            primary_report,
+            extraction_report,
+            provider,
+        ),
+        reasoning_tokens=primary_report.reasoning_tokens,
+    )
+    (skill_dir / "context.json").write_text(
+        context.to_json(), encoding="utf-8"
+    )
 
 
 def _write_run_dirs_or_scrub(
@@ -731,6 +973,7 @@ def _write_assertions_sidecar(
     run_outputs: list[tuple[str, list[dict]]],
     verbose: bool,
     no_transcript: bool,
+    harness: str = "claude-code",
 ) -> None:
     """Run L1 assertions per run, write ``assertions.json``, emit slices.
 
@@ -738,6 +981,14 @@ def _write_assertions_sidecar(
     auditor can jump from a failing row to the stream-json that
     produced it (US-004). Under ``verbose`` mode, failing-run transcript
     slices are printed to stderr (US-007).
+
+    ``harness`` (#152 US-002 / DEC-003): name of the harness that
+    produced the runs (one harness per command invocation per
+    DEC-S2=A). Stamped at the top level of ``assertions.json`` under
+    the ``harness`` key (schema_version 2). Defaults to ``"claude-code"``
+    so direct callers without the field stay green (the production
+    call site in ``_write_workspace_sidecars`` always passes the
+    resolved value).
     """
     from clauditor.cli import _print_failing_transcript_slice, _relative_to_repo
 
@@ -775,8 +1026,12 @@ def _write_assertions_sidecar(
                     idx, run_outputs[idx][1], sys.stderr
                 )
 
+    # #152 US-002: schema_version bumped 1 → 2 with a top-level
+    # ``harness`` field. Canonical key order: schema_version, harness,
+    # skill, iteration, runs (per DEC-003 / DEC-013).
     assertions_payload = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "harness": harness,
         "skill": spec.skill_name,
         "iteration": workspace.iteration,
         "runs": [
@@ -791,9 +1046,31 @@ def _write_assertions_sidecar(
 
 
 def _write_extraction_sidecar(
-    skill_dir: Path, primary_text: str, spec: SkillSpec, transport: str = "auto"
-) -> None:
-    """Run Layer 2 schema extraction and persist ``extraction.json``."""
+    skill_dir: Path,
+    primary_text: str,
+    spec: SkillSpec,
+    model: str,
+    transport: str = "auto",
+    *,
+    provider: str = "anthropic",
+    harness: str = "claude-code",
+) -> ExtractionReport:
+    """Run Layer 2 schema extraction and persist ``extraction.json``.
+
+    Returns the :class:`ExtractionReport` so downstream sidecars
+    (``context.json``'s ``cost_usd`` field per #169 US-005) can read
+    the same Layer 2 token counts without re-running extraction.
+
+    ``model`` is the resolved grading model the caller computed for
+    the surrounding ``cmd_grade`` invocation. Passed through verbatim
+    so OpenAI-graded skills don't fall back to ``extract_and_report``'s
+    Anthropic-default model (CodeRabbit finding on PR #164).
+
+    ``harness`` is the name of the harness that produced
+    ``primary_text`` (read off the originating ``SkillResult.harness``
+    by the caller). Persisted into ``extraction.json`` at
+    ``schema_version=4`` per #152 US-003 / DEC-004.
+    """
     import asyncio
 
     from clauditor.grader import extract_and_report
@@ -802,13 +1079,17 @@ def _write_extraction_sidecar(
         extract_and_report(
             primary_text,
             spec.eval_spec,
+            model=model,
             skill_name=spec.skill_name,
             transport=transport,
+            provider=provider,
+            harness=harness,
         )
     )
     (skill_dir / "extraction.json").write_text(
         extraction_report.to_json(), encoding="utf-8"
     )
+    return extraction_report
 
 
 def _write_baseline_and_benchmark(
@@ -819,8 +1100,10 @@ def _write_baseline_and_benchmark(
     skill_results: list[SkillResult | None],
     reports: list[GradingReport],
     model: str,
+    provider: str = "anthropic",
     env_override: dict[str, str] | None = None,
     timeout_override: int | None = None,
+    harness_name: str | None = None,
 ) -> Benchmark | None:
     """Run the baseline phase and compute+persist the benchmark delta.
 
@@ -838,8 +1121,10 @@ def _write_baseline_and_benchmark(
         skill_dir=skill_dir,
         iteration=workspace.iteration,
         model=model,
+        provider=provider,
         env_override=env_override,
         timeout_override=timeout_override,
+        harness_name=harness_name,
     )
 
     # #28 US-002: compute the pair-run benchmark delta and persist
@@ -894,8 +1179,10 @@ def _run_baseline_phase(
     skill_dir: Path,
     iteration: int,
     model: str,
+    provider: str = "anthropic",
     env_override: dict[str, str] | None = None,
     timeout_override: int | None = None,
+    harness_name: str | None = None,
 ) -> tuple[GradingReport, SkillResult]:
     """Run the baseline (no skill prefix) and persist sidecars.
 
@@ -908,10 +1195,19 @@ def _run_baseline_phase(
     ``--baseline`` run (otherwise the baseline subprocess would bypass
     the flags, defeating their intent).
 
+    ``harness_name`` (#151 US-005 / DEC-013): the resolved harness name
+    must match the primary arm's harness so the A/B comparison isolates
+    the variable. When non-default, materialize a fresh
+    :class:`SkillRunner` with the override harness for the baseline
+    invocation (mirrors :meth:`SkillSpec.run`'s
+    ``harness_name_override`` shape).
+
     Returns ``(GradingReport, SkillResult)`` so the caller can feed
     them to :func:`clauditor.benchmark.compute_benchmark`.
     """
+    from clauditor._harnesses import construct_harness
     from clauditor.baseline import compute_baseline
+    from clauditor.runner import SkillRunner
     from clauditor.workspace import stage_inputs
 
     test_args = spec.eval_spec.test_args or ""
@@ -924,7 +1220,23 @@ def _run_baseline_phase(
         stage_inputs(baseline_run_dir, sources)
         effective_cwd = baseline_run_dir / "inputs"
     print(f"Running baseline (no skill prefix) {test_args}...")
-    baseline_result = spec.runner.run_raw(
+
+    # #151 US-005 / DEC-013: when a non-default harness was resolved,
+    # materialize a fresh ``SkillRunner`` with that harness so the
+    # baseline runs under the same harness as the primary. Constructing
+    # a new runner (rather than mutating ``spec.runner.harness``) avoids
+    # mutating shared state across calls. ``harness_name`` is ``None``
+    # only on captured-output runs that never reach this path; treat
+    # ``"claude-code"`` and ``None`` the same way (preserve historical
+    # ``spec.runner`` behavior).
+    baseline_runner = spec.runner
+    if harness_name is not None and harness_name != "claude-code":
+        baseline_runner = SkillRunner(
+            project_dir=spec.runner.project_dir,
+            timeout=spec.runner.timeout,
+            harness=construct_harness(harness_name),
+        )
+    baseline_result = baseline_runner.run_raw(
         test_args,
         cwd=effective_cwd,
         env=env_override,
@@ -937,6 +1249,7 @@ def _run_baseline_phase(
         skill_name=spec.skill_name,
         iteration=iteration,
         model=model,
+        provider=provider,
     )
 
     for filename, content in reports.to_json_map().items():
@@ -977,11 +1290,28 @@ def _grade_all_runs(
     spec: SkillSpec,
     model: str,
     transport: str = "auto",
+    *,
+    provider: str = "anthropic",
+    skill_results: list[SkillResult | None] | None = None,
 ) -> list[GradingReport]:
-    """Grade every run's output concurrently and return the per-run reports."""
+    """Grade every run's output concurrently and return the per-run reports.
+
+    ``skill_results`` is a parallel list to ``run_outputs``; when
+    provided, each entry's ``harness`` value flows into the matching
+    :class:`GradingReport.harness` so the on-disk ``grading.json`` v4
+    sidecar (#152) records which harness produced the output. Captured
+    ``--output`` runs land as ``None`` in ``skill_results``; those
+    fall back to the ``"claude-code"`` default.
+    """
     import asyncio
 
     from clauditor.quality_grader import grade_quality
+
+    def _harness_for(idx: int) -> str:
+        if skill_results is None:
+            return "claude-code"
+        result = skill_results[idx] if idx < len(skill_results) else None
+        return result.harness if result is not None else "claude-code"
 
     async def _grade_all() -> list[GradingReport]:
         return list(
@@ -993,8 +1323,10 @@ def _grade_all_runs(
                         model,
                         thresholds=spec.eval_spec.grade_thresholds,
                         transport=transport,
+                        provider=provider,
+                        harness=_harness_for(idx),
                     )
-                    for text, _ev in run_outputs
+                    for idx, (text, _ev) in enumerate(run_outputs)
                 ]
             )
         )
@@ -1007,6 +1339,8 @@ def _cmd_grade_with_workspace(
     args: argparse.Namespace,
     spec: SkillSpec,
     model: str,
+    provider: str,
+    harness_name: str | None,
     clauditor_dir: Path,
     workspace: IterationWorkspace,
 ) -> int:
@@ -1022,7 +1356,7 @@ def _cmd_grade_with_workspace(
         skill_output_total,
         skill_duration_total,
         error_rc,
-    ) = _run_skill_variants(args, spec, workspace, n_variance)
+    ) = _run_skill_variants(args, spec, workspace, n_variance, harness_name)
     if error_rc is not None:
         return error_rc
 
@@ -1031,7 +1365,14 @@ def _cmd_grade_with_workspace(
     grader_transport = _resolve_grader_transport(args, spec.eval_spec)
 
     primary_text = run_outputs[0][0]
-    reports = _grade_all_runs(run_outputs, spec, model, transport=grader_transport)
+    reports = _grade_all_runs(
+        run_outputs,
+        spec,
+        model,
+        transport=grader_transport,
+        provider=provider,
+        skill_results=skill_results,
+    )
     primary_report = reports[0]
 
     variance_report: VarianceReport | None = None
@@ -1077,6 +1418,8 @@ def _cmd_grade_with_workspace(
             reports=reports,
             model=model,
             transport=grader_transport,
+            provider=provider,
+            harness_name=harness_name,
         )
         _write_timing_and_finalize(
             workspace=workspace,
@@ -1095,6 +1438,8 @@ def _cmd_grade_with_workspace(
         variance_report=variance_report,
         benchmark=benchmark,
         metrics_dict=metrics_dict,
+        provider=provider,
+        harness_name=harness_name,
     )
 
     # Determine exit code
@@ -1120,6 +1465,8 @@ def _report_grade_to_user(
     variance_report: VarianceReport | None,
     benchmark: Benchmark | None,
     metrics_dict: dict,
+    provider: str,
+    harness_name: str | None,
 ) -> None:
     """Emit the grade report, diff/baseline delta blocks, and history row.
 
@@ -1161,6 +1508,8 @@ def _report_grade_to_user(
             final_skill_dir=final_skill_dir,
             primary_report=primary_report,
             metrics_dict=metrics_dict,
+            provider=provider,
+            harness_name=harness_name,
         )
 
 
@@ -1299,8 +1648,21 @@ def _append_grade_history_record(
     final_skill_dir: Path | None,
     primary_report: GradingReport,
     metrics_dict: dict,
+    provider: str,
+    harness_name: str | None,
 ) -> None:
-    """Append a ``command="grade"`` row to ``history.jsonl`` (US-006)."""
+    """Append a ``command="grade"`` row to ``history.jsonl`` (US-006).
+
+    ``provider`` is the resolved grading provider (``"anthropic"`` or
+    ``"openai"``) per #147 DEC-012; threaded down from ``cmd_grade``'s
+    four-layer ``_resolve_grading_provider`` resolution.
+
+    ``harness_name`` is the resolved skill harness (``"claude-code"`` or
+    ``"codex"``) per #152 DEC-005; threaded down from ``cmd_grade``'s
+    ``_resolve_harness`` call. ``None`` collapses to ``"claude-code"``
+    (the default harness) so non-live-run paths still produce a record
+    with a concrete harness value.
+    """
     from clauditor.cli import _relative_to_repo
 
     workspace_rel = _relative_to_repo(clauditor_dir, final_skill_dir)
@@ -1311,6 +1673,8 @@ def _append_grade_history_record(
             mean_score=primary_report.mean_score,
             metrics=metrics_dict,
             command="grade",
+            provider=provider,
+            harness=harness_name or "claude-code",
             iteration=workspace.iteration,
             workspace_path=workspace_rel,
         )

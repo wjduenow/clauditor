@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reproduce CLI transport truncation for clauditor#94.
 
-Calls :func:`clauditor.runner._invoke_claude_cli` directly with a prompt
+Calls :class:`clauditor._harnesses._claude_code.ClaudeCodeHarness` directly with a prompt
 engineered to elicit a long structured-JSON response (similar to a
 grader verdict). Runs N times, records whether each response parses as
 JSON, captures the final ``result`` message's ``stop_reason`` and token
@@ -69,8 +69,13 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    from clauditor.runner import _invoke_claude_cli, env_without_api_key
+    from clauditor._harnesses._claude_code import (
+        ClaudeCodeHarness,
+        env_without_api_key,
+    )
     import os
+
+    harness = ClaudeCodeHarness(claude_bin="claude", model=args.model)
 
     args.log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -82,12 +87,11 @@ def main() -> int:
     results: list[dict] = []
     for i in range(args.runs):
         start = time.monotonic()
-        invoke = _invoke_claude_cli(
+        invoke = harness.invoke(
             INVESTIGATION_PROMPT,
             cwd=None,
             env=env_without_api_key(os.environ),
             timeout=args.timeout,
-            claude_bin="claude",
             model=args.model,
         )
         duration = time.monotonic() - start

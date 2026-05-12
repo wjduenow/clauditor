@@ -29,7 +29,7 @@ criteria):
 - ``clauditor.triggers.classify_query`` (the single-query seam
   ``test_triggers`` fans out over, same ``call_anthropic`` call path)
 
-Each test mocks ``clauditor._anthropic.call_anthropic`` at the one
+Each test mocks ``clauditor._providers.call_model`` at the one
 seam the target module imports it from, per
 ``.claude/rules/centralized-sdk-call.md``. No pytester, no
 ``runpytest_inprocess`` — this is a plain in-process coverage test
@@ -113,7 +113,7 @@ class TestGradeQualityRawMessageNone:
         )
         fake_result = _anthropic_result_with_none_raw(response)
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=fake_result),
         ):
             # No AttributeError — the call completes and returns a
@@ -149,7 +149,7 @@ class TestBlindCompareRawMessageNone:
         )
         fake_result = _anthropic_result_with_none_raw(response)
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=fake_result),
         ):
             report = await blind_compare(
@@ -193,7 +193,7 @@ class TestExtractAndGradeRawMessageNone:
         )
         fake_result = _anthropic_result_with_none_raw(extraction)
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=fake_result),
         ):
             result = await extract_and_grade("some output", spec)
@@ -239,7 +239,7 @@ class TestExtractAndReportRawMessageNone:
         )
         fake_result = _anthropic_result_with_none_raw(extraction)
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=fake_result),
         ):
             report = await extract_and_report(
@@ -287,7 +287,7 @@ class TestProposeEditsRawMessageNone:
         )
         fake_result = _anthropic_result_with_none_raw(envelope)
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=fake_result),
         ):
             report = await propose_edits(suggest_input)
@@ -325,7 +325,7 @@ class TestProposeEvalRawMessageNone:
         }
         fake_result = _anthropic_result_with_none_raw(json.dumps(spec_dict))
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=fake_result),
         ):
             report = await propose_eval(propose_input, spec_dir=tmp_path)
@@ -355,7 +355,7 @@ class TestClassifyQueryRawMessageNone:
         )
         fake_result = _anthropic_result_with_none_raw(response)
         with patch(
-            "clauditor._anthropic.call_anthropic",
+            "clauditor._providers.call_model",
             AsyncMock(return_value=fake_result),
         ):
             result = await classify_query(

@@ -32,7 +32,7 @@ class TestDoctorTransportChecks:
         out = capsys.readouterr().out
         lines = [
             line for line in out.splitlines()
-            if "api-key-available" in line
+            if "ANTHROPIC_API_KEY" in line
         ]
         assert len(lines) == 1
         assert lines[0].startswith("[ok]")
@@ -49,7 +49,7 @@ class TestDoctorTransportChecks:
         out = capsys.readouterr().out
         lines = [
             line for line in out.splitlines()
-            if "api-key-available" in line
+            if "ANTHROPIC_API_KEY" in line
         ]
         assert len(lines) == 1
         # DEC-021: info (not failure) when unset.
@@ -67,7 +67,7 @@ class TestDoctorTransportChecks:
         out = capsys.readouterr().out
         lines = [
             line for line in out.splitlines()
-            if "api-key-available" in line
+            if "ANTHROPIC_API_KEY" in line
         ]
         assert len(lines) == 1
         assert lines[0].startswith("[info]")
@@ -301,3 +301,61 @@ class TestDoctorTransportChecks:
         ]
         assert check_idxs
         assert summary_idx > max(check_idxs)
+
+
+class TestDoctorOpenAIKeyCheck:
+    """US-002 of #162 — OpenAI key presence reported as info, never fail."""
+
+    def test_openai_api_key_check_ok_when_key_set(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-test-1")
+        rc = main(["doctor"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "openai-api-key-available" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[ok]")
+        assert "OPENAI_API_KEY" in lines[0]
+        # Key value itself must NOT be echoed.
+        assert "sk-test-1" not in lines[0]
+
+    def test_openai_api_key_check_info_when_key_unset(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        rc = main(["doctor"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "openai-api-key-available" in line
+        ]
+        assert len(lines) == 1
+        # Status is info (NOT fail) — OpenAI is opt-in.
+        assert lines[0].startswith("[info]")
+        assert not lines[0].startswith("[fail]")
+
+    def test_openai_api_key_check_info_when_key_whitespace(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Whitespace-only key counts as unset."""
+        monkeypatch.setenv("OPENAI_API_KEY", "   ")
+        rc = main(["doctor"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        lines = [
+            line for line in out.splitlines()
+            if "openai-api-key-available" in line
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("[info]")

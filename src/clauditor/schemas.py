@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 
 @dataclass(frozen=True)
@@ -249,6 +250,7 @@ class EvalSpec:
     # the skill-runner CLI arg string. Optional at load time, but required
     # by the blind-compare helper when that code path is used.
     user_prompt: str | None = None
+    system_prompt: str | None = None
     input_files: list[str] = field(default_factory=list)  # Resolved absolute paths
     assertions: list[dict] = field(default_factory=list)  # Layer 1 checks
     sections: list[SectionRequirement] = field(default_factory=list)  # Layer 2 schema
@@ -257,7 +259,18 @@ class EvalSpec:
     # str}`` when loaded via ``from_file`` per DEC-001 (#25). Consumers must
     # normalize via ``criterion_text()``.
     grading_criteria: list = field(default_factory=list)
-    grading_model: str = "claude-sonnet-4-6"
+    # DEC-004b of #146 (issue #182): nullable migration completed. The
+    # dataclass default is now ``None`` so the provider-aware
+    # ``resolve_grading_model`` helper picks the per-provider default
+    # (``"claude-sonnet-4-6"`` for anthropic, ``DEFAULT_MODEL_L3`` for
+    # openai). Pre-#146 specs that omit ``grading_model`` load as
+    # ``None`` and grade against the right default for whichever
+    # provider wins precedence — no more provider/model mismatch on
+    # ``--grading-provider openai`` against a spec with no model set.
+    # Explicit ``null`` in JSON loads as ``None`` (unchanged from
+    # DEC-004a). Bool guard at load time per
+    # ``.claude/rules/constant-with-type-info.md``.
+    grading_model: str | None = None
     output_file: str | None = None  # Single output file path
     output_files: list[str] = field(default_factory=list)  # Multiple file paths/globs
     trigger_tests: TriggerTests | None = None
@@ -285,6 +298,18 @@ class EvalSpec:
     # string / bool values rejected per
     # ``.claude/rules/constant-with-type-info.md``.
     transport: str = "auto"
+    # DEC-001 / DEC-008 of #151: per-spec harness selector for the
+    # skill subprocess. One of ``"claude-code"``, ``"codex"``, or
+    # ``"auto"``. The default ``"auto"`` resolves to the harness
+    # whose CLI is on PATH (subscription-first); explicit
+    # ``"claude-code"`` / ``"codex"`` pin a specific harness.
+    # Four-layer precedence per ``.claude/rules/spec-cli-precedence.md``:
+    # CLI ``--harness`` > ``CLAUDITOR_HARNESS`` env > this field >
+    # default ``"auto"``. Validated at load time against the literal
+    # set; non-string / bool / unknown-string values rejected per
+    # ``.claude/rules/constant-with-type-info.md``. The pure resolver
+    # + ``construct_harness`` dispatcher live in US-002 of #151.
+    harness: str = "auto"
     # Tier 1.5 of GitHub #103: when ``True``, clauditor sets
     # ``CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`` in the skill
     # subprocess env, forcing ``Task(run_in_background=true)`` calls
@@ -297,6 +322,22 @@ class EvalSpec:
     # guarded at load time per
     # ``.claude/rules/constant-with-type-info.md``.
     sync_tasks: bool = False
+    # DEC-001b of #146 (issue #182): default-flip completed. The
+    # dataclass default is now ``"auto"`` so resolution flows through
+    # :func:`clauditor._providers.resolve_grading_provider` (which
+    # delegates to :func:`infer_provider_from_model` when the winning
+    # value is ``"auto"``). Pre-#146 specs that omit the field load
+    # as ``"auto"`` and pick a provider from the resolved model.
+    # Explicit ``null`` in JSON still loads as ``None`` so legacy
+    # #145-vintage round-trips stay readable; the CLI seam treats
+    # ``None`` the same as the default. ``"anthropic"`` and
+    # ``"openai"`` pin a specific backend. Validated at load time
+    # against the literal set; non-string / bool / unknown-string
+    # values rejected per ``.claude/rules/constant-with-type-info.md``.
+    # Four-layer precedence (CLI ``--grading-provider`` >
+    # ``CLAUDITOR_GRADING_PROVIDER`` env > this field > default
+    # ``"auto"``) per ``.claude/rules/spec-cli-precedence.md``.
+    grading_provider: Literal["anthropic", "openai", "auto"] | None = "auto"
 
     @classmethod
     def from_file(cls, path: str | Path) -> EvalSpec:
@@ -311,12 +352,16 @@ class EvalSpec:
         path = Path(path)
         with path.open() as f:
             data = json.load(f)
-        # Preserve the prior behavior where a missing ``skill_name`` in the
-        # JSON defaults to the file stem. Injected via a new dict so the
-        # caller's data is not mutated (non-mutating rule applies to the
-        # input they own on disk, but defensive here too).
+        # Default ``skill_name`` when absent from the JSON. Layout-aware
+        # per ``_filesystem_eval_skill_name`` (#176): ``<dir>/SKILL.eval.json``
+        # and ``<dir>/eval.json`` resolve to the parent directory name;
+        # ``<name>.eval.json`` strips the ``.eval`` suffix; other shapes
+        # fall back to ``path.stem`` for back-compat. Injected via a new
+        # dict so the caller's data is not mutated.
         if isinstance(data, dict) and "skill_name" not in data:
-            data = {"skill_name": path.stem, **data}
+            from clauditor.paths import _filesystem_eval_skill_name
+
+            data = {"skill_name": _filesystem_eval_skill_name(path), **data}
         return cls.from_dict(data, spec_dir=path.parent.resolve())
 
     @classmethod
@@ -642,6 +687,15 @@ class EvalSpec:
                     f"got {user_prompt!r}"
                 )
 
+        system_prompt = data.get("system_prompt")
+        if system_prompt is not None:
+            if not isinstance(system_prompt, str) or not system_prompt.strip():
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): system_prompt "
+                    f"must be a non-empty, non-whitespace string, "
+                    f"got {system_prompt!r}"
+                )
+
         # DEC-005: optional per-eval escape hatch for the
         # interactive-hang heuristic. Absent → default True (back-compat).
         # Present → must be a real bool (reject "false", 0, None, etc.)
@@ -711,6 +765,37 @@ class EvalSpec:
                 )
             transport = raw_transport
 
+        # DEC-001 / DEC-008 of #151: optional per-spec harness selector.
+        # Missing → default ``"auto"`` (back-compat). Must be a non-bool
+        # string in the literal set ``{"claude-code", "codex", "auto"}``.
+        # Explicit ``null`` is rejected (use omission for default).
+        # Bool guard first per ``.claude/rules/constant-with-type-info.md``.
+        harness: str = "auto"
+        if "harness" in data:
+            raw_harness = data["harness"]
+            if raw_harness is None:
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'harness' must be one of "
+                    "'claude-code', 'codex', 'auto', got null "
+                    "(omit the key to use the default 'auto')"
+                )
+            if isinstance(raw_harness, bool) or not isinstance(
+                raw_harness, str
+            ):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    f"'harness' must be a string, got "
+                    f"{type(raw_harness).__name__} {raw_harness!r}"
+                )
+            if raw_harness not in ("claude-code", "codex", "auto"):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'harness' must be one of 'claude-code', 'codex', "
+                    f"'auto', got {raw_harness!r}"
+                )
+            harness = raw_harness
+
         # Tier 1.5 of GitHub #103: optional per-spec sync-tasks
         # opt-in. Missing → default ``False``. Must be a real bool
         # per ``.claude/rules/constant-with-type-info.md`` — a
@@ -728,6 +813,34 @@ class EvalSpec:
                     f"{raw_sync_tasks!r}"
                 )
             sync_tasks = raw_sync_tasks
+
+        # DEC-001b of #146 (issue #182): per-spec grading provider
+        # selector. Default is ``"auto"`` (resolution flows through
+        # :func:`clauditor._providers.resolve_grading_provider`).
+        # Explicit ``null`` in JSON still loads as ``None`` so
+        # #145-vintage round-trips stay readable; the CLI seam treats
+        # ``None`` the same as the default. Bool guard first per
+        # ``.claude/rules/constant-with-type-info.md``.
+        grading_provider: Literal["anthropic", "openai", "auto"] | None = "auto"
+        if "grading_provider" in data:
+            raw_grading_provider = data["grading_provider"]
+            if raw_grading_provider is None:
+                grading_provider = None
+            elif (
+                isinstance(raw_grading_provider, bool)
+                or not isinstance(raw_grading_provider, str)
+                or raw_grading_provider
+                not in ("anthropic", "openai", "auto")
+            ):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'grading_provider' must be one of 'anthropic', "
+                    f"'openai', 'auto' (or null), got "
+                    f"{type(raw_grading_provider).__name__} "
+                    f"{raw_grading_provider!r}"
+                )
+            else:
+                grading_provider = raw_grading_provider
 
         trigger_tests = None
         if "trigger_tests" in data:
@@ -753,16 +866,49 @@ class EvalSpec:
                 min_mean_score=gt.get("min_mean_score", 0.5),
             )
 
+        # DEC-004b of #146 (issue #182): nullable migration completed.
+        # Default is ``None`` — the provider-aware
+        # ``resolve_grading_model`` helper picks per-provider defaults
+        # downstream. Explicit ``null`` in JSON also loads as ``None``
+        # so #145-vintage specs round-trip cleanly. Bool guard first
+        # per ``.claude/rules/constant-with-type-info.md``.
+        grading_model: str | None = None
+        if "grading_model" in data:
+            raw_grading_model = data["grading_model"]
+            if raw_grading_model is None:
+                grading_model = None
+            elif isinstance(raw_grading_model, bool) or not isinstance(
+                raw_grading_model, str
+            ):
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'grading_model' must be a string or null, got "
+                    f"{type(raw_grading_model).__name__} "
+                    f"{raw_grading_model!r}"
+                )
+            elif raw_grading_model.strip() == "":
+                # QG pass 1: reject empty/whitespace-only model names
+                # at load time. An empty string would otherwise survive
+                # through ``infer_provider_from_model`` and produce a
+                # downstream error with a worse message.
+                raise ValueError(
+                    f"EvalSpec(skill_name={skill_name!r}): "
+                    "'grading_model' must be a non-empty string or null"
+                )
+            else:
+                grading_model = raw_grading_model
+
         return cls(
             skill_name=skill_name,
             description=data.get("description", ""),
             test_args=data.get("test_args", ""),
             user_prompt=user_prompt,
+            system_prompt=system_prompt,
             input_files=resolved_input_files,
             assertions=data.get("assertions", []),
             sections=sections,
             grading_criteria=data.get("grading_criteria", []),
-            grading_model=data.get("grading_model", "claude-sonnet-4-6"),
+            grading_model=grading_model,
             output_file=data.get("output_file"),
             output_files=data.get("output_files", []),
             trigger_tests=trigger_tests,
@@ -771,7 +917,9 @@ class EvalSpec:
             allow_hang_heuristic=allow_hang_heuristic,
             timeout=timeout,
             transport=transport,
+            harness=harness,
             sync_tasks=sync_tasks,
+            grading_provider=grading_provider,
         )
 
     def to_dict(self) -> dict:
@@ -783,6 +931,11 @@ class EvalSpec:
             **(
                 {"user_prompt": self.user_prompt}
                 if self.user_prompt is not None
+                else {}
+            ),
+            **(
+                {"system_prompt": self.system_prompt}
+                if self.system_prompt is not None
                 else {}
             ),
             "input_files": self.input_files,
@@ -824,8 +977,16 @@ class EvalSpec:
                 for s in self.sections
             ],
             "grading_criteria": self.grading_criteria,
-            "grading_model": self.grading_model,
         }
+        # DEC-004b of #146 (issue #182): nullable migration completed.
+        # Default is ``None``; emit only when explicitly set so #146-
+        # vintage specs that omit ``grading_model`` round-trip with no
+        # synthetic key. Explicit-string specs round-trip verbatim.
+        # Explicit ``null`` in the source JSON also round-trips as
+        # ``None`` (no key emitted) — re-loading yields the default
+        # ``None`` again.
+        if self.grading_model is not None:
+            result["grading_model"] = self.grading_model
         if not self.allow_hang_heuristic:
             # Emit only on non-default to keep diffs minimal; omission
             # at load time means "default True" per from_dict.
@@ -834,10 +995,26 @@ class EvalSpec:
             # DEC-012 of #86: emit only on non-default. Omission at
             # load time means default "auto" per from_dict.
             result["transport"] = self.transport
+        if self.harness != "auto":
+            # DEC-001 / DEC-008 of #151: emit only on non-default.
+            # Omission at load time means default ``"auto"`` per
+            # from_dict.
+            result["harness"] = self.harness
         if self.sync_tasks:
             # Tier 1.5 of GitHub #103: emit only on non-default.
             # Omission at load time means default ``False``.
             result["sync_tasks"] = True
+        # DEC-001b of #146 (issue #182): default-flip completed.
+        # Default is ``"auto"`` — emit only on non-default, matching
+        # the ``transport`` / ``harness`` pattern. ``None`` (from a
+        # #145-vintage spec with explicit ``null``) is also treated
+        # as default and omitted; re-loading yields the new default
+        # ``"auto"`` which is semantically equivalent at the CLI seam.
+        if (
+            self.grading_provider is not None
+            and self.grading_provider != "auto"
+        ):
+            result["grading_provider"] = self.grading_provider
         if self.output_file is not None:
             result["output_file"] = self.output_file
         if self.output_files:

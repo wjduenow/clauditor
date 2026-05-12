@@ -92,12 +92,15 @@ class ExtractionReport:
     .. code-block:: json
 
         {
-          "schema_version": 2,
+          "schema_version": 5,
           "skill_name": "...",
           "model": "...",
           "transport_source": "api",
+          "provider_source": "anthropic",
+          "harness": "claude-code",
           "input_tokens": 0,
           "output_tokens": 0,
+          "reasoning_tokens": null,
           "parse_errors": [],
           "fields": {
             "<field_id>": [
@@ -114,12 +117,26 @@ class ExtractionReport:
     entries show up with an empty list — downstream auditors can still see
     that the field was *declared* in the spec.
 
-    ``transport_source`` records which :class:`AnthropicResult`
-    transport produced the Haiku response — ``"api"`` or ``"cli"``.
-    Persisted at ``schema_version=2`` per DEC-007 of
-    ``plans/super/86-claude-cli-transport.md``. The audit loader
-    accepts both ``{1, 2}`` and defaults missing ``transport_source``
-    to ``"api"`` when reading v1 sidecars.
+    ``transport_source`` records which :class:`ModelResult`
+    transport produced the Haiku response — ``"api"`` or ``"cli"``
+    (added in v2 per DEC-007 of
+    ``plans/super/86-claude-cli-transport.md``). ``provider_source``
+    records which provider backend produced the response —
+    ``"anthropic"`` or ``"openai"`` (added in v3 per DEC-001 /
+    DEC-006 of ``plans/super/147-sidecar-provider-field.md``).
+    ``harness`` records which skill harness produced the underlying
+    skill output that was extracted — ``"claude-code"`` (current
+    default) or ``"codex"`` (#149+) (added in v4 per DEC-004 /
+    DEC-006 of ``plans/super/152-sidecar-harness-field.md``).
+    ``reasoning_tokens`` records the per-call reasoning / thinking
+    token count summed across grader attempts — ``int`` or
+    ``null`` (added in v5 per DEC-004 of
+    ``plans/super/170-reasoning-tokens-capture.md``). The audit
+    loader accepts ``{1, 2, 3, 4, 5}`` and defaults missing
+    ``transport_source`` to ``"api"``, missing ``provider_source``
+    to ``"anthropic"``, missing ``harness`` to ``"claude-code"``,
+    and missing ``reasoning_tokens`` to ``None`` when reading
+    legacy v1/v2/v3/v4 sidecars.
     """
 
     skill_name: str
@@ -130,6 +147,35 @@ class ExtractionReport:
     parse_errors: list[str] = field(default_factory=list)
     declared_field_ids: list[str] = field(default_factory=list)
     transport_source: str = "api"
+    # ``provider_source`` records which provider backend produced the
+    # response — ``"anthropic"`` (current) or ``"openai"`` (#145+).
+    # Persisted into ``extraction.json`` at ``schema_version=3`` per
+    # DEC-001 / DEC-006 of ``plans/super/147-sidecar-provider-field.md``.
+    # The audit loader accepts ``{1, 2, 3, 4}`` and defaults missing
+    # ``provider_source`` to ``"anthropic"`` when reading legacy v1/v2
+    # sidecars.
+    provider_source: str = "anthropic"
+    # ``harness`` records which skill harness produced the underlying
+    # skill output extracted by Layer 2 — ``"claude-code"`` (current
+    # default) or ``"codex"`` (#149+). Persisted into
+    # ``extraction.json`` at ``schema_version=4`` per DEC-004 /
+    # DEC-006 of ``plans/super/152-sidecar-harness-field.md``. The
+    # audit loader defaults missing ``harness`` to ``"claude-code"``
+    # when reading legacy v1/v2/v3 sidecars.
+    harness: str = "claude-code"
+    # ``reasoning_tokens`` records the per-call reasoning / thinking
+    # token count summed across every extractor call this report
+    # aggregates (parse-retry attempts). ``None`` means "no provider
+    # call surfaced a reasoning-token count" — distinct from ``0``
+    # which would assert "calls ran but used zero reasoning tokens".
+    # Populated by sum-of-non-None semantics per DEC-003 of
+    # ``plans/super/170-reasoning-tokens-capture.md``: all-None inputs
+    # → ``None``; mixed ``[None, 42]`` → ``42``; all-int ``[10, 20]``
+    # → ``30``. Persisted into ``extraction.json`` at
+    # ``schema_version=5`` per US-004 of #170; the audit loader
+    # defaults missing ``reasoning_tokens`` to ``None`` when reading
+    # legacy v1/v2/v3/v4 sidecars.
+    reasoning_tokens: int | None = None
 
     @property
     def passed(self) -> bool:
@@ -140,11 +186,15 @@ class ExtractionReport:
     def to_json(self) -> str:
         """Serialize the report to a JSON string.
 
-        Emits ``schema_version: 2`` as the first key per
-        ``.claude/rules/json-schema-version.md``. Version 2 adds the
-        ``transport_source`` field; the audit loader accepts both
-        ``{1, 2}`` and defaults missing ``transport_source`` to
-        ``"api"`` when reading v1 sidecars.
+        Emits ``schema_version: 5`` as the first key per
+        ``.claude/rules/json-schema-version.md``. Version 5 adds the
+        ``reasoning_tokens`` field on disk (v4 added ``harness``, v3
+        added ``provider_source``, v2 added ``transport_source``); the
+        audit loader accepts ``{1, 2, 3, 4, 5}`` and defaults missing
+        ``transport_source`` to ``"api"``, missing ``provider_source``
+        to ``"anthropic"``, missing ``harness`` to ``"claude-code"``,
+        and missing ``reasoning_tokens`` to ``None`` when reading
+        legacy sidecars.
         """
         by_id: dict[str, list[dict]] = {}
         # Pre-populate every declared field id with an empty list so the
@@ -157,12 +207,15 @@ class ExtractionReport:
                 {k: v for k, v in r.to_dict().items() if k != "field_id"}
             )
         payload = {
-            "schema_version": 2,
+            "schema_version": 5,
             "skill_name": self.skill_name,
             "model": self.model,
             "transport_source": self.transport_source,
+            "provider_source": self.provider_source,
+            "harness": self.harness,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
             "parse_errors": list(self.parse_errors),
             "fields": by_id,
         }
@@ -172,9 +225,13 @@ class ExtractionReport:
     def from_json(cls, text: str) -> ExtractionReport:
         """Deserialize an ExtractionReport from a JSON string.
 
-        Tolerates both schema versions (``1`` and ``2``); a missing
-        ``transport_source`` defaults to ``"api"`` so pre-#86 sidecars
-        load cleanly.
+        Tolerates schema versions ``1``, ``2``, ``3``, ``4``, and
+        ``5``. A missing ``transport_source`` defaults to ``"api"`` so
+        pre-#86 sidecars load cleanly; a missing ``provider_source``
+        defaults to ``"anthropic"`` so pre-#147 sidecars load cleanly;
+        a missing ``harness`` defaults to ``"claude-code"`` so
+        pre-#152 sidecars load cleanly; a missing ``reasoning_tokens``
+        defaults to ``None`` so pre-#170 sidecars load cleanly.
         """
         data = json.loads(text)
         results: list[FieldExtractionResult] = []
@@ -195,6 +252,24 @@ class ExtractionReport:
                         evidence=entry.get("evidence"),
                     )
                 )
+        # ``reasoning_tokens`` is nullable: explicit ``None`` (or
+        # missing key for legacy sidecars) → ``None``; explicit int
+        # → preserve as int. Per US-004 of #170 / DEC-003: ``None`` is
+        # semantically distinct from ``0`` ("provider didn't surface
+        # a count" vs "provider surfaced a count of zero"). Bool
+        # values are rejected per ``.claude/rules/constant-with-type-info.md``
+        # (Python's ``isinstance(True, int)`` is ``True``); a malformed
+        # sidecar with ``"reasoning_tokens": true`` would otherwise
+        # silently coerce to ``1``. Symmetric with the writer-side
+        # ``_extract_reasoning_tokens`` discipline (DEC-006).
+        raw_reasoning = data.get("reasoning_tokens")
+        reasoning_tokens: int | None
+        if raw_reasoning is None or isinstance(raw_reasoning, bool):
+            reasoning_tokens = None
+        elif isinstance(raw_reasoning, int):
+            reasoning_tokens = raw_reasoning
+        else:
+            reasoning_tokens = None
         return cls(
             skill_name=data.get("skill_name", ""),
             model=data.get("model", ""),
@@ -204,6 +279,11 @@ class ExtractionReport:
             parse_errors=list(data.get("parse_errors") or []),
             declared_field_ids=list((data.get("fields") or {}).keys()),
             transport_source=str(data.get("transport_source") or "api"),
+            provider_source=str(
+                data.get("provider_source") or "anthropic"
+            ),
+            harness=str(data.get("harness") or "claude-code"),
+            reasoning_tokens=reasoning_tokens,
         )
 
 
@@ -217,6 +297,9 @@ def build_extraction_report(
     output_tokens: int = 0,
     parse_errors: list[str] | None = None,
     transport_source: str = "api",
+    provider_source: str = "anthropic",
+    harness: str = "claude-code",
+    reasoning_tokens: int | None = None,
 ) -> ExtractionReport:
     """Build a field-id-keyed ``ExtractionReport`` from extracted output.
 
@@ -305,6 +388,9 @@ def build_extraction_report(
         parse_errors=list(parse_errors or []),
         declared_field_ids=declared_field_ids,
         transport_source=transport_source,
+        provider_source=provider_source,
+        harness=harness,
+        reasoning_tokens=reasoning_tokens,
     )
 
 
@@ -725,6 +811,9 @@ def build_extraction_report_from_text(
     input_tokens: int,
     output_tokens: int,
     transport_source: str = "api",
+    provider_source: str = "anthropic",
+    harness: str = "claude-code",
+    reasoning_tokens: int | None = None,
 ) -> ExtractionReport:
     """Parse ``response_text`` into an :class:`ExtractionReport`.
 
@@ -746,6 +835,9 @@ def build_extraction_report_from_text(
             output_tokens=output_tokens,
             parse_errors=["grader returned no text blocks"],
             transport_source=transport_source,
+            provider_source=provider_source,
+            harness=harness,
+            reasoning_tokens=reasoning_tokens,
         )
 
     parse = parse_extraction_response(response_text, eval_spec)
@@ -764,6 +856,9 @@ def build_extraction_report_from_text(
             output_tokens=output_tokens,
             parse_errors=[err.message for err in parse.parse_errors],
             transport_source=transport_source,
+            provider_source=provider_source,
+            harness=harness,
+            reasoning_tokens=reasoning_tokens,
         )
     return build_extraction_report(
         parse.extracted,
@@ -774,6 +869,9 @@ def build_extraction_report_from_text(
         output_tokens=output_tokens,
         parse_errors=[err.message for err in parse.parse_errors],
         transport_source=transport_source,
+        provider_source=provider_source,
+        harness=harness,
+        reasoning_tokens=reasoning_tokens,
     )
 
 
@@ -784,35 +882,49 @@ async def _extract_call_with_retry(
     model: str,
     transport: str,
     ctx: str,
-) -> tuple[str, str, int, int]:
-    """Issue the extraction Anthropic call with parse retry.
+    provider: str,
+) -> tuple[str, str, str, int, int, int | None]:
+    """Issue the extraction model call with parse retry.
 
-    Returns ``(response_text, source, input_tokens, output_tokens)`` — the
-    final attempt's response text, the transport source, and cumulative
-    token counts across attempts. One retry on ``kind == "json"`` (true
-    decode failures + empty-after-fence-strip) per clauditor-6cf / #94;
-    no retry on ``kind == "shape"`` (valid JSON, wrong top-level type)
-    or ``kind == "flat_list"`` (section tiering missing) — both
-    indicate a model-protocol bug rather than a transient hiccup.
+    Returns ``(response_text, source, provider, input_tokens,
+    output_tokens, reasoning_tokens)`` — the final attempt's response
+    text, the transport source, the provider that produced the
+    response, and cumulative token counts across attempts
+    (``reasoning_tokens`` per DEC-003 of #170: sum-of-non-None across
+    attempts; ``None`` when every attempt's count was ``None``).
+    Routes through ``call_model`` per the caller-resolved provider
+    (#146 US-006), so the retry semantics apply to whichever backend
+    handles the call. One retry on ``kind == "json"`` (true decode
+    failures + empty-after-fence-strip) per clauditor-6cf / #94; no
+    retry on ``kind == "shape"`` (valid JSON, wrong top-level type) or
+    ``kind == "flat_list"`` (section tiering missing) — both indicate
+    a model-protocol bug rather than a transient hiccup.
     """
-    from clauditor._anthropic import call_anthropic
-    from clauditor.quality_grader import _emit_parse_retry_notice
+    from clauditor._providers import call_model
+    from clauditor.quality_grader import (
+        _emit_parse_retry_notice,
+        _sum_optional_reasoning_tokens,
+    )
 
     total_input = 0
     total_output = 0
+    reasoning_attempts: list[int | None] = []
     last_text = ""
     last_source = "api"
+    last_provider = provider
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
-        api_result = await call_anthropic(
+        api_result = await call_model(
             prompt,
+            provider=provider,
             model=model,
-            max_tokens=4096,
             transport=transport,
-            subject="L2 extraction",
+            max_tokens=4096,
         )
         total_input += api_result.input_tokens
         total_output += api_result.output_tokens
+        reasoning_attempts.append(api_result.reasoning_tokens)
         last_source = api_result.source
+        last_provider = api_result.provider
         last_text = (
             api_result.text_blocks[0] if api_result.text_blocks else ""
         )
@@ -832,7 +944,14 @@ async def _extract_call_with_retry(
             _emit_parse_retry_notice(
                 ctx, attempt + 2, _GRADER_PARSE_RETRY_LIMIT
             )
-    return last_text, last_source, total_input, total_output
+    return (
+        last_text,
+        last_source,
+        last_provider,
+        total_input,
+        total_output,
+        _sum_optional_reasoning_tokens(reasoning_attempts),
+    )
 
 
 async def extract_and_grade(
@@ -840,31 +959,46 @@ async def extract_and_grade(
     eval_spec: EvalSpec,
     model: str = "claude-haiku-4-5-20251001",
     transport: str = "auto",
+    *,
+    provider: str = "anthropic",
 ) -> AssertionSet:
     """Layer 2: Extract structured data with Haiku, then validate against schema.
 
     Thin async wrapper: builds a prompt, issues up to
-    :data:`_GRADER_PARSE_RETRY_LIMIT` Anthropic calls (one retry on
+    :data:`_GRADER_PARSE_RETRY_LIMIT` provider-routed model calls (one retry on
     malformed-JSON response — see clauditor-6cf / #94), parses the
     response, and returns an :class:`AssertionSet`. All verdict logic
     lives in the pure helpers :func:`build_extraction_prompt`,
     :func:`parse_extraction_response`, :func:`grade_extraction`, and
     :func:`build_extraction_assertion_set`.
 
+    ``provider`` is resolved at the CLI / fixture seam per #146 US-006
+    and passed through verbatim — orchestrators no longer read
+    ``eval_spec.grading_provider`` directly. Default
+    ``"anthropic"`` preserves back-compat for direct callers (mainly
+    tests); production callers always pass an explicit value.
+
     Requires the 'grader' extra: pip install clauditor[grader]
     """
     prompt = build_extraction_prompt(eval_spec, output)
-    response_text, _source, input_tokens, output_tokens = (
-        await _extract_call_with_retry(
-            prompt, eval_spec,
-            model=model, transport=transport,
-            ctx="extract_and_grade",
-        )
+    (
+        response_text,
+        _source,
+        _provider,
+        input_tokens,
+        output_tokens,
+        _reasoning_tokens,
+    ) = await _extract_call_with_retry(
+        prompt, eval_spec,
+        model=model, transport=transport,
+        ctx="extract_and_grade",
+        provider=provider,
     )
-    # Note: AssertionSet does not carry transport_source — extract_and_grade's
-    # sidecar (``assertions.json``) is unaffected by US-006. The transport
-    # source for the Layer 2 Haiku call is only persisted through
-    # ``extract_and_report`` → ``ExtractionReport``.
+    # Note: AssertionSet does not carry transport_source / provider_source /
+    # reasoning_tokens — extract_and_grade's sidecar (``assertions.json``)
+    # is unaffected by US-006 / #144 / #170. The transport / provider /
+    # reasoning attribution for the Layer 2 Haiku call is only persisted
+    # through ``extract_and_report`` → ``ExtractionReport``.
     return build_extraction_assertion_set(
         response_text,
         eval_spec,
@@ -880,27 +1014,40 @@ async def extract_and_report(
     *,
     skill_name: str = "",
     transport: str = "auto",
+    provider: str = "anthropic",
+    harness: str = "claude-code",
 ) -> ExtractionReport:
     """Layer 2 wrapper that returns a field-id-keyed :class:`ExtractionReport`.
 
     Thin async wrapper: builds a prompt, issues up to
-    :data:`_GRADER_PARSE_RETRY_LIMIT` Anthropic calls (one retry on
+    :data:`_GRADER_PARSE_RETRY_LIMIT` provider-routed model calls (one retry on
     malformed-JSON response — see clauditor-6cf / #94), parses the
     response, and aggregates an :class:`ExtractionReport`. All verdict
     logic lives in the pure helpers :func:`build_extraction_prompt`,
     :func:`parse_extraction_response`, :func:`build_extraction_report`, and
     :func:`build_extraction_report_from_text`.
 
+    ``provider`` is resolved at the CLI / fixture seam per #146 US-006
+    and passed through verbatim. Default ``"anthropic"`` preserves
+    back-compat for direct callers (mainly tests); production callers
+    always pass an explicit value.
+
     Used by ``cmd_grade`` (US-003) to persist per-field extraction results to
     ``iteration-N/<skill>/extraction.json``.
     """
     prompt = build_extraction_prompt(eval_spec, output)
-    response_text, source, input_tokens, output_tokens = (
-        await _extract_call_with_retry(
-            prompt, eval_spec,
-            model=model, transport=transport,
-            ctx="extract_and_report",
-        )
+    (
+        response_text,
+        source,
+        last_provider,
+        input_tokens,
+        output_tokens,
+        reasoning_tokens,
+    ) = await _extract_call_with_retry(
+        prompt, eval_spec,
+        model=model, transport=transport,
+        ctx="extract_and_report",
+        provider=provider,
     )
     return build_extraction_report_from_text(
         response_text,
@@ -910,4 +1057,7 @@ async def extract_and_report(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         transport_source=source,
+        provider_source=last_provider,
+        harness=harness,
+        reasoning_tokens=reasoning_tokens,
     )

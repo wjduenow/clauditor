@@ -43,7 +43,7 @@ class TestImplicitNoApiKeyCoupling:
     ) -> None:
         """Every test starts with the one-shot module flag False."""
         monkeypatch.setattr(
-            "clauditor._anthropic._announced_implicit_no_api_key", False
+            "clauditor._providers._auth._announced_implicit_no_api_key", False
         )
 
     def _run_grade(self, argv, *, eval_spec=None):
@@ -52,7 +52,7 @@ class TestImplicitNoApiKeyCoupling:
         Returns ``(rc, spec_mock, env_override_captured)``. The mocked
         ``spec.run`` always returns a clean :class:`SkillResult`; the mocked
         ``grade_quality`` returns a passing :class:`GradingReport`. The
-        pre-flight auth guard (:func:`check_any_auth_available`) is stubbed
+        pre-flight auth guard (:func:`check_provider_auth`) is stubbed
         so tests do not depend on the real ``claude`` binary being on PATH
         when only ``ANTHROPIC_AUTH_TOKEN`` (or neither) is set.
         """
@@ -68,7 +68,7 @@ class TestImplicitNoApiKeyCoupling:
         with (
             patch("clauditor.cli.SkillSpec.from_file", return_value=spec),
             patch(
-                "clauditor.cli.grade.check_any_auth_available",
+                "clauditor.cli.grade.check_provider_auth",
                 return_value=None,
             ),
             patch(

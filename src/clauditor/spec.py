@@ -9,9 +9,10 @@ import glob
 import sys
 from pathlib import Path
 
+from clauditor._frontmatter import parse_frontmatter
 from clauditor.assertions import AssertionSet, run_assertions
 from clauditor.conformance import check_conformance, format_issue_line
-from clauditor.paths import derive_project_dir, derive_skill_name
+from clauditor.paths import derive_project_dir, derive_skill_name, resolve_agents_md
 from clauditor.runner import SkillResult, SkillRunner, env_with_sync_tasks
 from clauditor.schemas import EvalSpec
 from clauditor.workspace import stage_inputs
@@ -129,6 +130,7 @@ class SkillSpec:
         timeout_override: int | None = None,
         env_override: dict[str, str] | None = None,
         sync_tasks_override: bool | None = None,
+        harness_name_override: str | None = None,
     ) -> SkillResult:
         """Run the skill and return captured output.
 
@@ -137,6 +139,14 @@ class SkillSpec:
         If ``run_dir`` is provided and the eval spec declares non-empty
         ``input_files``, those files are staged into ``run_dir / "inputs"``
         and the subprocess runs with that directory as its CWD.
+
+        ``harness_name_override`` (US-006 / DEC-004 of #151): when non-
+        ``None``, materialize a fresh :class:`SkillRunner` with the
+        named harness via :func:`clauditor._harnesses.construct_harness`
+        and use it for this call. ``"auto"`` is rejected by
+        ``construct_harness``; callers must resolve auto via
+        :func:`clauditor._providers.resolve_harness` before passing.
+        When ``None`` (default), ``self.runner`` is used as-is.
         """
         run_args = (
             args
@@ -190,14 +200,128 @@ class SkillSpec:
         effective_env = env_override
         if effective_sync_tasks:
             effective_env = env_with_sync_tasks(effective_env)
-        result = self.runner.run(
+
+        # US-004 of issue #150: resolve the effective system_prompt.
+        # US-003 of #154 (DEC-003 / DEC-008 / DEC-009): three-tier
+        # resolution with provenance stamping into
+        # ``SkillResult.harness_metadata["system_prompt_source"]``.
+        #
+        # Order:
+        #   (a) Explicit ``EvalSpec.system_prompt`` set →
+        #       source = "explicit".
+        #   (b) AGENTS.md found via :func:`clauditor.paths.resolve_agents_md`
+        #       (skill-dir first, then project-root) → source = "agents_md".
+        #   (c) Auto-derive from SKILL.md body (post-frontmatter) →
+        #       source = "skill_md".
+        #
+        # Wrap I/O failures (missing file, malformed frontmatter,
+        # permission errors) on the SKILL.md auto-derive path as a
+        # friendly ``RuntimeError`` that names the skill and path; the
+        # original exception chains through ``__cause__`` for debug.
+        # The empty-string body case threads through verbatim — we do
+        # NOT fall back to None, so misconfigured skills surface clearly
+        # rather than silently masking the missing prompt.
+        effective_system_prompt: str | None = None
+        system_prompt_source: str
+        if self.eval_spec is not None and self.eval_spec.system_prompt is not None:
+            effective_system_prompt = self.eval_spec.system_prompt
+            system_prompt_source = "explicit"
+        else:
+            # AGENTS.md tier — pure resolver applies the
+            # ``.claude/rules/path-validation.md`` recipe (resolve
+            # strict + ``is_relative_to`` anchor) before the read. A
+            # ValueError from the resolver is intentionally
+            # un-wrapped: a hostile/typoed symlink escape is a
+            # security-relevant signal, not a friendly auto-derive
+            # failure, and should propagate to the CLI seam.
+            agents_md_path = resolve_agents_md(
+                self.skill_path, self.runner.project_dir
+            )
+            if agents_md_path is not None:
+                # Theoretical race: ``resolve_agents_md`` validated via
+                # ``Path.resolve(strict=True)`` so the file existed when
+                # the resolver ran. A concurrent delete or perms change
+                # between resolve and read surfaces as a friendly
+                # RuntimeError naming the skill + path; ``__cause__``
+                # chains the original. The ``except`` arm is defensive
+                # and not exercised by tests.
+                try:
+                    effective_system_prompt = agents_md_path.read_text(
+                        encoding="utf-8"
+                    )
+                    system_prompt_source = "agents_md"
+                except (FileNotFoundError, OSError) as exc:  # pragma: no cover
+                    raise RuntimeError(
+                        f"clauditor.spec: failed to read AGENTS.md "
+                        f"for skill {self.skill_name!r} from "
+                        f"{agents_md_path}: {exc}"
+                    ) from exc
+            else:
+                try:
+                    skill_text = self.skill_path.read_text(encoding="utf-8")
+                    _meta, body = parse_frontmatter(skill_text)
+                    effective_system_prompt = body
+                    system_prompt_source = "skill_md"
+                except (FileNotFoundError, OSError, ValueError) as exc:
+                    raise RuntimeError(
+                        f"clauditor.spec: failed to auto-derive system_prompt "
+                        f"for skill {self.skill_name!r} from {self.skill_path}: "
+                        f"{exc}"
+                    ) from exc
+
+        # US-006 / DEC-004 of #151: when the caller (typically the CLI
+        # seam) has resolved a concrete harness name, materialize a fresh
+        # ``SkillRunner`` with that harness. Constructing a new runner
+        # (rather than mutating ``self.runner.harness``) avoids mutating
+        # shared state across calls; construction cost is negligible.
+        # ``construct_harness`` rejects ``"auto"`` — callers must resolve
+        # it through :func:`clauditor._providers.resolve_harness` first.
+        #
+        # Same-harness skip (Copilot / CodeRabbit review feedback on PR
+        # #166): when ``harness_name_override`` matches the harness the
+        # existing ``self.runner`` already uses, reuse the runner. This
+        # preserves any harness-specific configuration carried by that
+        # runner (notably the pytest plugin's ``--clauditor-claude-bin``
+        # which lives on ``self.runner.harness.claude_bin``). Constructing
+        # a fresh ``SkillRunner`` with the default ``construct_harness``
+        # call would silently swap that custom binary back to ``"claude"``.
+        if harness_name_override is not None:
+            current_harness_name = getattr(
+                getattr(self.runner, "harness", None), "name", None
+            )
+            if current_harness_name == harness_name_override:
+                active_runner = self.runner
+            else:
+                from clauditor._harnesses import construct_harness
+
+                override_harness = construct_harness(harness_name_override)
+                active_runner = SkillRunner(
+                    project_dir=self.runner.project_dir,
+                    timeout=self.runner.timeout,
+                    harness=override_harness,
+                )
+        else:
+            active_runner = self.runner
+
+        result = active_runner.run(
             self.skill_name,
             run_args,
             cwd=effective_cwd,
             allow_hang_heuristic=allow_hang_heuristic,
             timeout=effective_timeout,
             env=effective_env,
+            system_prompt=effective_system_prompt,
         )
+
+        # US-003 of #154 (DEC-008): stamp the resolved provenance label
+        # into ``SkillResult.harness_metadata`` so the context-sidecar
+        # writer can read it without re-running the resolver.
+        # ``harness_metadata`` is the additive forward-compat surface
+        # introduced by DEC-007 of #148; merging here is correct
+        # because each call returns its own ``SkillResult`` (the
+        # underlying ``InvokeResult`` is constructed fresh per harness
+        # invocation, never shared across runs).
+        result.harness_metadata["system_prompt_source"] = system_prompt_source
 
         # Read output from files if eval spec specifies file-based output
         # Only read files on successful runs to avoid stale output

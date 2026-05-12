@@ -1,32 +1,94 @@
-# Rule: Route every Anthropic SDK call through the centralized helper
+# Rule: Route every model SDK call through the centralized helper
 
-When any clauditor module needs to call the Anthropic API, it must go
-through `clauditor._anthropic.call_anthropic` rather than constructing
-its own `AsyncAnthropic` client or `messages.create` call. The helper
-owns retry policy, error categorization, token accounting, and the
-`AnthropicHelperError` user-facing error envelope. Bypassing it means
-each new caller re-implements (and drifts on) the retry/back-off/auth-
-error-message logic the rest of clauditor depends on.
+When any clauditor module needs to call a model provider's API, it
+must go through the centralized `clauditor._providers.call_model`
+dispatcher rather than constructing its own `AsyncAnthropic` /
+`AsyncOpenAI` client or calling `messages.create` /
+`responses.create` directly. The dispatcher routes to the backend
+selected by `provider=` — today `"anthropic"` (delegating to
+`clauditor._providers._anthropic.call_anthropic`) and `"openai"`
+(delegating to `clauditor._providers._openai.call_openai`, #145).
+Both layers together own retry policy, error categorization, token
+accounting, transport routing, and the `AnthropicHelperError` /
+`OpenAIHelperError` user-facing error envelopes. Bypassing them
+means each new caller re-implements (and drifts on) the
+retry/back-off/auth-error-message logic the rest of clauditor
+depends on.
+
+For one-release back-compat, `clauditor._anthropic` re-exports the
+moved Anthropic public surface (`call_anthropic`,
+`AnthropicHelperError`, `ClaudeCLIError`,
+`ModelResult`/`AnthropicResult`, the auth helpers, etc.) so existing
+call sites keep working unmodified — but new code should target
+`clauditor._providers` directly.
 
 ## The pattern
 
 ```python
 # At the call site:
-from clauditor._anthropic import AnthropicHelperError, call_anthropic
+from clauditor._providers import (
+    AnthropicHelperError,
+    OpenAIHelperError,
+    call_model,
+)
 
 try:
-    result = await call_anthropic(prompt, model=model, max_tokens=4096)
+    result = await call_model(
+        prompt,
+        provider="anthropic",   # or "openai"
+        model=model,
+        transport="auto",
+        max_tokens=4096,
+    )
 except AnthropicHelperError as exc:
     # User-facing message already formatted (auth hint, status code,
     # body excerpt). Surface to stderr, set exit code, do NOT retry.
     print(f"ERROR: {exc}", file=sys.stderr)
     raise
-response_text = result.text_blocks[0] if result.text_blocks else ""
+except OpenAIHelperError as exc:
+    # Same shape — pre-formatted user-facing message. Distinct
+    # exception class keeps the CLI's ``except`` ladder structural.
+    print(f"ERROR: {exc}", file=sys.stderr)
+    raise
+response_text = result.response_text  # joined text across all blocks
+# Per-block access still available via result.text_blocks if needed.
 # result.input_tokens / result.output_tokens for metrics
 # result.raw_message for refusal / tool-use inspection
+# result.provider in {"anthropic", "openai"}; result.source in
+# {"api", "cli"} (always "api" for openai per DEC-002 of #145)
 ```
 
-Inside `_anthropic.py`:
+Inside `_providers/__init__.py` (the dispatcher):
+
+```python
+async def call_model(
+    prompt: str,
+    *,
+    provider: Literal["anthropic", "openai"],
+    model: str,
+    transport: Literal["api", "cli", "auto"] = "auto",
+    max_tokens: int = 4096,
+) -> ModelResult:
+    if provider == "anthropic":
+        # Deferred per-call import per
+        # ``.claude/rules/back-compat-shim-discipline.md`` Pattern 3,
+        # so test patches that target the canonical seam
+        # ``clauditor._providers._anthropic.call_anthropic`` still fire.
+        from clauditor._providers import _anthropic as _anthropic_mod
+        return await _anthropic_mod.call_anthropic(
+            prompt, model=model, transport=transport, max_tokens=max_tokens
+        )
+    if provider == "openai":
+        # Same deferred-import shape; openai backend ignores
+        # ``transport=`` (always source="api" per DEC-002 of #145).
+        from clauditor._providers import _openai as _openai_mod
+        return await _openai_mod.call_openai(
+            prompt, model=model, transport=transport, max_tokens=max_tokens
+        )
+    raise ValueError(f"unknown provider: {provider!r}")
+```
+
+Inside `_providers/_anthropic.py` (the anthropic backend body):
 
 ```python
 # Module-level aliases per .claude/rules/monotonic-time-indirection.md.
@@ -46,70 +108,281 @@ async def call_anthropic(
     max_tokens: int = 4096,
 ) -> AnthropicResult:
     # ... build AsyncAnthropic(), loop with per-exception retry caps,
-    # compute exponential backoff with ±25% jitter, raise
-    # AnthropicHelperError on non-retriable or exhausted failures ...
+    # compute exponential backoff with ±25% jitter (via shared
+    # _providers/_retry.py helpers), raise AnthropicHelperError on
+    # non-retriable or exhausted failures ...
+```
+
+Inside `_providers/_openai.py` (the openai backend body):
+
+```python
+# Same module-level aliases — tests patch _sleep / _monotonic on the
+# openai module specifically so anthropic tests' patches don't leak.
+_sleep = asyncio.sleep
+_monotonic = time.monotonic
+
+
+async def call_openai(
+    prompt: str,
+    *,
+    model: str,
+    transport: Literal["api", "cli", "auto"] = "auto",  # accepted for signature parity; ignored
+    max_tokens: int = 4096,
+) -> ModelResult:
+    # Defense-in-depth: catch (TypeError, OpenAIError) at AsyncOpenAI()
+    # construction. OpenAI's SDK raises OpenAIError immediately when
+    # OPENAI_API_KEY is missing (Anthropic raises TypeError later, at
+    # messages.create()), so the construction wrap covers both shapes.
+    try:
+        client = AsyncOpenAI()
+    except ImportError:
+        raise
+    except (TypeError, OpenAIError) as exc:
+        raise OpenAIHelperError(
+            "OpenAI SDK client initialization failed — "
+            "verify OPENAI_API_KEY is set."
+        ) from exc
+    # ... loop with per-exception retry caps shared via
+    # _providers/_retry.py (same constants + compute_backoff). Stamps
+    # ModelResult.source="api" unconditionally per DEC-002 of #145.
 ```
 
 ## Why this shape
 
-- **One retry taxonomy, consistently applied**:
-  - `RateLimitError` (HTTP 429) → up to 3 retries (4 attempts total).
-  - `APIStatusError` with `status_code >= 500` → 1 retry then raise.
-  - `APIStatusError` 4xx (other than 401/403) → no retry; raise
-    immediately (bad request, not found, conflict, etc).
-  - `AuthenticationError` (401) / `PermissionDeniedError` (403) → no
-    retry; raise immediately with a message pointing at
-    `ANTHROPIC_API_KEY`.
-  - `APIConnectionError` → 1 retry then raise.
-  If every call site rolled its own, one module would treat 500s as
-  permanent and another as transient; operators would see inconsistent
-  failure behavior from identical API conditions.
-- **Exponential backoff with ±25% jitter**: the delay for retry index
-  `i` is `2 ** i` seconds (i.e. 1 s, 2 s, 4 s) multiplied by a
-  uniform random factor in `[0.75, 1.25]`. Jitter avoids the stampede
-  failure mode where two concurrent callers retry on the same wall-
-  clock tick and both hit the same throttling window again.
+- **One retry taxonomy, consistently applied across providers**.
+  Categories are property-based (HTTP status / error kind), not
+  literal SDK exception class names — each provider's per-SDK
+  exceptions are mapped into these categories at the call site.
+  Contributors must NOT catch provider-specific exceptions at call
+  sites; the centralized helper owns categorization.
+  - **rate-limit category** (HTTP 429) → up to 3 retries (4 attempts
+    total). `RATE_LIMIT_MAX_RETRIES = 3`.
+  - **server-error category** (HTTP 5xx) → 1 retry then raise.
+    `SERVER_MAX_RETRIES = 1`.
+  - **client-error category** (HTTP 4xx other than 401/403) → no
+    retry; raise immediately (bad request, not found, conflict, etc).
+  - **auth/permission category** (401/403) → no retry; raise
+    immediately with a message pointing at the provider's API-key
+    env var.
+  - **connection category** (transport-level connection failure) →
+    1 retry then raise. `CONN_MAX_RETRIES = 1`.
+  Both Anthropic and OpenAI backends share the same per-category
+  retry caps (`RATE_LIMIT_MAX_RETRIES=3`, `SERVER_MAX_RETRIES=1`,
+  `CONN_MAX_RETRIES=1`) and the same exponential-backoff formula
+  via the shared `clauditor._providers._retry` module (DEC-007 of
+  `plans/super/145-openai-provider.md`). Per-category ladder
+  decisions live in `compute_retry_decision(category, retry_index)`,
+  the policy-level helper. If every call site rolled its own, one
+  module would treat 500s as permanent and another as transient;
+  hoisting the policy to one shared module keeps every provider
+  in lockstep when the ladder evolves.
+- **Exponential backoff with ±25% jitter** via
+  `_providers/_retry.compute_backoff(retry_index)`: the delay for
+  retry index `i` is `2 ** i` seconds (i.e. 1 s, 2 s, 4 s)
+  multiplied by a uniform random factor in `[0.75, 1.25]`. Jitter
+  avoids the stampede failure mode where two concurrent callers
+  retry on the same wall-clock tick and both hit the same
+  throttling window again.
 - **Auth errors include the env-var hint**: an operator-friendly
-  `"check the ANTHROPIC_API_KEY environment variable"` is attached to
-  every 401/403 message. A scattered SDK-call style would leave this
+  `"check the ANTHROPIC_API_KEY environment variable"` (or
+  `OPENAI_API_KEY` for the OpenAI side) is attached to every
+  401/403 message. A scattered SDK-call style would leave this
   up to each call site and at least one would forget.
-- **`AnthropicHelperError` wraps the original exception**: non-
-  retriable SDK errors are re-raised as
-  `AnthropicHelperError(message) from exc`, so `__cause__` preserves
-  the original exception for callers that want to introspect (e.g.
-  for status code), while new callers can just `except
-  AnthropicHelperError` for the pre-formatted user-facing message.
-- **`_sleep` / `_rand_uniform` module-level aliases** per
-  `.claude/rules/monotonic-time-indirection.md`: tests patch
-  `clauditor._anthropic._sleep` and `clauditor._anthropic._rand_uniform`
-  rather than `asyncio.sleep` / `random.uniform`. Patching the
-  stdlib originals under asyncio corrupts the event loop's own
-  scheduler ticks; the alias indirection keeps the test scope tight.
-- **`AnthropicResult` bundles what all callers need**: joined
+- **Per-provider helper-error classes wrap the original exception**:
+  non-retriable SDK errors are re-raised as
+  `AnthropicHelperError(message) from exc` or
+  `OpenAIHelperError(message) from exc`, so `__cause__` preserves
+  the original exception for callers that want to introspect
+  (e.g. for status code), while new callers can just
+  `except AnthropicHelperError` / `except OpenAIHelperError` for
+  the pre-formatted user-facing message. The two classes are
+  siblings of `Exception`, NOT a shared parent class — preserving
+  the structural-routing invariant per
+  `.claude/rules/llm-cli-exit-code-taxonomy.md`.
+- **Per-provider `_sleep` / `_monotonic` / `_rand_uniform` aliases**
+  per `.claude/rules/monotonic-time-indirection.md`: tests patch
+  `clauditor._providers._anthropic._sleep` (or
+  `_providers._openai._sleep`) rather than `asyncio.sleep`.
+  Patching the stdlib originals under asyncio corrupts the event
+  loop's own scheduler ticks; the alias indirection keeps the
+  test scope tight. The shared retry module
+  `_providers/_retry.py` exposes its own `_rand_uniform` for
+  isolated-jitter testing.
+- **`ModelResult` bundles what all callers need**: joined
   `response_text`, per-block `text_blocks`, `input_tokens`,
-  `output_tokens`, `raw_message`. Callers that want to distinguish
-  "no text" from "empty text" check `text_blocks`; callers that want
-  refusal handling read `raw_message`; metrics consumers read the
-  token fields. One return type covers every current consumer without
-  forcing them to dig through the raw SDK response.
-- **`ImportError` is raised un-wrapped**: when the `anthropic` SDK is
-  not installed, the helper raises `ImportError` directly (not
-  `AnthropicHelperError`). This preserves the existing
-  `pip install clauditor[grader]` install-hint path every grader
-  entry point already produces when users run the tool without the
-  optional extra.
+  `output_tokens`, `raw_message`, plus `provider` (`"anthropic"`
+  or `"openai"`) and `source` (`"api"` or `"cli"`) so callers can
+  stamp per-call provenance on their reports. Plus
+  `reasoning_tokens: int | None` (#170) carrying the per-call
+  separately-billed reasoning / thinking-token count when the
+  provider exposes one. Callers that want to distinguish "no
+  text" from "empty text" check `text_blocks`; callers that want
+  refusal handling read `raw_message`; metrics consumers read
+  the token fields. One return type covers every current
+  consumer without forcing them to dig through the raw SDK
+  response. The legacy alias `AnthropicResult = ModelResult`
+  is preserved so existing test fixtures and docstrings keep
+  working.
+- **Asymmetric `reasoning_tokens` capture per provider** (#170).
+  The two backends populate `reasoning_tokens` differently
+  because the underlying SDKs surface different things, NOT as a
+  consistency lapse:
+  - **Anthropic always returns `None`** (DEC-001 of
+    `plans/super/170-reasoning-tokens-capture.md`).
+    `anthropic.types.Usage` carries no separately-billed
+    thinking-token field; for extended-thinking models (Opus 4.x,
+    Sonnet 4.x with `thinking={"type":"enabled",...}`) the
+    thinking tokens are ALREADY INCLUDED in `output_tokens`. The
+    construction site at `_providers/_anthropic.py::_extract_result`
+    hardcodes `reasoning_tokens=None` with an inline comment
+    citing DEC-001 so future contributors don't copy-paste a
+    `usage.<something>` shape from the OpenAI side. A
+    drift-guard test in `tests/test_providers_anthropic.py`
+    asserts `result.reasoning_tokens is None` for both a
+    normal mock and a thinking-style mock.
+  - **OpenAI extracts via a pure helper** (DEC-002, DEC-006).
+    `_providers/_openai.py::_extract_reasoning_tokens(usage)`
+    defensively reads `usage.output_tokens_details.reasoning_tokens`
+    and returns the int (including `0`) or `None` on any
+    malformed shape (`usage is None`, missing
+    `output_tokens_details`, missing field, non-int, `bool`,
+    any attribute-access exception). `0` is preserved as a
+    real signal ("model didn't reason on this call"); `None`
+    means "couldn't read" — conflating the two would lose the
+    per-call signal. The explicit `isinstance(value, bool)`
+    guard precedes the `int` check per
+    `.claude/rules/constant-with-type-info.md` (Python's
+    `isinstance(True, int)` is `True`).
+  Sum semantics across multi-call grader runs are codified in
+  `quality_grader.py::_sum_optional_reasoning_tokens` and
+  documented under the "Schema version bumps for #170"
+  subsection of `.claude/rules/json-schema-version.md`.
+- **Asymmetric transport: anthropic supports `{api,cli,auto}`,
+  openai always `source="api"`.** Per DEC-002 of
+  `plans/super/145-openai-provider.md`, OpenAI has no CLI
+  transport axis. `call_openai` accepts the `transport=` kwarg at
+  the signature level so the dispatcher can pass it uniformly,
+  but the OpenAI backend ignores the value and unconditionally
+  stamps `ModelResult.source = "api"`. Callers that want
+  per-provider behavior branch on `result.provider`, not
+  `result.source`.
+- **`ImportError` is raised un-wrapped**: when the `anthropic` or
+  `openai` SDK is not installed, the helper raises `ImportError`
+  directly (not `AnthropicHelperError` / `OpenAIHelperError`).
+  This preserves the existing `pip install clauditor[grader]`
+  install-hint path every grader entry point already produces
+  when users run the tool without the optional extra.
+- **Base-class catch-all defends the exit-3 routing** (US-004 of
+  #162). Each provider's retry loop ends with a final
+  `except AnthropicError as exc:` (in `call_anthropic`) /
+  `except OpenAIError as exc:` (in `call_openai`) branch — the
+  bare SDK base class. This lands AFTER all typed branches
+  (`RateLimitError`, `APIStatusError`, `AuthenticationError`,
+  `PermissionDeniedError`, `APIConnectionError`, `TypeError`)
+  so subclass matching takes precedence per Python's `except`
+  first-match semantics. A future SDK version's new typed error
+  not yet in the ladder would otherwise escape uncaught and
+  bypass the exit-3 routing in CLI dispatchers; the catch-all
+  wraps it as the corresponding `*HelperError` with message
+  `f"API request failed: {type(exc).__name__}"` — class name only
+  per the post-merge security tightening of DEC-003 of #162.
+  Earlier drafts truncated `str(exc)` to 500 chars, but a
+  CodeRabbit review pass on PR #163 surfaced a stronger argument:
+  this branch handles unknown SDK error shapes by definition, so
+  we cannot assume the SDK's `__str__` is well-behaved (a future
+  SDK error type's message could pack prompt fragments,
+  response-body excerpts, or echoed headers). Truncation bounds
+  size, not exposure. The class name alone is always safe;
+  diagnostic content is preserved on `__cause__` via
+  `raise ... from exc` so debuggers can introspect the full
+  original SDK exception. The branch does NOT retry (without
+  category info, no sound retry decision is possible). File
+  anchors: `_providers/_anthropic.py::call_anthropic` retry
+  loop, `_providers/_openai.py::call_openai` retry loop.
 
 ## Canonical implementation
 
-`src/clauditor/_anthropic.py::call_anthropic` — single async helper,
-~90 effective lines, exhaustive unit-tested retry branches in
-`tests/test_anthropic.py`. The dataclass `AnthropicResult` and the
-exception type `AnthropicHelperError` are part of the public surface
-for callers; everything prefixed with `_` (`_compute_backoff`,
-`_body_excerpt`, `_extract_result`, `_sleep`, `_rand_uniform`,
-`_rng`) is internal.
+`src/clauditor/_providers/__init__.py::call_model` — thin async
+dispatcher. Validates `provider`, delegates `provider="anthropic"`
+to `clauditor._providers._anthropic.call_anthropic` and
+`provider="openai"` to `clauditor._providers._openai.call_openai`
+via deferred per-call imports (per
+`.claude/rules/back-compat-shim-discipline.md` Pattern 3, so test
+patches on the canonical module path fire). Raises `ValueError`
+for unknown values.
 
-Call sites (four consumers):
+`src/clauditor/_providers/_anthropic.py::call_anthropic` — the
+anthropic backend body, single async helper, exhaustive
+unit-tested retry branches in `tests/test_providers_anthropic.py`.
+The dataclass `ModelResult` (with back-compat alias
+`AnthropicResult`) and the exception types `AnthropicHelperError`
+/ `ClaudeCLIError` are part of the public surface for callers;
+everything prefixed with `_` (`_body_excerpt`, `_extract_result`,
+`_sleep`, `_rand_uniform`, `_rng`) is internal.
+
+`src/clauditor/_providers/_openai.py::call_openai` — the openai
+backend body (US-002+ of #145). Mirrors the anthropic seam's
+structural shape — module-level test-indirection aliases,
+sibling `OpenAIHelperError` exception class, deferred SDK import
+where appropriate. Pins module-level constants
+`DEFAULT_MODEL_L3 = "gpt-5.4"` and `DEFAULT_MODEL_L2 = "gpt-5.4-mini"`
+per DEC-001 of `plans/super/145-openai-provider.md`. Catches
+`(TypeError, OpenAIError)` at `AsyncOpenAI()` construction
+because OpenAI's SDK raises its base `OpenAIError` immediately
+when `OPENAI_API_KEY` is missing, whereas Anthropic raises
+`TypeError` later at `messages.create()` — the `OpenAIError`
+arm of the tuple covers OpenAI's earlier failure point.
+Unit-tested retry branches in `tests/test_providers_openai.py`.
+
+`src/clauditor/_providers/_retry.py` — shared retry policy module
+(DEC-007 of `plans/super/145-openai-provider.md`). Hosts:
+
+- `RATE_LIMIT_MAX_RETRIES = 3` / `SERVER_MAX_RETRIES = 1` /
+  `CONN_MAX_RETRIES = 1` — the per-category retry caps both
+  providers honor.
+- `compute_backoff(retry_index)` — pure helper returning the
+  delay for the `retry_index`-th retry (`2 ** retry_index` plus
+  uniform `±25%` jitter, floored at 0).
+- `compute_retry_decision(category, retry_index)` — pure helper
+  returning `"retry"` or `"raise"` per the shared ladder. Each
+  provider's `except` arms call this rather than open-coding
+  the decision.
+
+Per-provider concerns (the `_sleep` / `_monotonic` /
+`_rand_uniform` / `_rng` test-indirection aliases) stay
+per-provider — patching `_providers._openai._sleep` does not
+clobber Anthropic's sleeping. The retry module owns the *policy*
+(constants + decision logic); each provider owns its own clock
+/ RNG indirection. Unit tests in `tests/test_providers_retry.py`.
+
+`src/clauditor/_providers/_auth.py` — auth sub-seam shared
+across providers. Hosts the per-provider auth helpers
+(`check_any_auth_available`, `check_openai_auth`), the
+multi-provider dispatcher `check_provider_auth(provider,
+cmd_name)` (DEC-006 of #145; see also
+`.claude/rules/multi-provider-dispatch.md`), the env-key probes
+(`_api_key_is_set` / `_openai_api_key_is_set`), and the
+implicit-coupling announcement family (see "Implicit-coupling
+announcements" below).
+
+`src/clauditor/_anthropic.py` — back-compat shim. Re-exports the
+public Anthropic surface so existing call sites still importing
+`from clauditor._anthropic` keep working unmodified for one
+release. New code targets `clauditor._providers` directly. There
+is no analogous `clauditor._openai.py` — the OpenAI surface is
+new and ships in `_providers` from day one.
+
+Call sites (six consumers — paths unchanged from #144; the
+provider parameter resolves through the four-layer resolver
+`clauditor.cli._resolve_grading_provider(args, eval_spec)` →
+`clauditor._providers.resolve_grading_provider(cli, env, spec,
+model)` (CLI flag > `CLAUDITOR_GRADING_PROVIDER` env >
+`EvalSpec.grading_provider` > default `"auto"`) per
+`.claude/rules/multi-provider-dispatch.md` and `.claude/rules/spec-cli-precedence.md`.
+The legacy `eval_spec.grading_provider or "anthropic"` short-circuit
+was retired in #182 / DEC-001b — `grading_provider` now defaults to
+`"auto"` and the resolver handles inference + the subscription-first
+fallback to anthropic when no model is available:
 
 - `src/clauditor/grader.py` — `extract_and_grade`,
   `extract_and_report` (Layer 2 schema extraction).
@@ -120,13 +393,14 @@ Call sites (four consumers):
 - `src/clauditor/triggers.py` — trigger precision judge.
 
 Each call site's shape is the same: build a prompt with a pure
-helper, `await call_anthropic(prompt, model=..., max_tokens=...)`,
-hand the resulting `text_blocks[0]` to a pure parser/builder. See
+helper, `await call_model(prompt, provider=<resolved>, model=...,
+transport=..., max_tokens=...)`, hand the resulting
+`text_blocks[0]` to a pure parser/builder. See
 `.claude/rules/pure-compute-vs-io-split.md` (LLM grader pure split
 anchor) for how the pure layer that surrounds this seam is
 structured.
 
-### Multi-transport routing (CLI + SDK, #86)
+### Multi-transport routing (CLI + SDK, #86) — Anthropic only
 
 `call_anthropic` accepts a `transport: str = "auto"` keyword argument
 (DEC-003 of `plans/super/86-claude-cli-transport.md`). The centralized
@@ -134,8 +408,9 @@ seam owns transport selection; every future caller inherits both the
 SDK and CLI backends for free.
 
 - **`"api"`** — HTTP SDK path via `AsyncAnthropic()`. Default before #86.
-- **`"cli"`** — subprocess path via `_invoke_claude_cli` (reuses the same
-  `InvokeResult` projection that `SkillRunner` uses).
+- **`"cli"`** — subprocess path via `harness.invoke()` (default harness is
+  `ClaudeCodeHarness` in `src/clauditor/_harnesses/_claude_code.py`; reuses the
+  same `InvokeResult` projection that `SkillRunner` uses).
 - **`"auto"`** — prefers CLI when `shutil.which("claude")` is non-None;
   falls back to SDK otherwise. Emits a one-time stderr announcement on
   first auto→CLI resolution per process so operators are not surprised.
@@ -147,68 +422,246 @@ env var > `EvalSpec.transport` > default `"auto"`. The shared helper
 the precedence logic for all six LLM-mediated CLI commands so whitespace
 normalization and env stripping are applied uniformly.
 
-`AnthropicResult.source` (`"api"` or `"cli"`) records which backend
-handled each call. `BlindReport.transport_source` propagates this through
-blind-compare; when the two parallel calls disagree (unlikely in practice),
-the report stamps `"mixed"` (DEC-018).
+`ModelResult.source` (`"api"` or `"cli"`) records which Anthropic
+backend handled each call (legacy alias `AnthropicResult.source` is
+preserved). For OpenAI calls, `source` is always `"api"` per DEC-002
+of `plans/super/145-openai-provider.md` — there is no OpenAI CLI
+transport to record. `BlindReport.transport_source` propagates this
+through blind-compare; when the two parallel calls disagree
+(unlikely in practice), the report stamps `"mixed"` (DEC-018).
+
+### Provider-axis stamping (`provider_source`, #147)
+
+Parallel to `transport_source`, each grader call stamps a
+`provider_source: str` field on `GradingReport` and `ExtractionReport`
+recording which model provider's SDK (`"anthropic"` or `"openai"`)
+served the call. The provider value comes from the
+`call_model(provider=...)` argument, resolved at the CLI seam by
+`_resolve_grading_provider(args, eval_spec)` per the four-layer
+precedence rule
+(`.claude/rules/spec-cli-precedence.md` "Four-layer precedence —
+grading provider (#146)"). The on-disk field name is byte-identical
+to the in-memory dataclass field — same shape as `transport_source`
+introduced in #86. Sidecars `grading.json` and `extraction.json`
+bumped from `schema_version: 2` to `3`; legacy v1/v2 reads default
+`provider_source` to `"anthropic"`. See
+`.claude/rules/json-schema-version.md` "Schema version bumps for
+`#147`" for the loader-side default-on-read semantics. The honest
+harness-axis sibling (`harness: str` on the same sidecars + on
+`assertions.json`) lives in `#152` and is strictly separable from
+`#147` per DEC-006 of `plans/super/147-sidecar-provider-field.md`.
 
 ### Implicit-coupling announcements — an emerging family
 
 One-time-per-process stderr notices are an emerging family co-located
-in `src/clauditor/_anthropic.py`. Each member pairs a module-level
-bool flag with an announcement-text constant; the print-and-flip
-logic either lives inline at the call site (the first member, from
-#86) or is factored into a public helper (the second member, from
-#95, and the target shape going forward). Two members today:
+in the `clauditor._providers` package. Each member pairs a
+module-level flag with an announcement-text constant; the
+print-and-flip logic either lives inline at the call site (the first
+member, from #86) or is factored into a public helper (the later
+members, from #95, #144, #151, #169, and #175 respectively, and the
+target shape going forward). The traditional flag shape is a module-
+level `bool`, but the family also admits **set-keyed** flags
+(`set[tuple[...]]`) for announcements that need per-key
+idempotence — see the `_announced_unknown_models` member below
+for the canonical shape. Seven members today (axes:
+transport-coupled, auth-coupled, deprecation-coupled, harness-
+coupled, pricing-coupled, codex-auth-coupled):
 
 - `_announced_cli_transport` (bool flag) + `_CLI_AUTO_ANNOUNCEMENT`
-  (plain `str` constant) — from #86. Fires on auto→cli transport
-  resolution. Print-and-flip is **inlined** inside `call_anthropic`
-  (see the `if not _announced_cli_transport:` block near the bottom
-  of the function). No standalone emitter helper.
+  (plain `str` constant) in `src/clauditor/_providers/_anthropic.py`
+  — from #86. Fires on auto→cli transport resolution. Print-and-flip
+  is **inlined** inside `call_anthropic` (see the
+  `if not _announced_cli_transport:` block near the bottom of the
+  function). No standalone emitter helper.
 - `_announced_implicit_no_api_key` (bool flag) +
-  `_IMPLICIT_NO_API_KEY_ANNOUNCEMENT` (`Final[str]` constant) — from
-  #95 US-002. Fires when `--transport cli` (or
-  `CLAUDITOR_TRANSPORT=cli`) implicitly strips `ANTHROPIC_API_KEY` /
-  `ANTHROPIC_AUTH_TOKEN` from a skill subprocess env. Print-and-flip
-  lives in the **public helper** `announce_implicit_no_api_key()`,
-  called from the `env_override` computation in
-  `cli/grade.py::cmd_grade` (see `.claude/rules/spec-cli-precedence.md`
-  "Implicit coupling at the operator-intent layers" for the call-site
-  contract).
+  `_IMPLICIT_NO_API_KEY_ANNOUNCEMENT` (`Final[str]` constant) in
+  `src/clauditor/_providers/_auth.py` — from #95 US-002. Fires when
+  `--transport cli` (or `CLAUDITOR_TRANSPORT=cli`) implicitly strips
+  `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from a skill subprocess
+  env. Print-and-flip lives in the **public helper**
+  `announce_implicit_no_api_key()`, called from the `env_override`
+  computation in `cli/grade.py::cmd_grade` (see
+  `.claude/rules/spec-cli-precedence.md` "Implicit coupling at the
+  operator-intent layers" for the call-site contract).
+- `_announced_call_anthropic_deprecation` (bool flag) +
+  `_CALL_ANTHROPIC_DEPRECATION_NOTICE` (`Final[str]` constant) in
+  `src/clauditor/_providers/_auth.py` — from #144 US-007. Fires on
+  the first invocation per Python process of the back-compat shim
+  `clauditor._anthropic.call_anthropic`. Print-and-flip lives in the
+  **public helper** `announce_call_anthropic_deprecation()`, called
+  from the shim's `call_anthropic` wrapper before each delegation to
+  `call_model(provider="anthropic", ...)`. Three durable substrings
+  pinned by tests: `"clauditor._anthropic"` (deprecated path),
+  `"clauditor._providers"` (canonical replacement),
+  `"will be removed"` (future-removal hint).
+- `_announced_auto_codex_harness` (bool flag) +
+  `_AUTO_CODEX_ANNOUNCEMENT` (`Final[str]` constant) in
+  `src/clauditor/_providers/_auth.py` — from #151 US-002 (DEC-007).
+  Fires when the harness resolver's auto branch picks `"codex"`
+  because `claude` is not on PATH but `codex` is. Print-and-flip
+  lives in the **public helper** `announce_auto_codex_harness()`,
+  called from `clauditor.cli._resolve_harness` before returning
+  the resolved name. Names the env vars Codex needs (`CODEX_API_KEY`
+  / `OPENAI_API_KEY`) and the two pin-it-explicitly escape hatches
+  (`--harness=claude-code` and `CLAUDITOR_HARNESS=claude-code`).
+- `_announced_pricing_table_stale` (bool flag) +
+  `_PRICING_TABLE_STALE_ANNOUNCEMENT` (`Final[str]` constant) in
+  `src/clauditor/_providers/_pricing.py` — from #169 US-002
+  (DEC-003). Fires on the first `estimate_cost` call per Python
+  process when `today - _LAST_VERIFIED > 90 days`. Print-and-flip
+  lives in the **public helper**
+  `announce_pricing_table_stale_if_old()`, called from the top of
+  `estimate_cost` so the warning fires before any contract-violation
+  check. Defensive: a typo in `_LAST_VERIFIED` treats the table as
+  stale (`days_old = 9999`) so a maintainer's typo cannot crash a
+  production grading run — the fallback is loud-but-safe (a stale
+  warning is preferable to a silent skip). Three durable substrings
+  pinned by tests: `"90 days"` (the threshold), `"pricing"` (topic
+  anchor), and at least one of `"platform.claude.com"` /
+  `"openai.com/api/pricing"` (source-of-truth URLs). The
+  `f"v{_PRICING_TABLE_VERSION}"` interpolation is also pinned so
+  a future schema bump surfaces in the warning text.
+- `_announced_unknown_models` (`set[tuple[str, str]]` — NOT a
+  bool; first set-keyed member) +
+  `_UNKNOWN_MODEL_ANNOUNCEMENT_TEMPLATE` (`Final[str]` constant)
+  in `src/clauditor/_providers/_pricing.py` — from #169 US-003
+  (DEC-006). Fires when `estimate_cost(provider, model, ...)` is
+  called with a recognized provider but an unknown model. Per-
+  `(provider, model)` one-shot semantics: each unique pair emits
+  exactly once per process; distinct unknown models each get their
+  own first-call warning rather than the first miss muting all
+  subsequent ones. Print-and-flip lives in the **public helper**
+  `announce_unknown_model(provider, model)`, called from
+  `estimate_cost`'s known-provider/unknown-model branch (an
+  unknown PROVIDER stays silent — different code path — so a
+  typo'd provider does not flood stderr with every model the
+  caller subsequently tries). The set-keyed shape is the **first
+  variation** on the family's traditional bool-flag tradition,
+  and a precedent for future announcements that need per-key
+  idempotence (e.g. per-skill, per-iteration, per-symbol). Two
+  durable substrings pinned by tests: `"pricing:"` (topic
+  anchor) and `"not in rate table"` (specific failure mode), plus
+  the literal `(provider, model)` strings interpolated at emit
+  time so the maintainer can grep stderr for the missing model
+  name. Reset mechanism for tests is
+  `monkeypatch.setattr(..., set())` (an empty set, not `False`).
+- `_announced_codex_cli_on_path` (bool flag) +
+  `_CODEX_CLI_ON_PATH_ANNOUNCEMENT` (`Final[str]` constant) in
+  `src/clauditor/_providers/_auth.py` — from #175 US-001
+  (DEC-003 of `plans/super/175-codex-chatgpt-login-auth.md`),
+  refined by #177 (DEC-007 of
+  `plans/super/177-codex-auth-mode-conflict.md`). Fires when
+  `check_codex_auth` accepts the pre-flight via the
+  **codex-CLI-on-PATH** branch under the post-#177 narrowed fire
+  condition: neither `CODEX_API_KEY` nor `OPENAI_API_KEY` is set,
+  `codex` is on PATH, AND `~/.codex/auth.json` is absent OR
+  declares `auth_mode != "chatgpt"`. Per #177 DEC-002 / DEC-006,
+  clauditor refuses ChatGPT-mode credentials at pre-flight (the
+  codex subprocess would route via ChatGPT and reject every
+  model) — that refusal raises `CodexAuthMissingError` and does
+  NOT fire the announcement (the exception IS the user signal).
+  The announcement body text was reworded by #177 US-004 to drop
+  the phrase "typically the ChatGPT-login flow"; the post-#177
+  body describes codex resolving credentials from
+  `~/.codex/auth.json` in API-key mode. Per #175 DEC-009 the env
+  branches (`_codex_api_key_is_set` / `_openai_api_key_is_set`)
+  short-circuit silently and do NOT fire the announcement —
+  surfacing the *implicit trust the CLI* decision to the
+  operator, not re-announcing what the operator set explicitly
+  via env. Print-and-flip lives in the **public helper**
+  `announce_codex_cli_on_path()`, called from `check_codex_auth`
+  only when the PATH branch is the accepting one. Three durable
+  substrings pinned by tests (#175 DEC-004, preserved verbatim by
+  #177 DEC-007): `"codex"` (topic anchor), `"PATH"` (the trust
+  mechanism), `"~/.codex/auth.json"` (the credentials file the
+  codex CLI reads; per #177 its presence is examined for
+  `auth_mode` and refusal fires when `auth_mode == "chatgpt"`, so
+  naming the file in the announcement still helps operators
+  locate where codex looks for credentials). Re-export shape per
+  `.claude/rules/back-compat-shim-discipline.md` Pattern 1:
+  the public helper `announce_codex_cli_on_path` IS re-exported
+  from `_providers/__init__.py` (function object — safe), the
+  constant `_CODEX_CLI_ON_PATH_ANNOUNCEMENT` IS re-exported
+  (immutable `Final[str]` — safe), but the mutable flag
+  `_announced_codex_cli_on_path` is **NOT** re-exported (would
+  frozen-copy and silently diverge from the canonical location).
+  Reset mechanism for tests is
+  `monkeypatch.setattr("clauditor._providers._auth._announced_codex_cli_on_path", False)`
+  — targeting the canonical module path, not the shim.
 
-The #95 shape (`Final[str]` constant + public helper) is the target
+Per #145 the OpenAI backend deliberately did **not** introduce a
+fourth announcement family. OpenAI's auth posture is strict
+(`OPENAI_API_KEY` only — no CLI fallback, no env-stripping
+implicit-coupling, no shim deprecation surface), so none of the
+three existing announcement triggers map to OpenAI. Adding a
+no-op flag for symmetry would create an empty member of the
+family that future maintainers would have to defend against.
+The empty result is itself the design decision: a future provider
+that introduces a genuinely new implicit-coupling failure mode
+(e.g. a Vertex auth-method-vs-credentials-file precedence
+ambiguity) earns its own announcement family member; OpenAI as
+shipped did not.
+
+The #95 / #144 shape (`Final[str]` constant + public helper) is the target
 pattern for new members — it makes the notice independently testable
 without reaching into `call_anthropic` internals. New announcement
-flags belong in the same module (DEC-009 of
-`plans/super/95-subscription-auth-flag.md`). Reset mechanism for
-tests is the `monkeypatch.setattr(..., False)` autouse fixture
-pattern — see `tests/test_anthropic.py::TestStderrAnnouncement` and
-`TestAnnounceImplicitNoApiKey` for the shape.
+flags belong in the `_providers` package (DEC-009 of
+`plans/super/95-subscription-auth-flag.md`); auth-coupled and
+deprecation-coupled notices (and the harness-coupled
+`_announced_auto_codex_harness` from #151, which names auth env
+vars) live in `_providers/_auth.py`, transport-coupled notices in
+`_providers/_anthropic.py`, and pricing-coupled notices in
+`_providers/_pricing.py` (a small pure-compute sibling module to
+`_retry.py` — NOT a `call_model` consumer; the pricing module is
+the first family member that lives outside the `call_*` /
+auth-helper call chain). Reset mechanism for tests is the
+`monkeypatch.setattr(..., False)` autouse fixture pattern (or
+`monkeypatch.setattr(..., set())` for the set-keyed
+`_announced_unknown_models`) — see
+`tests/test_providers_anthropic.py::TestStderrAnnouncement`,
+`tests/test_providers_auth.py::TestAnnounceImplicitNoApiKey`,
+`tests/test_providers_auth.py::TestCallAnthropicDeprecationAnnouncement`,
+`tests/test_providers_auth.py::TestAnnounceCodexCliOnPath`,
+and
+`tests/test_providers_pricing.py::TestStaleAnnouncement`
+/ `tests/test_providers_pricing.py::TestUnknownModelAnnouncement`
+for the shape.
 
 ## When this rule applies
 
-Any new clauditor feature that needs to call Anthropic — a new
-grader tier, an auto-triage judge, a rubric critic, a regeneration-
-on-low-score loop. Import `call_anthropic` and use it. Do NOT
-construct `AsyncAnthropic()` directly in the new module; do NOT
-catch `RateLimitError` / `APIStatusError` at the call site to
-implement a bespoke retry loop. If the centralized retry policy is
-genuinely wrong for a new use case, change the policy in
-`_anthropic.py` (with tests covering the new branches) so every
-caller inherits the fix.
+Any new clauditor feature that needs to call a model provider — a
+new grader tier, an auto-triage judge, a rubric critic, a
+regeneration-on-low-score loop. Import `call_model` from
+`clauditor._providers` and call it with the resolved `provider=`
+string. Do NOT construct `AsyncAnthropic()` / `AsyncOpenAI()`
+directly in the new module; do NOT catch `RateLimitError` /
+`APIStatusError` at the call site to implement a bespoke retry
+loop. If the centralized retry policy is genuinely wrong for a new
+use case, change the policy in `_providers/_retry.py` (with tests
+covering the new branches) so every provider inherits the fix.
 
 ## When this rule does NOT apply
 
-- Non-Anthropic API clients (OpenAI, local Ollama, a third-party
-  judge service). The centralized helper is Anthropic-specific; a
-  sibling helper per provider is fine, and the rule's shape
-  (centralize retry + error categorization in one seam) should be
-  replicated for each.
-- Synchronous one-off scripts in `scripts/` that want to hit the SDK
-  directly for a diagnostic. They can construct a client inline —
-  but production paths loaded via `import clauditor.*` must go
-  through the helper.
-- Tests that mock Anthropic entirely. The mock target is
-  `clauditor._anthropic.call_anthropic` (or a per-call-site patch of
-  the same symbol), never the `anthropic` SDK directly.
+- Non-Anthropic / non-OpenAI API clients (Vertex via direct REST,
+  local Ollama, a third-party judge service). The centralized
+  helper today supports only the two providers; a sibling helper
+  per provider is fine, and the rule's shape (centralize retry +
+  error categorization in one seam) should be replicated for
+  each — typically as a new `_providers/_<name>.py` module with
+  a matching `call_<name>` function and a sibling
+  `<Name>HelperError` class, plus a new branch in
+  `call_model`'s dispatcher.
+- Synchronous one-off scripts in `scripts/` that want to hit an
+  SDK directly for a diagnostic. They can construct a client
+  inline — but production paths loaded via `import clauditor.*`
+  must go through the helper.
+- Tests that mock a provider entirely. The canonical mock
+  targets are
+  `clauditor._providers._anthropic.call_anthropic` and
+  `clauditor._providers._openai.call_openai` (or a per-call-site
+  patch of the same symbols), never the `anthropic` / `openai`
+  SDKs directly. Tests that patched the legacy path
+  `clauditor._anthropic.X` need to follow the symbol to its new
+  location — Python's `monkeypatch.setattr` operates on the
+  module where the symbol lives, so re-exports through the
+  back-compat shim do not propagate patches.

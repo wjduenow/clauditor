@@ -7,9 +7,15 @@ import json
 import sys
 from pathlib import Path
 
+from clauditor._harnesses._claude_code import env_without_api_key
+from clauditor._providers import (
+    CodexAuthMissingError,
+    check_codex_auth,
+)
 from clauditor.assertions import run_assertions
+from clauditor.context import IterationContext
 from clauditor.paths import resolve_clauditor_dir
-from clauditor.runner import SkillResult, env_without_api_key
+from clauditor.runner import SkillResult
 from clauditor.workspace import (
     InvalidSkillNameError,
     IterationWorkspace,
@@ -21,7 +27,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``validate`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int
+    from clauditor.cli import _harness_choice, _positive_int
 
     p_validate = subparsers.add_parser(
         "validate", help="Run Layer 1 assertions against a skill's output"
@@ -75,6 +81,19 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
     p_validate.add_argument(
+        "--harness",
+        type=_harness_choice,
+        default=None,
+        choices=("claude-code", "codex", "auto"),
+        help=(
+            "Override the harness selection: 'claude-code' (Anthropic "
+            "Claude CLI), 'codex' (OpenAI Codex CLI), or 'auto' (prefer "
+            "claude-code when available). Four-layer precedence: this "
+            "flag > CLAUDITOR_HARNESS env > EvalSpec.harness > default "
+            "'auto'."
+        ),
+    )
+    p_validate.add_argument(
         "-v",
         "--verbose",
         action="store_true",
@@ -103,6 +122,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         _print_failing_transcript_slice,
         _relative_to_repo,
         _render_skill_error,
+        _resolve_harness,
         _write_run_dir,
     )
 
@@ -123,6 +143,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
     workspace: IterationWorkspace | None = None
     workspace_rel: str | None = None
     iteration_index: int | None = None
+    # ``harness_name`` is resolved only on the live-run path. The
+    # ``--output`` branch reads a captured file and never invokes a
+    # subprocess, so the four-layer resolver (which raises if neither
+    # ``claude`` nor ``codex`` is on PATH under the default ``"auto"``)
+    # would be a hostile UX regression for the captured-output workflow.
+    harness_name: str | None = None
 
     if args.output:
         # Validate against a pre-captured output file. This path is
@@ -149,6 +175,27 @@ def cmd_validate(args: argparse.Namespace) -> int:
         # Live-run path: allocate an iteration workspace, run the skill
         # into ``workspace.tmp_path / run-0``, persist sidecars, and
         # finalize atomically. On any exception, abort the staging dir.
+        #
+        # #151 US-005 / DEC-006 / DEC-012: resolve harness via the
+        # four-layer precedence helper (CLI flag > CLAUDITOR_HARNESS env
+        # > EvalSpec.harness > default "auto"), then fail fast if the
+        # resolved harness is "codex" and Codex auth is missing. Guard
+        # lands BEFORE allocate_iteration so we do not leave an
+        # abandoned iteration-N-tmp/ staging dir behind when the guard
+        # fires. ``validate`` has no provider-grader axis, so harness
+        # auth is the only pre-call check.
+        harness_name = _resolve_harness(args, spec.eval_spec)
+        if harness_name == "codex":
+            try:
+                check_codex_auth("validate")
+            except CodexAuthMissingError as exc:
+                # Template already starts with "ERROR: " — print verbatim
+                # to avoid a doubled "ERROR: ERROR: " prefix (matches the
+                # AnthropicAuthMissingError / OpenAIAuthMissingError
+                # handlers in cli/grade.py).
+                print(str(exc), file=sys.stderr)
+                return 2
+
         clauditor_dir = resolve_clauditor_dir()
         try:
             workspace = allocate_iteration(clauditor_dir, spec.skill_name)
@@ -166,8 +213,14 @@ def cmd_validate(args: argparse.Namespace) -> int:
             # vars via ``env_without_api_key``; ``--timeout`` wins over
             # spec/default per DEC-002. Both default to None (today's
             # behavior).
+            #
+            # ``harness_name`` is threaded into ``env_without_api_key``
+            # so the codex branch preserves ``OPENAI_API_KEY`` (Copilot
+            # review feedback on PR #166): otherwise ``--no-api-key``
+            # would launch the Codex subprocess without usable auth
+            # even though :func:`check_codex_auth` accepted it.
             env_override = (
-                env_without_api_key()
+                env_without_api_key(harness_name=harness_name)
                 if getattr(args, "no_api_key", False)
                 else None
             )
@@ -178,6 +231,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 sync_tasks_override=(
                     True if getattr(args, "sync_tasks", False) else None
                 ),
+                harness_name_override=harness_name,
             )
             if not skill_result.succeeded_cleanly:
                 print(
@@ -195,6 +249,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
                     skill_result=skill_result,
                     iteration=None,
                     workspace_path=None,
+                    harness_name=harness_name,
                 )
                 return 1
             output = skill_result.output
@@ -233,8 +288,16 @@ def cmd_validate(args: argparse.Namespace) -> int:
 
                 shutil.rmtree(skill_dir / "run-0", ignore_errors=True)
 
+            # #152 US-002 / B1: assertions.json carries the resolved
+            # harness identity from ``skill_result.harness`` (US-001's
+            # runtime field). This branch is the live-run path
+            # (``args.output`` is False), so ``skill_result`` is
+            # always set by the ``spec.run`` call above; ``--output``
+            # mode reaches a separate branch that does NOT write a
+            # workspace sidecar.
             assertions_payload = {
-                "schema_version": 1,
+                "schema_version": 2,
+                "harness": skill_result.harness,
                 "skill": spec.skill_name,
                 "iteration": workspace.iteration,
                 "runs": [{"run": 0, **results.to_json()}],
@@ -242,6 +305,34 @@ def cmd_validate(args: argparse.Namespace) -> int:
             (skill_dir / "assertions.json").write_text(
                 json.dumps(assertions_payload, indent=2) + "\n",
                 encoding="utf-8",
+            )
+
+            # #154 US-004 / DEC-007 / DEC-008: write the per-iteration
+            # comparability sidecar inside the staging block. Validate
+            # has no Layer 3 grading, so ``provider`` and ``model_grader``
+            # stay ``None``; ``cost_usd`` is ``None`` per DEC-001
+            # (placeholder for #169). ``reasoning_tokens`` is
+            # structurally ``None`` for this path per DEC-008 of
+            # ``plans/super/170-reasoning-tokens-capture.md``: validate
+            # makes no LLM grader call, so there is no per-call
+            # reasoning-token count to surface.
+            # ``model``/``system_prompt_source`` are unguarded
+            # subscripts per the harness contract; ``sandbox_mode`` IS
+            # optional (Codex-only).
+            context = IterationContext(
+                harness=harness_name,
+                provider=None,
+                model_runner=skill_result.harness_metadata["model"],
+                model_grader=None,
+                system_prompt_source=skill_result.harness_metadata[
+                    "system_prompt_source"
+                ],
+                sandbox_mode=skill_result.harness_metadata.get("sandbox_mode"),
+                cost_usd=None,
+                reasoning_tokens=None,
+            )
+            (skill_dir / "context.json").write_text(
+                context.to_json(), encoding="utf-8"
             )
 
             workspace.finalize()
@@ -261,6 +352,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
         skill_result=skill_result,
         iteration=iteration_index,
         workspace_path=workspace_rel,
+        harness_name=harness_name,
     )
 
     if args.json:

@@ -11,21 +11,41 @@ import clauditor.runner as _runner_mod
 
 importlib.reload(_runner_mod)
 
-from clauditor.asserters import SkillAsserter  # noqa: E402
-from clauditor.runner import (  # noqa: E402
-    _BACKGROUND_TASK_WARNING_PREFIX,
-    _INTERACTIVE_HANG_WARNING_PREFIX,
+# Reload the harness package + module too so their bound ``InvokeResult``
+# (imported from :mod:`clauditor.runner` at import time) re-resolves to the
+# reloaded class. Without this, ``isinstance(harness.invoke(...).., InvokeResult)``
+# checks fail because the harness still holds the pre-reload class
+# reference. See US-004 of ``plans/super/148-extract-harness-protocol.md``.
+#
+# Reloading ``clauditor._harnesses`` (the package ``__init__.py``) is also
+# what gives coverage instrumentation a chance to see the package's
+# ``Harness`` Protocol definition: pytest-cov starts AFTER test collection,
+# by which point ``__init__.py`` has already executed. Reloading it here
+# (during test-module import, but post-collection) re-runs the body under
+# coverage so the Protocol class lines register as covered.
+import clauditor._harnesses as _harnesses_pkg  # noqa: E402
+import clauditor._harnesses._claude_code as _claude_code_mod  # noqa: E402
+
+importlib.reload(_harnesses_pkg)
+importlib.reload(_claude_code_mod)
+
+from clauditor._harnesses._claude_code import (  # noqa: E402
     _RESULT_TEXT_MAX_CHARS,
-    InvokeResult,
-    SkillResult,
-    SkillRunner,
+    ClaudeCodeHarness,
     _classify_result_message,
     _count_background_task_launches,
     _detect_background_task_noncompletion,
     _detect_interactive_hang,
-    _invoke_claude_cli,
-    env_with_sync_tasks,
     env_without_api_key,
+)
+from clauditor.asserters import SkillAsserter  # noqa: E402
+from clauditor.runner import (  # noqa: E402
+    _BACKGROUND_TASK_WARNING_PREFIX,
+    _INTERACTIVE_HANG_WARNING_PREFIX,
+    InvokeResult,
+    SkillResult,
+    SkillRunner,
+    env_with_sync_tasks,
 )
 from tests.conftest import (  # noqa: E402
     _FakePopen,
@@ -43,7 +63,7 @@ class TestRunRaw:
     def test_run_raw_returns_baseline_skill_name(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream("hi"),
         ):
             result = runner.run_raw("test prompt")
@@ -52,7 +72,7 @@ class TestRunRaw:
     def test_run_raw_passes_prompt_directly(self):
         """Verify run_raw sends the prompt without a skill prefix."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("some output")
             result = runner.run_raw("find me activities in Seattle")
             mock_popen.assert_called_once()
@@ -87,8 +107,11 @@ class TestRunRaw:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run_raw("test prompt")
         assert result.exit_code == -1
@@ -98,7 +121,8 @@ class TestRunRaw:
     def test_run_raw_handles_missing_binary(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="nonexistent-binary")
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=FileNotFoundError
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            side_effect=FileNotFoundError
         ):
             result = runner.run_raw("test prompt")
         assert result.exit_code == -1
@@ -131,6 +155,351 @@ class TestSkillResultSucceeded:
 
     def test_succeeded_false_nonzero_exit(self):
         assert self._make(exit_code=1, output="hello").succeeded is False
+
+
+# ---------------------------------------------------------------------------
+# SkillResult.harness field (#152 US-001 / clauditor-gfo)
+# ---------------------------------------------------------------------------
+
+
+class TestSkillResult:
+    """``SkillResult.harness`` is the foundation for #152 sidecar emitters.
+
+    DEC-002 of ``plans/super/152-sidecar-harness-field.md``: the field
+    is populated from the active harness's ``name`` ClassVar at every
+    ``SkillResult(...)`` construction site inside ``SkillRunner._invoke``.
+    """
+
+    def test_harness_field_present_with_default(self):
+        """Direct dataclass construction yields ``harness == "claude-code"``."""
+        result = SkillResult(
+            output="hi", exit_code=0, skill_name="t", args=""
+        )
+        assert result.harness == "claude-code"
+
+
+class TestSkillRunner:
+    """``SkillRunner._invoke`` stamps ``SkillResult.harness`` from
+    ``self.harness.name`` per ``harness-protocol-shape.md``.
+    """
+
+    def test_invoke_populates_harness_from_active_harness(self):
+        """A custom ``MockHarness`` (name="mock") plumbs through verbatim."""
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir="/tmp", harness=mock)
+        result = runner.run("foo")
+        assert result.harness == "mock"
+
+    def test_invoke_populates_harness_claude_code_default(self):
+        """Default ``ClaudeCodeHarness`` stamps ``"claude-code"`` on the result."""
+        runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=make_fake_skill_stream("ok"),
+        ):
+            result = runner.run("my-skill")
+        assert result.harness == "claude-code"
+
+
+# ---------------------------------------------------------------------------
+# Harness protocol + InvokeResult.harness_metadata (US-001 / clauditor-3sm.1)
+# ---------------------------------------------------------------------------
+
+
+class TestHarnessProtocol:
+    """Structural tests for the ``Harness`` protocol introduced in US-001.
+
+    The protocol lives in ``clauditor._harnesses`` and is the seam future
+    harnesses (Codex per #149) will satisfy. This test confirms the
+    public shape: ``name`` ClassVar plus ``invoke``, ``strip_auth_keys``,
+    and ``build_prompt`` methods. Per DEC-008, ``allow_hang_heuristic``
+    is intentionally NOT on ``invoke`` — it's a Claude-Code-specific
+    knob configured at harness construction time (US-004).
+    """
+
+    def test_stub_satisfies_harness_protocol(self):
+        """A class with the four protocol members is structurally a
+        ``Harness``. Verified at runtime via ``isinstance`` (the protocol
+        is ``@runtime_checkable``) and at signature level via
+        ``inspect.signature`` so adding a new required parameter to
+        ``Harness.invoke`` without updating implementations fails this
+        test rather than silently passing.
+        """
+        import inspect
+        from pathlib import Path
+        from typing import ClassVar
+
+        from clauditor._harnesses import Harness
+        from clauditor.runner import InvokeResult
+
+        class StubHarness:
+            name: ClassVar[str] = "stub"
+
+            def invoke(
+                self,
+                prompt: str,
+                *,
+                cwd: Path | None,
+                env: dict[str, str] | None,
+                timeout: int,
+                model: str | None = None,
+                subject: str | None = None,
+            ) -> InvokeResult:
+                return InvokeResult(output="ok", exit_code=0)
+
+            def strip_auth_keys(self, env: dict[str, str]) -> dict[str, str]:
+                return dict(env)
+
+            def build_prompt(
+                self,
+                skill_name: str,
+                args: str,
+                *,
+                system_prompt: str | None,
+            ) -> str:
+                return f"/{skill_name}"
+
+        stub = StubHarness()
+
+        # Runtime member-presence check (the protocol is @runtime_checkable).
+        assert isinstance(stub, Harness)
+
+        # Signature drift-guard: the stub's invoke parameter set must be a
+        # superset of the protocol's, so adding a new required kwarg to
+        # ``Harness.invoke`` without updating implementations red-flags here.
+        # ``Harness.invoke`` is referenced via the class so ``self`` appears;
+        # ``stub.invoke`` is a bound method so ``self`` is absent. Compare
+        # the user-facing parameter sets (without ``self``) on both sides.
+        protocol_params = set(inspect.signature(Harness.invoke).parameters) - {"self"}
+        stub_params = set(inspect.signature(stub.invoke).parameters)
+        missing = protocol_params - stub_params
+        assert not missing, (
+            f"StubHarness.invoke missing protocol parameters: {missing}"
+        )
+
+    def test_harness_protocol_includes_build_prompt(self):
+        """Drift-guard for ``Harness.build_prompt`` (US-001 of #150).
+
+        Locks: (1) the method exists on the protocol; (2) ``system_prompt``
+        is keyword-only; (3) the return annotation is ``str``. A signature
+        change that drops keyword-only or changes the return type fails
+        this test.
+        """
+        import inspect
+
+        from clauditor._harnesses import Harness
+
+        assert hasattr(Harness, "build_prompt"), (
+            "Harness protocol missing build_prompt"
+        )
+        sig = inspect.signature(Harness.build_prompt)
+        params = sig.parameters
+        assert "system_prompt" in params, (
+            "Harness.build_prompt missing system_prompt parameter"
+        )
+        assert params["system_prompt"].kind is inspect.Parameter.KEYWORD_ONLY, (
+            "Harness.build_prompt.system_prompt must be keyword-only"
+        )
+        assert params["system_prompt"].annotation == "str | None", (
+            "Harness.build_prompt.system_prompt must be annotated 'str | None'"
+        )
+        assert sig.return_annotation == "str", (
+            "Harness.build_prompt return annotation must be 'str'"
+        )
+
+    def test_codex_harness_satisfies_harness_protocol(self):
+        """Drift-guard for ``CodexHarness`` (US-002 of #149).
+
+        Parallel to ``test_stub_satisfies_harness_protocol`` but pinned
+        to the real ``CodexHarness`` class. Locks: (1) instances satisfy
+        the runtime-checkable ``Harness`` protocol; (2) the four protocol
+        methods carry the parameter sets / kinds / return annotations the
+        protocol declares. ``runtime_checkable`` only verifies member
+        presence, so the explicit ``inspect.signature`` checks here are
+        what catch shape drift (e.g. dropping keyword-only on
+        ``system_prompt``, renaming a parameter on ``invoke``).
+        """
+        import inspect
+
+        from clauditor._harnesses import Harness
+        from clauditor._harnesses._codex import CodexHarness
+
+        codex = CodexHarness()
+
+        # Runtime member-presence check (the protocol is @runtime_checkable).
+        assert isinstance(codex, Harness)
+
+        # ``name`` ClassVar present and non-empty.
+        assert CodexHarness.name == "codex"
+
+        # Signature drift-guard for ``invoke``: parameter superset of
+        # ``Harness.invoke``. Compare without ``self`` per the existing
+        # stub-protocol test pattern.
+        protocol_invoke_params = (
+            set(inspect.signature(Harness.invoke).parameters) - {"self"}
+        )
+        codex_invoke_params = set(inspect.signature(codex.invoke).parameters)
+        missing_invoke = protocol_invoke_params - codex_invoke_params
+        assert not missing_invoke, (
+            f"CodexHarness.invoke missing protocol parameters: {missing_invoke}"
+        )
+
+        # Per ``.claude/rules/harness-protocol-shape.md``: ``runtime_checkable``
+        # does NOT enforce parameter kinds (positional vs keyword-only), so
+        # the explicit kind assertions below are what catch drift. ``cwd``,
+        # ``env``, ``timeout``, ``model``, ``subject`` are all keyword-only
+        # on the protocol — a refactor that drops the ``*,`` separator on
+        # ``CodexHarness.invoke`` would silently regress the signature parity
+        # this test is meant to enforce.
+        codex_invoke_sig = inspect.signature(codex.invoke)
+        for kw_only_param in ("cwd", "env", "timeout", "model", "subject"):
+            assert kw_only_param in codex_invoke_sig.parameters, (
+                f"CodexHarness.invoke missing parameter: {kw_only_param}"
+            )
+            kind = codex_invoke_sig.parameters[kw_only_param].kind
+            assert kind is inspect.Parameter.KEYWORD_ONLY, (
+                f"CodexHarness.invoke.{kw_only_param} must be keyword-only "
+                f"(got {kind!r})"
+            )
+
+        # ``strip_auth_keys`` exists, takes ``env`` (positional), returns
+        # a dict.
+        strip_sig = inspect.signature(codex.strip_auth_keys)
+        assert "env" in strip_sig.parameters, (
+            "CodexHarness.strip_auth_keys missing 'env' parameter"
+        )
+
+        # ``build_prompt`` shape per DEC-011: ``(skill_name, args, *,
+        # system_prompt) -> str`` with ``system_prompt`` keyword-only.
+        bp_sig = inspect.signature(codex.build_prompt)
+        bp_params = bp_sig.parameters
+        assert "skill_name" in bp_params, (
+            "CodexHarness.build_prompt missing 'skill_name' parameter"
+        )
+        assert "args" in bp_params, (
+            "CodexHarness.build_prompt missing 'args' parameter"
+        )
+        assert "system_prompt" in bp_params, (
+            "CodexHarness.build_prompt missing 'system_prompt' parameter"
+        )
+        assert (
+            bp_params["system_prompt"].kind is inspect.Parameter.KEYWORD_ONLY
+        ), "CodexHarness.build_prompt.system_prompt must be keyword-only"
+        assert bp_sig.return_annotation == "str", (
+            "CodexHarness.build_prompt return annotation must be 'str'"
+        )
+
+
+class TestInvokeResultHarnessMetadata:
+    """``InvokeResult`` gains a ``harness_metadata`` dict in US-001 to
+    let future harnesses surface harness-specific observability without
+    a sidecar-schema bump (DEC-007)."""
+
+    def test_default_is_empty_dict(self):
+        result = InvokeResult(output="ok", exit_code=0)
+        assert result.harness_metadata == {}
+
+    def test_independent_per_instance(self):
+        """``field(default_factory=dict)`` — not a shared mutable
+        default — so mutating one instance does not bleed into another."""
+        r1 = InvokeResult(output="ok", exit_code=0)
+        r2 = InvokeResult(output="ok", exit_code=0)
+        r1.harness_metadata["k"] = "v"
+        assert "k" not in r2.harness_metadata
+
+
+class TestClaudeCodeHarnessHarnessMetadata:
+    """US-002 of #154: ``ClaudeCodeHarness.invoke`` populates
+    ``result.harness_metadata["model"]`` so the iteration-context
+    sidecar reader (US-004) can read the effective model uniformly
+    across harnesses via ``skill_result.harness_metadata.get("model")``
+    — mirrors :class:`CodexHarness`'s metadata population per DEC-008
+    of #149.
+
+    Per DEC-004 of :file:`plans/super/154-context-sidecar.md` the read
+    path is harness-agnostic, so the write-side parity is the load-
+    bearing invariant.
+    """
+
+    def test_invoke_populates_model_default(self):
+        """``ClaudeCodeHarness(model="claude-sonnet-4-6").invoke(...)``
+        — the constructor-pinned model lands on
+        ``harness_metadata["model"]``."""
+        harness = ClaudeCodeHarness(model="claude-sonnet-4-6")
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=make_fake_skill_stream("hello"),
+        ):
+            result = harness.invoke(
+                "/test",
+                cwd=None,
+                env=None,
+                timeout=180,
+            )
+        assert result.harness_metadata["model"] == "claude-sonnet-4-6"
+
+    def test_invoke_populates_model_override(self):
+        """``invoke(..., model="claude-opus-4-7")`` overrides the
+        constructor default; the per-call value lands on
+        ``harness_metadata["model"]``. Mirrors :class:`CodexHarness`'s
+        same-shaped override (per DEC-006 of #148)."""
+        harness = ClaudeCodeHarness(model="claude-sonnet-4-6")
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=make_fake_skill_stream("hello"),
+        ):
+            result = harness.invoke(
+                "/test",
+                cwd=None,
+                env=None,
+                timeout=180,
+                model="claude-opus-4-7",
+            )
+        assert result.harness_metadata["model"] == "claude-opus-4-7"
+
+    def test_invoke_populates_model_none_when_unset(self):
+        """When neither the constructor nor the per-call kwarg pin a
+        model, the effective value is ``None`` and that is what lands
+        on the metadata dict — the honest "no model recorded" signal
+        for the sidecar reader (which uses ``.get("model")`` and
+        treats ``None`` identically to a missing key)."""
+        harness = ClaudeCodeHarness()
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=make_fake_skill_stream("hello"),
+        ):
+            result = harness.invoke(
+                "/test",
+                cwd=None,
+                env=None,
+                timeout=180,
+            )
+        assert "model" in result.harness_metadata
+        assert result.harness_metadata["model"] is None
+
+    def test_invoke_populates_model_on_missing_binary(self):
+        """The FileNotFoundError early-return path also stamps the
+        metadata dict — uniform contract across success and pre-spawn
+        failure paths so the sidecar writer never has to branch on
+        outcome to read ``model``."""
+        harness = ClaudeCodeHarness(
+            claude_bin="nonexistent-binary",
+            model="claude-sonnet-4-6",
+        )
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            side_effect=FileNotFoundError,
+        ):
+            result = harness.invoke(
+                "/test",
+                cwd=None,
+                env=None,
+                timeout=180,
+            )
+        assert result.exit_code == -1
+        assert result.harness_metadata["model"] == "claude-sonnet-4-6"
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +609,7 @@ class TestSkillAsserter:
 class TestSkillRunnerRun:
     def test_runner_run_success(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("skill output")
             result = runner.run("my-skill", "some args")
 
@@ -262,7 +631,7 @@ class TestSkillRunnerRun:
 
     def test_runner_run_success_no_args(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("output")
             runner.run("my-skill")
             cmd = mock_popen.call_args[0][0]
@@ -284,8 +653,11 @@ class TestSkillRunnerRun:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run("my-skill")
         assert result.exit_code == -1
@@ -294,7 +666,7 @@ class TestSkillRunnerRun:
     def test_runner_run_not_found(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="missing-bin")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             side_effect=FileNotFoundError,
         ):
             result = runner.run("my-skill")
@@ -308,14 +680,14 @@ class TestSkillRunnerCwd:
 
     def test_runner_default_cwd_is_project_dir(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("out")
             runner.run("my-skill", "args")
             assert mock_popen.call_args.kwargs["cwd"] == "/tmp"
 
     def test_runner_cwd_override_passes_through_to_popen(self, tmp_path):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("out")
             runner.run("my-skill", "args", cwd=tmp_path)
             assert mock_popen.call_args.kwargs["cwd"] == str(tmp_path)
@@ -333,7 +705,7 @@ class TestSkillRunnerEnvAndTimeout:
     def test_run_env_none_popen_receives_none(self):
         """Default ``env=None`` reaches Popen unchanged."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("out")
             runner.run("my-skill", "args")
             assert mock_popen.call_args.kwargs["env"] is None
@@ -342,7 +714,7 @@ class TestSkillRunnerEnvAndTimeout:
         """``env={"KEY": "VAL"}`` is forwarded to Popen verbatim."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         env = {"KEY": "VAL", "PATH": "/usr/bin"}
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("out")
             runner.run("my-skill", "args", env=env)
             assert mock_popen.call_args.kwargs["env"] == env
@@ -366,10 +738,10 @@ class TestSkillRunnerEnvAndTimeout:
 
         with (
             patch(
-                "clauditor.runner.subprocess.Popen",
+                "clauditor._harnesses._claude_code.subprocess.Popen",
                 return_value=make_fake_skill_stream("out"),
             ),
-            patch("clauditor.runner.threading.Timer", _CapturingTimer),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _CapturingTimer),
         ):
             runner.run("my-skill", "args", timeout=60)
 
@@ -394,10 +766,10 @@ class TestSkillRunnerEnvAndTimeout:
 
         with (
             patch(
-                "clauditor.runner.subprocess.Popen",
+                "clauditor._harnesses._claude_code.subprocess.Popen",
                 return_value=make_fake_skill_stream("out"),
             ),
-            patch("clauditor.runner.threading.Timer", _CapturingTimer),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _CapturingTimer),
         ):
             runner.run("my-skill", "args")
 
@@ -416,7 +788,7 @@ class TestSkillRunnerEnvAndTimeout:
         """A ``runner.run("skill", args="")`` call with no new kwargs still
         works and produces a normal ``SkillResult`` — back-compat check."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("hello")
             result = runner.run("my-skill", args="")
             # env kwarg is passed (as None), not omitted — Popen's default
@@ -425,6 +797,260 @@ class TestSkillRunnerEnvAndTimeout:
             assert mock_popen.call_args.kwargs["env"] is None
             assert result.output == "hello"
             assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# US-005: MockHarness substitution + claude_bin deprecation
+# ---------------------------------------------------------------------------
+
+
+class TestSkillRunnerHarnessSubstitution:
+    """US-005: a custom ``Harness`` swapped in via ``harness=`` kwarg
+    fully replaces the default :class:`ClaudeCodeHarness` and its result
+    is projected verbatim onto :class:`SkillResult`.
+    """
+
+    def test_skill_runner_projects_mock_harness_result(self):
+        """``runner.run`` projects the harness's configured ``InvokeResult``
+        onto a :class:`SkillResult` (field-copy per ``_invoke``)."""
+        from clauditor._harnesses._mock import MockHarness
+
+        configured = InvokeResult(
+            output="mocked-output",
+            exit_code=7,
+            duration_seconds=1.25,
+        )
+        mock = MockHarness(result=configured)
+        runner = SkillRunner(project_dir="/tmp", harness=mock)
+
+        result = runner.run("foo")
+
+        assert isinstance(result, SkillResult)
+        assert result.output == "mocked-output"
+        assert result.exit_code == 7
+        assert result.duration_seconds == 1.25
+        assert result.skill_name == "foo"
+
+    def test_skill_runner_records_invoke_call_args(self):
+        """The mock records prompt/cwd/env/timeout exactly as the runner
+        forwards them to :meth:`Harness.invoke`. Per US-003 of issue #150
+        the prompt is the string returned by ``MockHarness.build_prompt``,
+        which has its own deterministic shape (``"[mock]|/foo arg"``)."""
+        from pathlib import Path
+
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir="/tmp", timeout=99, harness=mock)
+
+        runner.run("foo", "arg")
+
+        assert len(mock.invoke_calls) == 1
+        call = mock.invoke_calls[0]
+        assert call["prompt"] == "[mock]|/foo arg"
+        assert call["cwd"] == Path("/tmp")
+        assert call["env"] is None
+        assert call["timeout"] == 99
+
+    def test_skill_runner_default_harness_is_claude_code(self):
+        """Constructing ``SkillRunner()`` with no ``harness=`` kwarg
+        builds a default :class:`ClaudeCodeHarness`."""
+        runner = SkillRunner()
+        assert isinstance(runner.harness, ClaudeCodeHarness)
+
+
+class TestSkillRunnerClaudeBinDeprecation:
+    """US-005 / DEC-002: ``claude_bin=`` together with an explicit
+    ``harness=`` is a soft-deprecation path — the harness wins and a
+    :class:`DeprecationWarning` is emitted. ``claude_bin=`` alone is
+    still the supported single-knob path and emits no warning.
+    """
+
+    def test_claude_bin_with_harness_emits_deprecation_warning(self):
+        from clauditor._harnesses._mock import MockHarness
+
+        with pytest.warns(
+            DeprecationWarning, match=r"claude_bin via ClaudeCodeHarness"
+        ):
+            SkillRunner(harness=MockHarness(), claude_bin="custom")
+
+    def test_claude_bin_without_harness_emits_no_warning(self):
+        """``claude_bin=`` alone is still supported — no warning, and the
+        constructed default harness honours the path."""
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            runner = SkillRunner(claude_bin="custom")
+
+        assert not any(
+            issubclass(w.category, DeprecationWarning) for w in caught
+        )
+        assert isinstance(runner.harness, ClaudeCodeHarness)
+        assert runner.harness.claude_bin == "custom"
+
+
+class TestHarnessStripAuthKeys:
+    """Direct coverage of ``Harness.strip_auth_keys`` on both implementers.
+
+    Pinned by Quality Gate of issue #148: the protocol method had no
+    direct unit-test coverage on either ``ClaudeCodeHarness`` or
+    ``MockHarness`` (only one branch reached via integration paths).
+    Locks the non-mutating-scrub contract per
+    ``.claude/rules/non-mutating-scrub.md``.
+    """
+
+    def test_claude_code_strips_anthropic_keys(self):
+        """``ClaudeCodeHarness.strip_auth_keys`` removes Anthropic auth env vars."""
+        env = {
+            "ANTHROPIC_API_KEY": "sk-...",
+            "ANTHROPIC_AUTH_TOKEN": "tok",
+            "PATH": "/usr/bin",
+            "FOO": "bar",
+        }
+        scrubbed = ClaudeCodeHarness().strip_auth_keys(env)
+        assert "ANTHROPIC_API_KEY" not in scrubbed
+        assert "ANTHROPIC_AUTH_TOKEN" not in scrubbed
+        assert scrubbed["PATH"] == "/usr/bin"
+        assert scrubbed["FOO"] == "bar"
+        # Input unchanged (non-mutating).
+        assert "ANTHROPIC_API_KEY" in env
+
+    def test_mock_strip_is_identity_copy(self):
+        """``MockHarness.strip_auth_keys`` returns a verbatim copy (no scrubbing)."""
+        from clauditor._harnesses._mock import MockHarness
+
+        env = {"ANTHROPIC_API_KEY": "sk-...", "FOO": "bar"}
+        scrubbed = MockHarness().strip_auth_keys(env)
+        assert scrubbed == env
+        # Returns a new dict (mutation-safe per Harness protocol contract).
+        scrubbed["FOO"] = "mutated"
+        assert env["FOO"] == "bar"
+
+
+class TestHarnessBuildPrompt:
+    """Direct coverage of ``Harness.build_prompt`` on both implementers.
+
+    Pinned by US-001 of issue #150: the prompt-builder is a pure helper
+    (no I/O) per ``.claude/rules/pure-compute-vs-io-split.md``. Locks:
+    (1) ``ClaudeCodeHarness`` returns slash-style commands and ignores
+    ``system_prompt``; (2) ``MockHarness`` records every call on
+    ``build_prompt_calls`` for test assertions.
+    """
+
+    def test_claude_code_harness_build_prompt_with_args_and_no_system_prompt(self):
+        """Args present → ``"/{skill_name} {args}"``; ``system_prompt`` ignored."""
+        result = ClaudeCodeHarness().build_prompt("foo", "bar baz", system_prompt=None)
+        assert result == "/foo bar baz"
+
+    def test_claude_code_harness_build_prompt_no_args(self):
+        """Empty args → ``"/{skill_name}"`` with no trailing space."""
+        result = ClaudeCodeHarness().build_prompt("foo", "", system_prompt=None)
+        assert result == "/foo"
+
+    def test_claude_code_harness_build_prompt_ignores_system_prompt(self):
+        """``system_prompt`` does not appear in the Claude Code slash command."""
+        result = ClaudeCodeHarness().build_prompt("foo", "", system_prompt="anything")
+        assert result == "/foo"
+
+    def test_mock_harness_build_prompt_records_call(self):
+        """``MockHarness.build_prompt`` records ``(skill_name, args, system_prompt)``
+        on ``build_prompt_calls`` so unit tests can assert against it."""
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        returned = mock.build_prompt("foo", "bar", system_prompt="hello")
+        assert len(mock.build_prompt_calls) == 1
+        entry = mock.build_prompt_calls[0]
+        # Recorded entry must contain all three values; structure is the
+        # mock's choice (dict or tuple) so long as the values are present.
+        if isinstance(entry, dict):
+            assert entry["skill_name"] == "foo"
+            assert entry["args"] == "bar"
+            assert entry["system_prompt"] == "hello"
+        else:
+            assert "foo" in entry
+            assert "bar" in entry
+            assert "hello" in entry
+        # And the returned string is deterministic enough to surface
+        # ``system_prompt`` when present.
+        assert "hello" in returned
+        assert "foo" in returned
+
+
+class TestSkillRunnerRunBuildsPromptViaHarness:
+    """US-003 of issue #150: ``SkillRunner.run`` composes its prompt via
+    ``self.harness.build_prompt(...)`` rather than synthesizing the slash
+    string inline. The ``system_prompt`` kwarg threads from
+    :meth:`SkillRunner.run` through to ``build_prompt`` (see DEC-008 for
+    why it is the LAST keyword argument on ``run``).
+    """
+
+    def test_runner_run_calls_harness_build_prompt_with_args(self):
+        """``runner.run("foo", "bar")`` records a build_prompt call with
+        ``skill_name="foo"``, ``args="bar"``, ``system_prompt=None``."""
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir="/tmp", harness=mock)
+
+        runner.run("foo", "bar")
+
+        assert len(mock.build_prompt_calls) == 1
+        call = mock.build_prompt_calls[-1]
+        assert call["skill_name"] == "foo"
+        assert call["args"] == "bar"
+        assert call["system_prompt"] is None
+
+    def test_runner_run_threads_system_prompt_kwarg_to_build_prompt(self):
+        """``runner.run("foo", "bar", system_prompt="hello")`` threads
+        ``system_prompt`` through to ``Harness.build_prompt``."""
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir="/tmp", harness=mock)
+
+        runner.run("foo", "bar", system_prompt="hello")
+
+        assert len(mock.build_prompt_calls) == 1
+        call = mock.build_prompt_calls[-1]
+        assert call["skill_name"] == "foo"
+        assert call["args"] == "bar"
+        assert call["system_prompt"] == "hello"
+
+    def test_runner_run_passes_built_prompt_to_invoke(self):
+        """The string returned by ``Harness.build_prompt`` is exactly what
+        reaches ``Harness.invoke`` as ``prompt``."""
+        from clauditor._harnesses._mock import MockHarness
+
+        mock = MockHarness()
+        runner = SkillRunner(project_dir="/tmp", harness=mock)
+
+        runner.run("foo", "bar", system_prompt="hello")
+
+        # ``MockHarness.build_prompt`` returns
+        # ``f"[mock]{system_prompt or ''}|/{skill_name} {args}".rstrip()``.
+        expected_prompt = "[mock]hello|/foo bar"
+        assert len(mock.invoke_calls) == 1
+        assert mock.invoke_calls[-1]["prompt"] == expected_prompt
+
+    def test_runner_run_back_compat_no_system_prompt_kwarg(self):
+        """Calling ``runner.run("foo", "bar")`` with no ``system_prompt``
+        kwarg yields the legacy ``"/foo bar"`` prompt when paired with
+        :class:`ClaudeCodeHarness` (which ignores ``system_prompt``)."""
+        runner = SkillRunner(project_dir="/tmp", harness=ClaudeCodeHarness())
+
+        # Patch ``invoke`` to capture the prompt without spawning a subprocess.
+        captured: dict[str, str] = {}
+
+        def _fake_invoke(prompt, **_kwargs):
+            captured["prompt"] = prompt
+            return InvokeResult(output="", exit_code=0, duration_seconds=0.0)
+
+        with patch.object(runner.harness, "invoke", side_effect=_fake_invoke):
+            runner.run("foo", "bar")
+
+        assert captured["prompt"] == "/foo bar"
 
 
 # ---------------------------------------------------------------------------
@@ -481,7 +1107,7 @@ class TestStreamJsonRunner:
     def test_single_assistant_message_single_text_block(self):
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream(
                 "hello", input_tokens=100, output_tokens=50
             ),
@@ -505,7 +1131,7 @@ class TestStreamJsonRunner:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream("first", extra_messages=extra),
         ):
             result = runner.run("skill")
@@ -540,7 +1166,8 @@ class TestStreamJsonRunner:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=_FakePopen(lines)
         ):
             result = runner.run("skill")
         assert result.output == "visible"
@@ -561,7 +1188,8 @@ class TestStreamJsonRunner:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=_FakePopen(lines)
         ):
             result = runner.run("skill")
         assert isinstance(result, SkillResult)
@@ -592,7 +1220,8 @@ class TestStreamJsonRunner:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=_FakePopen(lines)
         ):
             result = runner.run("skill")
         assert result.output == "survived"
@@ -617,8 +1246,11 @@ class TestStreamJsonRunner:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run("skill")
         assert result.error == "timeout"
@@ -649,8 +1281,11 @@ class TestStreamJsonRunner:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run("skill")
         # _on_timeout was called but returned early (poll() was not None);
@@ -677,8 +1312,11 @@ class TestStreamJsonRunner:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run("skill")
         assert result.error == "timeout"
@@ -713,8 +1351,11 @@ class TestStreamJsonRunner:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run("skill")
         assert result.error == "timeout"
@@ -746,8 +1387,11 @@ class TestStreamJsonRunner:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
             result = runner.run("skill")
         assert result.error == "timeout"
@@ -760,7 +1404,8 @@ class TestStreamJsonRunner:
         """DEC-005: duration must be set even on FileNotFoundError."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="missing")
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=FileNotFoundError
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            side_effect=FileNotFoundError
         ):
             result = runner.run("skill")
         assert result.exit_code == -1
@@ -773,7 +1418,7 @@ class TestStreamJsonRunner:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream("x", extra_messages=extra),
         ):
             result = runner.run("skill")
@@ -809,7 +1454,7 @@ class TestStreamJsonDefensiveBranches:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=_FakePopen(lines),
         ):
             result = runner.run("skill")
@@ -834,7 +1479,7 @@ class TestStreamJsonDefensiveBranches:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=_FakePopen(lines),
         ):
             result = runner.run("skill")
@@ -858,7 +1503,7 @@ class TestStreamJsonDefensiveBranches:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=_FakePopen(lines),
         ):
             result = runner.run("skill")
@@ -883,7 +1528,7 @@ class TestStreamJsonDefensiveBranches:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=_FakePopen(lines),
         ):
             result = runner.run("skill")
@@ -898,7 +1543,7 @@ class TestStreamJsonDefensiveBranches:
         fake.returncode = 1
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ):
             result = runner.run("skill")
         assert "warning: something" in (result.error or "")
@@ -919,7 +1564,7 @@ class TestStreamJsonDefensiveBranches:
         fake.stderr = _RaisingIter()
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=fake
+            "clauditor._harnesses._claude_code.subprocess.Popen", return_value=fake
         ):
             result = runner.run("skill")
         # The run completed successfully despite the stderr drain exception.
@@ -965,7 +1610,10 @@ class TestStreamJsonDefensiveBranches:
 
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
             pytest.raises(RuntimeError, match="boom"),
         ):
             runner.run("skill")
@@ -994,7 +1642,7 @@ class TestStreamJsonDefensiveBranches:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=_FakePopen(lines),
         ):
             result = runner.run("skill")
@@ -1035,7 +1683,10 @@ class TestStreamJsonDefensiveBranches:
 
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
             pytest.raises(RuntimeError, match="parse failure"),
         ):
             runner.run("skill")
@@ -1067,7 +1718,10 @@ class TestStreamJsonDefensiveBranches:
 
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
             pytest.raises(RuntimeError, match="parse failure"),
         ):
             runner.run("skill")
@@ -1097,7 +1751,10 @@ class TestStreamJsonDefensiveBranches:
 
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
             pytest.raises(RuntimeError, match="parse failure"),
         ):
             runner.run("skill")
@@ -1128,7 +1785,10 @@ class TestStreamEvents:
         ]
         fake = _FakePopen([json.dumps(m) for m in messages])
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
 
         assert len(result.stream_events) == 3
@@ -1167,7 +1827,10 @@ class TestStreamEvents:
         ]
         fake = _FakePopen(lines)
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
 
         assert len(result.stream_events) == 3
@@ -1177,7 +1840,10 @@ class TestStreamEvents:
         """Regression: SkillResult.output is unchanged by stream_events work."""
         fake = make_fake_skill_stream("the quick brown fox")
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
 
         assert result.output == "the quick brown fox"
@@ -1216,7 +1882,7 @@ class TestSkillResultWarnings:
         """A clean run should produce zero warnings."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream("fine"),
         ):
             result = runner.run("skill")
@@ -1243,7 +1909,8 @@ class TestSkillResultWarnings:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=_FakePopen(lines)
         ):
             result = runner.run("skill")
         assert result.output == "ok"
@@ -1266,7 +1933,8 @@ class TestSkillResultWarnings:
         ]
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen", return_value=_FakePopen(lines)
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=_FakePopen(lines)
         ):
             result = runner.run("skill")
         assert result.output == "no result"
@@ -1312,7 +1980,10 @@ class TestSkillResultWarnings:
         fake._killed = False
 
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
 
         assert result.output == "ok"
@@ -1338,7 +2009,10 @@ class TestSkillResultWarnings:
         fake = make_fake_skill_stream("ok")
         fake.stderr = _RaisingIter()
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
         assert result.output == "ok"
         assert any(
@@ -1359,7 +2033,10 @@ class TestSkillResultWarnings:
         fake = make_fake_skill_stream("ok")
         fake.stderr = _RaisingIter()
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
         assert result.output == "ok"
         assert any(
@@ -1387,7 +2064,10 @@ class TestSkillResultWarnings:
         fake.terminate = lambda: None
 
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
         assert result.output == "ok"
         assert any(
@@ -1405,7 +2085,10 @@ class TestSkillResultWarnings:
 
         fake.stdout.close = _close_raises
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill")
         assert result.output == "ok"
         assert any(
@@ -1728,7 +2411,10 @@ class TestStreamJsonIsErrorResult:
 
     def _run_with_stream(self, fake: _FakePopen) -> SkillResult:
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             return runner.run("skill")
 
     def test_429_classified_as_rate_limit(self):
@@ -2223,7 +2909,10 @@ class TestInteractiveHangDetection:
         allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             return runner.run("skill", allow_hang_heuristic=allow_hang_heuristic)
 
     def test_trailing_question_mark_triggers(self):
@@ -2400,7 +3089,10 @@ class TestApiKeySourceParsing:
 
     def _run_with_stream(self, fake: _FakePopen) -> SkillResult:
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             return runner.run("skill")
 
     def test_init_apikeysource_none(self):
@@ -2501,7 +3193,7 @@ class TestApiKeySourceParsing:
 
     def test_stderr_line_appends_subject_suffix(self, capsys):
         # Issue #107: when the caller threads a ``subject`` label
-        # through ``_invoke_claude_cli`` (as grader call sites do via
+        # through ``ClaudeCodeHarness.invoke`` (as grader call sites do via
         # ``call_anthropic``), the stderr info line gains a
         # ``" (<subject>)"`` suffix so operators can attribute each
         # line to a specific internal LLM call.
@@ -2513,13 +3205,15 @@ class TestApiKeySourceParsing:
                 "apiKeySource": "none",
             },
         )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
-            _invoke_claude_cli(
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
+            ClaudeCodeHarness(claude_bin="claude").invoke(
                 "prompt",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
                 subject="L2 extraction",
             )
         captured = capsys.readouterr()
@@ -2545,13 +3239,15 @@ class TestApiKeySourceParsing:
                 "apiKeySource": "none",
             },
         )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
-            _invoke_claude_cli(
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
+            ClaudeCodeHarness(claude_bin="claude").invoke(
                 "prompt",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
             )
         captured = capsys.readouterr()
         matching = [
@@ -2576,13 +3272,15 @@ class TestApiKeySourceParsing:
             },
         )
         hostile = "  L2\nextraction\rwith   " + ("x" * 500) + "  "
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
-            _invoke_claude_cli(
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
+            ClaudeCodeHarness(claude_bin="claude").invoke(
                 "prompt",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
                 subject=hostile,
             )
         captured = capsys.readouterr()
@@ -2618,13 +3316,15 @@ class TestApiKeySourceParsing:
                 "apiKeySource": "none",
             },
         )
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
-            _invoke_claude_cli(
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
+            ClaudeCodeHarness(claude_bin="claude").invoke(
                 "prompt",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
                 subject="   \n\r ",
             )
         captured = capsys.readouterr()
@@ -2740,6 +3440,73 @@ class TestEnvWithoutApiKey:
         assert result == base
         assert result is not base
 
+    def test_strips_openai_api_key(self):
+        """DEC-008 of plans/super/145-openai-provider.md (US-008).
+
+        ``OPENAI_API_KEY`` is stripped alongside the Anthropic auth
+        env vars so that under ``--transport cli`` an untrusted skill
+        subprocess cannot silently spend the operator's OpenAI quota.
+        Non-mutating per ``.claude/rules/non-mutating-scrub.md``.
+        """
+        base = {
+            "OPENAI_API_KEY": "secret",
+            "ANTHROPIC_API_KEY": "anth",
+            "FOO": "bar",
+        }
+        original = dict(base)
+        result = env_without_api_key(base)
+        # Both API keys stripped, unrelated key preserved.
+        assert "OPENAI_API_KEY" not in result
+        assert "ANTHROPIC_API_KEY" not in result
+        assert result["FOO"] == "bar"
+        # Non-mutating: input dict still has all three original keys.
+        assert base == original
+        assert "OPENAI_API_KEY" in base
+        assert "ANTHROPIC_API_KEY" in base
+        assert base["FOO"] == "bar"
+
+    def test_codex_harness_preserves_openai_api_key(self):
+        """Copilot review feedback on PR #166: when the skill subprocess
+        runs under the Codex harness, ``OPENAI_API_KEY`` is one of the
+        two valid Codex auth env vars and MUST be preserved. Stripping
+        it would launch the Codex subprocess without usable auth even
+        though :func:`check_codex_auth` accepted it from ``os.environ``.
+
+        Anthropic env vars are still stripped because Codex does not
+        need them.
+        """
+        base = {
+            "OPENAI_API_KEY": "sk-openai",
+            "CODEX_API_KEY": "ck-codex",
+            "ANTHROPIC_API_KEY": "sk-ant",
+            "ANTHROPIC_AUTH_TOKEN": "tok-ant",
+            "PATH": "/usr/bin",
+        }
+        result = env_without_api_key(base, harness_name="codex")
+        # OpenAI/Codex auth preserved (Codex needs them).
+        assert result["OPENAI_API_KEY"] == "sk-openai"
+        assert result["CODEX_API_KEY"] == "ck-codex"
+        # Anthropic auth still stripped (Codex does not need them).
+        assert "ANTHROPIC_API_KEY" not in result
+        assert "ANTHROPIC_AUTH_TOKEN" not in result
+        assert result["PATH"] == "/usr/bin"
+
+    def test_claude_code_harness_strips_openai_api_key(self):
+        """Default behavior preserved for the claude-code harness:
+        ``OPENAI_API_KEY`` is stripped alongside the Anthropic vars.
+        Explicit ``harness_name="claude-code"`` matches the
+        no-kwarg default — defends DEC-008 of #145 by re-asserting it.
+        """
+        base = {
+            "OPENAI_API_KEY": "sk-openai",
+            "ANTHROPIC_API_KEY": "sk-ant",
+            "PATH": "/usr/bin",
+        }
+        result = env_without_api_key(base, harness_name="claude-code")
+        assert "OPENAI_API_KEY" not in result
+        assert "ANTHROPIC_API_KEY" not in result
+        assert result["PATH"] == "/usr/bin"
+
 
 class TestEnvWithSyncTasks:
     """Pure-unit tests for :func:`clauditor.runner.env_with_sync_tasks`.
@@ -2815,7 +3582,8 @@ class TestEnvWithSyncTasks:
 
 class TestSkillRunnerInvokeRegressionSmoke:
     """Smoke tests for ``SkillRunner.run`` invariants preserved by
-    the US-001 extraction of ``_invoke_claude_cli``.
+    the US-001 extraction of ``_invoke_claude_cli`` (now
+    ``ClaudeCodeHarness.invoke`` per issue #148).
 
     These tests were authored BEFORE the extraction to lock in the
     current field-population shape of ``SkillResult``. Every existing
@@ -2831,7 +3599,7 @@ class TestSkillRunnerInvokeRegressionSmoke:
         try/finally measurement."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream(
                 "canonical success",
                 input_tokens=123,
@@ -2864,7 +3632,7 @@ class TestSkillRunnerInvokeRegressionSmoke:
         """Canonical success stream-json → pinned ``output`` text."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream(
                 "pinned-output-text-abc123",
                 input_tokens=10,
@@ -2881,7 +3649,7 @@ class TestSkillRunnerInvokeRegressionSmoke:
         """429-style stream-json result → ``error_category=="rate_limit"``."""
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
         with patch(
-            "clauditor.runner.subprocess.Popen",
+            "clauditor._harnesses._claude_code.subprocess.Popen",
             return_value=make_fake_skill_stream(
                 "partial",
                 error_text="429 Too Many Requests: rate limit exceeded",
@@ -2893,33 +3661,52 @@ class TestSkillRunnerInvokeRegressionSmoke:
 
 
 # ---------------------------------------------------------------------------
-# US-001 (#86): _invoke_claude_cli direct tests
+# ClaudeCodeHarness.invoke direct tests
+# (originally _invoke_claude_cli per #86 US-001; migrated to the harness
+# protocol in #148 US-004)
 # ---------------------------------------------------------------------------
 
 
 class TestInvokeClaudeCli:
-    """Direct tests for the module-private ``_invoke_claude_cli`` helper
-    extracted in US-001 of ``plans/super/86-claude-cli-transport.md``.
+    """Direct tests for ``ClaudeCodeHarness.invoke``.
 
-    The helper is the transport-level primitive: it takes a pre-built
-    prompt plus explicit ``cwd`` / ``env`` / ``timeout`` / ``claude_bin``
-    and returns a lean :class:`InvokeResult` with no skill-name / args
-    context. US-003 will wire a second caller (``call_anthropic``'s CLI
+    Originally extracted as the module-private ``_invoke_claude_cli``
+    helper per US-001 of ``plans/super/86-claude-cli-transport.md``;
+    migrated to ``ClaudeCodeHarness.invoke`` per #148 US-004 (the body
+    moved verbatim into the harness method, function deleted, no
+    compatibility shim).
+
+    The harness's ``invoke`` is the transport-level primitive: it takes
+    a pre-built prompt plus explicit ``cwd`` / ``env`` / ``timeout`` and
+    returns a lean :class:`InvokeResult` with no skill-name / args
+    context. ``call_anthropic``'s CLI transport branch is the second caller
     transport branch) that needs exactly this raw-prompt shape.
     """
 
     def _call(self, fake, **overrides):
-        """Run ``_invoke_claude_cli`` with the fake Popen + sane defaults."""
+        """Run ``ClaudeCodeHarness.invoke`` with the fake Popen + defaults."""
+        # ``claude_bin`` and ``allow_hang_heuristic`` are
+        # construction-time knobs on the harness now (US-004 of
+        # ``plans/super/148-extract-harness-protocol.md``); pull them
+        # out of ``overrides`` before forwarding the rest as ``invoke``
+        # call kwargs.
+        claude_bin = overrides.pop("claude_bin", "claude")
+        allow_hang_heuristic = overrides.pop("allow_hang_heuristic", True)
         kwargs = dict(
             cwd=None,
             env=None,
             timeout=180,
-            claude_bin="claude",
-            allow_hang_heuristic=True,
         )
         kwargs.update(overrides)
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
-            return _invoke_claude_cli("hi there prompt", **kwargs)
+        harness = ClaudeCodeHarness(
+            claude_bin=claude_bin,
+            allow_hang_heuristic=allow_hang_heuristic,
+        )
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
+            return harness.invoke("hi there prompt", **kwargs)
 
     # --------------------------------------------------------------- #
     # Success + field-population                                       #
@@ -3074,16 +3861,19 @@ class TestInvokeClaudeCli:
                 pass
 
         with (
-            patch("clauditor.runner.subprocess.Popen", return_value=fake),
-            patch("clauditor.runner.threading.Timer", _ImmediateTimer),
+            patch(
+                "clauditor._harnesses._claude_code.subprocess.Popen",
+                return_value=fake,
+            ),
+            patch("clauditor._harnesses._claude_code.threading.Timer", _ImmediateTimer),
         ):
-            result = _invoke_claude_cli(
+            result = ClaudeCodeHarness(
+                claude_bin="claude", allow_hang_heuristic=True
+            ).invoke(
                 "hi",
                 cwd=None,
                 env=None,
                 timeout=1,
-                claude_bin="claude",
-                allow_hang_heuristic=True,
             )
         assert result.exit_code == -1
         assert result.error == "timeout"
@@ -3095,15 +3885,17 @@ class TestInvokeClaudeCli:
         """Popen raising FileNotFoundError produces a clean InvokeResult
         with a descriptive error and no leaked stream state."""
         with patch(
-            "clauditor.runner.subprocess.Popen", side_effect=FileNotFoundError
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            side_effect=FileNotFoundError
         ):
-            result = _invoke_claude_cli(
+            result = ClaudeCodeHarness(
+                claude_bin="nonexistent-claude-binary",
+                allow_hang_heuristic=True,
+            ).invoke(
                 "hi",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="nonexistent-claude-binary",
-                allow_hang_heuristic=True,
             )
         assert isinstance(result, InvokeResult)
         assert result.exit_code == -1
@@ -3121,15 +3913,15 @@ class TestInvokeClaudeCli:
     def test_env_none_passes_through_to_popen_verbatim(self):
         """``env=None`` reaches Popen unchanged (Popen's own default:
         inherit ``os.environ``)."""
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("ok")
-            _invoke_claude_cli(
+            ClaudeCodeHarness(
+                claude_bin="claude", allow_hang_heuristic=True
+            ).invoke(
                 "hi",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
-                allow_hang_heuristic=True,
             )
             assert mock_popen.call_args.kwargs["env"] is None
             # cwd=None → Popen.cwd=None (helper has no self.project_dir
@@ -3141,15 +3933,15 @@ class TestInvokeClaudeCli:
         CLI-transport caller (US-003) uses this path with
         ``env=env_without_api_key(os.environ)``."""
         env = {"PATH": "/usr/bin", "MARKER": "x"}
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("ok")
-            _invoke_claude_cli(
+            ClaudeCodeHarness(
+                claude_bin="claude", allow_hang_heuristic=True
+            ).invoke(
                 "hi",
                 cwd=tmp_path,
                 env=env,
                 timeout=180,
-                claude_bin="claude",
-                allow_hang_heuristic=True,
             )
             assert mock_popen.call_args.kwargs["env"] == env
             assert mock_popen.call_args.kwargs["cwd"] == str(tmp_path)
@@ -3158,16 +3950,16 @@ class TestInvokeClaudeCli:
         """``model=`` kwarg is inserted into the subprocess argv as
         ``["--model", model]`` so CLI transport honours the requested model.
         """
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("ok")
-            _invoke_claude_cli(
+            ClaudeCodeHarness(
+                claude_bin="claude", allow_hang_heuristic=True
+            ).invoke(
                 "hi",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
                 model="claude-haiku-4-5-20251001",
-                allow_hang_heuristic=True,
             )
             argv = mock_popen.call_args.args[0]
             assert "--model" in argv
@@ -3176,15 +3968,15 @@ class TestInvokeClaudeCli:
 
     def test_model_none_omits_flag(self):
         """When ``model=None`` (the default), ``--model`` is not added to argv."""
-        with patch("clauditor.runner.subprocess.Popen") as mock_popen:
+        with patch("clauditor._harnesses._claude_code.subprocess.Popen") as mock_popen:
             mock_popen.return_value = make_fake_skill_stream("ok")
-            _invoke_claude_cli(
+            ClaudeCodeHarness(
+                claude_bin="claude", allow_hang_heuristic=True
+            ).invoke(
                 "hi",
                 cwd=None,
                 env=None,
                 timeout=180,
-                claude_bin="claude",
-                allow_hang_heuristic=True,
             )
             argv = mock_popen.call_args.args[0]
             assert "--model" not in argv
@@ -3193,35 +3985,32 @@ class TestInvokeClaudeCli:
     # Single-caller invariant (US-001 done-when criterion)             #
     # --------------------------------------------------------------- #
 
-    def test_single_caller_runner_py_only(self):
-        """Drift guard: ``_invoke_claude_cli`` is only called from the
-        whitelisted modules.
-
-        US-001 restricted callers to ``runner.py`` alone. US-003 added
-        the CLI transport branch in ``_anthropic.py`` as the second
-        (and only other) legitimate caller. Any third caller is a
-        layering smell — the transport primitive should not be reached
-        directly from CLI commands, pytest fixtures, or grader modules.
+    def test_invoke_claude_cli_helper_is_gone(self):
+        """Drift guard: the ``_invoke_claude_cli`` module-private helper
+        was deleted in US-004 of issue #148 (no compatibility shim per
+        DEC-001 / Q1 → A). All transport-level calls go through
+        :class:`ClaudeCodeHarness.invoke` now. A re-introduced helper
+        would re-fragment the harness seam, so this test fails loudly.
         """
         import pathlib
 
         import clauditor
 
         src_root = pathlib.Path(clauditor.__file__).parent
-        allowed_callers = {"runner.py", "_anthropic.py"}
         hits: list[pathlib.Path] = []
         for py_file in src_root.rglob("*.py"):
             text = py_file.read_text(encoding="utf-8")
-            # Skip the definition site + the US-003 CLI transport
-            # caller. Any other hit is a layering violation.
-            if py_file.name in allowed_callers:
-                continue
             if "_invoke_claude_cli" in text:
                 hits.append(py_file)
         assert hits == [], (
-            f"Unexpected caller of _invoke_claude_cli — allowed callers "
-            f"are {sorted(allowed_callers)!r}, got extras: {hits!r}"
+            "Unexpected reference to _invoke_claude_cli — the helper "
+            f"was deleted in US-004 of issue #148; got: {hits!r}"
         )
+
+        # Direct import attempt should now fail.
+        from clauditor import runner as _runner
+
+        assert not hasattr(_runner, "_invoke_claude_cli")
 
 
 # ---------------------------------------------------------------------------
@@ -3520,7 +4309,10 @@ class TestBackgroundTaskNoncompletionIntegration:
         allow_hang_heuristic: bool = True,
     ) -> SkillResult:
         runner = SkillRunner(project_dir="/tmp", claude_bin="claude")
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             return runner.run("skill", allow_hang_heuristic=allow_hang_heuristic)
 
     def test_waiting_text_triggers_warning_and_category(self):
@@ -3604,7 +4396,10 @@ class TestBackgroundTaskNoncompletionIntegration:
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
             "PATH": "/usr/bin",
         }
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill", env=env)
         assert result.error_category is None
         assert not any(
@@ -3627,7 +4422,10 @@ class TestBackgroundTaskNoncompletionIntegration:
             "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "0",
             "PATH": "/usr/bin",
         }
-        with patch("clauditor.runner.subprocess.Popen", return_value=fake):
+        with patch(
+            "clauditor._harnesses._claude_code.subprocess.Popen",
+            return_value=fake,
+        ):
             result = runner.run("skill", env=env)
         assert result.error_category == "background-task"
         assert any(
@@ -3662,7 +4460,7 @@ class TestBackgroundTaskNoncompletionIntegration:
         captured stderr is preserved in ``warnings`` (not silently
         dropped). Covers the shared
         ``("interactive", "background-task")`` branch in
-        ``_invoke_claude_cli`` that moves stderr to warnings so the
+        ``ClaudeCodeHarness.invoke`` that moves stderr to warnings so the
         caller can still observe subprocess diagnostics.
         """
         fake = make_fake_background_task_stream(

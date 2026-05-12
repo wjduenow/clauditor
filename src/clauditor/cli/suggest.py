@@ -6,11 +6,13 @@ import argparse
 import sys
 from pathlib import Path
 
-from clauditor._anthropic import (
+from clauditor._providers import (
     AnthropicAuthMissingError,
-    check_any_auth_available,
+    OpenAIAuthMissingError,
+    check_provider_auth,
 )
 from clauditor.paths import derive_skill_name, resolve_clauditor_dir
+from clauditor.spec import SkillSpec
 from clauditor.suggest import (
     NoPriorGradeError,
     load_suggest_input,
@@ -25,7 +27,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     """Register the ``suggest`` subparser."""
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _positive_int, _transport_choice
+    from clauditor.cli import _positive_int, _provider_choice, _transport_choice
 
     p_suggest = subparsers.add_parser(
         "suggest",
@@ -52,8 +54,12 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     p_suggest.add_argument(
         "--model",
-        default="claude-sonnet-4-6",
-        help="Proposer model (default: claude-sonnet-4-6)",
+        default=None,
+        help=(
+            "Proposer model. When unset, defaults to the resolved "
+            "provider's standard model (claude-sonnet-4-6 for "
+            "anthropic, gpt-5.4 for openai)."
+        ),
     )
     p_suggest.add_argument(
         "--json",
@@ -79,6 +85,20 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "'auto'."
         ),
     )
+    p_suggest.add_argument(
+        "--grading-provider",
+        type=_provider_choice,
+        default=None,
+        choices=("anthropic", "openai", "auto"),
+        help=(
+            "Override the proposer provider: 'anthropic', 'openai', or "
+            "'auto' (infer from --model). Four-layer precedence: this "
+            "flag > CLAUDITOR_GRADING_PROVIDER env > "
+            "EvalSpec.grading_provider > default 'auto'. The suggest "
+            "command has no eval spec at the CLI seam, so only the CLI "
+            "flag and env var are typically meaningful."
+        ),
+    )
 
 
 def cmd_suggest(args: argparse.Namespace) -> int:
@@ -101,11 +121,22 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
     - exit 1 when no prior grading.json exists or the proposer returns
       unparseable JSON (no sidecar).
     - exit 2 when any proposal anchor fails validation (no sidecar),
-      OR when no usable authentication is available — the pre-flight
-      ``check_any_auth_available("suggest")`` guard raises
-      ``AnthropicAuthMissingError`` before any API call per #83
-      DEC-002/DEC-011 and #86 DEC-008 (no sidecar).
-    - exit 3 on Anthropic API errors (no sidecar).
+      OR when no usable authentication is available for the resolved
+      provider — the pre-flight ``check_provider_auth(provider,
+      "suggest")`` guard raises ``AnthropicAuthMissingError`` /
+      ``OpenAIAuthMissingError`` before any API call per #83
+      DEC-002/DEC-011, #86 DEC-008, #145 DEC-006, and #146 DEC-005
+      (no sidecar).
+    - exit 3 on provider API errors (no sidecar).
+
+    #162 US-003 + #146 US-005/US-006: provider is resolved via the
+    four-layer ``_resolve_grading_provider`` helper (CLI
+    ``--grading-provider`` > ``CLAUDITOR_GRADING_PROVIDER`` env >
+    ``spec.eval_spec.grading_provider`` > default ``"auto"`` with
+    auto-inference from ``--model`` / ``grading_model``).
+    ``SkillSpec.from_file`` is loaded after the zero-failing-signals
+    early-exit and before the auth check, mirroring the pattern in
+    ``cli/triggers.py``.
     """
     skill_path = Path(args.skill)
     if not skill_path.exists():
@@ -195,17 +226,61 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
         )
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
-    # ANTHROPIC_API_KEY nor the claude CLI binary is available.
+    # #162 US-003 + #146 US-005/US-006: load the spec so the four-layer
+    # provider resolver can read ``eval_spec.grading_provider`` /
+    # ``eval_spec.grading_model``. Mirrors ``cli/triggers.py:114-127``.
+    # The early ``skill_path.exists()`` check above already covered the
+    # missing-skill-file case (rc=1); the try/except here covers a
+    # TOCTOU race plus ``EvalSpec.from_file`` validation failures.
+    try:
+        skill_spec = SkillSpec.from_file(skill_path)
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        print(
+            f"Error: cannot load spec for {skill_path}: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #146 US-005/US-006: fail fast
+    # when the resolved provider's required auth is missing. Per #146
+    # DEC-005 ``suggest`` is no longer hardcoded to Anthropic; the
+    # four-layer ``_resolve_grading_provider`` helper handles
+    # ``--grading-provider`` > ``CLAUDITOR_GRADING_PROVIDER`` env >
+    # ``EvalSpec.grading_provider`` > default "auto" with auto-
+    # inference from ``--model`` / ``eval_spec.grading_model``.
     # ``suggest`` has no --dry-run; the guard lands AFTER the zero-
     # failing-signals early-exit (so the "all passed" path still works
-    # without auth — it never calls Anthropic) and BEFORE the
-    # propose_edits orchestrator.
+    # without auth — it never calls the provider) and BEFORE the
+    # propose_edits orchestrator. Distinct ``except`` branches per
+    # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    #
+    # The resolved provider is threaded down to ``propose_edits`` per
+    # #146 US-006.
+    from clauditor.cli import _resolve_grading_provider
+
+    provider = _resolve_grading_provider(args, skill_spec.eval_spec)
     try:
-        check_any_auth_available("suggest")
+        check_provider_auth(provider, "suggest")
     except AnthropicAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    except OpenAIAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    # Resolve the effective model post-#182 (DEC-001b/DEC-004b): if the
+    # operator didn't pass ``--model``, pick the per-provider default
+    # via ``resolve_grading_model``. With the new resolver semantics,
+    # ``--grading-provider auto`` with no model resolves provider to
+    # ``"anthropic"`` (subscription-first historical default), then
+    # this picks ``"claude-sonnet-4-6"`` — eliminating the
+    # ``model=None`` foot-gun Copilot flagged on PR #185.
+    if args.model is None:
+        from clauditor._providers import resolve_grading_model
+        args.model = resolve_grading_model(skill_spec.eval_spec, provider)
 
     if args.verbose:
         print(
@@ -236,6 +311,7 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
         suggest_input,
         model=args.model,
         transport=_resolve_grader_transport(args),
+        provider=provider,
     )
 
     # DEC-008 row 3: API / prompt-build failure.

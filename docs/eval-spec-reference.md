@@ -227,9 +227,35 @@ A few `EvalSpec` fields tune specific code paths and are safe to omit:
   in a rhetorical question). When disabled, a suppressed-heuristic
   run still lands in `SkillResult` but without the `error_category=
   "interactive"` signal.
-- **`grading_model`** (string, default `"claude-sonnet-4-6"`) — the
-  Anthropic model used for Layer 3 grading. Override per-spec when you
-  want to trade cost for fidelity.
+- **`grading_model`** (string or null, default `null` post-#182) —
+  the model used for Layer 3 grading (and L2 extraction, suggest,
+  propose-eval, triggers, blind compare). Per-spec override when you
+  want to trade cost for fidelity. Default is `null` per #146
+  DEC-004b: when unset (omitted or explicit `null`), the
+  per-provider resolver `clauditor._providers.resolve_grading_model`
+  picks the standard default for the resolved `grading_provider` —
+  `"claude-sonnet-4-6"` for `anthropic`, `"gpt-5.4"` for `openai`.
+  Set explicitly to override (e.g. `"claude-opus-4-1"` or
+  `"gpt-5.4-mini"`). `to_dict()` omits the key when it equals
+  `null`, so pre-#146 specs round-trip with no synthetic key.
+- **`grading_provider`** (string or null, default `"auto"` post-#182)
+  — selects which provider's SDK handles LLM-grader calls. One of
+  `"anthropic"`, `"openai"`, `"auto"`, or `null` (legacy
+  #145-vintage; treated the same as the default at the CLI seam).
+  When the resolved value is `"auto"`, the auto-inference layer
+  maps `claude-*` → `anthropic`, `gpt-*` / `o[0-9]+*` → `openai`;
+  when no model is available the resolver falls back to
+  `"anthropic"` (subscription-first historical default). An unknown
+  model prefix raises a load-time error advising the operator to
+  set `--grading-provider` explicitly. Precedence:
+  `--grading-provider` on the CLI wins, then
+  `CLAUDITOR_GRADING_PROVIDER` env var, then this field, then the
+  `"auto"` default. `to_dict()` omits the key when it equals
+  `"auto"` (or `None` from legacy specs), matching the
+  `transport` / `harness` pattern — pre-#146 specs round-trip with
+  no synthetic key. Full reference:
+  [`docs/cli-reference.md`](cli-reference.md) (per-command
+  `--grading-provider` row).
 - **`grade_thresholds`** (object, default `null`) — an object with
   `min_pass_rate` and/or `min_mean_score` (both floats in `[0.0, 1.0]`)
   that gate `clauditor grade`'s exit code. When set, a run whose
@@ -272,6 +298,77 @@ A few `EvalSpec` fields tune specific code paths and are safe to omit:
   [`docs/skill-usage.md#--sync-tasks-force-task-mode-synchronous-at-eval-time`](skill-usage.md#--sync-tasks-force-task-mode-synchronous-at-eval-time)
   before enabling this field — evaluating sync is not equivalent to
   evaluating async.**
+
+## System Prompt
+
+`EvalSpec.system_prompt` (string, default `null`) is the prompt body
+sent to harnesses that consume a separate system-prompt channel. The
+shipping `ClaudeCodeHarness` ignores it (the `claude -p` CLI has no
+analogue — slash-command identity carries the skill body), but the
+forthcoming `CodexHarness` (#149) will prepend it before the user
+message. It is part of the cross-harness `Harness.build_prompt`
+contract introduced in #150 so a single `EvalSpec` shape feeds every
+harness identically.
+
+**Three-level precedence.** clauditor resolves the effective
+`system_prompt` once per run:
+
+1. **Explicit `EvalSpec.system_prompt`** (set in `eval.json`) wins.
+2. **Auto-derived `AGENTS.md`** — when the field is `null` or
+   omitted, `SkillSpec.run` consults `resolve_agents_md(skill_dir,
+   project_root)` (per #154 DEC-009; sibling-then-project-root,
+   strict containment per
+   `.claude/rules/path-validation.md`). If a readable `AGENTS.md`
+   is found, its contents become the system prompt.
+3. **Auto-derived `SKILL.md` body** — falls through when no
+   `AGENTS.md` is available. clauditor reads the skill file
+   referenced by `SkillSpec`, strips the YAML frontmatter via
+   `parse_frontmatter`, and uses the remaining body as the system
+   prompt.
+
+There is no fourth fallback. The empty-string body case threads
+through verbatim — a `SKILL.md` with frontmatter but no body
+resolves to `""`, not `None`, so a misconfigured skill surfaces
+clearly downstream rather than silently masking a missing prompt.
+
+**Validation rules.** When set, `system_prompt` must be a non-empty,
+non-whitespace string. The loader raises `ValueError` at
+`EvalSpec.from_file` time on any of: non-string value, empty string
+(`""`), or a string that strips to empty (whitespace-only). Mirrors
+`user_prompt`'s validation shape exactly.
+
+Frontmatter `system_prompt:` keys inside `SKILL.md` are NOT supported
+(DEC-003 of #150). The body of `SKILL.md` is the auto-derive source;
+authors who need a value distinct from the body must set it explicitly
+in `eval.json`.
+
+**Auto-derive failure mode.** If the auto-derive path is taken (no
+explicit `system_prompt` in the eval spec) and the skill file is
+missing, unreadable, or has malformed frontmatter, `SkillSpec.run`
+raises `RuntimeError` naming both the skill identity and the
+resolved skill path. The underlying `FileNotFoundError` / `OSError` /
+`ValueError` chains through `__cause__` for debug. This is a hard
+failure — not a warning — because every grader code path needs a
+deterministic system prompt for cross-run comparability.
+
+**Example — explicit override in eval.json:**
+
+```json
+{
+  "skill_name": "find-kid-activities",
+  "test_args": "\"Cupertino, CA\" --ages 4-6 --count 5",
+  "system_prompt": "You are a careful local-events researcher. Prefer primary sources (venue websites, official park pages) over aggregators. When confidence is low, say so explicitly.",
+  "assertions": [
+    {"id": "no_error", "type": "not_contains", "needle": "Error"}
+  ]
+}
+```
+
+When omitted, `clauditor` derives the same prompt from the body of
+`find-kid-activities/SKILL.md` automatically — the explicit field is
+only needed when the eval-time prompt should diverge from the shipped
+skill body (e.g. tightening rubric framing for a CI grader without
+editing `SKILL.md`).
 
 ## Schema history
 

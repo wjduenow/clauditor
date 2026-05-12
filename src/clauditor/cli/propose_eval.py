@@ -29,9 +29,10 @@ import json
 import sys
 from pathlib import Path
 
-from clauditor._anthropic import (
+from clauditor._providers import (
     AnthropicAuthMissingError,
-    check_any_auth_available,
+    OpenAIAuthMissingError,
+    check_provider_auth,
 )
 from clauditor.capture_provenance import (
     read_capture_provenance,
@@ -118,7 +119,7 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     # Shared argparse type helpers live in the package __init__; import
     # lazily to avoid a circular import at module load time.
-    from clauditor.cli import _transport_choice
+    from clauditor.cli import _provider_choice, _transport_choice
 
     p.add_argument(
         "--transport",
@@ -131,6 +132,20 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
             "CLI when available). Four-layer precedence: this flag > "
             "CLAUDITOR_TRANSPORT env > EvalSpec.transport > default "
             "'auto'."
+        ),
+    )
+    p.add_argument(
+        "--grading-provider",
+        type=_provider_choice,
+        default=None,
+        choices=("anthropic", "openai", "auto"),
+        help=(
+            "Override the proposer provider: 'anthropic', 'openai', or "
+            "'auto' (infer from --model). Four-layer precedence: this "
+            "flag > CLAUDITOR_GRADING_PROVIDER env > "
+            "EvalSpec.grading_provider > default 'auto'. The "
+            "propose-eval command has no eval spec at the CLI seam, so "
+            "only the CLI flag and env var are typically meaningful."
         ),
     )
 
@@ -345,9 +360,38 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    model = args.model or DEFAULT_PROPOSE_EVAL_MODEL
-    if args.verbose:
-        print(f"[propose-eval] model: {model}", file=sys.stderr)
+    # Provider-aware model defaulting per #146 + QG pass 1.
+    # If the user didn't pass ``--model``, choose a sensible default
+    # by peeking at the CLI/env provider signals: explicit
+    # ``--grading-provider openai`` (or matching env) → OpenAI
+    # default; ``"anthropic"`` / ``"auto"`` / no signal → Anthropic
+    # default (preserves the pre-#146 behavior for the no-args case;
+    # post-#182 ``"auto"`` resolves to anthropic via the resolver's
+    # subscription-first fallback when no model is available). The
+    # provider auto-inference layer in ``_resolve_grading_provider``
+    # then sees the stamped model and picks the matching provider,
+    # so every path ends up self-consistent — and ``model`` is never
+    # ``None`` at the ``propose_eval(...)`` call below.
+    if args.model is None:
+        import os as _os
+        explicit_provider: str | None = getattr(
+            args, "grading_provider", None
+        )
+        if explicit_provider is None:
+            env_value = _os.environ.get("CLAUDITOR_GRADING_PROVIDER")
+            if env_value is not None and env_value.strip() != "":
+                explicit_provider = env_value.strip()
+        if explicit_provider == "openai":
+            from clauditor._providers._openai import DEFAULT_MODEL_L3
+            args.model = DEFAULT_MODEL_L3
+        else:
+            # ``"anthropic"`` / ``"auto"`` / None all fall back to the
+            # Anthropic default. Post-#182, ``"auto"`` no longer raises
+            # at the resolver when model is None — it falls back to
+            # anthropic — so we proactively stamp the matching model
+            # here to keep ``propose_eval(model=...)`` non-``None``.
+            args.model = DEFAULT_PROPOSE_EVAL_MODEL
+    model = args.model
 
     # Build the prompt in the CLI layer so we can (a) honor --dry-run
     # without spending an API call (plan line 520-521) and (b) route
@@ -371,15 +415,36 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
         print(prompt, end="" if prompt.endswith("\n") else "\n")
         return 0
 
-    # #83 DEC-002/DEC-011 + #86 DEC-008: fail fast only when neither
-    # ANTHROPIC_API_KEY nor the claude CLI binary is available. Guard
-    # lands AFTER --dry-run (dry-run is a cost-free preview — no API
-    # call, no key needed) and BEFORE the propose_eval orchestrator.
+    # #83 DEC-002/DEC-011 + #86 DEC-008 + #145 US-009 + #146 US-005/US-006:
+    # fail fast when the proposer-provider's required auth is missing.
+    # ``propose-eval`` is the eval-creation step itself, so there is no
+    # ``eval_spec`` at the CLI seam — the resolver is called with
+    # ``eval_spec=None``. Per #146 DEC-005 ``propose-eval`` is no
+    # longer hardcoded to ``"anthropic"``; the four-layer
+    # ``_resolve_grading_provider`` helper handles ``--grading-provider``,
+    # ``CLAUDITOR_GRADING_PROVIDER``, and falls back to default
+    # "auto" with auto-inference from ``--model``. Guard lands AFTER
+    # --dry-run (dry-run is a cost-free preview — no API call, no key
+    # needed) and BEFORE the propose_eval orchestrator. Distinct
+    # ``except`` branches per
+    # ``.claude/rules/llm-cli-exit-code-taxonomy.md``.
+    #
+    # The resolved provider is threaded down to ``propose_eval`` per
+    # #146 US-006.
+    from clauditor.cli import _resolve_grading_provider
+
+    provider = _resolve_grading_provider(args, None)
     try:
-        check_any_auth_available("propose-eval")
+        check_provider_auth(provider, "propose-eval")
     except AnthropicAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+    except OpenAIAuthMissingError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+    if args.verbose:
+        print(f"[propose-eval] model: {model}", file=sys.stderr)
 
     from clauditor.cli import _resolve_grader_transport
 
@@ -388,6 +453,7 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
         model=model,
         spec_dir=skill_md_path.parent,
         transport=_resolve_grader_transport(args),
+        provider=provider,
     )
 
     # DEC-006 row: Anthropic API failure → exit 3.

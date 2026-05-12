@@ -304,7 +304,8 @@ class TestEvalSpecNewFields:
             f.flush()
             spec = EvalSpec.from_file(f.name)
 
-        assert spec.grading_model == "claude-sonnet-4-6"
+        # DEC-004b of #146 (issue #182): default flipped to None.
+        assert spec.grading_model is None
         assert spec.trigger_tests is None
         assert spec.variance is None
 
@@ -362,7 +363,8 @@ class TestEvalSpecNewFields:
         d = spec.to_dict()
         assert "trigger_tests" not in d
         assert "variance" not in d
-        assert d["grading_model"] == "claude-sonnet-4-6"
+        # DEC-004b of #146 (issue #182): default flipped to None; key omitted.
+        assert "grading_model" not in d
 
 
 # --- New test classes for from_file, to_dict, and edge cases ---
@@ -455,16 +457,46 @@ class TestFromFile:
         assert spec.assertions == []
         assert spec.sections == []
         assert spec.grading_criteria == []
-        assert spec.grading_model == "claude-sonnet-4-6"
+        # DEC-004b of #146 (issue #182): default flipped to None.
+        assert spec.grading_model is None
         assert spec.trigger_tests is None
         assert spec.variance is None
 
-    def test_from_file_empty_dict_defaults_skill_name_to_stem(self, tmp_path):
-        """When skill_name is missing, defaults to the file stem."""
+    def test_from_file_empty_dict_defaults_skill_name_strips_eval_suffix(
+        self, tmp_path
+    ):
+        """``<name>.eval.json`` default strips the ``.eval`` suffix (#176)."""
         path = _write_json(tmp_path, {}, name="my-skill.eval.json")
         spec = EvalSpec.from_file(path)
 
-        assert spec.skill_name == "my-skill.eval"
+        assert spec.skill_name == "my-skill"
+
+    def test_from_file_modern_layout_skill_eval_json_uses_parent_dir(self, tmp_path):
+        """``<dir>/SKILL.eval.json`` default resolves to parent dir name (#176)."""
+        skill_dir = tmp_path / "find-restaurants"
+        skill_dir.mkdir()
+        path = skill_dir / "SKILL.eval.json"
+        path.write_text("{}")
+        spec = EvalSpec.from_file(path)
+
+        assert spec.skill_name == "find-restaurants"
+
+    def test_from_file_modern_layout_eval_json_uses_parent_dir(self, tmp_path):
+        """``<dir>/eval.json`` default resolves to parent dir name (#176)."""
+        skill_dir = tmp_path / "find-restaurants"
+        skill_dir.mkdir()
+        path = skill_dir / "eval.json"
+        path.write_text("{}")
+        spec = EvalSpec.from_file(path)
+
+        assert spec.skill_name == "find-restaurants"
+
+    def test_from_file_plain_json_falls_back_to_stem(self, tmp_path):
+        """``<name>.json`` (no ``.eval`` suffix) keeps the stem (back-compat)."""
+        path = _write_json(tmp_path, {}, name="my-skill.json")
+        spec = EvalSpec.from_file(path)
+
+        assert spec.skill_name == "my-skill"
 
     def test_from_file_missing(self, tmp_path):
         """Raises FileNotFoundError for a nonexistent file."""
@@ -1507,6 +1539,70 @@ class TestEvalSpecUserPrompt:
         assert loaded.user_prompt == "Is ramen good?"
 
 
+class TestEvalSpecSystemPrompt:
+    """Tests for the optional ``system_prompt`` field (#150)."""
+
+    def test_from_file_loads_system_prompt(self, tmp_path):
+        """A spec with system_prompt set parses into the dataclass."""
+        data = {
+            "skill_name": "s",
+            "system_prompt": "you are helpful",
+        }
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+        assert spec.system_prompt == "you are helpful"
+
+    def test_from_file_system_prompt_absent_defaults_to_none(self, tmp_path):
+        """Omitting system_prompt leaves the attribute None."""
+        data = {"skill_name": "s"}
+        path = _write_json(tmp_path, data)
+        spec = EvalSpec.from_file(path)
+        assert spec.system_prompt is None
+
+    def test_from_file_system_prompt_empty_string_rejected(self, tmp_path):
+        """An empty-string system_prompt must be rejected — callers should
+        not have to disambiguate ``None`` vs ``""``."""
+        data = {"skill_name": "s", "system_prompt": ""}
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError, match="system_prompt must be a non-empty"
+        ) as excinfo:
+            EvalSpec.from_file(path)
+        assert "'s'" in str(excinfo.value)
+
+    def test_from_file_system_prompt_whitespace_only_rejected(self, tmp_path):
+        """Whitespace-only system_prompt must be rejected at load time."""
+        data = {"skill_name": "s", "system_prompt": "   "}
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError,
+            match="system_prompt must be a non-empty, non-whitespace",
+        ) as excinfo:
+            EvalSpec.from_file(path)
+        assert "'s'" in str(excinfo.value)
+
+    def test_from_file_system_prompt_non_string_rejected(self, tmp_path):
+        """A non-string system_prompt (e.g. a number) is rejected."""
+        data = {"skill_name": "s", "system_prompt": 42}
+        path = _write_json(tmp_path, data)
+        with pytest.raises(
+            ValueError, match="system_prompt must be a non-empty"
+        ) as excinfo:
+            EvalSpec.from_file(path)
+        assert "'s'" in str(excinfo.value)
+
+    def test_to_dict_omits_system_prompt_when_unset(self):
+        """Round-tripping a spec without system_prompt does not inject the key."""
+        spec = EvalSpec(skill_name="s")
+        d = spec.to_dict()
+        assert "system_prompt" not in d
+
+    def test_to_dict_emits_system_prompt_when_set(self):
+        spec = EvalSpec(skill_name="s", system_prompt="hi")
+        d = spec.to_dict()
+        assert d["system_prompt"] == "hi"
+
+
 class TestEvalSpecFromDict:
     """Direct tests for :meth:`EvalSpec.from_dict` (DEC-007 of #52).
 
@@ -1523,7 +1619,8 @@ class TestEvalSpecFromDict:
         assert spec.assertions == []
         assert spec.sections == []
         assert spec.grading_criteria == []
-        assert spec.grading_model == "claude-sonnet-4-6"
+        # DEC-004b of #146 (issue #182): default flipped to None.
+        assert spec.grading_model is None
         assert spec.test_args == ""
         assert spec.input_files == []
 
@@ -2080,6 +2177,452 @@ class TestEvalSpecTransport:
         spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
         round_tripped = spec.to_dict()
         assert "transport" not in round_tripped
+
+
+class TestEvalSpecHarness:
+    """US-001 / DEC-001 / DEC-008 of #151: ``EvalSpec.harness`` parsing
+    in ``from_dict``.
+
+    Default ``"auto"`` preserves back-compat. The literal set
+    ``{"claude-code", "codex", "auto"}`` is enforced at load time;
+    non-string, bool, null, and unknown-literal values are rejected
+    with a ``ValueError`` per
+    ``.claude/rules/constant-with-type-info.md``. ``to_dict`` omits
+    the key when value equals the default ``"auto"`` (matches the
+    ``transport`` skip-if-default pattern).
+    """
+
+    def test_missing_defaults_to_auto(self, tmp_path):
+        """No ``harness`` key → ``.harness == "auto"`` (back-compat)."""
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.harness == "auto"
+
+    def test_valid_claude_code_loads(self, tmp_path):
+        """``{"harness": "claude-code"}`` loads with ``.harness == "claude-code"``."""
+        data = {"skill_name": "s", "harness": "claude-code"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.harness == "claude-code"
+
+    def test_valid_codex_loads(self, tmp_path):
+        """``{"harness": "codex"}`` loads with ``.harness == "codex"``."""
+        data = {"skill_name": "s", "harness": "codex"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.harness == "codex"
+
+    def test_valid_auto_loads(self, tmp_path):
+        """``{"harness": "auto"}`` loads with ``.harness == "auto"``."""
+        data = {"skill_name": "s", "harness": "auto"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.harness == "auto"
+
+    def test_invalid_string_rejects(self, tmp_path):
+        """Unknown literal string (e.g. ``"raw-api"``) rejected with a
+        ``must be one of`` error that names the allowed values.
+        """
+        data = {"skill_name": "s", "harness": "raw-api"}
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"'harness' must be one of 'claude-code', 'codex', "
+                r"'auto', got 'raw-api'"
+            ),
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_non_string_rejects(self, tmp_path):
+        """Non-string (e.g. int 42) rejected with a type error."""
+        data = {"skill_name": "s", "harness": 42}
+        with pytest.raises(
+            ValueError,
+            match=r"'harness' must be a string, got int 42",
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_bool_rejects(self, tmp_path):
+        """Bool guard per ``.claude/rules/constant-with-type-info.md``:
+        ``isinstance(True, str)`` is False but we still want a distinct
+        error path that names the type.
+        """
+        data = {"skill_name": "s", "harness": True}
+        with pytest.raises(
+            ValueError,
+            match=r"'harness' must be a string, got bool True",
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_null_rejects(self, tmp_path):
+        """Explicit null is rejected — authors should omit the key
+        to get the default ``"auto"``, not write ``null`` explicitly.
+        """
+        data = {"skill_name": "s", "harness": None}
+        with pytest.raises(
+            ValueError,
+            match=(
+                r"'harness' must be one of 'claude-code', 'codex', "
+                r"'auto', got null"
+            ),
+        ):
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+
+    def test_round_trip_non_default(self, tmp_path):
+        """Non-default harness round-trips through to_dict / from_dict."""
+        data = {"skill_name": "s", "harness": "codex"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        round_tripped = spec.to_dict()
+        assert round_tripped.get("harness") == "codex"
+        # End-to-end: re-load preserves value.
+        spec2 = EvalSpec.from_dict(round_tripped, spec_dir=tmp_path)
+        assert spec2.harness == "codex"
+
+    def test_round_trip_default_omits_key(self, tmp_path):
+        """Default ``"auto"`` is omitted from ``to_dict`` output to
+        keep diffs minimal (matches ``transport`` pattern).
+        """
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        round_tripped = spec.to_dict()
+        assert "harness" not in round_tripped
+        # End-to-end: re-load yields the default again.
+        spec2 = EvalSpec.from_dict(round_tripped, spec_dir=tmp_path)
+        assert spec2.harness == "auto"
+
+
+class TestEvalSpecGradingModel:
+    """DEC-004b of #146 (issue #182): ``EvalSpec.grading_model``
+    nullable migration completed.
+
+    Field type is ``str | None`` and the dataclass default is now
+    ``None`` so the provider-aware ``resolve_grading_model`` helper
+    picks the per-provider default (``"claude-sonnet-4-6"`` for
+    anthropic, ``DEFAULT_MODEL_L3`` for openai). #145-vintage specs
+    that emit ``"grading_model": null`` and #146-vintage specs that
+    omit the field both load as ``None``. Bool / non-string-non-null
+    values rejected at load time per
+    ``.claude/rules/constant-with-type-info.md``.
+    """
+
+    def test_grading_model_default_is_none(self, tmp_path):
+        """No ``grading_model`` key → default ``None`` (DEC-004b).
+
+        The provider-aware ``resolve_grading_model`` helper picks the
+        per-provider default downstream, so an unset spec grades
+        against the right model for whichever provider wins
+        precedence.
+        """
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_model is None
+
+    def test_grading_model_explicit_null_loads_as_none(self, tmp_path):
+        """``{"grading_model": null}`` loads as ``None`` (same as
+        omitting the key post-DEC-004b).
+        """
+        data = {"skill_name": "s", "grading_model": None}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_model is None
+
+    def test_grading_model_explicit_string_loads(self, tmp_path):
+        """Explicit string value is loaded verbatim."""
+        data = {"skill_name": "s", "grading_model": "gpt-5.4"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_model == "gpt-5.4"
+
+    def test_bool_rejects(self, tmp_path):
+        """Bool guard per ``.claude/rules/constant-with-type-info.md``:
+        ``isinstance(True, str)`` is False but we still reject
+        explicitly with a type error.
+        """
+        data = {"skill_name": "s", "grading_model": True}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_model" in msg
+
+    def test_int_rejects(self, tmp_path):
+        """Non-string int rejected with a type error."""
+        data = {"skill_name": "s", "grading_model": 1}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_model" in msg
+
+    def test_list_rejects(self, tmp_path):
+        """Non-string list rejected."""
+        data = {"skill_name": "s", "grading_model": []}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_model" in msg
+
+    def test_empty_string_rejects(self, tmp_path):
+        """QG pass 1 of #146 + PR #164 review: empty/whitespace-only
+        ``grading_model`` is rejected at load time so it does not
+        survive through ``infer_provider_from_model`` and produce a
+        worse downstream error.
+        """
+        data = {"skill_name": "s", "grading_model": ""}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_model" in msg
+        assert "non-empty" in msg
+
+    def test_whitespace_only_string_rejects(self, tmp_path):
+        """Whitespace-only is treated as empty per the same load-time
+        guard.
+        """
+        data = {"skill_name": "s", "grading_model": "   "}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert "grading_model" in str(exc_info.value)
+
+    def test_to_dict_emits_grading_model_when_set(self, tmp_path):
+        """``to_dict()`` emits ``grading_model`` when explicitly set."""
+        data = {"skill_name": "s", "grading_model": "claude-opus-4-6"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        result = spec.to_dict()
+        assert result["grading_model"] == "claude-opus-4-6"
+
+    def test_to_dict_omits_when_none(self, tmp_path):
+        """DEC-004b: default is ``None`` → ``to_dict()`` omits the key
+        so #146-vintage specs that omit ``grading_model`` round-trip
+        with no synthetic key.
+        """
+        data = {"skill_name": "s", "grading_model": None}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        result = spec.to_dict()
+        assert "grading_model" not in result
+
+    def test_to_dict_omits_when_unset(self, tmp_path):
+        """When the key is omitted at load time, ``to_dict()`` omits it
+        too (default ``None`` post-DEC-004b). Pre-#146 specs that
+        omitted the field round-trip clean.
+        """
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        result = spec.to_dict()
+        assert "grading_model" not in result
+
+    def test_to_dict_round_trip_preserves_none(self, tmp_path):
+        """End-to-end: explicit-null → from_dict → to_dict → from_dict
+        yields ``None`` again (default semantics).
+        """
+        data = {"skill_name": "s", "grading_model": None}
+        spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        spec2 = EvalSpec.from_dict(spec1.to_dict(), spec_dir=tmp_path)
+        assert spec2.grading_model is None
+
+    def test_to_dict_round_trip_preserves_string(self, tmp_path):
+        """End-to-end round-trip for explicit string value."""
+        data = {"skill_name": "s", "grading_model": "gpt-5.4"}
+        spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        spec2 = EvalSpec.from_dict(spec1.to_dict(), spec_dir=tmp_path)
+        assert spec2.grading_model == "gpt-5.4"
+
+
+class TestGradingProviderValidation:
+    """US-002 / DEC-001 / DEC-008 of #146: ``EvalSpec.grading_provider``
+    parsing.
+
+    Field promoted from #145's ``str | None = None`` sentinel to
+    ``Literal["anthropic", "openai", "auto"] = "auto"``. ``"auto"``
+    is the subscription-first resolution token; ``"anthropic"`` and
+    ``"openai"`` pin a specific backend. Legacy ``"grading_provider":
+    null`` (from #145-vintage eval.json files) is silently coerced
+    to ``"auto"`` per DEC-008 — runtime semantics are byte-identical.
+    Unknown strings, non-strings, bools, lists, etc. are rejected at
+    load time with a ``ValueError`` that names the field and the
+    allowed values per
+    ``.claude/rules/constant-with-type-info.md``.
+    """
+
+    # --- Reject cases (write FIRST per TDD) ---
+
+    def test_unknown_string_claude_rejects(self, tmp_path):
+        """``"claude"`` is not in the literal set — rejected with an
+        error naming ``grading_provider``, ``anthropic``, ``openai``,
+        ``auto``.
+        """
+        data = {"skill_name": "s", "grading_provider": "claude"}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_provider" in msg
+        assert "anthropic" in msg
+        assert "openai" in msg
+        assert "auto" in msg
+
+    def test_unknown_string_gpt_rejects(self, tmp_path):
+        """``"gpt"`` is not in the literal set."""
+        data = {"skill_name": "s", "grading_provider": "gpt"}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_provider" in msg
+        assert "anthropic" in msg
+        assert "openai" in msg
+        assert "auto" in msg
+
+    def test_int_rejects(self, tmp_path):
+        """Non-string int rejected."""
+        data = {"skill_name": "s", "grading_provider": 1}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_provider" in msg
+        assert "anthropic" in msg
+        assert "openai" in msg
+        assert "auto" in msg
+
+    def test_bool_rejects(self, tmp_path):
+        """Bool guard: ``isinstance(True, str)`` is False, but we still
+        reject explicitly with a type error per
+        ``.claude/rules/constant-with-type-info.md``.
+        """
+        data = {"skill_name": "s", "grading_provider": True}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_provider" in msg
+        assert "anthropic" in msg
+        assert "openai" in msg
+        assert "auto" in msg
+
+    def test_list_rejects(self, tmp_path):
+        """Non-string list rejected."""
+        data = {"skill_name": "s", "grading_provider": []}
+        with pytest.raises(ValueError) as exc_info:
+            EvalSpec.from_dict(data, spec_dir=tmp_path)
+        msg = str(exc_info.value)
+        assert "grading_provider" in msg
+        assert "anthropic" in msg
+        assert "openai" in msg
+        assert "auto" in msg
+
+    # --- Accept cases ---
+
+    def test_grading_provider_default_is_auto(self, tmp_path):
+        """No ``grading_provider`` key → default ``"auto"`` (DEC-001b).
+
+        Resolution flows through ``resolve_grading_provider`` which
+        delegates to ``infer_provider_from_model`` when the winning
+        value is ``"auto"``.
+        """
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_provider == "auto"
+
+    def test_grading_provider_explicit_null_loads_as_none(
+        self, tmp_path
+    ):
+        """``{"grading_provider": null}`` loads as ``None``.
+
+        Legacy #145-vintage specs that emit explicit ``null`` keep
+        loading without error; the CLI seam treats ``None`` the same
+        as the default ``"auto"``.
+        """
+        data = {"skill_name": "s", "grading_provider": None}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_provider is None
+
+    def test_grading_provider_accepts_auto(self, tmp_path):
+        """``"auto"`` is a valid value (the new default token)."""
+        data = {"skill_name": "s", "grading_provider": "auto"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_provider == "auto"
+
+    def test_anthropic_loads(self, tmp_path):
+        """``"anthropic"`` is a valid value."""
+        data = {"skill_name": "s", "grading_provider": "anthropic"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_provider == "anthropic"
+
+    def test_openai_loads(self, tmp_path):
+        """``"openai"`` is a valid value."""
+        data = {"skill_name": "s", "grading_provider": "openai"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        assert spec.grading_provider == "openai"
+
+    # --- Round-trip via to_dict ---
+
+    def test_to_dict_includes_grading_provider_when_set(self, tmp_path):
+        """``to_dict()`` emits ``grading_provider`` when explicitly
+        set to a non-default value.
+
+        QG pass 3 of #145 caught the original writer-side gap.
+        """
+        data = {"skill_name": "s", "grading_provider": "openai"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        result = spec.to_dict()
+        assert result["grading_provider"] == "openai"
+
+    def test_grading_provider_to_dict_omits_when_default(
+        self, tmp_path
+    ):
+        """Default ``"auto"`` is omitted from ``to_dict`` per DEC-001b
+        — matches the ``transport`` / ``harness`` pattern. Pre-#146
+        specs that don't set the field round-trip with no synthetic
+        key.
+        """
+        data = {"skill_name": "s"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        result = spec.to_dict()
+        assert "grading_provider" not in result
+
+    def test_grading_provider_omits_auto_round_trip(self, tmp_path):
+        """Explicit ``"auto"`` is treated as default and omitted from
+        ``to_dict``. Re-loading yields ``"auto"`` (the new default).
+        """
+        data = {"skill_name": "s", "grading_provider": "auto"}
+        spec = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        result = spec.to_dict()
+        assert "grading_provider" not in result
+
+    def test_to_dict_round_trip_preserves_grading_provider(
+        self, tmp_path
+    ):
+        """End-to-end: from_dict → to_dict → from_dict yields a spec
+        whose ``grading_provider`` matches the original.
+        """
+        data = {"skill_name": "s", "grading_provider": "openai"}
+        spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        round_tripped = spec1.to_dict()
+        spec2 = EvalSpec.from_dict(round_tripped, spec_dir=tmp_path)
+        assert spec2.grading_provider == "openai"
+
+    def test_to_dict_round_trip_anthropic(self, tmp_path):
+        """Symmetric round-trip for explicit ``"anthropic"``."""
+        data = {"skill_name": "s", "grading_provider": "anthropic"}
+        spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        spec2 = EvalSpec.from_dict(spec1.to_dict(), spec_dir=tmp_path)
+        assert spec2.grading_provider == "anthropic"
+
+    def test_to_dict_round_trip_auto(self, tmp_path):
+        """Round-trip stability for the new default ``"auto"`` —
+        from_dict (with explicit ``"auto"`` or no key) yields ``"auto"``
+        after a to_dict → from_dict pass.
+        """
+        data = {"skill_name": "s", "grading_provider": "auto"}
+        spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        spec2 = EvalSpec.from_dict(spec1.to_dict(), spec_dir=tmp_path)
+        assert spec2.grading_provider == "auto"
+
+    def test_to_dict_round_trip_legacy_null_coerces_to_auto(
+        self, tmp_path
+    ):
+        """Legacy ``null`` round-trips: from_dict yields ``None``,
+        to_dict omits the field, re-load yields the new default
+        ``"auto"``. DEC-001b: ``None`` and ``"auto"`` are
+        semantically equivalent at the CLI seam, so the round-trip
+        is intentionally lossy on this asymmetry.
+        """
+        data = {"skill_name": "s", "grading_provider": None}
+        spec1 = EvalSpec.from_dict(data, spec_dir=tmp_path)
+        round_tripped = spec1.to_dict()
+        assert "grading_provider" not in round_tripped
+        spec2 = EvalSpec.from_dict(round_tripped, spec_dir=tmp_path)
+        assert spec2.grading_provider == "auto"
 
 
 class TestAssertionKeySpec:

@@ -21,7 +21,17 @@ if TYPE_CHECKING:
     from clauditor.spec import SkillSpec
 
 
+# #146 US-006 / DEC-004: per-provider default-model resolution lives in
+# :func:`clauditor._providers.resolve_grading_model`. Callers that passed
+# ``provider="openai"`` without an explicit OpenAI ``grading_model`` no
+# longer need a runtime guard here: the CLI seam picks
+# ``"gpt-5.4"`` via the resolver before invoking the orchestrator, so
+# the Anthropic-default never reaches the OpenAI backend in the first
+# place. ``DEFAULT_GRADING_MODEL`` remains as the Anthropic-specific
+# default for direct callers (mainly tests) that pass ``provider``
+# implicitly through the kwarg's back-compat default.
 DEFAULT_GRADING_MODEL = "claude-sonnet-4-6"
+
 
 # Indirection so tests can patch blind_compare timing without affecting
 # the asyncio event loop's own time.monotonic() calls.
@@ -38,6 +48,20 @@ _monotonic = time.monotonic
 # grader's parse. Retries are NOT triggered on alignment failures —
 # those indicate a prompt-design bug, not a model hiccup.
 _GRADER_PARSE_RETRY_LIMIT = 2
+
+
+def _sum_optional_reasoning_tokens(values: list[int | None]) -> int | None:
+    """Sum the non-None reasoning-token counts in ``values``.
+
+    Pure helper. Returns ``None`` when every entry is ``None`` (so the
+    aggregate distinguishes "no provider call surfaced a count" from
+    "calls surfaced zero"). Returns the integer sum of the non-None
+    entries otherwise — mixed input ``[None, 42]`` returns ``42``,
+    not ``0`` and not ``None``. Per DEC-003 of
+    ``plans/super/170-reasoning-tokens-capture.md``.
+    """
+    present = [v for v in values if v is not None]
+    return sum(present) if present else None
 
 
 @dataclass
@@ -65,7 +89,7 @@ class GradingResult:
 class GradingReport:
     """Aggregated results from grading against a full rubric.
 
-    ``transport_source`` records which :class:`AnthropicResult` transport
+    ``transport_source`` records which :class:`ModelResult` transport
     produced the Anthropic response this report was built from — either
     ``"api"`` (SDK / HTTP path) or ``"cli"`` (subprocess via
     ``claude -p``). Persisted into ``grading.json`` at
@@ -84,6 +108,38 @@ class GradingReport:
     input_tokens: int = 0
     output_tokens: int = 0
     transport_source: str = "api"
+    # ``provider_source`` records which provider backend produced the
+    # response — ``"anthropic"`` (current) or ``"openai"`` (#145+).
+    # Persisted into ``grading.json`` at ``schema_version=3`` per
+    # DEC-001 / DEC-006 of ``plans/super/147-sidecar-provider-field.md``.
+    # The audit loader accepts ``{1, 2, 3}`` and defaults missing
+    # ``provider_source`` to ``"anthropic"`` when reading legacy v1/v2
+    # sidecars.
+    provider_source: str = "anthropic"
+    # ``harness`` records which skill harness produced the underlying
+    # output this report grades — ``"claude-code"`` (default) or
+    # ``"codex"`` (#149+). Populated from :class:`SkillResult.harness`
+    # by orchestrators that have a SkillResult in scope; defaults to
+    # ``"claude-code"`` for direct callers (mainly tests). Persisted
+    # into ``grading.json`` at ``schema_version=4`` per DEC-004 /
+    # DEC-006 of ``plans/super/152-sidecar-harness-field.md``. The
+    # audit loader accepts ``{1, 2, 3, 4}`` and defaults missing
+    # ``harness`` to ``"claude-code"`` when reading legacy v1/v2/v3
+    # sidecars.
+    harness: str = "claude-code"
+    # ``reasoning_tokens`` records the per-call reasoning / thinking
+    # token count summed across every grader call this report
+    # aggregates (variance / parse-retry attempts). ``None`` means
+    # "no provider call surfaced a reasoning-token count" — distinct
+    # from ``0`` which would assert "calls ran but used zero
+    # reasoning tokens". Populated by sum-of-non-None semantics per
+    # DEC-003 of ``plans/super/170-reasoning-tokens-capture.md``:
+    # all-None inputs → ``None``; mixed ``[None, 42]`` → ``42``;
+    # all-int ``[10, 20]`` → ``30``. Persisted into ``grading.json``
+    # at ``schema_version=5`` per US-004 of #170; the audit loader
+    # defaults missing ``reasoning_tokens`` to ``None`` when reading
+    # legacy v1/v2/v3/v4 sidecars.
+    reasoning_tokens: int | None = None
 
     @property
     def passed(self) -> bool:
@@ -111,20 +167,27 @@ class GradingReport:
     def to_json(self) -> str:
         """Serialize the report to a JSON string.
 
-        Emits ``schema_version: 2`` as the first key per
-        ``.claude/rules/json-schema-version.md``. Version 2 adds the
-        ``transport_source`` field; the audit loader accepts both
-        ``{1, 2}`` and defaults missing ``transport_source`` to
-        ``"api"`` when reading v1 sidecars.
+        Emits ``schema_version: 5`` as the first key per
+        ``.claude/rules/json-schema-version.md``. Version 5 adds the
+        ``reasoning_tokens`` field on disk (v4 added ``harness``, v3
+        added ``provider_source``, v2 added ``transport_source``); the
+        audit loader accepts ``{1, 2, 3, 4, 5}`` and defaults missing
+        ``transport_source`` to ``"api"``, missing ``provider_source``
+        to ``"anthropic"``, missing ``harness`` to ``"claude-code"``,
+        and missing ``reasoning_tokens`` to ``None`` when reading
+        legacy sidecars.
         """
         data = {
-            "schema_version": 2,
+            "schema_version": 5,
             "skill_name": self.skill_name,
             "model": self.model,
             "transport_source": self.transport_source,
+            "provider_source": self.provider_source,
+            "harness": self.harness,
             "duration_seconds": self.duration_seconds,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
             "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
             "results": [
                 {
@@ -150,9 +213,13 @@ class GradingReport:
     def from_json(cls, data: str) -> GradingReport:
         """Deserialize a GradingReport from a JSON string.
 
-        Tolerates both schema versions (``1`` and ``2``); a missing
-        ``transport_source`` defaults to ``"api"`` so pre-#86 sidecars
-        load cleanly.
+        Tolerates schema versions ``1``, ``2``, ``3``, ``4``, and
+        ``5``. A missing ``transport_source`` defaults to ``"api"`` so
+        pre-#86 sidecars load cleanly; a missing ``provider_source``
+        defaults to ``"anthropic"`` so pre-#147 sidecars load cleanly;
+        a missing ``harness`` defaults to ``"claude-code"`` so pre-#152
+        sidecars load cleanly; a missing ``reasoning_tokens`` defaults
+        to ``None`` so pre-#170 sidecars load cleanly.
         """
         parsed = json.loads(data)
         results = [
@@ -171,6 +238,24 @@ class GradingReport:
             min_pass_rate=float(t.get("min_pass_rate", 0.7)),
             min_mean_score=float(t.get("min_mean_score", 0.5)),
         )
+        # ``reasoning_tokens`` is nullable: explicit ``None`` (or
+        # missing key for legacy sidecars) → ``None``; explicit int
+        # → preserve as int. Per US-004 of #170 / DEC-003: ``None`` is
+        # semantically distinct from ``0`` ("provider didn't surface
+        # a count" vs "provider surfaced a count of zero"). Bool
+        # values are rejected per ``.claude/rules/constant-with-type-info.md``
+        # (Python's ``isinstance(True, int)`` is ``True``); a malformed
+        # sidecar with ``"reasoning_tokens": true`` would otherwise
+        # silently coerce to ``1``. Symmetric with the writer-side
+        # ``_extract_reasoning_tokens`` discipline (DEC-006).
+        raw_reasoning = parsed.get("reasoning_tokens")
+        reasoning_tokens: int | None
+        if raw_reasoning is None or isinstance(raw_reasoning, bool):
+            reasoning_tokens = None
+        elif isinstance(raw_reasoning, int):
+            reasoning_tokens = raw_reasoning
+        else:
+            reasoning_tokens = None
         return cls(
             skill_name=parsed.get("skill_name", ""),
             results=results,
@@ -181,6 +266,11 @@ class GradingReport:
             input_tokens=int(parsed.get("input_tokens", 0)),
             output_tokens=int(parsed.get("output_tokens", 0)),
             transport_source=str(parsed.get("transport_source") or "api"),
+            provider_source=str(
+                parsed.get("provider_source") or "anthropic"
+            ),
+            harness=str(parsed.get("harness") or "claude-code"),
+            reasoning_tokens=reasoning_tokens,
         )
 
     def summary(self) -> str:
@@ -205,7 +295,7 @@ class BlindReport:
     anchoring on a/b), but results are reported against the canonical
     a/b labels of the caller.
 
-    ``transport_source`` records which :class:`AnthropicResult`
+    ``transport_source`` records which :class:`ModelResult`
     transport produced the underlying Anthropic response(s) — either
     ``"api"`` or ``"cli"``. DEC-018 of
     ``plans/super/86-claude-cli-transport.md`` introduces
@@ -227,13 +317,31 @@ class BlindReport:
     output_tokens: int = 0
     duration_seconds: float = 0.0
     transport_source: str = "api"
+    # ``provider_source`` records which provider backend produced the
+    # response — ``"anthropic"`` (current) or ``"openai"`` (#145+). Per
+    # DEC-006 of ``plans/super/144-providers-call-model.md`` this field
+    # is in-memory only — :meth:`to_json` does NOT include it; #147
+    # owns the on-disk schema bump that lights it up in the sidecar.
+    provider_source: str = "anthropic"
+    # ``reasoning_tokens`` records the per-call reasoning / thinking
+    # token count summed across the two parallel judge calls (sum of
+    # non-None values per DEC-003 of #170). ``None`` means "neither
+    # call surfaced a reasoning-token count" — distinct from ``0``
+    # which would assert "calls ran but used zero reasoning tokens".
+    # Per DEC-005 of #170 the ``BlindReport`` schema_version stays at
+    # ``1`` (always-v1 pattern; this additive nullable field is
+    # forward-compat-safe; there is no ``from_json`` reader to break).
+    reasoning_tokens: int | None = None
 
     def to_json(self) -> str:
         """Serialize the report to a JSON string.
 
         Emits ``schema_version: 1`` as the first key (DEC-018 — the
         inaugural version for this report type) per
-        ``.claude/rules/json-schema-version.md``.
+        ``.claude/rules/json-schema-version.md``. Per DEC-005 of #170
+        the version stays at ``1`` even after the ``reasoning_tokens``
+        field is added: the field is nullable and additive, and there
+        is no ``from_json`` reader to break (always-v1 pattern).
         """
         data = {
             "schema_version": 1,
@@ -247,6 +355,7 @@ class BlindReport:
             "transport_source": self.transport_source,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "reasoning_tokens": self.reasoning_tokens,
             "duration_seconds": self.duration_seconds,
             "timestamp": datetime.datetime.now(datetime.UTC).isoformat(),
         }
@@ -417,6 +526,8 @@ def combine_blind_results(
     output_tokens: int,
     duration_seconds: float,
     transport_source: str = "api",
+    provider_source: str = "anthropic",
+    reasoning_tokens: int | None = None,
 ) -> BlindReport:
     """Combine two parsed judge verdicts into a canonical :class:`BlindReport`.
 
@@ -450,6 +561,8 @@ def combine_blind_results(
             output_tokens=output_tokens,
             duration_seconds=duration_seconds,
             transport_source=transport_source,
+            provider_source=provider_source,
+            reasoning_tokens=reasoning_tokens,
         )
 
     if parsed1 is None or parsed2 is None:
@@ -482,6 +595,8 @@ def combine_blind_results(
             output_tokens=output_tokens,
             duration_seconds=duration_seconds,
             transport_source=transport_source,
+            provider_source=provider_source,
+            reasoning_tokens=reasoning_tokens,
         )
 
     winner1, conf1, sa1, sb1, reason1 = _translate_blind_result(
@@ -521,6 +636,8 @@ def combine_blind_results(
         output_tokens=output_tokens,
         duration_seconds=duration_seconds,
         transport_source=transport_source,
+        provider_source=provider_source,
+        reasoning_tokens=reasoning_tokens,
     )
 
 
@@ -577,34 +694,42 @@ async def _call_blind_side_with_retry(
     model: str,
     transport: str,
     side_label: str,
-) -> tuple[dict | None, str, str, int, int]:
+    provider: str = "anthropic",
+) -> tuple[dict | None, str, str, str, int, int, int | None]:
     """Run one side of a blind-compare judge with parse retry.
 
-    Returns ``(parsed, text, source, input_tokens, output_tokens)`` — the
-    parsed verdict dict (or ``None`` on shape failure), the final
-    attempt's response text, the transport source, and the cumulative
-    token counts across attempts. One retry on JSON decode failure per
-    clauditor-6cf / #94; no retry on shape failure (missing required
-    keys) since that indicates a model-protocol bug.
+    Returns ``(parsed, text, source, provider, input_tokens,
+    output_tokens, reasoning_tokens)`` — the parsed verdict dict (or
+    ``None`` on shape failure), the final attempt's response text, the
+    transport source, the provider that produced the response, and the
+    cumulative token counts across attempts (``reasoning_tokens`` per
+    DEC-003 of #170: sum-of-non-None across attempts; ``None`` when
+    every attempt's count was ``None``). One retry on JSON decode
+    failure per clauditor-6cf / #94; no retry on shape failure
+    (missing required keys) since that indicates a model-protocol bug.
     """
-    from clauditor._anthropic import call_anthropic
+    from clauditor._providers import call_model
 
     total_input = 0
     total_output = 0
+    reasoning_attempts: list[int | None] = []
     last_text = ""
     last_source = "api"
+    last_provider = provider
     parsed: dict | None = None
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
-        r = await call_anthropic(
+        r = await call_model(
             prompt,
+            provider=provider,
             model=model,
-            max_tokens=2048,
             transport=transport,
-            subject=f"L3 blind compare {side_label}",
+            max_tokens=2048,
         )
         total_input += r.input_tokens
         total_output += r.output_tokens
+        reasoning_attempts.append(r.reasoning_tokens)
         last_source = r.source
+        last_provider = r.provider
         last_text = r.text_blocks[0] if r.text_blocks else ""
         parsed, parse_err = _parse_blind_response_verbose(last_text)
         if parsed is not None:
@@ -621,7 +746,15 @@ async def _call_blind_side_with_retry(
                 attempt + 2,
                 _GRADER_PARSE_RETRY_LIMIT,
             )
-    return parsed, last_text, last_source, total_input, total_output
+    return (
+        parsed,
+        last_text,
+        last_source,
+        last_provider,
+        total_input,
+        total_output,
+        _sum_optional_reasoning_tokens(reasoning_attempts),
+    )
 
 
 async def blind_compare(
@@ -633,6 +766,7 @@ async def blind_compare(
     model: str = DEFAULT_GRADING_MODEL,
     rng: random.Random | None = None,
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> BlindReport:
     """Blind A/B judge: call Anthropic twice with swapped positions.
 
@@ -647,6 +781,10 @@ async def blind_compare(
     Retries fire independently: if side 1 parses on the first attempt
     but side 2 needs a retry, only side 2 is re-invoked.
 
+    ``provider`` is resolved at the CLI / fixture seam per #146 US-006
+    and threaded into BOTH parallel calls. Default ``"anthropic"``
+    preserves back-compat for direct callers (mainly tests).
+
     Requires the 'grader' extra: pip install clauditor[grader]
     """
     import asyncio as _asyncio
@@ -657,22 +795,32 @@ async def blind_compare(
     p1 = _build_blind_prompt_for_mapping(m1, *args)
     p2 = _build_blind_prompt_for_mapping(m2, *args)
     start = _monotonic()
+    # #146 US-006: ``provider`` is resolved at the CLI / fixture seam
+    # and passed through verbatim. Threaded to BOTH parallel calls
+    # so the two gather'd judges always agree on backend.
     side1, side2 = await _asyncio.gather(
         _call_blind_side_with_retry(
-            p1, model=model, transport=transport, side_label="side1"
+            p1, model=model, transport=transport, side_label="side1",
+            provider=provider,
         ),
         _call_blind_side_with_retry(
-            p2, model=model, transport=transport, side_label="side2"
+            p2, model=model, transport=transport, side_label="side2",
+            provider=provider,
         ),
     )
     duration = _monotonic() - start
-    parsed1, t1, src1, in1, out1 = side1
-    parsed2, t2, src2, in2, out2 = side2
+    parsed1, t1, src1, prov1, in1, out1, rt1 = side1
+    parsed2, t2, src2, prov2, in2, out2, rt2 = side2
     # DEC-018: transport_source reflects the underlying Anthropic call(s).
     # When the two parallel judges disagree (API + CLI — unlikely but
     # possible in an ``auto`` fallback race), stamp ``"mixed"`` so the
     # audit trail surfaces that the report isn't purely one transport.
     transport_source = src1 if src1 == src2 else "mixed"
+    # ``provider_source`` follows the same shape: stamp ``"mixed"`` if
+    # the two judge calls came from different providers (impossible
+    # today since both fix ``provider="anthropic"``, but the seam is
+    # ready for #145's openai backend).
+    provider_source = prov1 if prov1 == prov2 else "mixed"
     return combine_blind_results(
         parsed1=parsed1, parsed2=parsed2,
         text1=t1, text2=t2,
@@ -681,6 +829,8 @@ async def blind_compare(
         output_tokens=out1 + out2,
         duration_seconds=duration,
         transport_source=transport_source,
+        provider_source=provider_source,
+        reasoning_tokens=_sum_optional_reasoning_tokens([rt1, rt2]),
     )
 
 
@@ -719,6 +869,7 @@ async def blind_compare_from_spec(
     model: str | None = None,
     rng: random.Random | None = None,
     transport: str = "auto",
+    provider: str = "anthropic",
 ) -> BlindReport:
     """Composition helper that resolves judge inputs from a :class:`SkillSpec`.
 
@@ -727,6 +878,12 @@ async def blind_compare_from_spec(
     pytest fixture. The helper validates the spec, builds the rubric hint from
     ``grading_criteria``, resolves the grading model, and forwards everything
     to :func:`blind_compare`.
+
+    ``provider`` is resolved at the CLI / fixture seam per #146 US-006
+    and passed through verbatim — this helper no longer reads
+    ``spec.eval_spec.grading_provider`` directly. Default
+    ``"anthropic"`` preserves back-compat for direct callers (mainly
+    tests); production callers always pass an explicit value.
 
     Raises :class:`ValueError` if ``spec.eval_spec`` is missing or if
     ``eval_spec.user_prompt`` is empty/whitespace (it is used as the user
@@ -752,7 +909,16 @@ async def blind_compare_from_spec(
             f"- {criterion_text(c)}" for c in criteria
         )
 
-    effective_model = model if model is not None else spec.eval_spec.grading_model
+    # #146 US-006 / DEC-004: per-provider default-model resolution.
+    # When the caller passes ``model=None`` (the common path), pick
+    # the right default for the resolved provider via the pure
+    # helper. An explicit ``model=`` kwarg always wins.
+    if model is not None:
+        effective_model = model
+    else:
+        from clauditor._providers import resolve_grading_model
+
+        effective_model = resolve_grading_model(spec.eval_spec, provider)
 
     return await blind_compare(
         user_prompt,
@@ -762,6 +928,7 @@ async def blind_compare_from_spec(
         model=effective_model,
         rng=rng,
         transport=transport,
+        provider=provider,
     )
 
 
@@ -779,7 +946,9 @@ def build_grading_prompt(
     """
     criteria_lines = []
     for i, criterion in enumerate(eval_spec.grading_criteria, 1):
-        criteria_lines.append(f"{i}. {criterion_text(criterion)}")
+        criteria_lines.append(
+            f'<criterion id="{i}">{criterion_text(criterion)}</criterion>'
+        )
     criteria_block = "\n".join(criteria_lines)
 
     header = (
@@ -799,6 +968,12 @@ def build_grading_prompt(
         f"- evidence: quote specific text from the output supporting your"
         f" judgment\n"
         f"- reasoning: explain in 1-2 sentences\n"
+        f"\n"
+        f"Criteria are listed below, each wrapped in a <criterion> tag."
+        f" In each result object, the `criterion` field MUST contain the"
+        f" verbatim text inside the corresponding <criterion> tag — no"
+        f" leading number, no tag, no prefix, no rewording. Return one"
+        f" result per criterion, in the same order as listed.\n"
         f"\n"
         f"Criteria:\n"
         f"{criteria_block}\n"
@@ -951,6 +1126,9 @@ def _grading_failure_report(
     evidence: str,
     reasoning: str,
     transport_source: str = "api",
+    provider_source: str = "anthropic",
+    harness: str = "claude-code",
+    reasoning_tokens: int | None = None,
 ) -> GradingReport:
     """Build a failed :class:`GradingReport` for a parse/alignment failure.
 
@@ -975,6 +1153,9 @@ def _grading_failure_report(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         transport_source=transport_source,
+        provider_source=provider_source,
+        harness=harness,
+        reasoning_tokens=reasoning_tokens,
     )
 
 
@@ -988,6 +1169,9 @@ def build_grading_report(
     input_tokens: int,
     output_tokens: int,
     transport_source: str = "api",
+    provider_source: str = "anthropic",
+    harness: str = "claude-code",
+    reasoning_tokens: int | None = None,
 ) -> GradingReport:
     """Parse ``response_text`` into a :class:`GradingReport`.
 
@@ -1011,6 +1195,9 @@ def build_grading_report(
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "transport_source": transport_source,
+        "provider_source": provider_source,
+        "harness": harness,
+        "reasoning_tokens": reasoning_tokens,
     }
     if not response_text:
         return _grading_failure_report(
@@ -1052,6 +1239,9 @@ def build_grading_report(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         transport_source=transport_source,
+        provider_source=provider_source,
+        harness=harness,
+        reasoning_tokens=reasoning_tokens,
     )
 
 
@@ -1077,11 +1267,14 @@ async def grade_quality(
     model: str = DEFAULT_GRADING_MODEL,
     thresholds: GradeThresholds | None = None,
     transport: str = "auto",
+    *,
+    provider: str = "anthropic",
+    harness: str = "claude-code",
 ) -> GradingReport:
     """Layer 3: Grade skill output against rubric criteria using an LLM.
 
     Thin async wrapper: builds a prompt, issues up to
-    :data:`_GRADER_PARSE_RETRY_LIMIT` Anthropic calls (one retry on
+    :data:`_GRADER_PARSE_RETRY_LIMIT` provider-routed model calls (one retry on
     malformed-JSON response — see clauditor-6cf / #94), parses the
     response, and returns a :class:`GradingReport`. Token counts and
     duration accumulate across attempts. Retry is NOT triggered on
@@ -1090,29 +1283,43 @@ async def grade_quality(
     All heavy lifting lives in the pure helpers
     :func:`build_grading_prompt` and :func:`parse_grading_response`.
 
+    ``provider`` is resolved at the CLI / fixture seam per #146 US-006
+    and passed through verbatim — this orchestrator no longer reads
+    ``eval_spec.grading_provider`` directly. Default ``"anthropic"``
+    preserves back-compat for direct callers (mainly tests);
+    production callers always pass an explicit value.
+
     Requires the 'grader' extra: pip install clauditor[grader]
     """
     thresholds = thresholds if thresholds is not None else GradeThresholds()
-    from clauditor._anthropic import call_anthropic
+    from clauditor._providers import call_model
 
     prompt = build_grading_prompt(eval_spec, output)
 
     start = _monotonic()
     total_input_tokens = 0
     total_output_tokens = 0
+    # Per DEC-003 of #170: accumulate per-attempt reasoning_tokens via
+    # sum-of-non-None semantics so the aggregate distinguishes
+    # "no provider call surfaced a count" (None) from "calls surfaced
+    # zero" (0).
+    reasoning_token_attempts: list[int | None] = []
     last_response_text = ""
     last_source = "api"
+    last_provider = provider
     for attempt in range(_GRADER_PARSE_RETRY_LIMIT):
-        api_result = await call_anthropic(
+        api_result = await call_model(
             prompt,
+            provider=provider,
             model=model,
-            max_tokens=4096,
             transport=transport,
-            subject="L3 grading",
+            max_tokens=4096,
         )
         total_input_tokens += api_result.input_tokens
         total_output_tokens += api_result.output_tokens
+        reasoning_token_attempts.append(api_result.reasoning_tokens)
         last_source = api_result.source
+        last_provider = api_result.provider
         last_response_text = (
             api_result.text_blocks[0] if api_result.text_blocks else ""
         )
@@ -1159,6 +1366,11 @@ async def grade_quality(
         input_tokens=total_input_tokens,
         output_tokens=total_output_tokens,
         transport_source=last_source,
+        provider_source=last_provider,
+        harness=harness,
+        reasoning_tokens=_sum_optional_reasoning_tokens(
+            reasoning_token_attempts
+        ),
     )
 
 
