@@ -1121,8 +1121,8 @@ class TestBuildGradingPrompt:
         spec = _make_spec()
         prompt = build_grading_prompt(spec)
         assert "monotonically aligned with `passed`" in prompt
-        assert "score >= 0.5 implies passed=true" in prompt
-        assert "score < 0.5 implies passed=false" in prompt
+        assert 'score >= 0.5 implies "passed": true' in prompt
+        assert 'score < 0.5 implies "passed": false' in prompt
 
     def test_prompt_language_would_have_prevented_gpt5_shape(self):
         """Issue #186 acceptance bullet 5: the new prompt language

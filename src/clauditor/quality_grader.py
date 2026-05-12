@@ -968,8 +968,8 @@ def build_grading_prompt(
         f' "the output completely fails this criterion" and 1.0 means'
         f' "the output completely satisfies this criterion". This MUST'
         f" be monotonically aligned with `passed`: any score >= 0.5"
-        f" implies passed=true, and any score < 0.5 implies"
-        f" passed=false.\n"
+        f' implies "passed": true, and any score < 0.5 implies'
+        f' "passed": false.\n'
         f"- evidence: quote specific text from the output supporting your"
         f" judgment\n"
         f"- reasoning: explain in 1-2 sentences\n"
