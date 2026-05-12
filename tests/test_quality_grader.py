@@ -1066,12 +1066,18 @@ class TestBuildGradingPrompt:
 
     def test_instructs_verbatim_echo_without_prefix(self):
         """Issue #183: the prompt must tell the model not to echo any
-        leading number or tag prefix into the ``criterion`` field.
+        leading number, tag, prefix, or rewording into the ``criterion``
+        field. The full prohibition set is pinned so a future prompt
+        edit that drops any clause trips this test (CodeRabbit nit on
+        PR #184).
         """
         spec = _make_spec()
         prompt = build_grading_prompt(spec)
         assert "verbatim text inside the corresponding <criterion>" in prompt
         assert "no leading number" in prompt
+        assert "no tag" in prompt
+        assert "no prefix" in prompt
+        assert "no rewording" in prompt
 
     def test_asks_for_json_response(self):
         spec = _make_spec()
