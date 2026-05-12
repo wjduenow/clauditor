@@ -303,7 +303,7 @@ The 80% coverage gate is enforced.
 **Traces to:** DEC-001, DEC-002, DEC-007, DEC-008, plus the security CONCERN around `sandbox_mode` validation (closed-set `{"read-only", "workspace-write", "danger-full-access"}`).
 
 **Acceptance criteria:**
-- New file `src/clauditor/context.py` exports `IterationContext` dataclass with fields: `schema_version: int = 1`, `harness: str`, `provider: str | None`, `model_runner: str`, `model_grader: str | None`, `system_prompt_source: str`, `sandbox_mode: str | None`, `reasoning_tokens: int | None = None`, `cost_usd: float | None = None`.
+- New file `src/clauditor/context.py` exports `IterationContext` dataclass with fields: `schema_version: int = 1`, `harness: str`, `provider: str | None`, `model_runner: str | None`, `model_grader: str | None`, `system_prompt_source: str`, `sandbox_mode: str | None`, `reasoning_tokens: int | None = None`, `cost_usd: float | None = None`. (Per DEC-007: `model_runner` is nullable so harnesses without a model field — e.g. `claude-code` stream-json — can record `None` rather than fabricating a default.)
 - `to_json()` emits `schema_version` as the first key per `.claude/rules/json-schema-version.md`; round-trips losslessly.
 - `from_dict(data)` hard-rejects: `harness` not in `{"claude-code", "codex"}`; `provider` not in `{"anthropic", "openai", None}`; `system_prompt_source` not in `{"explicit", "agents_md", "skill_md"}`; `sandbox_mode` not in `{"read-only", "workspace-write", "danger-full-access", None}` per the security review.
 - Bool-guard on `reasoning_tokens` (must be `int`, not `bool`) per `.claude/rules/constant-with-type-info.md`.

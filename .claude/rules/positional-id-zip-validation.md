@@ -91,7 +91,7 @@ for i, criterion in enumerate(criteria, 1):
     lines.append(f"{i}. {criterion_text(criterion)}")
 ```
 
-Anthropic Claude models tend to strip the leading `N. ` when echoing
+Anthropic Claude models tend to strip the leading `N.` prefix when echoing
 the item into a structured response field; OpenAI gpt-5.4 (and
 likely gpt-5.4-mini) preserves it verbatim. The result: every
 positional-zip text match fails with

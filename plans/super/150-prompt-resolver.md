@@ -177,7 +177,7 @@ These rules apply to #150's design. Each will become a validation criterion at t
 | Security | **pass** | Inputs are trusted developer files (SKILL.md, eval.json). No new traversal surface. Existing `SKILL_NAME_RE` guard at `paths.py` is defense-in-depth. Optional: length cap on `system_prompt` to prevent accidental memory bloat. |
 | Performance | **pass** | Measured: ~0.013 ms read+parse for a 6.5 KB SKILL.md. Per-run overhead ~0.001% relative to subprocess startup. Variance worst case (5 sequential runs) totals ~0.065 ms. DEC-002 (re-read per run) is fine. |
 | API + Data Model | **concern** | (1) `build_prompt` should be keyword-only on `system_prompt` to match the codebase style for optional kwargs. (2) `MockHarness` already exists at `_harnesses/_mock.py` and **must** gain `build_prompt` — otherwise it stops satisfying the runtime-checkable protocol. (3) Kwarg order in `runner.run` for `system_prompt` is up for review. (4) Whether `SkillResult` should record the resolved `system_prompt` for audit/replay is open. (5) `EvalSpec` has no `schema_version`; sidecars do not embed `EvalSpec`. No version bumps. |
-| Observability | **concern** | (1) When `SkillSpec.run` auto-derives, missing/unreadable `SKILL.md` raises an unwrapped `FileNotFoundError`/`ValueError`; should be wrapped with a friendly stderr message. (2) Should we emit a one-line stderr "system_prompt source = explicit-eval-spec | auto-derived-from-body | not-set" tag (label only, not content)? Useful for cross-harness debugging once #149 lands. |
+| Observability | **concern** | (1) When `SkillSpec.run` auto-derives, missing/unreadable `SKILL.md` raises an unwrapped `FileNotFoundError`/`ValueError`; should be wrapped with a friendly stderr message. (2) Should we emit a one-line stderr "system_prompt source = explicit-eval-spec \| auto-derived-from-body \| not-set" tag (label only, not content)? Useful for cross-harness debugging once #149 lands. |
 | Testing | **pass** | Mature infrastructure exists: `test_schemas.py:1418–1756` has the `user_prompt` validation suite that we mirror; `tmp_skill_file` fixture in `conftest.py:432–485` writes modern-layout `.claude/skills/<n>/SKILL.md`; `MockHarness` at `_harnesses/_mock.py` is the harness fake. `TestHarnessProtocol` (`test_runner.py:165–226`) is a structural-conformance drift-guard we'll need to update for `build_prompt`. ~100 LoC of new tests across 4 files. Coverage gate (`--cov-fail-under=80`) will pass. |
 
 ### Key concerns (carry into refinement)
@@ -391,7 +391,7 @@ If no new patterns emerge, this story explicitly records "no new rules" and veri
 
 ### Story dependency graph
 
-```
+```text
 US-001 ─┬─> US-003 ──┐
 US-002 ─┴─> US-004 ──┴─> US-005 ──> US-006 ──> US-007
 ```

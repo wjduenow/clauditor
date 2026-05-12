@@ -1125,12 +1125,12 @@ canonical-implementations section update per the rule's discipline.
 
 ---
 
-## Detailed Breakdown
+## Detailed Breakdown (deferred)
 
 *(Pending — Phase 4.)*
 
 ---
 
-## Beads Manifest
+## Beads Manifest (deferred)
 
 *(Pending — Phase 7.)*

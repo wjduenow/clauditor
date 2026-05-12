@@ -150,7 +150,7 @@ The mechanical update applies to: `monkeypatch.setattr`,
 adjacent helpers — anything that sets an attribute on a module by
 string path. Grep before merging the extraction:
 
-```
+```bash
 rg '"X\.[a-z_]+"|"X\."' tests/
 ```
 

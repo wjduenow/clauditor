@@ -2,9 +2,11 @@
 
 When an LLM-mediated CLI command supports more than one model
 provider (today: `"anthropic"` and `"openai"`; future: `"vertex"`,
-`"bedrock"`, …), resolve the active provider from
-`eval_spec.grading_provider` (defaulting to `"anthropic"` when
-unset) and route the pre-call auth guard through the centralized
+`"bedrock"`, …), resolve the active provider via the four-layer
+resolver `clauditor.cli._resolve_grading_provider(args, eval_spec)`
+(CLI flag > `CLAUDITOR_GRADING_PROVIDER` env >
+`EvalSpec.grading_provider` > default `"auto"`) and route the
+pre-call auth guard through the centralized
 `check_provider_auth(provider, cmd_name)` dispatcher in
 `clauditor._providers._auth`. The dispatcher delegates to the
 per-provider helper (`check_any_auth_available` for Anthropic,
@@ -16,6 +18,13 @@ provider is one new branch in the dispatcher and one new
 auth-missing exception class; no CLI command needs to learn about
 it.
 
+The legacy `eval_spec.grading_provider or "anthropic"` falsy-`None`
+short-circuit was retired in #182 / DEC-001b — `grading_provider`
+now defaults to `"auto"`, and the resolver handles auto-inference
+from the resolved model plus the subscription-first fallback to
+anthropic when no model is available. Do NOT reintroduce the
+short-circuit; always go through the resolver helper.
+
 ## The pattern
 
 ### Layer 1 — spec field carries the provider selection
@@ -25,22 +34,28 @@ it.
 @dataclass
 class EvalSpec:
     # ... other fields ...
-    # ``None`` (default) preserves pre-#145 behavior: caller treats
-    # ``None`` as ``"anthropic"``. When set, must be one of
-    # ``"anthropic"`` / ``"openai"``. Validated at load time.
-    grading_provider: str | None = None
+    # Default ``"auto"`` (post-#182 / DEC-001b). Resolution flows
+    # through ``resolve_grading_provider``, which delegates to
+    # ``infer_provider_from_model`` when the winning value is
+    # ``"auto"`` (and falls back to ``"anthropic"`` when no model is
+    # available — preserves byte-identical pre-#146 behavior).
+    # Explicit ``null`` in JSON still loads as ``None`` so legacy
+    # #145-vintage round-trips stay readable; the resolver treats
+    # ``None`` the same as the default.
+    grading_provider: Literal["anthropic", "openai", "auto"] | None = "auto"
 ```
 
 ### Layer 2 — CLI seam resolves provider, dispatches auth guard
 
-Five LLM-mediated commands share the same shape (grade, extract,
-triggers, compare --blind, propose-eval). Each resolves the
-provider from `eval_spec.grading_provider`, falls back to
-`"anthropic"`, and runs `check_provider_auth(provider, cmd_name)`
-with two distinct `except` branches:
+Six LLM-mediated commands share the same shape (grade, extract,
+triggers, compare --blind, propose-eval, suggest). Each routes
+through the four-layer `_resolve_grading_provider` helper and runs
+`check_provider_auth(provider, cmd_name)` with two distinct
+`except` branches:
 
 ```python
-# cli/grade.py (and extract, triggers, compare, propose_eval).
+# cli/grade.py (and extract, triggers, compare, propose_eval, suggest).
+from clauditor.cli import _resolve_grading_provider
 from clauditor._providers import (
     AnthropicAuthMissingError,
     OpenAIAuthMissingError,
@@ -50,12 +65,10 @@ from clauditor._providers import (
 def cmd_grade(args) -> int:
     # ... arg validation, spec load, dry-run early-return ...
 
-    provider = (
-        spec.eval_spec.grading_provider
-        if spec.eval_spec is not None
-        and spec.eval_spec.grading_provider is not None
-        else "anthropic"
-    )
+    # Four-layer resolver (CLI flag > env > spec > default "auto").
+    # Returns a concrete ``"anthropic"`` or ``"openai"`` — never
+    # ``"auto"`` (the resolver inflates auto via inference).
+    provider = _resolve_grading_provider(args, spec.eval_spec)
     try:
         check_provider_auth(provider, "grade")
     except AnthropicAuthMissingError as exc:

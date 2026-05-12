@@ -261,44 +261,6 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
     # #146 US-006.
     from clauditor.cli import _resolve_grading_provider
 
-    # Provider-aware default-model pick (QG pass 2 of #146): peek at
-    # the explicit provider signals (CLI flag, env) BEFORE running the
-    # resolver, so the no-args case (no --grading-provider, no --model)
-    # gets an Anthropic-default model that lets the resolver auto-infer
-    # provider="anthropic". This matches the propose-eval pattern. If
-    # the operator passed --grading-provider openai without --model,
-    # we pre-stamp the OpenAI default so the resolver routes correctly
-    # and the orchestrator gets a coherent (provider, model) pair.
-    #
-    # Explicit ``"auto"`` (CodeRabbit finding on PR #164) is treated as
-    # "no explicit provider" so the resolver's auto-inference path runs
-    # against the (still-unset) model — surfacing a precise
-    # "provide grading_provider or grading_model" error instead of
-    # silently routing to Anthropic. Only ``"anthropic"`` / ``"openai"``
-    # pre-stamp a default model.
-    if args.model is None:
-        import os as _os
-        explicit_provider: str | None = getattr(
-            args, "grading_provider", None
-        )
-        if explicit_provider is None:
-            env_value = _os.environ.get("CLAUDITOR_GRADING_PROVIDER")
-            if env_value is not None and env_value.strip() != "":
-                explicit_provider = env_value.strip()
-        if explicit_provider == "openai":
-            from clauditor._providers._openai import DEFAULT_MODEL_L3
-            args.model = DEFAULT_MODEL_L3
-        elif explicit_provider == "anthropic":
-            args.model = "claude-sonnet-4-6"
-        elif explicit_provider is None:
-            # No explicit provider signal anywhere — preserve the
-            # pre-#146 no-args default so the auto-inference path
-            # picks anthropic from the model prefix.
-            args.model = "claude-sonnet-4-6"
-        # else: explicit_provider == "auto" — leave args.model as None
-        # so _resolve_grading_provider raises "provide grading_provider
-        # or grading_model" (CLI maps to exit 2).
-
     provider = _resolve_grading_provider(args, skill_spec.eval_spec)
     try:
         check_provider_auth(provider, "suggest")
@@ -308,6 +270,17 @@ async def _cmd_suggest_impl(args: argparse.Namespace) -> int:
     except OpenAIAuthMissingError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+    # Resolve the effective model post-#182 (DEC-001b/DEC-004b): if the
+    # operator didn't pass ``--model``, pick the per-provider default
+    # via ``resolve_grading_model``. With the new resolver semantics,
+    # ``--grading-provider auto`` with no model resolves provider to
+    # ``"anthropic"`` (subscription-first historical default), then
+    # this picks ``"claude-sonnet-4-6"`` — eliminating the
+    # ``model=None`` foot-gun Copilot flagged on PR #185.
+    if args.model is None:
+        from clauditor._providers import resolve_grading_model
+        args.model = resolve_grading_model(skill_spec.eval_spec, provider)
 
     if args.verbose:
         print(

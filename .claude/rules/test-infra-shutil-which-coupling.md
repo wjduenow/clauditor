@@ -108,7 +108,7 @@ def test_auto_resolves_codex_when_claude_absent(monkeypatch):
 combines the original `monkeypatch.setattr(_anthropic.shutil, "which",
 ...)` pin (from #86) with the parallel
 `monkeypatch.setenv("CLAUDITOR_HARNESS", "claude-code")` pin (from
-#151 US-005). The harness resolver is
+issue `#151` US-005). The harness resolver is
 `src/clauditor/_providers/__init__.py::resolve_harness` (4-layer
 precedence: CLI > env > spec > PATH-auto). The env-var pin
 short-circuits at layer 2, so the `shutil.which("claude")` lookup at

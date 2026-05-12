@@ -238,7 +238,7 @@ Two protocol-design blockers (B1: `harness_metadata` field, B2: `allow_hang_heur
 
 Story ordering follows architecture-layer-first: protocol skeleton → pure helpers → auth utility → main migration → test helpers/deprecation tests → rule refresh → quality gate → patterns & memory. Every story leaves the test suite green at the end. Validation command for every story:
 
-```
+```bash
 ruff check src/ tests/ && ruff format --check src/ tests/ && pytest tests/
 ```
 

@@ -142,16 +142,24 @@ def check_provider_auth(provider: str, cmd_name: str) -> None:
 Every LLM-mediated command follows the same shape. Guard lands
 after the `--dry-run` early-return (dry-run is a cost-free preview
 — no API call, no key needed) and before any `call_model` /
-orchestrator invocation. Multi-provider commands resolve
-`provider = eval_spec.grading_provider or "anthropic"` and route
-through `check_provider_auth(provider, cmd_name)` with **distinct
+orchestrator invocation. Multi-provider commands resolve the
+provider via the four-layer
+`clauditor.cli._resolve_grading_provider(args, eval_spec)` helper
+(CLI flag > `CLAUDITOR_GRADING_PROVIDER` env >
+`EvalSpec.grading_provider` > default `"auto"`) and route through
+`check_provider_auth(provider, cmd_name)` with **distinct
 `except` branches per provider** so each auth-missing class maps
 to its own exit-2 routing (see
-`.claude/rules/multi-provider-dispatch.md`):
+`.claude/rules/multi-provider-dispatch.md`). The legacy
+`eval_spec.grading_provider or "anthropic"` falsy-`None`
+short-circuit was retired in #182 / DEC-001b — the resolver
+handles inference and the subscription-first fallback to anthropic
+when no model is available:
 
 ```python
 # src/clauditor/cli/grade.py (and extract, triggers, compare --blind,
 # propose-eval — the five provider-aware seams today).
+from clauditor.cli import _resolve_grading_provider
 from clauditor._providers import (
     AnthropicAuthMissingError,
     OpenAIAuthMissingError,
@@ -170,12 +178,7 @@ def cmd_grade(args) -> int:
     # staging dir behind when the guard fires, and we do not hit the
     # SDK with a missing key (which raises a raw TypeError /
     # OpenAIError from deep in client init).
-    provider = (
-        spec.eval_spec.grading_provider
-        if spec.eval_spec is not None
-        and spec.eval_spec.grading_provider is not None
-        else "anthropic"
-    )
+    provider = _resolve_grading_provider(args, spec.eval_spec)
     try:
         check_provider_auth(provider, "grade")
     except AnthropicAuthMissingError as exc:

@@ -595,7 +595,7 @@ Stories are ordered to keep `_anthropic.py` working as a re-export shim througho
 
 ### Story dependency graph
 
-```
+```text
 US-001 (auth move)
   └── US-002 (SDK seam move + ModelResult rename)
         └── US-003 (call_model dispatcher)

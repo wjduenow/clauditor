@@ -262,14 +262,18 @@ async def test_triggers(
 
     Classifies all should_trigger and should_not_trigger queries in
     parallel via asyncio.gather, then returns a TriggerReport with
-    precision, recall, and accuracy metrics. The Anthropic SDK is
-    accessed through :func:`clauditor._anthropic.call_anthropic` inside
-    :func:`classify_query`; retry / error handling lives in the helper.
+    precision, recall, and accuracy metrics. Each per-query call routes
+    through :func:`clauditor._providers.call_model` (the multi-provider
+    dispatcher) inside :func:`classify_query`; retry / error handling
+    lives in the per-provider backend (``call_anthropic`` /
+    ``call_openai``).
 
     ``provider`` is resolved at the CLI / fixture seam per #146 US-006
-    and threaded into every per-query :func:`classify_query` call.
-    Default ``"anthropic"`` preserves back-compat for direct callers
-    (mainly tests); production callers always pass an explicit value.
+    (and #182 / DEC-001b — the four-layer resolver handles the auto
+    default + subscription-first anthropic fallback) and threaded into
+    every per-query :func:`classify_query` call. Default ``"anthropic"``
+    preserves back-compat for direct callers (mainly tests); production
+    callers always pass an explicit value.
     """
     if eval_spec.trigger_tests is None:
         return TriggerReport(

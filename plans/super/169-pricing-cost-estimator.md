@@ -134,7 +134,7 @@ helper.
 
 #### `_providers/` package layout (where `_pricing.py` lands)
 
-```
+```text
 src/clauditor/_providers/
 ├── __init__.py    (call_model dispatcher, resolve_harness, resolve_grading_provider, ...)
 ├── _anthropic.py  (call_anthropic, AnthropicHelperError, ...)

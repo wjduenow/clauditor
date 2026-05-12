@@ -373,9 +373,16 @@ is no analogous `clauditor._openai.py` — the OpenAI surface is
 new and ships in `_providers` from day one.
 
 Call sites (six consumers — paths unchanged from #144; the
-provider parameter resolves from
-`eval_spec.grading_provider or "anthropic"` per
-`.claude/rules/multi-provider-dispatch.md`):
+provider parameter resolves through the four-layer resolver
+`clauditor.cli._resolve_grading_provider(args, eval_spec)` →
+`clauditor._providers.resolve_grading_provider(cli, env, spec,
+model)` (CLI flag > `CLAUDITOR_GRADING_PROVIDER` env >
+`EvalSpec.grading_provider` > default `"auto"`) per
+`.claude/rules/multi-provider-dispatch.md` and `.claude/rules/spec-cli-precedence.md`.
+The legacy `eval_spec.grading_provider or "anthropic"` short-circuit
+was retired in #182 / DEC-001b — `grading_provider` now defaults to
+`"auto"` and the resolver handles inference + the subscription-first
+fallback to anthropic when no model is available:
 
 - `src/clauditor/grader.py` — `extract_and_grade`,
   `extract_and_report` (Layer 2 schema extraction).

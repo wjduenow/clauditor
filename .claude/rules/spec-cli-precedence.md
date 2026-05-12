@@ -396,9 +396,9 @@ command exposes a `--model` flag) wins over `eval_spec.grading_model`
 so an operator passing `--model gpt-5.4 --grading-provider auto`
 gets OpenAI even when the spec author wrote `claude-sonnet-4-6`.
 
-**Companion knob — `grading_model` (nullable migration).** #146
-also promoted `EvalSpec.grading_model` from `str` to `str | None`
-(DEC-004a, partial — see "Deferred default-flip" below). The
+**Companion knob — `grading_model` (nullable, post-#182).** #146
+promoted `EvalSpec.grading_model` from `str` to `str | None`, and
+#182 / DEC-004b flipped the dataclass default to `None`. The
 provider-aware default-picker
 `clauditor._providers.resolve_grading_model(eval_spec, provider)`
 returns `eval_spec.grading_model` when non-`None`, else the
@@ -409,44 +409,39 @@ orchestrator calls `resolve_grading_model(...)` rather than reading
 `eval_spec.grading_model` directly so the right per-provider
 default fires.
 
-**Deferred default-flip — DEC-001a / DEC-004a partial migration.**
-The plan called for flipping the dataclass defaults — `grading_provider`
-to `"auto"` and `grading_model` to `None` — in lockstep with the
-field-shape changes. Mid-implementation it surfaced that doing so
-would have broken downstream tests because six CLI files and
-several orchestrators still resolve provider via the falsy-`None`
-short-circuit pattern `eval_spec.grading_provider or "anthropic"`
-that pre-dates #146. With `"auto"` being truthy (and `None` no
-longer the sentinel), the short-circuit fails and
-`check_provider_auth("auto", ...)` raises because the auth
-dispatcher only knows `anthropic`/`openai`.
+**Default flip completed — DEC-001b / DEC-004b (#182).** #146 split
+the dataclass-default flip into two stories because doing it in
+lockstep with the field-shape changes would have broken six CLI
+files and several orchestrators that resolved provider via the
+falsy-`None` short-circuit `eval_spec.grading_provider or
+"anthropic"`. The deferred work landed in #182:
 
-Per `.claude/rules/plan-contradiction-stop.md`, the worker
-surfaced the gap and split each DEC into two parts:
+- **DEC-001b (shipped in #182)** — flip default
+  `grading_provider: None → "auto"`. The shipped behavior is
+  fully consistent: every CLI seam now routes through the
+  four-layer `_resolve_grading_provider` helper, and
+  `infer_provider_from_model(None)` falls back to `"anthropic"`
+  (subscription-first historical default) so pre-#146 specs that
+  omit both `grading_provider` and `grading_model` grade against
+  anthropic with byte-identical output to today. `to_dict` omits
+  the field when it equals `"auto"` (or `None` from legacy
+  specs), matching the `transport` / `harness` pattern.
+- **DEC-004b (shipped in #182)** — flip default
+  `grading_model: "claude-sonnet-4-6" → None`. The
+  `_validate_provider_model` runtime guard was already removed in
+  #146; the per-flight CLI coherence check in grade.py / extract.py
+  / compare.py was retired in #182 because the motivating
+  regression (Claude default sent to OpenAI backend) is
+  structurally gone once the default is `None`. An
+  explicit-but-mismatching spec value still surfaces as a clean
+  SDK 400 with the right blame. `to_dict` omits the field when
+  it equals `None`.
 
-- **DEC-001a (this story)** — accept `"auto"` as a literal value
-  alongside `anthropic`/`openai`; keep dataclass default
-  `grading_provider: str | None = None`. `to_dict` still emits
-  conditionally so #145 round-trip stays byte-identical. Runtime
-  semantics unchanged from #145.
-- **DEC-001b (deferred)** — flip default `None` → `"auto"` once a
-  follow-up sweep eliminates every falsy-`None` short-circuit
-  call site.
-- **DEC-004a (this story)** — promote `grading_model` field type
-  from `str` to `str | None`; accept explicit JSON `null` in
-  `from_dict` (previously coerced to the default); keep dataclass
-  default `"claude-sonnet-4-6"` AND the `_validate_provider_model`
-  runtime guard. Runtime semantics for unset / set specs are
-  byte-identical to #145; the new capability is "explicit `null`
-  no longer silently coerced."
-- **DEC-004b (deferred)** — flip default to `None` and retire the
-  `_validate_provider_model` guard once the sweep above completes.
-
-Net effect on this rule: the precedence machinery, the auto-
-inference layer, and `resolve_grading_model`'s provider-aware
-default-picker are all live in production. The dataclass defaults
-will flip in a follow-up ticket once the falsy-short-circuit call
-sites are migrated.
+Companion code: do NOT reintroduce the legacy
+`eval_spec.grading_provider or "anthropic"` short-circuit; always
+go through `_resolve_grading_provider`. The pure resolver +
+auto-inference + per-provider default-picker stack is the only
+sanctioned path.
 
 Canonical implementation paths:
 
@@ -461,8 +456,10 @@ Canonical implementation paths:
   land): `clauditor.pytest_plugin._dispatch_fixture_auth_guard` +
   `_resolve_fixture_provider`.
 
-Traces to DEC-001a, DEC-003, DEC-004a, DEC-005, DEC-006, DEC-007,
-DEC-008 of `plans/super/146-grading-provider-precedence.md`.
+Traces to DEC-001a/b, DEC-003, DEC-004a/b, DEC-005, DEC-006,
+DEC-007, DEC-008 of
+`plans/super/146-grading-provider-precedence.md` plus the
+default-flip closeout in issue #182.
 Companion rules: `.claude/rules/multi-provider-dispatch.md` (the
 `check_provider_auth` dispatcher this resolver feeds),
 `.claude/rules/centralized-sdk-call.md` (the `call_model(provider=...)`
@@ -471,7 +468,7 @@ seam this resolver targets),
 auth-missing-exception shape that fires after this resolver
 picks the provider),
 `.claude/rules/plan-contradiction-stop.md` (the deferred-default-
-flip migration discipline).
+flip migration discipline that drove the #146 → #182 split).
 
 ### Four-layer precedence — harness (#151)
 

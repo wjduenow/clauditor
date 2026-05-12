@@ -671,7 +671,8 @@ DEC-009 (no shim), DEC-012 (docs landing site).
 - The asymmetry note explains why `_ALLOW_OPENAI=1` does not
   exist (no relaxed mode for OpenAI auth).
 - `CHANGELOG.md` documents:
-  ```
+
+  ```markdown
   - `clauditor_runner` is now a factory fixture. Migration:
     `runner = clauditor_runner` → `runner = clauditor_runner()`.
   ```
