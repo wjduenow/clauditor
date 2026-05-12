@@ -100,9 +100,10 @@ def cmd_extract(args: argparse.Namespace) -> int:
     # ``--model`` and the spec didn't set ``grading_model``, the model
     # falls through to ``resolve_grading_model(spec.eval_spec,
     # provider)`` once we've resolved the provider below. For the
-    # ``--dry-run`` preview we use the spec's value (or the legacy
-    # extract default) — the dry-run preview does not consult the
-    # provider yet because the auth guard hasn't fired.
+    # ``--dry-run`` preview we surface whatever pinning exists; an
+    # unresolved value renders as ``<auto, resolved from provider>``
+    # because the dry-run preview does not consult the provider yet
+    # (the auth guard hasn't fired).
     model = args.model or spec.eval_spec.grading_model
 
     # --dry-run: print prompt and exit

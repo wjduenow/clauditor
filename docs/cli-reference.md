@@ -413,7 +413,7 @@ Run a skill via `claude -p` and print its output to stdout. The thinnest of the 
 
 ### `extract`
 
-Run Layer 2 schema extraction. Sends the skill output to a small LLM (default Haiku) along with the `sections` schema declared in `eval.json`, then validates the extracted JSON against per-tier field requirements. Produces the `extraction.json` sidecar.
+Run Layer 2 schema extraction. Sends the skill output to an LLM (resolved via `EvalSpec.grading_model` / `resolve_grading_model(...)` — defaults to `claude-sonnet-4-6` for the anthropic provider, `gpt-5.4` for openai) along with the `sections` schema declared in `eval.json`, then validates the extracted JSON against per-tier field requirements. Produces the `extraction.json` sidecar.
 
 | Flag | Purpose |
 | ---- | ------- |

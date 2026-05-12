@@ -392,8 +392,6 @@ async def _cmd_propose_eval_impl(args: argparse.Namespace) -> int:
             # here to keep ``propose_eval(model=...)`` non-``None``.
             args.model = DEFAULT_PROPOSE_EVAL_MODEL
     model = args.model
-    if args.verbose:
-        print(f"[propose-eval] model: {model}", file=sys.stderr)
 
     # Build the prompt in the CLI layer so we can (a) honor --dry-run
     # without spending an API call (plan line 520-521) and (b) route

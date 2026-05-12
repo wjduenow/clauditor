@@ -385,7 +385,11 @@ falls through to the default `"auto"`):
   error at resolve time rather than silently routing the wrong
   provider's SDK and surfacing as an opaque 400.
 - `model is None` AND every precedence layer is `"auto"` →
-  `ValueError` ("provide grading_provider or grading_model").
+  falls back to `"anthropic"` (subscription-first historical
+  default per issue #182 / DEC-001b). Pre-#146 specs that omit
+  both `grading_provider` and `grading_model` resolve cleanly
+  to anthropic instead of raising the hostile
+  "provide grading_provider or grading_model" error.
 
 The auto-inference layer lives in
 `clauditor._providers.infer_provider_from_model` and is invoked by

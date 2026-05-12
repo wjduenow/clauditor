@@ -128,11 +128,11 @@ The two transports have intentional observability gaps that callers should know 
 
 ## Skill-runner harness axis (#149 Codex)
 
-The `--transport` axis above governs clauditor's own LLM-mediated calls (grade, extract, …). A separate axis — the **skill-runner harness** — picks which CLI runs the *skill itself* under `SkillRunner.run`. Today the default is `ClaudeCodeHarness` (subprocess to `claude`); #149 adds `CodexHarness` (subprocess to `codex exec --json`). The harness axis is independent: a future `EvalSpec.harness` flag (#151) will let an eval declare it runs under Codex while the grader still uses Claude.
+The `--transport` axis above governs clauditor's own LLM-mediated calls (grade, extract, …). A separate axis — the **skill-runner harness** — picks which CLI runs the *skill itself* under `SkillRunner.run`. Today the default is `ClaudeCodeHarness` (subprocess to `claude`); #149 added `CodexHarness` (subprocess to `codex exec --json`); #151 wired the four-layer `--harness {claude-code,codex,auto}` precedence (CLI flag > `CLAUDITOR_HARNESS` env > `EvalSpec.harness` > `auto`). The harness axis is independent of the grader transport: an eval can declare it runs under Codex while the grader still uses Claude.
 
 | Axis | Selects | Today | Knob |
 | --- | --- | --- | --- |
 | Grader transport (this doc) | API path for `call_anthropic` | `auto` (CLI when `claude` on PATH) | `--transport`, `CLAUDITOR_TRANSPORT`, `EvalSpec.transport` |
-| Skill-runner harness | `SkillRunner.harness` instance | `ClaudeCodeHarness()` | `SkillRunner(harness=...)` (CLI flag deferred to #151) |
+| Skill-runner harness | `SkillRunner.harness` instance | `auto` (resolves to `ClaudeCodeHarness` when `claude` is on PATH, else `CodexHarness`) | `--harness` on `validate`/`grade`/`capture`/`run`, `CLAUDITOR_HARNESS` env, `EvalSpec.harness` (#151) |
 
 Codex parses NDJSON differently from Claude — see [Codex stream-JSON schema](codex-stream-schema.md) for the event-type matrix, failure surface, auth precedence, `harness_metadata` keys, and operational gotchas. `CodexHarness` lives in `src/clauditor/_harnesses/_codex.py` (private; not exported from `_harnesses/__init__.py`) and is constructed by passing `SkillRunner(harness=CodexHarness(...))`.

@@ -310,19 +310,26 @@ message. It is part of the cross-harness `Harness.build_prompt`
 contract introduced in #150 so a single `EvalSpec` shape feeds every
 harness identically.
 
-**Two-level precedence.** clauditor resolves the effective
+**Three-level precedence.** clauditor resolves the effective
 `system_prompt` once per run:
 
 1. **Explicit `EvalSpec.system_prompt`** (set in `eval.json`) wins.
-2. **Auto-derived `SKILL.md` body** — when the field is `null` or
-   omitted, clauditor reads the skill file referenced by `SkillSpec`,
-   strips the YAML frontmatter via `parse_frontmatter`, and uses the
-   remaining body as the system prompt.
+2. **Auto-derived `AGENTS.md`** — when the field is `null` or
+   omitted, `SkillSpec.run` consults `resolve_agents_md(skill_dir,
+   project_root)` (per #154 DEC-009; sibling-then-project-root,
+   strict containment per
+   `.claude/rules/path-validation.md`). If a readable `AGENTS.md`
+   is found, its contents become the system prompt.
+3. **Auto-derived `SKILL.md` body** — falls through when no
+   `AGENTS.md` is available. clauditor reads the skill file
+   referenced by `SkillSpec`, strips the YAML frontmatter via
+   `parse_frontmatter`, and uses the remaining body as the system
+   prompt.
 
-There is no third fallback. The empty-string body case threads through
-verbatim — a `SKILL.md` with frontmatter but no body resolves to `""`,
-not `None`, so a misconfigured skill surfaces clearly downstream
-rather than silently masking a missing prompt.
+There is no fourth fallback. The empty-string body case threads
+through verbatim — a `SKILL.md` with frontmatter but no body
+resolves to `""`, not `None`, so a misconfigured skill surfaces
+clearly downstream rather than silently masking a missing prompt.
 
 **Validation rules.** When set, `system_prompt` must be a non-empty,
 non-whitespace string. The loader raises `ValueError` at
