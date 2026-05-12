@@ -1043,12 +1043,35 @@ class TestBuildGradingPrompt:
         assert "professional and clear" in prompt
         assert "requested topics are covered" in prompt
 
-    def test_criteria_are_numbered(self):
+    def test_criteria_are_wrapped_in_tags(self):
+        """Criteria are rendered as ``<criterion id="N">text</criterion>``
+        (NOT a leading-``N.`` numbered list). gpt-5.4 echoed the ``"N. "``
+        prefix into the ``criterion`` field of each result object, which
+        broke the strict positional-zip parser per
+        ``.claude/rules/positional-id-zip-validation.md``. The tag wrapper
+        plus the explicit verbatim instruction below removes the prefix
+        the model would otherwise reproduce. See issue #183.
+        """
         spec = _make_spec()
         prompt = build_grading_prompt(spec)
-        assert "1. Output contains actionable" in prompt
-        assert "2. Tone is professional" in prompt
-        assert "3. All requested topics" in prompt
+        assert (
+            '<criterion id="1">Output contains actionable'
+            in prompt
+        )
+        assert '<criterion id="2">Tone is professional' in prompt
+        assert '<criterion id="3">All requested topics' in prompt
+        # The pre-#183 leading-``N.`` shape must not reappear.
+        assert "1. Output contains actionable" not in prompt
+        assert "2. Tone is professional" not in prompt
+
+    def test_instructs_verbatim_echo_without_prefix(self):
+        """Issue #183: the prompt must tell the model not to echo any
+        leading number or tag prefix into the ``criterion`` field.
+        """
+        spec = _make_spec()
+        prompt = build_grading_prompt(spec)
+        assert "verbatim text inside the corresponding <criterion>" in prompt
+        assert "no leading number" in prompt
 
     def test_asks_for_json_response(self):
         spec = _make_spec()

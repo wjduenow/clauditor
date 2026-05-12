@@ -946,7 +946,9 @@ def build_grading_prompt(
     """
     criteria_lines = []
     for i, criterion in enumerate(eval_spec.grading_criteria, 1):
-        criteria_lines.append(f"{i}. {criterion_text(criterion)}")
+        criteria_lines.append(
+            f'<criterion id="{i}">{criterion_text(criterion)}</criterion>'
+        )
     criteria_block = "\n".join(criteria_lines)
 
     header = (
@@ -966,6 +968,12 @@ def build_grading_prompt(
         f"- evidence: quote specific text from the output supporting your"
         f" judgment\n"
         f"- reasoning: explain in 1-2 sentences\n"
+        f"\n"
+        f"Criteria are listed below, each wrapped in a <criterion> tag."
+        f" In each result object, the `criterion` field MUST contain the"
+        f" verbatim text inside the corresponding <criterion> tag — no"
+        f" leading number, no tag, no prefix, no rewording. Return one"
+        f" result per criterion, in the same order as listed.\n"
         f"\n"
         f"Criteria:\n"
         f"{criteria_block}\n"
