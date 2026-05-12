@@ -398,7 +398,7 @@ gets OpenAI even when the spec author wrote `claude-sonnet-4-6`.
 
 **Companion knob — `grading_model` (nullable, post-#182).** #146
 promoted `EvalSpec.grading_model` from `str` to `str | None`, and
-#182 / DEC-004b flipped the dataclass default to `None`. The
+issue #182 / DEC-004b flipped the dataclass default to `None`. The
 provider-aware default-picker
 `clauditor._providers.resolve_grading_model(eval_spec, provider)`
 returns `eval_spec.grading_model` when non-`None`, else the
@@ -799,7 +799,7 @@ guards fire (when applicable); a test using only one sees only
 that seam's guard.
 
 **Hard break, not back-compat shim.** Per DEC-002 / DEC-009 of
-#155, the pre-#155 value-fixture form
+issue #155, the pre-#155 value-fixture form
 (`def test(clauditor_runner): clauditor_runner.run("foo")`) is a
 hard break — `clauditor_runner` is now a factory and callers must
 invoke `clauditor_runner()` to get the runner. There is no

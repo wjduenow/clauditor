@@ -118,8 +118,8 @@ grader call. **The runner cost and grader cost may use different
 providers** and even different price tables.
 
 `model_runner` is `harness_metadata["model"]` for Codex (`_codex.py:747`)
-but is unreliably populated for ClaudeCodeHarness — DEC-007 of
-#154's plan: when neither the constructor nor a per-call override
+but is unreliably populated for ClaudeCodeHarness — per DEC-007 of
+issue #154's plan: when neither the constructor nor a per-call override
 pinned a model, `model_runner` is `None` because the `claude` CLI's
 stream-json `result` carries no model field. So the runner cost is
 *unknown* for any ClaudeCodeHarness invocation that didn't pin

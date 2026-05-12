@@ -244,8 +244,8 @@ option (b) is forward-compat for future runner kwargs.
 **Test brittleness.** `test_pytest_plugin.py:102` and the addoption
 counter assertions are fragile to option-set changes. Same shape
 fired on every prior option add (#86 added `--clauditor-no-api-key`,
-#151 did not need a fixture option since it's harness-axis). Bump
-the count and add per-option assertions.
+and issue #151 did not need a fixture option since it's
+harness-axis). Bump the count and add per-option assertions.
 
 ---
 
