@@ -126,7 +126,11 @@ list lives at the LLM boundary: grading criteria, trigger-test
 slots, future per-section field lists. Anything else risks the
 same silent cross-provider divergence.
 
-Traces to #183.
+Traces to #183. Sibling rule for the same cross-provider prompt-
+semantics class of bug on a numeric field (per-criterion `score`
+read as fulfillment by Anthropic and as verdict-confidence by
+gpt-5.4) lives in `.claude/rules/numeric-judge-field-anchors.md`
+— traces to #186.
 
 ## Canonical implementation
 
