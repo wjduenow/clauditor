@@ -5,9 +5,44 @@
 SKILLS_DIR=".claude/skills"
 LOGO="docs/assets/clauditor-social-preview.png"
 
-# Write directly to the terminal so the banner is visible to the user.
-# Hook stdout is captured for Claude's context injection; /dev/tty bypasses that.
-exec > /dev/tty
+# Write directly to the user's terminal so the banner is visible.
+#
+# Hook stdout is captured by Claude Code for context injection — anything we
+# print there is hidden from the user (and counted against context budget). We
+# need a sidechannel to the real terminal.
+#
+# /dev/tty doesn't work: Claude Code spawns hook children without a
+# controlling terminal, so `exec > /dev/tty` fails with ENXIO.
+#
+# Strategy: walk up the parent process chain and find the first ancestor whose
+# stdout (/proc/PID/fd/1) is a /dev/pts/N device. That's the terminal that
+# launched Claude (works whether or not tmux is in the chain). Write the
+# banner there directly. If no PTY ancestor is found (Claude launched from a
+# non-terminal context — IDE plugin, CI, etc.), exit silently.
+
+find_user_tty() {
+    local pid=$PPID
+    local depth=0
+    while [ -n "$pid" ] && [ "$pid" != "0" ] && [ "$pid" != "1" ] && [ $depth -lt 20 ]; do
+        local target
+        target=$(readlink "/proc/$pid/fd/1" 2>/dev/null)
+        case "$target" in
+            /dev/pts/*|/dev/tty[0-9]*)
+                if [ -w "$target" ]; then
+                    echo "$target"
+                    return 0
+                fi
+                ;;
+        esac
+        pid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null)
+        depth=$((depth + 1))
+    done
+    return 1
+}
+
+USER_TTY=$(find_user_tty)
+[ -z "$USER_TTY" ] && exit 0
+exec > "$USER_TTY"
 
 BOLD=$'\033[1m'
 CYAN=$'\033[36m'
@@ -15,12 +50,14 @@ YELLOW=$'\033[33m'
 GRAY=$'\033[90m'
 RESET=$'\033[0m'
 
-# Logo. Leading newline so chafa's first row starts at column 0 — without
-# it, chafa emits on the same line where the cursor already sits (after
-# Claude Code's prompt marker), indenting only the first row of the image.
+# Render order: small thumbnail logo FIRST, then skills list. Claude Code
+# repaints its TUI over the bottom of the banner output, so the bottom
+# portion gets clipped. Logo is sized small (24x12 cells) so the total
+# banner height stays compact and the skills list lands in the survival zone.
+
 if command -v chafa &>/dev/null && [[ -f "$LOGO" ]]; then
     echo ""
-    chafa --size 60x30 -f symbols "$LOGO"
+    chafa --size 24x12 -f symbols "$LOGO"
 fi
 
 skills=()
