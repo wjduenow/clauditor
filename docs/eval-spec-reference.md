@@ -286,6 +286,19 @@ A few `EvalSpec` fields tune specific code paths and are safe to omit:
   default. Load-time validation rejects values outside the three-
   choice set. See [`docs/transport-architecture.md`](transport-architecture.md)
   for the full backend matrix.
+- **`harness`** (string, default `"auto"`) — selects which CLI runs the
+  skill subprocess: `"claude-code"` (Claude Code via `claude -p`),
+  `"codex"` (the OpenAI Codex CLI), or `"auto"` (prefers `claude` when
+  on PATH, falls back to `codex`). This is the *runtime* axis and is
+  independent of `transport` / `grading_provider`, which govern the
+  *grader* call — a skill can run under Codex while the L3 grader still
+  calls Claude Sonnet. Precedence: `--harness` on the CLI wins (on
+  `validate`, `grade`, `capture`, `run`), then the `CLAUDITOR_HARNESS`
+  env var, then this field, then the `auto` default. Load-time
+  validation rejects values outside the three-choice set. Running under
+  Codex requires `CODEX_API_KEY` or `OPENAI_API_KEY` in the subprocess
+  env. See [`docs/codex-harness.md`](codex-harness.md) for the full
+  harness reference.
 - **`sync_tasks`** (bool, default `false`) — when `true`, clauditor
   sets `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in the `claude -p`
   subprocess env, forcing `Task(run_in_background=true)` spawns to
@@ -304,8 +317,8 @@ A few `EvalSpec` fields tune specific code paths and are safe to omit:
 `EvalSpec.system_prompt` (string, default `null`) is the prompt body
 sent to harnesses that consume a separate system-prompt channel. The
 shipping `ClaudeCodeHarness` ignores it (the `claude -p` CLI has no
-analogue — slash-command identity carries the skill body), but the
-forthcoming `CodexHarness` (#149) will prepend it before the user
+analogue — slash-command identity carries the skill body), while the
+`CodexHarness` (#149) prepends it before the user
 message. It is part of the cross-harness `Harness.build_prompt`
 contract introduced in #150 so a single `EvalSpec` shape feeds every
 harness identically.
