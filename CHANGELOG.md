@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-05-21
+
 ### Breaking changes
 
 - **Codex auth pre-flight refuses ChatGPT-mode credentials (#177, PR #181).**
@@ -439,6 +441,7 @@ First stable release on PyPI: <https://pypi.org/project/clauditor-eval/0.1.0/>.
 - Bundled `/clauditor` Claude Code slash command installable via
   `clauditor setup`.
 
-[Unreleased]: https://github.com/wjduenow/clauditor/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/wjduenow/clauditor/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/wjduenow/clauditor/releases/tag/v0.1.2
 [0.1.1]: https://github.com/wjduenow/clauditor/releases/tag/v0.1.1
 [0.1.0]: https://github.com/wjduenow/clauditor/releases/tag/v0.1.0
