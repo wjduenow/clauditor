@@ -1,5 +1,8 @@
 """Clauditor — Auditor for Claude Code skills and slash commands."""
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
+
 from clauditor.asserters import SkillAsserter, assert_from
 from clauditor.assertions import AssertionResult, AssertionSet
 from clauditor.context import IterationContext
@@ -35,9 +38,6 @@ __all__ = [
     "VarianceConfig",
     "VarianceReport",
 ]
-
-from importlib.metadata import PackageNotFoundError
-from importlib.metadata import version as _pkg_version
 
 try:
     __version__ = _pkg_version("clauditor-eval")
