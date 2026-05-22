@@ -109,6 +109,7 @@ clauditor capture <skill> --no-api-key --timeout 600  # subscription auth, 10-mi
 | `-- <args>` | Arguments passed to the skill command as initial context, appended to the `-p` prompt: `claude -p "/<skill> <args>"`. The only injection point before the skill runs — see [Interactive skills](#interactive-skills) below. |
 | `--out PATH` | Write captured output to a custom path instead of the default `tests/eval/captured/<skill>.txt`. |
 | `--versioned` | Append `-YYYY-MM-DD` to the output file stem (e.g. `my-skill-2026-04-22.txt`). Useful when keeping a dated history of captures. |
+| `--harness {claude-code,codex,auto}` | Select which CLI runs the skill (shared runner flag). `codex` captures a run under the OpenAI Codex CLI instead of `claude -p`; needs `CODEX_API_KEY` or `OPENAI_API_KEY`. Precedence: this flag > `CLAUDITOR_HARNESS` env > `EvalSpec.harness` > default `auto`. See [`docs/codex-harness.md`](codex-harness.md). |
 | `--no-api-key` | Strip `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the subprocess environment. Falls back to subscription auth cached in `~/.claude/`. Useful for skills that exhaust the API-tier rate limit. |
 | `--timeout SECONDS` | Override the default 300-second watchdog. Long-running skills (deep research, multi-step workflows) may still need 600 s or more. |
 | `--claude-bin PATH` | Path to the `claude` CLI (default: `claude` on PATH). |
@@ -366,7 +367,7 @@ Generate a starter `eval.json` next to a `SKILL.md`. Reads the skill's frontmatt
 
 ### `validate`
 
-Run Layer 1 deterministic assertions against a skill's output. Spawns the skill via `claude -p`, captures stdout, then evaluates each assertion in `eval.json`. No LLM call on the clauditor side.
+Run Layer 1 deterministic assertions against a skill's output. Spawns the skill via the resolved harness (`claude -p` by default; the OpenAI Codex CLI under `--harness codex`), captures stdout, then evaluates each assertion in `eval.json`. No LLM call on the clauditor side.
 
 | Flag | Purpose |
 | ---- | ------- |
@@ -376,7 +377,7 @@ Run Layer 1 deterministic assertions against a skill's output. Spawns the skill 
 | `--no-transcript` | Skip writing per-run stream-json transcripts to disk. |
 | `-v / --verbose` | On assertion failure, print the last 5 assistant text blocks to stderr. |
 
-Also accepts the [shared runner flags](#shared-runner-flags-validate-grade-capture-run): `--no-api-key`, `--sync-tasks`, `--timeout`.
+Also accepts the [shared runner flags](#shared-runner-flags-validate-grade-capture-run): `--harness`, `--no-api-key`, `--sync-tasks`, `--timeout`.
 
 ### `grade`
 
@@ -399,17 +400,17 @@ Run Layer 3 LLM-graded quality scoring. Auto-increments the iteration slot (`.cl
 | `--transport {api,cli,auto}` | Override the Anthropic call backend. See [transport architecture](#transport-architecture). |
 | `--grading-provider {anthropic,openai,auto}` | Select which provider's SDK handles the LLM-grader call. Precedence: this flag > `CLAUDITOR_GRADING_PROVIDER` env > `EvalSpec.grading_provider` > default `auto`. Under `auto`, infers from the model prefix (`claude-*` → anthropic, `gpt-*` / `o[0-9]+*` → openai). |
 
-Also accepts the shared runner flags: `--no-api-key`, `--sync-tasks`, `--timeout`, `-v`, `--no-transcript`.
+Also accepts the shared runner flags: `--harness`, `--no-api-key`, `--sync-tasks`, `--timeout`, `-v`, `--no-transcript`.
 
 ### `run`
 
-Run a skill via `claude -p` and print its output to stdout. The thinnest of the skill-invoking commands — no eval, no assertions, no grading.
+Run a skill via the resolved harness (`claude -p` by default, or the OpenAI Codex CLI under `--harness codex`) and print its output to stdout. The thinnest of the skill-invoking commands — no eval, no assertions, no grading.
 
 | Flag | Purpose |
 | ---- | ------- |
 | `--args STRING` | Arguments to pass to the skill command. |
 | `--project-dir PATH` | Override project-root detection (default: cwd). |
-| `--timeout SECONDS`, `--no-api-key`, `--sync-tasks` | Shared runner flags. |
+| `--harness {claude-code,codex,auto}`, `--timeout SECONDS`, `--no-api-key`, `--sync-tasks` | Shared runner flags. |
 
 ### `extract`
 
@@ -507,10 +508,11 @@ Print environment diagnostics: clauditor version, `claude` CLI presence and vers
 
 ## Shared runner flags (`validate`, `grade`, `capture`, `run`)
 
-Four skill-invoking commands share three flags that control the `claude -p` subprocess the runner spawns. All default to "not set" so today's behavior is unchanged when none are passed.
+Four skill-invoking commands share these flags that control the skill subprocess the runner spawns (Claude Code's `claude -p` by default, or the OpenAI Codex CLI under `--harness codex`). All default to "not set" so today's behavior is unchanged when none are passed.
 
 | Flag | Purpose |
 | ---- | ------- |
+| `--harness {claude-code,codex,auto}` | Select which CLI runs the skill subprocess. `claude-code` spawns `claude -p`; `codex` spawns the OpenAI Codex CLI (needs `CODEX_API_KEY` or `OPENAI_API_KEY` in the subprocess env); `auto` (default) prefers `claude` when it is on PATH, else falls back to `codex`. Precedence: this flag > `CLAUDITOR_HARNESS` env var > `EvalSpec.harness` > default `auto`. The harness (runtime) axis is independent of the grader-side `--transport` / `--grading-provider` axes — a skill can run under Codex while the L3 grader still calls Claude Sonnet. Full reference: [`docs/codex-harness.md`](codex-harness.md). |
 | `--no-api-key` | Strip both `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the subprocess environment before invoking `claude -p`. The child then falls back to whatever auth is cached in `~/.claude/` — typically a Pro/Max subscription, which carries a much higher throughput ceiling than the API-key tier. Useful for research-heavy skills (multi-agent, deep-research) that exhaust the free API tier in a single run. Non-auth Anthropic env vars such as `ANTHROPIC_BASE_URL` are preserved. Also implied by `--transport cli` on `grade` (see `--transport`). |
 | `--timeout SECONDS` | Override the runner's 300-second watchdog for a single invocation. Must be a positive integer; `--timeout 0`, `--timeout -5`, and `--timeout foo` exit `2` at argparse time. Precedence: the CLI flag wins when passed explicitly; otherwise the `EvalSpec.timeout` field wins when set; otherwise the built-in 300s default applies. See [`docs/eval-spec-reference.md#optional-top-level-fields`](eval-spec-reference.md#optional-top-level-fields) for the spec-field side of the contract. |
 | `--sync-tasks` | Set `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in the subprocess env, forcing `Task(run_in_background=true)` spawns to run synchronously. Resolves the output-truncation failure mode for skills that use background sub-agents for parallel fanout. Also suppresses the `background-task:` warning from the [#97](https://github.com/wjduenow/clauditor/issues/97) detector under that env. Precedence: CLI flag > `EvalSpec.sync_tasks` > default `False`. On `grade --baseline`, applies to both primary and baseline arms so the delta compares like-for-like. Synchronous Tasks roughly double wall time vs the parallel default — non-trivial skills routinely land in the 300-400s range and exhaust the built-in 300s watchdog; pair `--sync-tasks` with `--timeout 600` (or higher) to avoid first-run timeouts. **Read the fidelity caveats in [`docs/skill-usage.md#--sync-tasks-force-task-mode-synchronous-at-eval-time`](skill-usage.md#--sync-tasks-force-task-mode-synchronous-at-eval-time) before relying on `--sync-tasks` — you are evaluating a different execution model than what ships.** Full decision record: [`docs/adr/transport-research-103.md`](adr/transport-research-103.md). |

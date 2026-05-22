@@ -92,11 +92,23 @@ clauditor validate .claude/commands/my-skill.md
 clauditor validate .claude/commands/my-skill.md --json
 ```
 
+### Running under Codex instead of Claude Code
+
+Every skill-running command (`validate`, `grade`, `capture`, `run`) accepts `--harness codex` to drive the skill through the OpenAI Codex CLI instead of `claude -p`. Export `CODEX_API_KEY` (or `OPENAI_API_KEY`) first:
+
+```bash
+export CODEX_API_KEY=sk-...
+clauditor validate .claude/commands/my-skill.md --harness codex
+```
+
+The default `--harness auto` picks Claude Code when `claude` is on PATH, else Codex. The runtime axis is independent of the grader — a skill can run under Codex while L3 still grades with Claude Sonnet. Full reference: [Codex harness](codex-harness.md).
+
 ## 5. Use in pytest
 
 ```python
 def test_my_skill(clauditor_runner, clauditor_asserter):
-    result = clauditor_runner.run("my-skill", '"San Jose, CA" --depth quick')
+    runner = clauditor_runner()  # factory fixture; pass harness="codex" to run under Codex
+    result = runner.run("my-skill", '"San Jose, CA" --depth quick')
     asserter = clauditor_asserter(result)
     asserter.assert_contains("Results")
     asserter.assert_has_entries(minimum=3)
