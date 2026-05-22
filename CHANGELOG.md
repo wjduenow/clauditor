@@ -15,6 +15,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+
+- **Surface the Codex harness across the discovery docs.** The Codex
+  runtime shipped in 0.1.2 but was only mentioned in a buried
+  paragraph of the README's auth section. Added a dedicated
+  "Running skills under Codex" README section (with a tagline clause
+  and Contents-nav entry), documented the `--harness {claude-code,codex,auto}`
+  flag on the four skill-running commands in the CLI reference's
+  shared-runner-flags table, added a `harness` field entry to the
+  eval-spec reference, and a "Running under Codex" subsection to the
+  quick-start. All link to the existing [`docs/codex-harness.md`](docs/codex-harness.md)
+  as the single source of truth. Also fixed the README and quick-start
+  pytest examples to use the post-#155 `clauditor_runner()` factory
+  form (they still showed the pre-#155 value-fixture call).
+
 ## [0.1.2] - 2026-05-21
 
 ### Breaking changes

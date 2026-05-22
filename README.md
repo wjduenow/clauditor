@@ -10,12 +10,12 @@
 [![License](https://img.shields.io/github/license/wjduenow/clauditor)](https://github.com/wjduenow/clauditor/blob/dev/LICENSE)
 [![codecov](https://codecov.io/gh/wjduenow/clauditor/branch/dev/graph/badge.svg)](https://codecov.io/gh/wjduenow/clauditor)
 
-Automated quality checks for [Agent Skills](https://agentskills.io). A skill is a reusable instruction file (`SKILL.md`) that tells Claude how to do a task. clauditor answers three questions about every run: **Did it run?** **Did it return the right structure?** **Was the answer actually good?** First two checks cost pennies and run in CI; the third is for release gates.
+Automated quality checks for [Agent Skills](https://agentskills.io). A skill is a reusable instruction file (`SKILL.md`) that tells Claude how to do a task. clauditor answers three questions about every run: **Did it run?** **Did it return the right structure?** **Was the answer actually good?** First two checks cost pennies and run in CI; the third is for release gates. Skills run under [Claude Code or the OpenAI Codex CLI](#running-skills-under-codex) — pick the runtime per command.
 
 <details markdown="1">
 <summary>Contents</summary>
 
-[Why clauditor?](#why-clauditor) · [Install](#install) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [Suggest](#llm-assisted-skill-improvement-clauditor-suggest) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Eval Spec Format](#eval-spec-format) · [Skill compatibility](#skill-compatibility) · [Authentication](#authentication-and-api-keys) · [Reference docs](#reference-docs)
+[Why clauditor?](#why-clauditor) · [Install](#install) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [Suggest](#llm-assisted-skill-improvement-clauditor-suggest) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Eval Spec Format](#eval-spec-format) · [Skill compatibility](#skill-compatibility) · [Running under Codex](#running-skills-under-codex) · [Authentication](#authentication-and-api-keys) · [Reference docs](#reference-docs)
 
 </details>
 
@@ -165,7 +165,8 @@ clauditor badge <skill.md>            # Shields.io endpoint JSON for README embe
 
 ```python
 def test_my_skill(clauditor_runner, clauditor_asserter):
-    result = clauditor_runner.run("my-skill", '"San Jose, CA"')
+    runner = clauditor_runner()  # factory fixture; clauditor_runner(harness="codex") runs under Codex
+    result = runner.run("my-skill", '"San Jose, CA"')
     clauditor_asserter(result).assert_contains("Results")
 ```
 
@@ -247,6 +248,20 @@ Full matrix and refactoring recipes: [`docs/skill-usage.md#skill-compatibility`]
 
 </details>
 
+## Running skills under Codex
+
+clauditor can drive your skill through the **OpenAI Codex CLI** instead of Claude Code. Pass `--harness codex` (or set `CLAUDITOR_HARNESS` / the `harness` field in `eval.json`) to `validate`, `grade`, `capture`, or `run`:
+
+```bash
+export CODEX_API_KEY=sk-...                          # or OPENAI_API_KEY
+clauditor validate .claude/skills/my-skill/SKILL.md --harness codex
+clauditor grade    .claude/skills/my-skill/SKILL.md --harness codex
+```
+
+The default `auto` harness picks Claude Code when `claude` is on PATH, else Codex. The **runtime axis is independent of the grader**: an eval can run under Codex while the L3 quality grader still calls Claude Sonnet (or vice versa), so you can A/B the same skill across runtimes. `clauditor audit` / `trend` / `compare` group results by harness and refuse to silently average across them.
+
+**Covered in the full reference:** four-layer harness precedence, Codex auth modes (`CODEX_API_KEY` / `OPENAI_API_KEY` / `~/.codex/auth.json`), sandbox modes, the NDJSON stream contract, and useful harness × grader pairings. Full reference: [docs/codex-harness.md](docs/codex-harness.md).
+
 ## Authentication and API Keys
 
 **Do I need an Anthropic API key?**
@@ -261,7 +276,7 @@ clauditor also supports multi-provider grading: pass `--grading-provider {anthro
 
 Running `clauditor grade <skill> --transport cli` is the one-liner for subscription auth end-to-end: it implicitly strips `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the skill subprocess env, so both the grader and the skill use subscription auth. Pass `--transport api` to keep the keys.
 
-**Running skills under a non-Claude harness.** Clauditor can also drive your skill through the OpenAI Codex CLI instead of Claude Code: pass `--harness codex` (or set `CLAUDITOR_HARNESS` / `EvalSpec.harness`) to `validate`, `grade`, `capture`, or `run`. Codex needs `CODEX_API_KEY` or `OPENAI_API_KEY` in the subprocess env; the default `auto` harness picks Claude when `claude` is on PATH, else Codex. The harness axis is independent of the grader provider — an eval can run under Codex while the L3 grader still calls Claude (or vice versa). Full reference: [docs/codex-harness.md](docs/codex-harness.md).
+**Running the skill subprocess under Codex** needs `CODEX_API_KEY` or `OPENAI_API_KEY` in the subprocess env rather than Anthropic credentials — this is the runtime axis, separate from the grader auth above. See [Running skills under Codex](#running-skills-under-codex).
 
 ## Cost and observability
 
