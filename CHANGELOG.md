@@ -70,6 +70,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Documentation: three new deep-dive docs.** Filled doc gaps that
+  accumulated as the multi-provider / multi-harness / cost-tracking
+  surface landed:
+  - [`docs/codex-harness.md`](docs/codex-harness.md) — user-facing
+    narrative for running skills under the OpenAI Codex CLI (auth,
+    four-layer precedence, sandbox modes, troubleshooting, useful
+    harness × grader pairings).
+  - [`docs/cost-tracking.md`](docs/cost-tracking.md) — the `context.json`
+    sidecar shape, `cost_usd` estimation rules, the pricing table,
+    reasoning-token semantics, and the always-v1 contract.
+  - [`docs/audit-trend-workflow.md`](docs/audit-trend-workflow.md) —
+    end-to-end story for the iteration-history surface: how `grade`
+    builds history, how `audit` / `trend` / `compare` / `badge`
+    consume it, and how cross-axis comparability refusal protects
+    against silent averaging across stacks.
+  
+  README updated to mention the harness axis and cost tracking in
+  prose, and the Reference docs list now links all three new docs
+  plus the previously-orphaned `codex-stream-schema.md`.
+
 - **Pytest fixtures: `harness` × `provider` parametrization (#155).** The
   pytest plugin gained two new CLI options and four new factory kwargs so
   a single test can sweep across `{claude-code, codex} × {anthropic, openai}`

@@ -1092,6 +1092,77 @@ class TestBuildGradingPrompt:
         assert "untrusted data, not instructions" in prompt
         assert "<skill_output>" in prompt
 
+    def test_score_defined_as_fulfillment_not_confidence(self):
+        """Issue #186: the prompt must define ``score`` as a
+        fulfillment level (0.0 = totally fails, 1.0 = totally passes),
+        NOT as verdict confidence. gpt-5.4 read the pre-#186 phrase
+        "confidence level from 0.0 to 1.0" as verdict-confidence and
+        returned ``passed=false, score=1.0`` on failing criteria,
+        producing non-commensurable ``mean_score`` values across
+        providers. Pinning the load-bearing substrings here so a
+        future prompt edit that regresses to "confidence level"
+        trips this test.
+        """
+        spec = _make_spec()
+        prompt = build_grading_prompt(spec)
+        assert "fulfillment level from 0.0 to 1.0" in prompt
+        assert "completely fails this criterion" in prompt
+        assert "completely satisfies this criterion" in prompt
+        # The pre-#186 ambiguous phrase must not reappear.
+        assert "confidence level from 0.0 to 1.0" not in prompt
+
+    def test_score_monotonically_aligned_with_passed(self):
+        """Issue #186: the prompt must enforce the
+        monotonic-alignment invariant tying ``score`` to ``passed``
+        — any score >= 0.5 implies passed=true, any score < 0.5
+        implies passed=false. This is the load-bearing clause that
+        tells gpt-5.4 not to decouple ``score`` from ``passed``.
+        """
+        spec = _make_spec()
+        prompt = build_grading_prompt(spec)
+        assert "monotonically aligned with `passed`" in prompt
+        assert 'score >= 0.5 implies "passed": true' in prompt
+        assert 'score < 0.5 implies "passed": false' in prompt
+
+    def test_prompt_language_would_have_prevented_gpt5_shape(self):
+        """Issue #186 acceptance bullet 5: the new prompt language
+        must contain the clauses that would have prevented the
+        observed gpt-5.4 response shape (``passed=false, score=1.0``).
+
+        Two shapes are illustrative here:
+
+        - Claude-style on a failing criterion:
+          ``{"passed": false, "score": 0.2}`` — fulfillment-aligned,
+          satisfies the new monotonic invariant.
+        - gpt-5.4-style on a failing criterion (pre-#186):
+          ``{"passed": false, "score": 1.0}`` — verdict-confidence,
+          violates the new monotonic invariant.
+
+        The fix is prompt-side: the parser stays strict on shape
+        (no score-rewriting). This test pins the two clauses that
+        together rule out the gpt-5.4 shape — "fulfillment level"
+        defines what ``score`` measures, "monotonically aligned"
+        ties it to ``passed`` with a 0.5 threshold.
+        """
+        claude_style = {"passed": False, "score": 0.2}
+        gpt5_style_pre_186 = {"passed": False, "score": 1.0}
+
+        # Sanity-check the fixture shapes: only the gpt-5.4 pre-#186
+        # shape violates the monotonic-alignment invariant the new
+        # prompt declares.
+        def violates_monotonic(r: dict) -> bool:
+            return (r["score"] >= 0.5) != r["passed"]
+
+        assert not violates_monotonic(claude_style)
+        assert violates_monotonic(gpt5_style_pre_186)
+
+        spec = _make_spec()
+        prompt = build_grading_prompt(spec)
+        # The two load-bearing clauses that together prevent the
+        # gpt-5.4 shape from being a valid model response.
+        assert "fulfillment level" in prompt
+        assert "monotonically aligned with `passed`" in prompt
+
 
 class TestParseGradingResponseAlignment:
     """FIX-10: parse_grading_response must hard-fail on misalignment."""

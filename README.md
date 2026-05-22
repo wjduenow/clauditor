@@ -261,6 +261,12 @@ clauditor also supports multi-provider grading: pass `--grading-provider {anthro
 
 Running `clauditor grade <skill> --transport cli` is the one-liner for subscription auth end-to-end: it implicitly strips `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the skill subprocess env, so both the grader and the skill use subscription auth. Pass `--transport api` to keep the keys.
 
+**Running skills under a non-Claude harness.** Clauditor can also drive your skill through the OpenAI Codex CLI instead of Claude Code: pass `--harness codex` (or set `CLAUDITOR_HARNESS` / `EvalSpec.harness`) to `validate`, `grade`, `capture`, or `run`. Codex needs `CODEX_API_KEY` or `OPENAI_API_KEY` in the subprocess env; the default `auto` harness picks Claude when `claude` is on PATH, else Codex. The harness axis is independent of the grader provider — an eval can run under Codex while the L3 grader still calls Claude (or vice versa). Full reference: [docs/codex-harness.md](docs/codex-harness.md).
+
+## Cost and observability
+
+Every `clauditor grade` iteration writes a `context.json` sidecar capturing the harness, provider, model, sandbox mode, reasoning-token count, and an estimated `cost_usd` for the grader calls. `clauditor trend` and `clauditor audit` aggregate across iterations and refuse to silently average across mismatched harness or provider axes — pass `--cross-harness` / `--cross-provider` to opt in. Full reference: [docs/cost-tracking.md](docs/cost-tracking.md) and [docs/audit-trend-workflow.md](docs/audit-trend-workflow.md).
+
 ## Reference docs
 
 - [`docs/architecture.md`](docs/architecture.md) — how clauditor works under the hood (mermaid diagrams of the grade flow)
@@ -273,7 +279,11 @@ Running `clauditor grade <skill> --transport cli` is the one-liner for subscript
 - [`docs/skills.md`](docs/skills.md) — catalog of skills shipped with this repo, with live badge status
 - [`docs/badges.md`](docs/badges.md) — shields.io badges from iteration sidecars (`clauditor badge`)
 - [`docs/stream-json-schema.md`](docs/stream-json-schema.md) — `claude` stream-json parser contract
+- [`docs/codex-stream-schema.md`](docs/codex-stream-schema.md) — `codex` NDJSON parser contract (sibling of stream-json-schema)
 - [`docs/transport-architecture.md`](docs/transport-architecture.md) — CLI vs SDK transport, auth-state matrix, precedence, migration
+- [`docs/codex-harness.md`](docs/codex-harness.md) — running skills under the OpenAI Codex CLI
+- [`docs/cost-tracking.md`](docs/cost-tracking.md) — `cost_usd`, reasoning tokens, the pricing table, and per-iteration `context.json`
+- [`docs/audit-trend-workflow.md`](docs/audit-trend-workflow.md) — measuring regressions over iterations with `audit` / `trend` / `compare` / `badge`
 - [`CONTRIBUTING.md`](CONTRIBUTING.md#pre-release-dogfood) — maintainer pre-release dogfood gate + contribution workflow
 
 ## License
