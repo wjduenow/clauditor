@@ -304,12 +304,17 @@ example skill implements:
 ```diff
  Research the topic across three lanes: editorial, authoritative,
  and verification.
+-Launch all three lanes in parallel as background sub-agents:
+-- Task(run_in_background=true): research the editorial lane.
+-- Task(run_in_background=true): research the authoritative lane.
+-- Task(run_in_background=true): research the verification lane.
+-Then poll for their results and synthesize.
 +Run each lane as a sequential Task call — dispatch the editorial
 +lane, wait for it, then the authoritative lane, then the
 +verification lane. Do NOT use run_in_background; collect every
 +lane's output before synthesizing.
- Then synthesize the lanes, flagging any conflicts the verification
- lane caught.
++Then synthesize the lanes, flagging any conflicts the verification
++lane caught.
 ```
 
 **Recipe B — replace `Task` sub-agents with parallel tool calls in
