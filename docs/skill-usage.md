@@ -185,7 +185,7 @@ Code runtime — some patterns that work in the TUI do not work under
 | Sequential `Task` calls (no `run_in_background`) | ✅ Works |
 | Parallel tool calls in the parent (multiple `tool_use` blocks per turn) | ✅ Works |
 | `WebSearch` / `WebFetch` / `Bash` / `Read` / `Write` / `Edit` | ✅ Works |
-| `Task(run_in_background=true)` (background sub-agents) | ⚠️ Loud warning — parent exits before children complete; output truncated 5-10× (see [GitHub #97](https://github.com/wjduenow/clauditor/issues/97)) |
+| `Task(run_in_background=true)` (background sub-agents) | ⚠️ Loud warning — parent exits before children complete; output truncated 5-10× (see [GitHub #97](https://github.com/wjduenow/clauditor/issues/97)). Fix: [`--sync-tasks`](#--sync-tasks-force-task-mode-synchronous-at-eval-time) or the [worked refactor example](#worked-example-a-parallel-research-fan-out) |
 | `AskUserQuestion` / interactive prompts | ⚠️ Loud warning — interactive-hang detector fires (no input channel in print mode) |
 
 ### `--sync-tasks`: force Task mode synchronous at eval time

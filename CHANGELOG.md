@@ -15,8 +15,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`parallel-research` example skill demonstrating the background-task
+  refactor (#103).** Added `examples/.claude/skills/parallel-research/`
+  — a runnable companion to "Recipe A" (drop `run_in_background: true`,
+  run lanes sequentially) for skills that fan out research across
+  parallel sub-agents. Its `SKILL.eval.json` includes a `not_contains`
+  assertion on `"run_in_background"` so the refactored-good shape stays
+  locked in.
+- **Live-gated background-task non-completion test fixture (#103).**
+  Added a triple-lock-gated (`CLAUDITOR_RUN_LIVE=1` + auth + `claude`
+  on PATH) test that drives a real `Task(run_in_background=true)` skill
+  through the runner and asserts the `background-task:` warning fires,
+  plus an offline unit assertion on the warning text. Default CI does
+  not spend tokens.
+
 ### Documentation
 
+- **Background-task / `--sync-tasks` doc-coherence sweep (#103).** The
+  `background-task:` runner warning now links to
+  [`docs/skill-usage.md#skill-compatibility`](docs/skill-usage.md#skill-compatibility)
+  for refactoring recipes. Added a worked before/after example (Recipe A
+  and Recipe B) for a parallel-research fan-out to the skill-usage
+  compatibility section, cross-linked from the README's "Skill
+  compatibility" parallel-sub-tasks bullet and from the compatibility
+  matrix row, and catalogued the async-fidelity gap (blocked on
+  upstream [anthropics/claude-code#52917](https://github.com/anthropics/claude-code/issues/52917))
+  in a new Tier 3 subsection of
+  [`docs/adr/transport-research-103.md`](docs/adr/transport-research-103.md).
 - **Surface the Codex harness across the discovery docs.** The Codex
   runtime shipped in 0.1.2 but was only mentioned in a buried
   paragraph of the README's auth section. Added a dedicated
