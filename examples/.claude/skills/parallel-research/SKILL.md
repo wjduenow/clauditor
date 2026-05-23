@@ -48,7 +48,7 @@ lane entry is a numbered bold heading followed by a fielded list. The
 `example.com` URLs below are illustrative of the output *shape* only — a
 live run cites the real sources found via WebSearch/WebFetch:
 
-```
+```text
 ## Editorial
 
 **1. The Wirecutter Guide**

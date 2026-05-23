@@ -65,7 +65,7 @@ def _live_run_skip_reason() -> str | None:
 
 
 @pytest.mark.live
-class TestLiveSkillRun:
+class TestBackgroundTaskFixture:
     """Canary: a real ``Task(run_in_background=true)`` skill must warn.
 
     Gated triple-lock so this class never runs in default CI and never
@@ -99,8 +99,17 @@ class TestLiveSkillRun:
         # Do NOT pass any sync-tasks / CLAUDE_CODE_DISABLE_BACKGROUND_TASKS
         # override (DEC-004) — that would suppress the detector. The run is
         # expected to truncate; a generous timeout covers launch latency.
+        # Defensively strip CLAUDE_CODE_DISABLE_BACKGROUND_TASKS from the
+        # inherited env so an ambient ``=1`` (e.g. an operator who exports it
+        # to default-force --sync-tasks) cannot suppress the detector and
+        # make this canary fail for the wrong reason.
+        env = {
+            k: v
+            for k, v in os.environ.items()
+            if k != "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+        }
         runner = SkillRunner(project_dir=project_dir, timeout=360)
-        result = runner.run(spec.skill_name)
+        result = runner.run(spec.skill_name, env=env)
 
         diag = (
             f"\nerror_category={result.error_category!r}"

@@ -210,7 +210,7 @@ setup) failed silently with `"Unknown command:
 /review-agentskills-spec"` in the stream-json result, which is the
 failure mode this rule exists to prevent.
 
-`tests/test_background_task_fixture.py::TestLiveSkillRun::test_live_run_emits_background_task_warning`
+`tests/test_background_task_fixture.py::TestBackgroundTaskFixture::test_live_run_emits_background_task_warning`
 — second anchor (warning-asserting shape, see "Variant" above).
 Same triple-lock gate, `tmp_path` symlink setup, `.git` marker, and
 360s timeout, but stages a TEST-ONLY known-bad fixture
