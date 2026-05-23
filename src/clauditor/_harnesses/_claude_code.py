@@ -157,7 +157,8 @@ _BACKGROUND_TASK_WARNING = (
     f"{_BACKGROUND_TASK_WARNING_PREFIX} skill launched "
     "Task(run_in_background=true) and exited without polling — "
     "claude -p does not poll background tasks, so output is likely "
-    "truncated (heuristic)"
+    "truncated (heuristic). See "
+    "docs/skill-usage.md#skill-compatibility for refactoring recipes."
 )
 
 

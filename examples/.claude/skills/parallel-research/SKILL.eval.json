@@ -1,0 +1,85 @@
+{
+  "skill_name": "parallel-research",
+  "description": "Validates /parallel-research fans out across three sequential lanes (no run_in_background) and synthesizes a sourced briefing",
+  "user_prompt": "Research electric kettles across editorial, authoritative, and verification lanes, then synthesize.",
+  "test_args": "\"electric kettles\" --depth deep --lanes 3 --count 3",
+  "input_files": [
+    "assets/sample-input.txt"
+  ],
+  "assertions": [
+    {"id": "contains_editorial", "type": "contains", "needle": "Editorial"},
+    {"id": "contains_authoritative", "type": "contains", "needle": "Authoritative"},
+    {"id": "contains_verification", "type": "contains", "needle": "Verification"},
+    {"id": "contains_synthesis", "type": "contains", "needle": "Synthesis"},
+    {"id": "has_entries_3", "type": "has_entries", "count": 3},
+    {"id": "has_urls_3", "type": "has_urls", "count": 3},
+    {"id": "min_length_500", "type": "min_length", "length": 500},
+    {"id": "no_background_task", "type": "not_contains", "needle": "run_in_background"},
+    {"id": "regex_numbered_bold", "type": "regex", "pattern": "\\*\\*\\d+\\.\\s+"},
+    {"id": "regex_url", "type": "regex", "pattern": "https?://[^\\s]+"}
+  ],
+  "sections": [
+    {
+      "name": "Editorial",
+      "tiers": [
+        {
+          "label": "default",
+          "min_entries": 1,
+          "fields": [
+            {"id": "editorial_name", "name": "name", "required": true},
+            {"id": "editorial_source", "name": "source", "required": true},
+            {"id": "editorial_claim", "name": "claim", "required": true}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Authoritative",
+      "tiers": [
+        {
+          "label": "default",
+          "min_entries": 1,
+          "fields": [
+            {"id": "authoritative_name", "name": "name", "required": true},
+            {"id": "authoritative_source", "name": "source", "required": true},
+            {"id": "authoritative_claim", "name": "claim", "required": true}
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Verification",
+      "tiers": [
+        {
+          "label": "default",
+          "min_entries": 1,
+          "fields": [
+            {"id": "verification_name", "name": "name", "required": true},
+            {"id": "verification_source", "name": "source", "required": true},
+            {"id": "verification_claim", "name": "claim", "required": true}
+          ]
+        }
+      ]
+    }
+  ],
+  "grading_criteria": [
+    {"id": "lanes_distinct", "criterion": "Do the three lanes contain genuinely distinct kinds of sources (editorial overviews vs primary/authoritative vs independent verification)?"},
+    {"id": "synthesis_reconciles", "criterion": "Does the Synthesis section reconcile the lanes and flag any conflicts the verification lane caught?"},
+    {"id": "sources_cited", "criterion": "Does every entry cite a source URL?"},
+    {"id": "no_unanswered_questions", "criterion": "Does the output end cleanly without asking the user a follow-up question?"}
+  ],
+  "trigger_tests": {
+    "should_trigger": [
+      "Research electric kettles across multiple sources and summarize",
+      "Give me a thorough multi-source briefing on noise-cancelling headphones"
+    ],
+    "should_not_trigger": [
+      "What's the weather today?",
+      "Help me write a Python script"
+    ]
+  },
+  "variance": {
+    "n_runs": 5,
+    "min_stability": 0.8
+  }
+}
