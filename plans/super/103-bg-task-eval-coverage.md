@@ -322,7 +322,46 @@ the existing no-go rationale byte-stable, add the structured triggers.
 
 **Traces:** Tier 3 / closing checklist #3. DEC-006.
 
-### US-005 — Quality Gate (second-to-last; depends on US-001..US-004)
+### US-005 — Related-docs sweep (depends on US-001..US-004)
+
+**Goal:** After the four implementation stories land, sweep every doc
+surface that references the background-task gap so nothing is left
+stating the pre-implementation story. This is the catch-all for doc
+drift that the per-story edits (US-002 `skill-usage.md`, US-003 warning,
+US-004 ADR) don't already cover.
+
+**Files / surfaces to audit and update where needed:**
+- `README.md` — the Skill Compatibility section + transport-architecture
+  limitations entry. Add a pointer to the new worked example if the
+  teaser warrants it (D2-lean per `readme-promotion-recipe.md`).
+- `docs/skill-usage.md` — verify the new worked example is cross-linked
+  from the compatibility matrix row and the `--sync-tasks` section reads
+  coherently alongside it.
+- `docs/cli-reference.md` / `docs/eval-spec-reference.md` — confirm the
+  `--sync-tasks` / `sync_tasks` references still align with the warning's
+  new docs link (US-003) and the worked example.
+- `CHANGELOG` (if present) — add entries for the new example skill, the
+  live fixture, and the warning-link change.
+- **GitHub issue #103** — tick the now-closed checklist boxes in the
+  2026-04-24 status comment (worked example, known-bad fixture, warning
+  link); leave the Tier 3 revisit box and the umbrella open.
+- Grep for stale references to the pre-link warning text or the
+  hypothetical `#background-task-compatibility` anchor anywhere in
+  `docs/`, `README.md`, and `src/` comments; fix to `#skill-compatibility`.
+
+**Rules:** `bundled-skill-docs-sync.md` (only fires if a `/clauditor`
+SKILL.md workflow edit slipped in — it should not have);
+`readme-promotion-recipe.md` (teaser budget for any README pointer).
+
+**Traces:** Coherence follow-up across DEC-002/003/005/006. Closes the
+issue-checklist housekeeping.
+
+**Note:** keep this story scoped to **doc/reference coherence** — it must
+not introduce new code or behavior. If the sweep surfaces a missing doc
+surface that needs net-new content, flag it rather than silently
+expanding scope (per `.claude/rules/plan-contradiction-stop.md`).
+
+### US-006 — Quality Gate (second-to-last; depends on US-001..US-005)
 
 - Run the code reviewer 4 times across the full changeset; fix every real
   finding each pass.
@@ -337,7 +376,7 @@ the existing no-go rationale byte-stable, add the structured triggers.
   `internal-skill-live-test` rule's validation-note convention).
 - Validate every story against the Phase 1 rule checklist.
 
-### US-006 — Patterns & Memory (last; depends on US-005)
+### US-007 — Patterns & Memory (last; depends on US-006)
 
 - If the live-test assertion inversion (assert-warning-not-success)
   recurs as a pattern, consider a short note or a refresh to
@@ -363,7 +402,9 @@ the existing no-go rationale byte-stable, add the structured triggers.
       updated. (US-003)
 - [ ] `docs/adr/transport-research-103.md` has a structured Tier 3
       revisit-triggers subsection. (US-004)
-- [ ] Quality gate passes; 80% coverage holds. (US-005)
+- [ ] Related-docs sweep done; no surface left stating the
+      pre-implementation story; issue-#103 checklist boxes ticked. (US-005)
+- [ ] Quality gate passes; 80% coverage holds. (US-006)
 
 ## Out of scope
 
