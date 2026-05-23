@@ -8048,7 +8048,8 @@ class TestRenderSkillError:
                 "background-task",
                 "Hint: skill launched Task(run_in_background=true) and "
                 "exited before polling — claude -p does not poll "
-                "background tasks, so output is likely truncated",
+                "background tasks, so output is likely truncated. See "
+                "docs/skill-usage.md#skill-compatibility for refactoring recipes",
             ),
             (
                 "timeout",

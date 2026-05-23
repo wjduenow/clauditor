@@ -30,6 +30,7 @@ importlib.reload(_harnesses_pkg)
 importlib.reload(_claude_code_mod)
 
 from clauditor._harnesses._claude_code import (  # noqa: E402
+    _BACKGROUND_TASK_WARNING,
     _RESULT_TEXT_MAX_CHARS,
     ClaudeCodeHarness,
     _classify_result_message,
@@ -2186,6 +2187,17 @@ class TestSkillResultErrorCategory:
         assert result.error is None
         assert result.error_category is None
         assert result.succeeded_cleanly is False
+
+    def test_background_task_warning_links_to_docs(self):
+        """The #97 background-task warning body points operators at the
+        skill-compatibility docs section while keeping the load-bearing
+        ``background-task:`` prefix intact (DEC-005)."""
+        assert _BACKGROUND_TASK_WARNING.startswith(
+            _BACKGROUND_TASK_WARNING_PREFIX
+        )
+        assert "docs/skill-usage.md#skill-compatibility" in (
+            _BACKGROUND_TASK_WARNING
+        )
 
     def test_succeeded_cleanly_tolerates_other_warnings(self):
         """Warnings that do NOT start with the interactive-hang prefix
