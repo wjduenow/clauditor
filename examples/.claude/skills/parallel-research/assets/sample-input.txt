@@ -1,0 +1,9 @@
+# Seed sources — fed via input_files so each lane has known fixtures
+# to enrich rather than starting from a blank web search every run.
+# Real evals would use this for deterministic ground truth.
+
+editorial    | Wirecutter electric kettle roundup | https://example.com/editorial/kettles | Gooseneck kettles win for pour-over precision.
+authoritative | Manufacturer spec sheet (Model A)   | https://example.com/specs/kettle-a   | Heats 1L to boil in 4 minutes at 1500W.
+authoritative | UL safety listing                   | https://example.com/specs/ul-listing | Auto-shutoff certified to UL 1082.
+verification  | Independent lab boil-time test      | https://example.com/labs/kettle-test | Confirms the 4-minute boil time within margin.
+verification  | Consumer reports reliability survey | https://example.com/labs/reliability | Failure rate under 2% over two years.
