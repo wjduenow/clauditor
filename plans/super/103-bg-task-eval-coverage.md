@@ -5,9 +5,17 @@
 - **Ticket:** [#103](https://github.com/wjduenow/clauditor/issues/103) — "Support evaluation of skills that use Task(run_in_background=true) for parallel sub-agents"
 - **Branch:** `feature/103-bg-task-eval-coverage`
 - **Worktree:** `../worktrees/clauditor/103-bg-task-eval-coverage`
-- **Phase:** detailing
+- **Phase:** devolved
 - **Planner:** super-plan-team (Lead + Ticket Analyst + Codebase Scout)
 - **Priority:** P3
+- **Beads epic:** `clauditor-c71p`
+  - US-001 `clauditor-c71p.1` — live-gated fixture + warning test
+  - US-002 `clauditor-c71p.2` — example skill + Recipe A/B worked example
+  - US-003 `clauditor-c71p.3` — warning + CLI hint docs link
+  - US-004 `clauditor-c71p.4` — Tier 3 revisit-triggers ADR subsection
+  - US-005 `clauditor-c71p.5` — related-docs sweep (deps: .1–.4)
+  - US-006 `clauditor-c71p.6` — Quality Gate (dep: .5)
+  - US-007 `clauditor-c71p.7` — Patterns & Memory (dep: .6)
 
 ## TL;DR
 
