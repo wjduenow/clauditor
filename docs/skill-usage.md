@@ -255,6 +255,99 @@ same cases:
   Shorter latency than Recipe A; loses the sub-agent's isolated
   context window.
 
+#### Worked example: a parallel-research fan-out
+
+A common `run_in_background=true` shape is a research fan-out:
+launch one sub-agent per research lane in parallel, then synthesize.
+This echoes the `find-restaurants --depth deep` motif — editorial,
+authoritative, and verification lanes researched concurrently. Under
+`claude -p` the parent emits its `result` message before the
+background children finish, so clauditor sees a truncated transcript
+and #97's loud warning fires.
+
+The runnable companion to **Recipe A** below lives at
+[`examples/.claude/skills/parallel-research/`](../examples/.claude/skills/parallel-research/)
+— it is the refactored-good version (sequential `Task`, no
+`run_in_background`), with a `SKILL.eval.json` that includes a
+`not_contains` assertion on `"run_in_background"` to lock the refactor
+in:
+
+```json
+{
+  "skill_name": "parallel-research",
+  "test_args": "\"electric kettles\" --depth deep --lanes 3 --count 3",
+  "assertions": [
+    {"id": "no_background_task", "type": "not_contains", "needle": "run_in_background"}
+  ]
+}
+```
+
+**The "before" — background fan-out that truncates under `claude -p`:**
+
+```diff
+ Research the topic across three lanes: editorial, authoritative,
+ and verification.
+-Launch all three lanes in parallel as background sub-agents:
+-- Task(run_in_background=true): research the editorial lane.
+-- Task(run_in_background=true): research the authoritative lane.
+-- Task(run_in_background=true): research the verification lane.
+-Then poll for their results and synthesize.
+```
+
+**Recipe A — drop `run_in_background`, run the lanes sequentially.**
+The parent dispatches lane 1, waits, then lane 2, then lane 3, so the
+full transcript stays visible. Higher wall-clock latency, but it
+evaluates cleanly under clauditor. This is exactly what the
+[`parallel-research`](../examples/.claude/skills/parallel-research/)
+example skill implements:
+
+```diff
+ Research the topic across three lanes: editorial, authoritative,
+ and verification.
++Run each lane as a sequential Task call — dispatch the editorial
++lane, wait for it, then the authoritative lane, then the
++verification lane. Do NOT use run_in_background; collect every
++lane's output before synthesizing.
+ Then synthesize the lanes, flagging any conflicts the verification
+ lane caught.
+```
+
+**Recipe B — replace `Task` sub-agents with parallel tool calls in
+the parent.** Drop the sub-agents entirely and emit multiple
+`WebSearch` / `WebFetch` `tool_use` blocks in a single parent turn.
+Lower latency than Recipe A; the lanes share the parent's context
+window instead of getting isolated ones:
+
+```diff
+ Research the topic across three lanes: editorial, authoritative,
+ and verification.
+-Launch all three lanes in parallel as background sub-agents:
+-- Task(run_in_background=true): research the editorial lane.
+-- Task(run_in_background=true): research the authoritative lane.
+-- Task(run_in_background=true): research the verification lane.
+-Then poll for their results and synthesize.
++In a single turn, issue three parallel tool calls directly — one
++WebSearch per lane (editorial, authoritative, verification) — then
++follow up with WebFetch on the most promising results. Synthesize
++from the combined tool output. (Parallel tool_use blocks in the
++parent work fine under claude -p; only background Task spawns do not.)
+```
+
+Three things to copy from this example:
+
+1. **The skill is runnable and refactored-good.** It ships sequential
+   `Task` calls (Recipe A), so it both works under clauditor AND
+   demonstrates the fix — not a broken before-snapshot you have to
+   imagine fixing.
+2. **An L1 `not_contains` assertion locks the refactor in.** The
+   `not_contains` assertion on `"run_in_background"` fails the test if
+   anyone reintroduces a background sub-agent. Cheap, deterministic,
+   catches the regression at the structural layer.
+3. **Section + criteria mirror the lanes.** The `sections` block has
+   one section per research lane (Editorial / Authoritative /
+   Verification) plus a Synthesis criterion, so L2/L3 grading verifies
+   the fan-out actually produced distinct, reconciled lanes.
+
 ### Recipe: skills that ask the user mid-run
 
 Skills that call `AskUserQuestion` (or end a turn with a clarifying
