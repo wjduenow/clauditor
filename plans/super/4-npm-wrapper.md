@@ -4,8 +4,8 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/4
 - **Branch:** `feature/4-npm-wrapper`
 - **Worktree:** in-place (`/home/wesd/Projects/clauditor`)
-- **Phase:** `detailing`
-- **PR:** _(filled at publish)_
+- **Phase:** `published`
+- **PR:** https://github.com/wjduenow/clauditor/pull/199
 - **Beads epic:** _(filled at devolve)_
 - **Sessions:** 1
 - **Last session:** 2026-05-25
