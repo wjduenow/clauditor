@@ -203,6 +203,103 @@ class TestCmdRun:
         assert rc == 1
         assert "command not found" in capsys.readouterr().err
 
+    def test_run_json_emits_all_documented_keys(self, capsys):
+        """--json prints a parseable object with every documented key."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="skill output here",
+            skill_name="my-skill",
+            args="--depth deep",
+            duration_seconds=2.5,
+            input_tokens=10,
+            output_tokens=20,
+        )
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--args", "--depth deep", "--json"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        assert set(payload.keys()) == {
+            "output",
+            "exit_code",
+            "duration_seconds",
+            "error",
+            "error_category",
+            "warnings",
+            "input_tokens",
+            "output_tokens",
+            "harness",
+            "skill",
+            "args",
+        }
+        assert payload["output"] == "skill output here"
+        assert payload["exit_code"] == 0
+        assert payload["duration_seconds"] == 2.5
+        assert payload["input_tokens"] == 10
+        assert payload["output_tokens"] == 20
+        assert payload["skill"] == "my-skill"
+        assert payload["args"] == "--depth deep"
+        assert payload["harness"] == "claude-code"
+        # No schema_version on stdout --json (sidecar-only convention).
+        assert "schema_version" not in payload
+        # No secret-bearing fields leak into the payload.
+        assert "api_key_source" not in payload
+        assert "raw_messages" not in payload
+        assert "stream_events" not in payload
+        assert "harness_metadata" not in payload
+
+    def test_run_json_handles_empty_optional_fields(self, capsys):
+        """--json does not crash when error is None and warnings == []."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="ok", skill_name="my-skill",
+        )
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["error"] is None
+        assert payload["error_category"] is None
+        assert payload["warnings"] == []
+
+    def test_run_json_prints_object_not_rendered_output(self, capsys):
+        """--json replaces the plain stdout render with the JSON object."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="PLAIN RENDER LINE", skill_name="my-skill",
+        )
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--json"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        # The raw output appears only inside the JSON "output" field,
+        # not as a bare rendered line.
+        assert not out.startswith("PLAIN RENDER LINE")
+        assert json.loads(out)["output"] == "PLAIN RENDER LINE"
+
+
+class TestPythonDashM:
+    """Tests for the ``python -m clauditor`` entry point."""
+
+    def test_python_m_clauditor_help_exits_zero(self):
+        """``python -m clauditor --help`` exits 0 (smoke)."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "clauditor", "--help"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "usage" in result.stdout.lower()
+
 
 class TestCmdGrade:
     """Tests for the grade subcommand."""
