@@ -4,9 +4,9 @@
 - **Ticket:** https://github.com/wjduenow/clauditor/issues/4
 - **Branch:** `feature/4-npm-wrapper`
 - **Worktree:** in-place (`/home/wesd/Projects/clauditor`)
-- **Phase:** `published`
+- **Phase:** `devolved`
 - **PR:** https://github.com/wjduenow/clauditor/pull/199
-- **Beads epic:** _(filled at devolve)_
+- **Beads epic:** `clauditor-ovml` (tasks `.1`–`.9`)
 - **Sessions:** 1
 - **Last session:** 2026-05-25
 
@@ -394,4 +394,16 @@ resolved in Discovery scoping questions.
 ---
 
 ## Beads Manifest
-_(filled at devolve)_
+- **Epic:** `clauditor-ovml`
+- **Tasks:**
+  - `clauditor-ovml.1` — US-001 Python `run --json` + `__main__.py` *(ready)*
+  - `clauditor-ovml.2` — US-002 npm/ skeleton + tooling *(ready)*
+  - `clauditor-ovml.3` — US-003 lib core (resolve+exec+errors) — needs .2
+  - `clauditor-ovml.4` — US-004 index.js API — needs .3, .1
+  - `clauditor-ovml.5` — US-005 bin launcher — needs .3
+  - `clauditor-ovml.6` — US-006 jest/vitest matcher — needs .4
+  - `clauditor-ovml.7` — US-007 README + npm-publish CI — needs .5, .6
+  - `clauditor-ovml.8` — US-008 Quality Gate — needs .1–.7
+  - `clauditor-ovml.9` — US-009 Patterns & Memory — needs .8
+- **Dependency graph:** `.1`→`.4`; `.2`→`.3`→{`.4`,`.5`}; `.4`→`.6`;
+  {`.5`,`.6`}→`.7`; `.1`–`.7`→`.8`→`.9`.
