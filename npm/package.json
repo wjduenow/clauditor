@@ -39,6 +39,7 @@
     "bin/",
     "lib/",
     "jest-helper.js",
+    "jest-helper.d.ts",
     "README.md",
     "LICENSE"
   ],
