@@ -1,0 +1,114 @@
+// Pure-helper + resolveBinary tests (jest runner). Mirrored under
+// test/lib-core.test.js for vitest. No subprocess spawned here.
+const { mapExit } = require("../lib/exec");
+const { resolveBinary } = require("../lib/resolve-binary");
+const {
+  ClauditorError,
+  ClauditorNotFoundError,
+  ClauditorInputError,
+  ClauditorApiError,
+} = require("../lib/errors");
+
+describe("error class hierarchy", () => {
+  test("every error extends ClauditorError and sets .name", () => {
+    for (const Cls of [
+      ClauditorNotFoundError,
+      ClauditorInputError,
+      ClauditorApiError,
+    ]) {
+      const e = new Cls("boom");
+      expect(e).toBeInstanceOf(ClauditorError);
+      expect(e).toBeInstanceOf(Error);
+      expect(e.name).toBe(Cls.name);
+      expect(e.message).toBe("boom");
+    }
+    expect(new ClauditorError("x").name).toBe("ClauditorError");
+  });
+});
+
+describe("mapExit (pure exit-code mapper)", () => {
+  test("exit 0 returns parsed JSON", () => {
+    const out = mapExit(0, '{"passed": true, "pass_rate": 1.0}', "");
+    expect(out).toEqual({ passed: true, pass_rate: 1.0 });
+  });
+
+  test("exit 1 returns parsed JSON (failing eval is data, not error)", () => {
+    const out = mapExit(1, '{"passed": false, "pass_rate": 0.5}', "");
+    expect(out).toEqual({ passed: false, pass_rate: 0.5 });
+  });
+
+  test("exit 2 throws ClauditorInputError with stderr text", () => {
+    expect(() => mapExit(2, "", "bad spec: missing id")).toThrow(
+      ClauditorInputError
+    );
+    try {
+      mapExit(2, "", "bad spec: missing id");
+    } catch (e) {
+      expect(e.message).toContain("bad spec: missing id");
+    }
+  });
+
+  test("exit 3 throws ClauditorApiError with stderr text", () => {
+    expect(() => mapExit(3, "", "rate limited")).toThrow(ClauditorApiError);
+    try {
+      mapExit(3, "", "rate limited");
+    } catch (e) {
+      expect(e.message).toContain("rate limited");
+    }
+  });
+
+  test("exit 7 (unexpected) throws ClauditorError", () => {
+    expect(() => mapExit(7, "", "weird")).toThrow(ClauditorError);
+    try {
+      mapExit(7, "", "weird");
+    } catch (e) {
+      expect(e).not.toBeInstanceOf(ClauditorInputError);
+      expect(e).not.toBeInstanceOf(ClauditorApiError);
+      expect(e.message).toContain("7");
+    }
+  });
+
+  test("non-JSON stdout on exit 0 throws ClauditorError with snippet", () => {
+    expect(() => mapExit(0, "not json at all", "")).toThrow(ClauditorError);
+    try {
+      mapExit(0, "not json at all", "");
+    } catch (e) {
+      expect(e.message).toContain("non-JSON");
+      expect(e.message).toContain("not json at all");
+    }
+  });
+});
+
+describe("resolveBinary", () => {
+  const ORIG_BIN = process.env.CLAUDITOR_BIN;
+  const ORIG_PATH = process.env.PATH;
+
+  afterEach(() => {
+    if (ORIG_BIN === undefined) {
+      delete process.env.CLAUDITOR_BIN;
+    } else {
+      process.env.CLAUDITOR_BIN = ORIG_BIN;
+    }
+    process.env.PATH = ORIG_PATH;
+  });
+
+  test("honors CLAUDITOR_BIN override", () => {
+    process.env.CLAUDITOR_BIN = "/opt/custom/clauditor";
+    expect(resolveBinary()).toEqual({
+      command: "/opt/custom/clauditor",
+      argsPrefix: [],
+    });
+  });
+
+  test("throws ClauditorNotFoundError with install hint when nothing resolves", () => {
+    delete process.env.CLAUDITOR_BIN;
+    process.env.PATH = "";
+    expect(() => resolveBinary()).toThrow(ClauditorNotFoundError);
+    try {
+      resolveBinary();
+    } catch (e) {
+      expect(e.message).toContain("pipx install clauditor-eval");
+      expect(e.message).toContain("CLAUDITOR_BIN");
+    }
+  });
+});
