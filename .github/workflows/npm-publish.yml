@@ -1,0 +1,30 @@
+name: Publish to npm
+
+# Dedicated tag pattern so this is independent of the PyPI publish.yml
+# workflow (which triggers on GitHub release). The npm package versions
+# independently of the Python engine, so it gets its own ``npm-v*`` tag.
+on:
+  push:
+    tags:
+      - 'npm-v*'
+
+defaults:
+  run:
+    working-directory: npm
+
+jobs:
+  publish-npm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm install
+      - run: npm test
+      - run: npm run test:vitest
+      - run: npm run lint
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
