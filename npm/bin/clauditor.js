@@ -1,16 +1,86 @@
 #!/usr/bin/env node
-// clauditor-eval CLI launcher (npx clauditor / clauditor-eval bin).
+// clauditor-eval CLI launcher (npx clauditor-eval / `clauditor` bin).
 //
-// v1 is a SUBPROCESS BRIDGE: US-005 fills this stub to forward argv to the
-// Python `clauditor` CLI (via the binary resolver from US-003) and proxy
-// its exit code.
+// v1 is a SUBPROCESS BRIDGE (US-005): resolve the Python `clauditor`
+// engine via lib/resolve-binary.js, forward every CLI arg through to it
+// with inherited stdio, and propagate the child's exit code.
 //
-// Skeleton story (US-002): keep it parseable and a no-op success so the
-// package installs and the bin entry is wired. Not yet implemented.
+// The core logic lives in a testable ``run(argv, deps)`` function with
+// injectable dependencies (spawn / resolve / stderr / exit) so tests can
+// drive it with a fake child without launching a real process. The
+// ``require.main === module`` guard at the bottom wires it to the real
+// dependencies when executed as a script (per pure-compute-vs-io-split.md:
+// arg-assembly is separated from the spawn I/O).
 "use strict";
 
-process.stderr.write(
-  "clauditor-eval: CLI launcher not yet implemented (skeleton). " +
-    "See https://github.com/wjduenow/clauditor\n",
-);
-process.exit(0);
+const childProcess = require("child_process");
+
+const { resolveBinary } = require("../lib/resolve-binary");
+const { ClauditorNotFoundError } = require("../lib/errors");
+
+// Exit code for engine-missing / input-category failures, mirroring the
+// Python exit-code taxonomy (DEC-008): 2 == input/pre-call category.
+const ENGINE_MISSING_EXIT = 2;
+
+// Pure: assemble the argv array the child engine should receive.
+// ``resolution.argsPrefix`` makes the ``python3 -m clauditor`` fallback
+// work — the user's args are appended verbatim after the prefix.
+function buildChildArgs(resolution, userArgs) {
+  return [...resolution.argsPrefix, ...userArgs];
+}
+
+// Core launcher logic with injectable deps for testability.
+//
+//   deps.spawn   — child_process.spawn-compatible (command, args, opts)
+//   deps.resolve — resolveBinary-compatible (() => {command, argsPrefix})
+//   deps.stderr  — writable stream for the install hint
+//   deps.exit    — process.exit-compatible (code) => never returns
+function run(argv, deps = {}) {
+  const spawn = deps.spawn || childProcess.spawn;
+  const resolve = deps.resolve || resolveBinary;
+  const stderr = deps.stderr || process.stderr;
+  const exit = deps.exit || process.exit;
+
+  let resolution;
+  try {
+    resolution = resolve();
+  } catch (err) {
+    if (err instanceof ClauditorNotFoundError) {
+      // Surface the actionable install hint to stderr, exit 2.
+      stderr.write(`${err.message}\n`);
+      return exit(ENGINE_MISSING_EXIT);
+    }
+    throw err;
+  }
+
+  const args = buildChildArgs(resolution, argv);
+  // INHERIT stdio for interactive passthrough; inherit env so API keys
+  // flow through. Argument ARRAY only (no shell: true) to prevent
+  // command injection (DEC-007).
+  const child = spawn(resolution.command, args, {
+    stdio: "inherit",
+    env: process.env,
+  });
+
+  child.on("error", (err) => {
+    stderr.write(`clauditor-eval: failed to launch engine: ${err.message}\n`);
+    return exit(1);
+  });
+
+  child.on("exit", (code, signal) => {
+    if (code != null) {
+      return exit(code);
+    }
+    // Signal-killed (code === null): propagate as a nonzero exit.
+    stderr.write(`clauditor-eval: engine terminated by signal ${signal}\n`);
+    return exit(1);
+  });
+
+  return child;
+}
+
+module.exports = { run, buildChildArgs, ENGINE_MISSING_EXIT };
+
+if (require.main === module) {
+  run(process.argv.slice(2));
+}
