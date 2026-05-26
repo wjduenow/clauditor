@@ -159,7 +159,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         # Deliberately excludes secret-bearing fields (api_key_source,
         # raw_messages, stream_events, harness_metadata).
         print(json.dumps(_result_to_json(result), indent=2))
-    elif result.output:
+        # In --json mode the run result is DATA: the skill's own exit
+        # code (which can be -1 on spawn failure, 124 on timeout, or any
+        # other subprocess code) is carried inside the payload as
+        # ``exit_code``/``error``/``error_category``. Return 0 so a
+        # JSON-consuming wrapper (the npm ``clauditor-eval`` bridge)
+        # receives the parsed object instead of mapping an arbitrary
+        # child exit code to a thrown error per the CLI exit taxonomy.
+        return 0
+    if result.output:
         print(result.output)
 
     return result.exit_code

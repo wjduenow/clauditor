@@ -1,5 +1,8 @@
 // Pure-helper + resolveBinary tests (jest runner). Mirrored under
 // test/lib-core.test.js for vitest. No subprocess spawned here.
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const { mapExit } = require("../lib/exec");
 const { resolveBinary } = require("../lib/resolve-binary");
 const {
@@ -109,6 +112,42 @@ describe("resolveBinary", () => {
     } catch (e) {
       expect(e.message).toContain("pipx install clauditor-eval");
       expect(e.message).toContain("CLAUDITOR_BIN");
+    }
+  });
+
+  // H2: a `clauditor` on PATH resolves to the FULL path (incl. extension),
+  // not the bare name — Windows execFile/spawn must target the exact file.
+  test("PATH resolution returns the full resolved path, not the bare name", () => {
+    delete process.env.CLAUDITOR_BIN;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clauditor-path-"));
+    const name = process.platform === "win32" ? "clauditor.exe" : "clauditor";
+    const full = path.join(dir, name);
+    fs.writeFileSync(full, "#!/bin/sh\n", { mode: 0o755 });
+    process.env.PATH = dir;
+    try {
+      const res = resolveBinary();
+      expect(res.command).toBe(full);
+      expect(res.argsPrefix).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // H3: the python fallback fires for `python` (not only `python3`), and
+  // returns the full interpreter path + the `-m clauditor` prefix.
+  test("python fallback resolves `python` with the -m clauditor prefix", () => {
+    delete process.env.CLAUDITOR_BIN;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clauditor-py-"));
+    const name = process.platform === "win32" ? "python.exe" : "python";
+    const full = path.join(dir, name);
+    fs.writeFileSync(full, "#!/bin/sh\n", { mode: 0o755 });
+    process.env.PATH = dir; // no `clauditor` here — forces the fallback
+    try {
+      const res = resolveBinary();
+      expect(res.command).toBe(full);
+      expect(res.argsPrefix).toEqual(["-m", "clauditor"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });

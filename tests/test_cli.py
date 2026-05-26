@@ -158,6 +158,29 @@ class TestCmdValidate:
         assert rc == 1
         assert "Skill failed" in capsys.readouterr().err
 
+    def test_validate_json_emits_json_when_skill_fails_to_run(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """--json emits a parseable {passed: false} object even when the
+        skill never runs, so the npm bridge's validate() does not choke on
+        empty stdout. Returns 1, but stdout carries valid JSON."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="", exit_code=1, duration_seconds=0.5, error="timeout",
+        )
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--json"])
+
+        assert rc == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["passed"] is False
+        assert payload["pass_rate"] == 0.0
+        assert payload["results"] == []
+        assert "error" in payload
+
     def test_validate_output_file_missing_exits_2(self, capsys, tmp_path):
         """--output pointing at a non-existent path exits 2 with clean error."""
         missing = tmp_path / "no-such-file.txt"
@@ -282,6 +305,32 @@ class TestCmdRun:
         # not as a bare rendered line.
         assert not out.startswith("PLAIN RENDER LINE")
         assert json.loads(out)["output"] == "PLAIN RENDER LINE"
+
+    def test_run_json_returns_zero_even_on_nonzero_skill_exit(self, capsys):
+        """--json returns 0 so a JSON consumer gets the payload as data.
+
+        The skill's own exit code (e.g. -1 on spawn failure, 124 on
+        timeout) is carried inside the payload as ``exit_code``; the
+        process return code stays 0 in --json mode so the npm bridge
+        does not map an arbitrary child code to a thrown error.
+        """
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="",
+            skill_name="my-skill",
+            exit_code=-1,
+            error="spawn failed",
+        )
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--json"])
+
+        # Process exit is 0 (data delivered) ...
+        assert rc == 0
+        # ... but the skill's real exit code is preserved in the payload.
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["exit_code"] == -1
+        assert payload["error"] == "spawn failed"
 
 
 class TestPythonDashM:

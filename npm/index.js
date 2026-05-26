@@ -24,6 +24,16 @@ const {
   ClauditorApiError,
 } = require("./lib/errors");
 
+// Grace added to the JS-side exec timeout over the engine's own --timeout
+// (both in the same wall-clock window otherwise). The engine catches its
+// OWN timeout and reports it as structured data (run --json exit 0 with
+// error_category="timeout"; validate --json exit 1 with passed:false). If
+// the JS execFile kill fired at the same instant it would instead surface
+// as a thrown ClauditorError ("killed (timeout?)"). The grace lets the
+// engine's watchdog always win; the JS timeout is only a hard backstop for
+// a genuinely hung engine.
+const _EXEC_TIMEOUT_GRACE_MS = 5000;
+
 /**
  * Run a skill via `clauditor run <skill> --json` and return the parsed
  * SkillResult-shaped object (DEC-004).
@@ -55,9 +65,10 @@ async function runSkill(skill, opts = {}) {
 
   const execOpts = {};
   if (typeof options.timeout === "number") {
-    // The engine's --timeout is in SECONDS; the execJson timeout is in ms.
+    // The engine's --timeout is in SECONDS; the execJson timeout is in ms,
+    // with a grace margin so the engine's own watchdog wins (see constant).
     cliArgs.push("--timeout", String(options.timeout));
-    execOpts.timeout = options.timeout * 1000;
+    execOpts.timeout = options.timeout * 1000 + _EXEC_TIMEOUT_GRACE_MS;
   }
 
   return execJson(cliArgs, execOpts);
@@ -90,7 +101,7 @@ async function validate(skillPath, opts = {}) {
   const execOpts = {};
   if (typeof options.timeout === "number") {
     cliArgs.push("--timeout", String(options.timeout));
-    execOpts.timeout = options.timeout * 1000;
+    execOpts.timeout = options.timeout * 1000 + _EXEC_TIMEOUT_GRACE_MS;
   }
 
   return execJson(cliArgs, execOpts);
@@ -110,8 +121,10 @@ async function validate(skillPath, opts = {}) {
  *     eval is discovered:
  *       - `X.md`        -> look for `X.eval.json` in the same directory.
  *       - `.../SKILL.md` -> look for, in order:
- *           1. `eval.json` in the same directory, then
- *           2. `<dirname>.eval.json` in the same directory (where
+ *           1. `SKILL.eval.json` (engine-canonical sibling, matches
+ *              spec.py's skill_path.with_suffix(".eval.json")), then
+ *           2. `eval.json` in the same directory, then
+ *           3. `<dirname>.eval.json` in the same directory (where
  *              `<dirname>` is the name of the skill's parent directory).
  *
  * @param {string} target - Explicit `.json` eval path OR a skill file path.
@@ -134,7 +147,11 @@ async function loadSpec(target) {
 
   const candidates = [];
   if (base === "SKILL.md") {
-    // Modern layout: <skill-dir>/SKILL.md
+    // Modern layout: <skill-dir>/SKILL.md. Lead with the engine-canonical
+    // sibling name (spec.py uses skill_path.with_suffix(".eval.json") ->
+    // SKILL.eval.json) so loadSpec agrees with what `validate()` loads;
+    // keep eval.json / <dir>.eval.json as convenience fallbacks.
+    candidates.push(path.join(dir, "SKILL.eval.json"));
     candidates.push(path.join(dir, "eval.json"));
     candidates.push(path.join(dir, `${path.basename(dir)}.eval.json`));
   } else {

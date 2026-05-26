@@ -34,12 +34,18 @@ function _candidateNames(base) {
   return [base];
 }
 
-// Pure fs PATH scan: return true if `name` is found as a file on PATH.
-// Avoids spawning `which`/`where` (which would be a subprocess per resolve).
-function _isOnPath(name) {
+// Pure fs PATH scan: return the FULL resolved path (including any platform
+// extension) of `name` on PATH, or null if not found. Avoids spawning
+// `which`/`where`. Returning the full path — rather than the bare name —
+// matters on Windows: `child_process.execFile`/`spawn` targets the exact
+// file, and the `.exe` candidate is tried before `.cmd`/`.bat` so the
+// spawnable executable wins. (Node refuses to spawn `.cmd`/`.bat` without
+// `shell: true` since CVE-2024-27980; for those rare shim-only installs the
+// operator should point CLAUDITOR_BIN at the real interpreter.)
+function _findOnPath(name) {
   const pathEnv = process.env.PATH || "";
   if (pathEnv === "") {
-    return false;
+    return null;
   }
   const entries = pathEnv.split(path.delimiter);
   for (const dir of entries) {
@@ -51,7 +57,7 @@ function _isOnPath(name) {
       try {
         const stat = fs.statSync(full);
         if (stat.isFile()) {
-          return true;
+          return full;
         }
       } catch {
         // Not present / not readable in this dir — keep scanning.
@@ -59,7 +65,17 @@ function _isOnPath(name) {
       }
     }
   }
-  return false;
+  return null;
+}
+
+// Interpreter names to probe for the `python -m clauditor` fallback, in
+// order. Windows installs almost always expose `python` (not `python3`),
+// and the `py` launcher as a last resort.
+function _pythonCandidates() {
+  if (process.platform === "win32") {
+    return ["python", "python3", "py"];
+  }
+  return ["python3", "python"];
 }
 
 // Resolve the engine binary per the DEC-005 precedence order.
@@ -73,14 +89,18 @@ function resolveBinary() {
     return { command: override, argsPrefix: [] };
   }
 
-  // 2. `clauditor` on PATH.
-  if (_isOnPath("clauditor")) {
-    return { command: "clauditor", argsPrefix: [] };
+  // 2. `clauditor` on PATH — return the full resolved path.
+  const clauditorPath = _findOnPath("clauditor");
+  if (clauditorPath !== null) {
+    return { command: clauditorPath, argsPrefix: [] };
   }
 
-  // 3. `python3 -m clauditor` best-effort fallback.
-  if (_isOnPath("python3")) {
-    return { command: "python3", argsPrefix: ["-m", "clauditor"] };
+  // 3. `python -m clauditor` best-effort fallback (probe python3/python/py).
+  for (const interpreter of _pythonCandidates()) {
+    const interpreterPath = _findOnPath(interpreter);
+    if (interpreterPath !== null) {
+      return { command: interpreterPath, argsPrefix: ["-m", "clauditor"] };
+    }
   }
 
   // 4. Nothing resolved.

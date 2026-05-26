@@ -240,6 +240,22 @@ describe("loadSpec", () => {
     expect(spec).toEqual({ skill_name: "greeter" });
   });
 
+  test("prefers SKILL.eval.json (engine-canonical) for a SKILL.md skill", async () => {
+    // The Python engine loads skill_path.with_suffix(".eval.json") ->
+    // SKILL.eval.json; loadSpec must agree, even when eval.json also exists.
+    fs.writeFileSync(path.join(specDir, "SKILL.md"), "# skill");
+    fs.writeFileSync(
+      path.join(specDir, "SKILL.eval.json"),
+      JSON.stringify({ via: "SKILL.eval.json" })
+    );
+    fs.writeFileSync(
+      path.join(specDir, "eval.json"),
+      JSON.stringify({ via: "eval.json" })
+    );
+    const spec = await loadSpec(path.join(specDir, "SKILL.md"));
+    expect(spec).toEqual({ via: "SKILL.eval.json" });
+  });
+
   test("discovers eval.json for a SKILL.md skill", async () => {
     fs.writeFileSync(path.join(specDir, "SKILL.md"), "# skill");
     fs.writeFileSync(

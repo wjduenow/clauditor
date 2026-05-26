@@ -2,6 +2,9 @@
 // __tests__/lib-core.test.js so the same contract runs under both runners.
 import { describe, it, expect, afterEach } from "vitest";
 import { createRequire } from "node:module";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const require = createRequire(import.meta.url);
 const { mapExit } = require("../lib/exec");
@@ -80,5 +83,39 @@ describe("resolveBinary (vitest)", () => {
     delete process.env.CLAUDITOR_BIN;
     process.env.PATH = "";
     expect(() => resolveBinary()).toThrow(ClauditorNotFoundError);
+  });
+
+  // H2: PATH resolution returns the FULL resolved path, not the bare name.
+  it("PATH resolution returns the full resolved path, not the bare name", () => {
+    delete process.env.CLAUDITOR_BIN;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clauditor-path-"));
+    const name = process.platform === "win32" ? "clauditor.exe" : "clauditor";
+    const full = path.join(dir, name);
+    fs.writeFileSync(full, "#!/bin/sh\n", { mode: 0o755 });
+    process.env.PATH = dir;
+    try {
+      const res = resolveBinary();
+      expect(res.command).toBe(full);
+      expect(res.argsPrefix).toEqual([]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // H3: python fallback resolves `python` (not only python3) with -m prefix.
+  it("python fallback resolves `python` with the -m clauditor prefix", () => {
+    delete process.env.CLAUDITOR_BIN;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clauditor-py-"));
+    const name = process.platform === "win32" ? "python.exe" : "python";
+    const full = path.join(dir, name);
+    fs.writeFileSync(full, "#!/bin/sh\n", { mode: 0o755 });
+    process.env.PATH = dir;
+    try {
+      const res = resolveBinary();
+      expect(res.command).toBe(full);
+      expect(res.argsPrefix).toEqual(["-m", "clauditor"]);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

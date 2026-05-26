@@ -62,19 +62,31 @@ function run(argv, deps = {}) {
     env: process.env,
   });
 
-  child.on("error", (err) => {
-    stderr.write(`clauditor-eval: failed to launch engine: ${err.message}\n`);
-    return exit(1);
-  });
-
-  child.on("exit", (code, signal) => {
-    if (code != null) {
-      return exit(code);
+  // Guard against double-dispatch: a spawn failure can emit both "error"
+  // and "exit"; only the first should drive the process exit code.
+  let settled = false;
+  const settle = (codeOrNull, signal) => {
+    if (settled) {
+      return undefined;
+    }
+    settled = true;
+    if (codeOrNull != null) {
+      return exit(codeOrNull);
     }
     // Signal-killed (code === null): propagate as a nonzero exit.
     stderr.write(`clauditor-eval: engine terminated by signal ${signal}\n`);
     return exit(1);
+  };
+
+  child.on("error", (err) => {
+    if (settled) {
+      return undefined;
+    }
+    stderr.write(`clauditor-eval: failed to launch engine: ${err.message}\n`);
+    return settle(1);
   });
+
+  child.on("exit", (code, signal) => settle(code, signal));
 
   return child;
 }

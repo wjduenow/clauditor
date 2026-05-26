@@ -115,6 +115,14 @@ async function execJson(args, opts) {
       code = err.code;
       stdout = err.stdout != null ? err.stdout : "";
       stderr = err.stderr != null ? err.stderr : "";
+    } else if (err.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") {
+      // Output exceeded maxBuffer — distinct from a timeout. Surface a
+      // clear message so a huge transcript isn't misread as a hang.
+      throw new ClauditorError(
+        `clauditor engine output exceeded the ${
+          execOptions.maxBuffer / (1024 * 1024)
+        } MB buffer: ${err.message}`,
+      );
     } else {
       // No numeric exit code: spawn failure (ENOENT), timeout kill, etc.
       const detail = err.killed

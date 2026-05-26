@@ -40,6 +40,13 @@ export interface ValidateResult {
   pass_rate: number;
   passed: boolean;
   results: ValidateResultEntry[];
+  /**
+   * Present on the skill-failed-to-run path (exit 1 is data): a rendered
+   * error string and the engine's error category. Absent on the normal
+   * pass/fail path.
+   */
+  error?: string;
+  error_category?: string | null;
   [key: string]: unknown;
 }
 

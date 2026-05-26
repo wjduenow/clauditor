@@ -207,7 +207,12 @@ def cmd_validate(args: argparse.Namespace) -> int:
             return 2
 
         try:
-            print(f"Running /{spec.skill_name} {spec.eval_spec.test_args}...")
+            # Progress goes to stderr under --json so stdout stays pure
+            # JSON (the npm clauditor-eval bridge parses all of stdout).
+            print(
+                f"Running /{spec.skill_name} {spec.eval_spec.test_args}...",
+                file=sys.stderr if args.json else sys.stdout,
+            )
             # DEC-001, DEC-006, DEC-014: thread CLI auth/timeout flags
             # through to the spec. ``--no-api-key`` strips both auth env
             # vars via ``env_without_api_key``; ``--timeout`` wins over
@@ -239,6 +244,26 @@ def cmd_validate(args: argparse.Namespace) -> int:
                     f"{_render_skill_error(skill_result)}",
                     file=sys.stderr,
                 )
+                if args.json:
+                    # Emit a JSON eval result so the --json contract holds
+                    # even when the skill never ran. Consumers (the npm
+                    # ``clauditor-eval`` validate() / toPassClauditor
+                    # matcher) parse exit-1 stdout as JSON; empty stdout
+                    # would surface as an opaque non-JSON error instead of
+                    # a clean {passed: false} result.
+                    print(
+                        json.dumps(
+                            {
+                                "skill": spec.skill_name,
+                                "pass_rate": 0.0,
+                                "passed": False,
+                                "results": [],
+                                "error": _render_skill_error(skill_result),
+                                "error_category": skill_result.error_category,
+                            },
+                            indent=2,
+                        )
+                    )
                 workspace.abort()
                 # Still record history so failed live-validates remain
                 # visible in trend/audit tooling. No iteration is
@@ -253,7 +278,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
                 )
                 return 1
             output = skill_result.output
-            print(f"Skill completed in {skill_result.duration_seconds:.1f}s")
+            print(
+                f"Skill completed in {skill_result.duration_seconds:.1f}s",
+                file=sys.stderr if args.json else sys.stdout,
+            )
 
             results = run_assertions(output, spec.eval_spec.assertions)
 
