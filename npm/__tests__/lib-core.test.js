@@ -150,4 +150,40 @@ describe("resolveBinary", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // POSIX: a non-executable file named `clauditor` on PATH must NOT be
+  // selected (it would fail at spawn). Skipped on Windows (no exec bit).
+  const itPosix = process.platform === "win32" ? test.skip : test;
+  itPosix("skips a non-executable PATH match (POSIX)", () => {
+    delete process.env.CLAUDITOR_BIN;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clauditor-noexec-"));
+    fs.writeFileSync(path.join(dir, "clauditor"), "not a binary\n", {
+      mode: 0o644,
+    });
+    process.env.PATH = dir;
+    try {
+      // No executable `clauditor` and no python here → nothing resolves.
+      expect(() => resolveBinary()).toThrow(ClauditorNotFoundError);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Recursion guard: a PATH `clauditor` that is really this wrapper's own
+  // launcher (npm/bin/clauditor.js) must be skipped, not spawned as the
+  // engine. Simulated via a symlink whose realpath is the wrapper bin.
+  itPosix("skips a PATH match that resolves to the wrapper's own bin", () => {
+    delete process.env.CLAUDITOR_BIN;
+    const selfBin = path.join(__dirname, "..", "bin", "clauditor.js");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clauditor-self-"));
+    fs.symlinkSync(selfBin, path.join(dir, "clauditor"));
+    process.env.PATH = dir;
+    try {
+      // The only `clauditor` on PATH is the wrapper itself → must NOT
+      // resolve to it (would infinite-loop); nothing else here resolves.
+      expect(() => resolveBinary()).toThrow(ClauditorNotFoundError);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });

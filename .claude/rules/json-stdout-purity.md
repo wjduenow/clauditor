@@ -83,7 +83,7 @@ The external consumer treats the producer's stdout as a tolerated
 contract (parse defensively, surface a crisp error on non-JSON) and
 mirrors the producer's exit-code taxonomy structurally — NOT by
 substring-matching messages. See
-`src/clauditor/lib/exec.js::mapExit` (npm bridge): exit 0/1 → parsed
+`npm/lib/exec.js::mapExit` (npm bridge): exit 0/1 → parsed
 JSON data, 2 → `ClauditorInputError`, 3 → `ClauditorApiError`, other →
 `ClauditorError`; non-JSON stdout → `ClauditorError` with a bounded
 snippet.

@@ -25,6 +25,8 @@ jobs:
       - run: npm test
       - run: npm run test:vitest
       - run: npm run lint
-      - run: npm publish --access public
+      # Unscoped packages publish public by default; no --access flag needed
+      # (and passing one is only meaningful for scoped packages).
+      - run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

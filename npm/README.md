@@ -21,13 +21,21 @@ uv tool install clauditor-eval     # if you use uv
 pip install clauditor-eval         # into the active environment
 ```
 
-`clauditor-eval` resolves the engine in this order:
+`clauditor-eval` resolves the **Python engine** in this order:
 
 1. `CLAUDITOR_BIN` — an explicit path to the engine binary (wins).
-2. `clauditor` on `PATH`.
-3. `python3 -m clauditor` — best-effort fallback when `python3` is on `PATH`.
+2. `clauditor` on `PATH` — this is the **Python engine's** console script
+   (installed by `pipx install clauditor-eval`), NOT this npm wrapper. The
+   wrapper installs its own command as `clauditor-eval`, so the scan can
+   never resolve to itself.
+3. `python -m clauditor` — best-effort fallback, probing `python3`, then
+   `python`, then (on Windows) the `py` launcher.
 
 If none resolve, calls throw `ClauditorNotFoundError` with an install hint.
+
+Note: on Windows the PATH scan only accepts a spawnable `clauditor.exe`;
+`.cmd`/`.bat` shims are skipped (they can't be launched without a shell), so
+point `CLAUDITOR_BIN` at the real interpreter for those installs.
 
 ## Install
 

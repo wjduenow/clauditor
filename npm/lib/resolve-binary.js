@@ -25,23 +25,55 @@ const _NOT_FOUND_HINT =
   "pipx install clauditor-eval  (or: uv tool install clauditor-eval), " +
   "or set CLAUDITOR_BIN to the binary path.";
 
-// On Windows, PATHEXT-style executables need the extension. We keep this
-// minimal: try the bare name and `.exe`. (Cross-platform without spawning.)
+// Windows: only consider extensions we can actually spawn WITHOUT a shell.
+// `.exe` is spawnable via execFile; `.cmd`/`.bat` are NOT (Node refuses them
+// without `shell: true` since CVE-2024-27980), so we deliberately do NOT
+// return them — a `.cmd`/`.bat`-only install must point CLAUDITOR_BIN at the
+// real interpreter. The bare name is kept as a last resort.
 function _candidateNames(base) {
   if (process.platform === "win32") {
-    return [base + ".exe", base + ".cmd", base + ".bat", base];
+    return [base + ".exe", base];
   }
   return [base];
+}
+
+// Realpath of this wrapper's OWN launcher (npm/bin/clauditor.js). Used to
+// skip self-matches during the PATH scan: belt-and-suspenders against the
+// infinite-recursion trap where the wrapper resolves its own installed bin
+// shim instead of the Python engine. (The primary defense is naming the
+// installed command `clauditor-eval` in package.json, so a scan for the
+// engine's `clauditor` cannot match it; this guard covers symlink/rename
+// edge cases too.) Computed once; null if it can't be resolved.
+const _SELF_BIN = (() => {
+  try {
+    return fs.realpathSync(path.join(__dirname, "..", "bin", "clauditor.js"));
+  } catch {
+    return null;
+  }
+})();
+
+// True when `full` is executable. On POSIX we require the execute bit so a
+// non-exec data file named `clauditor` earlier on PATH doesn't shadow the
+// real binary and then fail at spawn. On Windows, file presence is the
+// signal (the exec bit has no POSIX meaning there).
+function _isExecutable(full) {
+  if (process.platform === "win32") {
+    return true;
+  }
+  try {
+    fs.accessSync(full, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // Pure fs PATH scan: return the FULL resolved path (including any platform
 // extension) of `name` on PATH, or null if not found. Avoids spawning
 // `which`/`where`. Returning the full path — rather than the bare name —
-// matters on Windows: `child_process.execFile`/`spawn` targets the exact
-// file, and the `.exe` candidate is tried before `.cmd`/`.bat` so the
-// spawnable executable wins. (Node refuses to spawn `.cmd`/`.bat` without
-// `shell: true` since CVE-2024-27980; for those rare shim-only installs the
-// operator should point CLAUDITOR_BIN at the real interpreter.)
+// matters on Windows: `execFile`/`spawn` targets the exact file. Skips
+// non-executable files (POSIX) and any path that resolves to this wrapper's
+// own launcher (recursion guard).
 function _findOnPath(name) {
   const pathEnv = process.env.PATH || "";
   if (pathEnv === "") {
@@ -56,9 +88,22 @@ function _findOnPath(name) {
       const full = path.join(dir, candidate);
       try {
         const stat = fs.statSync(full);
-        if (stat.isFile()) {
-          return full;
+        if (!stat.isFile() || !_isExecutable(full)) {
+          continue;
         }
+        // Skip a match that is really this wrapper's own launcher.
+        if (_SELF_BIN !== null) {
+          let real;
+          try {
+            real = fs.realpathSync(full);
+          } catch {
+            real = full;
+          }
+          if (real === _SELF_BIN) {
+            continue;
+          }
+        }
+        return full;
       } catch {
         // Not present / not readable in this dir — keep scanning.
         continue;
