@@ -1,11 +1,11 @@
 ---
 name: release-manager
-description: Cut a clauditor-eval release. Test releases run from dev (→ TestPyPI, npm dist-tag `next`); full releases run from main (→ PyPI, npm `latest`). Python and npm version independently — release either or both.
+description: Cut a clauditor-eval release. Test releases run from dev (→ TestPyPI, npm dist-tag `next`); full releases run from main (→ PyPI, npm `latest`). Python and npm version independently of each other — release either or both.
 compatibility: "Requires: uv, gh CLI, git, node/npm. Must be run from the clauditor repo root."
 metadata:
   clauditor-version: "0.1.0"
 disable-model-invocation: true
-allowed-tools: Bash(git *), Bash(gh *), Bash(uv *), Bash(uvx *), Bash(npm *), Bash(node *), Bash(grep *), Bash(cat *), Bash(sleep *), Bash(pip *), Bash(curl *), Bash(awk *), Bash(rm *), Bash(date *), Read, Edit, Write
+allowed-tools: Bash(git *), Bash(gh *), Bash(uv *), Bash(uvx *), Bash(npm *), Bash(node *), Bash(cd *), Bash(grep *), Bash(cat *), Bash(sleep *), Bash(pip *), Bash(curl *), Bash(awk *), Bash(rm *), Bash(date *), Read, Edit, Write
 ---
 
 # /release-manager — Cut a clauditor-eval release
@@ -28,9 +28,9 @@ Branch model is shared:
 Ask the user **two** questions:
 
 > **1. Release type?**
-> - `test` — pre-release (Python version must have a dev/alpha/rc suffix; npm version must be a semver prerelease like `0.1.1-rc.0`)
+> - `test` — pre-release (Python version must have a dev/alpha/rc suffix; npm version must be a semver pre-release like `0.1.1-rc.0`)
 > - `full` — stable release (clean versions, e.g. `0.1.0`)
-
+>
 > **2. Which components?**
 > - `pypi` — Python engine only
 > - `npm` — npm wrapper only
@@ -129,10 +129,10 @@ Ask the user to confirm before proceeding.
 
 Read `npm/package.json` and extract the current version
 (`node -p "require('./npm/package.json').version"`). npm uses **semver
-prerelease** syntax (hyphen), NOT Python's `.devN` — `0.1.1-rc.0`,
+pre-release** syntax (hyphen), NOT Python's `.devN` — `0.1.1-rc.0`,
 `0.1.1-beta.2`, etc.
 
-**For a test release:** the version must be a semver prerelease (contains a
+**For a test release:** the version must be a semver pre-release (contains a
 `-`). The publish workflow auto-detects the `-` and publishes under the `next`
 dist-tag (testers run `npm install clauditor-eval@next`; plain installs keep
 resolving `latest`). If `npm/package.json` is a clean version, stop and ask the
@@ -143,7 +143,7 @@ user to bump it to a `-rc.N` / `-beta.N` first.
 
 In both cases the pre-flight registry probe already confirmed the version is
 unpublished. Show the user:
-```
+```text
 npm current version : {npm_current}
 npm release version : {npm_release}   (dist-tag: next | latest)
 ```
@@ -206,7 +206,7 @@ Report: TestPyPI URL `https://test.pypi.org/project/clauditor-eval/{release_vers
 ### npm track (dist-tag `next`)
 
 Run only when `npm`/`both` is selected. The npm version must be a semver
-prerelease (`-rc.N` / `-beta.N`); the publish workflow auto-detects the `-` and
+pre-release (`-rc.N` / `-beta.N`); the publish workflow auto-detects the `-` and
 publishes under the `next` dist-tag via OIDC trusted publishing (no token).
 
 #### Step N1 — Commit if `npm/package.json` changed
@@ -249,12 +249,26 @@ Report: `npm install clauditor-eval@next` → `{npm_release_version}`.
 
 ## Full release workflow
 
+> **Component gating (read first):**
+> - **PyPI track = Steps 1–9.** Run them only when `pypi`/`both` is selected.
+>   For an **`npm`-only** full release, **skip Steps 1–9 entirely** (no
+>   `pyproject.toml` bump, no release PR, no `v` tag, no GitHub Release, no
+>   next-dev bump, no backmerge) and run only the **npm track** below.
+> - **npm track** (after Step 7) runs only when `npm`/`both` is selected.
+> - For **`both`**, run the PyPI track first, then the npm track.
+>
 > **Note:** `main` has GitHub branch protection — direct pushes are rejected. The release-version commit and the next-dev bump both ship via PR.
 >
 > When `npm`/`both` is selected, the `npm/package.json` bump rides the **same
 > release PR** (Step 3) so main carries both version bumps atomically; the
 > `npm-v` tag is then pushed alongside the `v` tag after the merge (npm track
-> below, after Step 7). When `pypi`-only, skip every npm-flavored note here.
+> below, after Step 7).
+>
+> For an **`npm`-only** full release there is no release PR (Steps 1–9 are
+> skipped), so bump `npm/package.json` on its own branch → PR to `main` → merge,
+> then run the npm track to tag and publish.
+
+### PyPI track (Steps 1–9 — skip entirely for an `npm`-only release)
 
 ### Step 1 — Bump to release version
 Edit `pyproject.toml`: set `version = "{release_version}"`. Then refresh the lock file so `uv.lock` matches:
