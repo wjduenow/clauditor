@@ -15,8 +15,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-05-26
+
 ### Added
 
+- **npm wrapper package `clauditor-eval` (#4).** A Node.js subprocess
+  bridge that shells out to the Python `clauditor` CLI: a `bin/clauditor.js`
+  launcher, a JS API (`runSkill` / `validate` / `loadSpec`) with
+  TypeScript types, a `toPassClauditor` jest/vitest matcher, and an
+  npm-publish CI workflow. Lets JS/TS projects run clauditor evals
+  without a Python entry point of their own.
+- **`clauditor run --json` structured output and `python -m clauditor`
+  entry point (#4).** `run --json` emits a single pure-JSON document on
+  stdout (skill exit code carried in the payload, all progress routed to
+  stderr) so external wrappers can `JSON.parse` it; `python -m clauditor`
+  invokes the CLI as a module. Both back the npm bridge.
 - **`parallel-research` example skill demonstrating the background-task
   refactor (#103).** Added `examples/.claude/skills/parallel-research/`
   — a runnable companion to "Recipe A" (drop `run_in_background: true`,
@@ -483,7 +496,8 @@ First stable release on PyPI: <https://pypi.org/project/clauditor-eval/0.1.0/>.
 - Bundled `/clauditor` Claude Code slash command installable via
   `clauditor setup`.
 
-[Unreleased]: https://github.com/wjduenow/clauditor/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/wjduenow/clauditor/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/wjduenow/clauditor/releases/tag/v0.1.3
 [0.1.2]: https://github.com/wjduenow/clauditor/releases/tag/v0.1.2
 [0.1.1]: https://github.com/wjduenow/clauditor/releases/tag/v0.1.1
 [0.1.0]: https://github.com/wjduenow/clauditor/releases/tag/v0.1.0
