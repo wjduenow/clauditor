@@ -49,4 +49,18 @@ jobs:
       # config. Provenance attestation is generated automatically for
       # trusted-publisher releases. Unscoped packages publish public by
       # default; no --access flag needed.
-      - run: npm publish
+      #
+      # Dist-tag is derived from the version: a semver prerelease (contains a
+      # '-', e.g. 0.1.1-rc.0) publishes under 'next' so it does not become the
+      # default 'latest' install; a clean version publishes to 'latest'. This
+      # is npm's analog of TestPyPI (npm has no separate test registry).
+      - name: Publish to npm (dist-tag derived from version)
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          if [[ "$version" == *-* ]]; then
+            echo "Prerelease $version → dist-tag 'next'"
+            npm publish --tag next
+          else
+            echo "Stable $version → dist-tag 'latest'"
+            npm publish
+          fi
