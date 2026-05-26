@@ -1,0 +1,5 @@
+node_modules/
+*.log
+.DS_Store
+# Note: package-lock.json is ignored repo-wide via the root .gitignore
+# (this is a library package; the CI workflow runs a fresh `npm install`).

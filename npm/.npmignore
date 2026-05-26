@@ -1,0 +1,22 @@
+# Tests
+__tests__/
+test/
+*.test.js
+*.spec.js
+
+# Tooling configs
+jest.config.js
+vitest.config.js
+eslint.config.js
+.eslintrc.json
+
+# Dependencies / build artifacts
+node_modules/
+coverage/
+
+# Lockfiles (the published package does not need the dev lockfile)
+package-lock.json
+
+# Misc
+.DS_Store
+*.log

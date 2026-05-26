@@ -15,7 +15,7 @@ Automated quality checks for [Agent Skills](https://agentskills.io). A skill is 
 <details markdown="1">
 <summary>Contents</summary>
 
-[Why clauditor?](#why-clauditor) · [Install](#install) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [Suggest](#llm-assisted-skill-improvement-clauditor-suggest) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Eval Spec Format](#eval-spec-format) · [Skill compatibility](#skill-compatibility) · [Running under Codex](#running-skills-under-codex) · [Authentication](#authentication-and-api-keys) · [Reference docs](#reference-docs)
+[Why clauditor?](#why-clauditor) · [Install](#install) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [Suggest](#llm-assisted-skill-improvement-clauditor-suggest) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Node.js](#nodejs-jest--vitest) · [Eval Spec Format](#eval-spec-format) · [Skill compatibility](#skill-compatibility) · [Running under Codex](#running-skills-under-codex) · [Authentication](#authentication-and-api-keys) · [Reference docs](#reference-docs)
 
 </details>
 
@@ -171,6 +171,19 @@ def test_my_skill(clauditor_runner, clauditor_asserter):
 ```
 
 Full reference: [docs/pytest-plugin.md](https://github.com/wjduenow/clauditor/blob/dev/docs/pytest-plugin.md).
+
+## Node.js (Jest / Vitest)
+
+The `clauditor-eval` npm package is a subprocess bridge to the Python engine (install it separately), exposing `runSkill` / `validate` / `loadSpec` plus a `toPassClauditor` matcher.
+
+```js
+const { validate } = require("clauditor-eval");
+const { toPassClauditor } = require("clauditor-eval/jest-helper");
+expect.extend({ toPassClauditor });
+await expect(await validate(".claude/skills/my-skill/SKILL.md")).toPassClauditor();
+```
+
+Full reference: [npm/README.md](https://github.com/wjduenow/clauditor/blob/dev/npm/README.md).
 
 ## Eval Spec Format
 

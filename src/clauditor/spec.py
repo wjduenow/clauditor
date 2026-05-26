@@ -163,7 +163,14 @@ class SkillSpec:
             sources = [Path(p) for p in self.eval_spec.input_files]
             stage_inputs(run_dir, sources)
             effective_cwd = run_dir / "inputs"
-            print(f"Staged {len(sources)} input file(s) into {effective_cwd}")
+            # Progress breadcrumb → stderr, never stdout: callers such as
+            # ``clauditor validate --json`` / ``run --json`` emit a pure-JSON
+            # payload on stdout that the npm clauditor-eval bridge parses
+            # wholesale; a stray "Staged ..." line would break JSON.parse.
+            print(
+                f"Staged {len(sources)} input file(s) into {effective_cwd}",
+                file=sys.stderr,
+            )
 
         # DEC-005: thread the per-eval escape hatch into the runner. When
         # no eval_spec is attached, default to True (back-compat).
