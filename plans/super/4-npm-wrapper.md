@@ -7,6 +7,7 @@
 - **Phase:** `devolved`
 - **PR:** https://github.com/wjduenow/clauditor/pull/199
 - **Beads epic:** `clauditor-ovml` (tasks `.1`–`.9`)
+- **Follow-up epic (deferred binary distribution):** https://github.com/wjduenow/clauditor/issues/200
 - **Sessions:** 1
 - **Last session:** 2026-05-25
 
@@ -383,6 +384,8 @@ resolved in Discovery scoping questions.
 ---
 
 ## Deferred to follow-up epic (NOT in this plan)
+> Filed as https://github.com/wjduenow/clauditor/issues/200.
+
 - PyInstaller standalone-binary builds for linux-x64, darwin-arm64,
   darwin-x64, win32-x64 (DEC-002 / DEC-003).
 - `@clauditor-eval/<platform>` scoped platform packages +
