@@ -17,6 +17,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Publish workflow never pushes to git; don't leave the token
+          # configured in git config for later steps.
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20

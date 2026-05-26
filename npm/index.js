@@ -34,6 +34,26 @@ const {
 // a genuinely hung engine.
 const _EXEC_TIMEOUT_GRACE_MS = 5000;
 
+// Validate an optional `timeout` (seconds). Returns the number when present
+// and valid, undefined when omitted. Throws on a non-positive / non-finite /
+// non-number value (NaN, Infinity, 0, negative, "30") so a typo'd timeout
+// fails loudly instead of producing a bad `--timeout` CLI arg.
+function _validateTimeoutSeconds(timeout) {
+  if (timeout === undefined) {
+    return undefined;
+  }
+  if (
+    typeof timeout !== "number" ||
+    !Number.isFinite(timeout) ||
+    timeout <= 0
+  ) {
+    throw new ClauditorError(
+      `timeout must be a positive finite number of seconds, got: ${timeout}`,
+    );
+  }
+  return timeout;
+}
+
 /**
  * Run a skill via `clauditor run <skill> --json` and return the parsed
  * SkillResult-shaped object (DEC-004).
@@ -64,11 +84,12 @@ async function runSkill(skill, opts = {}) {
   }
 
   const execOpts = {};
-  if (typeof options.timeout === "number") {
+  const timeoutSec = _validateTimeoutSeconds(options.timeout);
+  if (timeoutSec !== undefined) {
     // The engine's --timeout is in SECONDS; the execJson timeout is in ms,
     // with a grace margin so the engine's own watchdog wins (see constant).
-    cliArgs.push("--timeout", String(options.timeout));
-    execOpts.timeout = options.timeout * 1000 + _EXEC_TIMEOUT_GRACE_MS;
+    cliArgs.push("--timeout", String(timeoutSec));
+    execOpts.timeout = timeoutSec * 1000 + _EXEC_TIMEOUT_GRACE_MS;
   }
 
   return execJson(cliArgs, execOpts);
@@ -99,9 +120,10 @@ async function validate(skillPath, opts = {}) {
   }
 
   const execOpts = {};
-  if (typeof options.timeout === "number") {
-    cliArgs.push("--timeout", String(options.timeout));
-    execOpts.timeout = options.timeout * 1000 + _EXEC_TIMEOUT_GRACE_MS;
+  const timeoutSec = _validateTimeoutSeconds(options.timeout);
+  if (timeoutSec !== undefined) {
+    cliArgs.push("--timeout", String(timeoutSec));
+    execOpts.timeout = timeoutSec * 1000 + _EXEC_TIMEOUT_GRACE_MS;
   }
 
   return execJson(cliArgs, execOpts);

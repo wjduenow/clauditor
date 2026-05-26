@@ -98,6 +98,18 @@ describe("runSkill", () => {
     ]);
   });
 
+  test.each([
+    ["zero", 0],
+    ["negative", -5],
+    ["NaN", NaN],
+    ["Infinity", Infinity],
+    ["string", "30"],
+  ])("rejects an invalid timeout (%s)", async (_label, bad) => {
+    await expect(runSkill("my-skill", { timeout: bad })).rejects.toThrow(
+      ClauditorError,
+    );
+  });
+
   test("returns the parsed run --json shape", async () => {
     const payload = {
       output: "hello",

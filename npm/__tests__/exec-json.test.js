@@ -47,7 +47,23 @@ process.exit(Number(process.env.EXIT_CODE || "0"));
   return exeStub;
 }
 
+// Env keys these tests mutate. Save originals in beforeEach and restore in
+// afterEach (rather than blanket-delete) so a pre-existing value in the
+// developer's shell — notably CLAUDITOR_BIN — survives the test run.
+const _MUTATED_ENV = [
+  "CLAUDITOR_BIN",
+  "ARGV_DUMP",
+  "CANNED_JSON",
+  "CANNED_STDERR",
+  "EXIT_CODE",
+];
+let _savedEnv;
+
 beforeEach(() => {
+  _savedEnv = {};
+  for (const key of _MUTATED_ENV) {
+    _savedEnv[key] = process.env[key];
+  }
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clauditor-exec-"));
   argvDumpPath = path.join(tmpDir, "argv.json");
   process.env.CLAUDITOR_BIN = writeStub();
@@ -55,11 +71,13 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  delete process.env.CLAUDITOR_BIN;
-  delete process.env.ARGV_DUMP;
-  delete process.env.CANNED_JSON;
-  delete process.env.CANNED_STDERR;
-  delete process.env.EXIT_CODE;
+  for (const key of _MUTATED_ENV) {
+    if (_savedEnv[key] === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = _savedEnv[key];
+    }
+  }
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
