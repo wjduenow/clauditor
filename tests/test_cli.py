@@ -349,6 +349,29 @@ class TestPythonDashM:
         assert result.returncode == 0
         assert "usage" in result.stdout.lower()
 
+    def test_main_module_dispatches_to_cli_main(self, monkeypatch):
+        """``__main__`` executes in-process: dispatches to cli.main and
+        raises SystemExit with its return code.
+
+        Runs the module body via ``runpy`` (rather than a subprocess) so
+        coverage instruments ``__main__.py`` — the subprocess smoke test
+        above cannot. ``clauditor.cli.main`` is patched to a sentinel so
+        no real CLI runs.
+        """
+        import runpy
+
+        called = {}
+
+        def _fake_main(argv=None):
+            called["argv"] = argv
+            return 0
+
+        monkeypatch.setattr("clauditor.cli.main", _fake_main)
+        with pytest.raises(SystemExit) as excinfo:
+            runpy.run_module("clauditor", run_name="__main__", alter_sys=True)
+        assert excinfo.value.code == 0
+        assert "argv" in called
+
 
 class TestCmdGrade:
     """Tests for the grade subcommand."""
