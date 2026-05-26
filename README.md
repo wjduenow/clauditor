@@ -15,7 +15,7 @@ Automated quality checks for [Agent Skills](https://agentskills.io). A skill is 
 <details markdown="1">
 <summary>Contents</summary>
 
-[Why clauditor?](#why-clauditor) · [Install](#install) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [Suggest](#llm-assisted-skill-improvement-clauditor-suggest) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Eval Spec Format](#eval-spec-format) · [Skill compatibility](#skill-compatibility) · [Running under Codex](#running-skills-under-codex) · [Authentication](#authentication-and-api-keys) · [Reference docs](#reference-docs)
+[Why clauditor?](#why-clauditor) · [Install](#install) · [One-minute example](#one-minute-example) · [Installing /clauditor](#installing-the-clauditor-slash-command) · [Using /clauditor](#using-clauditor-in-claude-code) · [Quick Start](#quick-start) · [Three Layers](#three-layers-of-validation) · [Suggest](#llm-assisted-skill-improvement-clauditor-suggest) · [CLI Reference](#cli-reference) · [Pytest Integration](#pytest-integration) · [Node.js](#nodejs-jest--vitest) · [Eval Spec Format](#eval-spec-format) · [Skill compatibility](#skill-compatibility) · [Running under Codex](#running-skills-under-codex) · [Authentication](#authentication-and-api-keys) · [Reference docs](#reference-docs)
 
 </details>
 
@@ -172,6 +172,19 @@ def test_my_skill(clauditor_runner, clauditor_asserter):
 
 Full reference: [docs/pytest-plugin.md](https://github.com/wjduenow/clauditor/blob/dev/docs/pytest-plugin.md).
 
+## Node.js (Jest / Vitest)
+
+The `clauditor-eval` npm package is a subprocess bridge to the Python engine (install it separately), exposing `runSkill` / `validate` / `loadSpec` plus a `toPassClauditor` matcher.
+
+```js
+const { validate } = require("clauditor-eval");
+const { toPassClauditor } = require("clauditor-eval/jest-helper");
+expect.extend({ toPassClauditor });
+await expect(await validate(".claude/skills/my-skill/SKILL.md")).toPassClauditor();
+```
+
+Full reference: [npm/README.md](https://github.com/wjduenow/clauditor/blob/dev/npm/README.md).
+
 ## Eval Spec Format
 
 An `<skill-name>.eval.json` lives next to the skill's `.md` file and drives all three layers. In plain English, it lists: **what input to test the skill with**, **structural rules the output must satisfy** (assertions), **fields the output should contain** (sections + tiers, used by Layer 2), and **rubric questions for the LLM judge** (grading criteria, used by Layer 3).
@@ -235,7 +248,7 @@ Note: `--no-api-key` only affects the subprocess; the six LLM-mediated commands 
 
 clauditor works for most skills out of the box. A few patterns need a workaround or aren't supported yet:
 
-- **Skills with parallel sub-tasks** (the `Task(run_in_background=true)` pattern): pass `--sync-tasks` to force them to run sequentially. Output capture works correctly, but the *async behavior itself* (race conditions, late-arriving results) is not tested — you're evaluating a slightly different execution model than what ships.
+- **Skills with parallel sub-tasks** (the `Task(run_in_background=true)` pattern): pass `--sync-tasks` to force them to run sequentially. Output capture works correctly, but the *async behavior itself* (race conditions, late-arriving results) is not tested — you're evaluating a slightly different execution model than what ships. For an in-skill alternative, see the refactoring recipes and worked before/after example in [`docs/skill-usage.md#worked-example-a-parallel-research-fan-out`](docs/skill-usage.md#worked-example-a-parallel-research-fan-out), anchored on [`examples/.claude/skills/parallel-research/`](examples/.claude/skills/parallel-research/).
 - **Skills that ask the user mid-run** (e.g. `AskUserQuestion` to clarify intent): not supported directly — clauditor runs skills non-interactively, so the question never gets an answer and the run hangs. The fix is usually to take all parameters in the initial prompt; see the worked before/after example and the `not_contains AskUserQuestion` regression assertion in [`docs/skill-usage.md#recipe-skills-that-ask-the-user-mid-run`](docs/skill-usage.md#recipe-skills-that-ask-the-user-mid-run), with [`examples/.claude/skills/find-kid-activities/SKILL.eval.json`](examples/.claude/skills/find-kid-activities/SKILL.eval.json) as the canonical anchor.
 - **Skills whose correctness depends on async timing**: cannot be tested accurately yet. Blocked on an upstream Claude Code feature.
 

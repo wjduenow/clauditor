@@ -158,6 +158,29 @@ class TestCmdValidate:
         assert rc == 1
         assert "Skill failed" in capsys.readouterr().err
 
+    def test_validate_json_emits_json_when_skill_fails_to_run(
+        self, capsys, tmp_path, monkeypatch
+    ):
+        """--json emits a parseable {passed: false} object even when the
+        skill never runs, so the npm bridge's validate() does not choke on
+        empty stdout. Returns 1, but stdout carries valid JSON."""
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".git").mkdir()
+        spec = _make_spec(eval_spec=_make_eval_spec())
+        spec.run.return_value = make_skill_result(
+            output="", exit_code=1, duration_seconds=0.5, error="timeout",
+        )
+
+        with patch("clauditor.cli.SkillSpec.from_file", return_value=spec):
+            rc = main(["validate", "skill.md", "--json"])
+
+        assert rc == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["passed"] is False
+        assert payload["pass_rate"] == 0.0
+        assert payload["results"] == []
+        assert "error" in payload
+
     def test_validate_output_file_missing_exits_2(self, capsys, tmp_path):
         """--output pointing at a non-existent path exits 2 with clean error."""
         missing = tmp_path / "no-such-file.txt"
@@ -202,6 +225,152 @@ class TestCmdRun:
 
         assert rc == 1
         assert "command not found" in capsys.readouterr().err
+
+    def test_run_json_emits_all_documented_keys(self, capsys):
+        """--json prints a parseable object with every documented key."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="skill output here",
+            skill_name="my-skill",
+            args="--depth deep",
+            duration_seconds=2.5,
+            input_tokens=10,
+            output_tokens=20,
+        )
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--args", "--depth deep", "--json"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        assert set(payload.keys()) == {
+            "output",
+            "exit_code",
+            "duration_seconds",
+            "error",
+            "error_category",
+            "warnings",
+            "input_tokens",
+            "output_tokens",
+            "harness",
+            "skill",
+            "args",
+        }
+        assert payload["output"] == "skill output here"
+        assert payload["exit_code"] == 0
+        assert payload["duration_seconds"] == 2.5
+        assert payload["input_tokens"] == 10
+        assert payload["output_tokens"] == 20
+        assert payload["skill"] == "my-skill"
+        assert payload["args"] == "--depth deep"
+        assert payload["harness"] == "claude-code"
+        # No schema_version on stdout --json (sidecar-only convention).
+        assert "schema_version" not in payload
+        # No secret-bearing fields leak into the payload.
+        assert "api_key_source" not in payload
+        assert "raw_messages" not in payload
+        assert "stream_events" not in payload
+        assert "harness_metadata" not in payload
+
+    def test_run_json_handles_empty_optional_fields(self, capsys):
+        """--json does not crash when error is None and warnings == []."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="ok", skill_name="my-skill",
+        )
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--json"])
+
+        assert rc == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["error"] is None
+        assert payload["error_category"] is None
+        assert payload["warnings"] == []
+
+    def test_run_json_prints_object_not_rendered_output(self, capsys):
+        """--json replaces the plain stdout render with the JSON object."""
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="PLAIN RENDER LINE", skill_name="my-skill",
+        )
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--json"])
+
+        assert rc == 0
+        out = capsys.readouterr().out
+        # The raw output appears only inside the JSON "output" field,
+        # not as a bare rendered line.
+        assert not out.startswith("PLAIN RENDER LINE")
+        assert json.loads(out)["output"] == "PLAIN RENDER LINE"
+
+    def test_run_json_returns_zero_even_on_nonzero_skill_exit(self, capsys):
+        """--json returns 0 so a JSON consumer gets the payload as data.
+
+        The skill's own exit code (e.g. -1 on spawn failure, 124 on
+        timeout) is carried inside the payload as ``exit_code``; the
+        process return code stays 0 in --json mode so the npm bridge
+        does not map an arbitrary child code to a thrown error.
+        """
+        mock_runner = MagicMock()
+        mock_runner.run.return_value = make_skill_result(
+            output="",
+            skill_name="my-skill",
+            exit_code=-1,
+            error="spawn failed",
+        )
+
+        with patch("clauditor.cli.run.SkillRunner", return_value=mock_runner):
+            rc = main(["run", "my-skill", "--json"])
+
+        # Process exit is 0 (data delivered) ...
+        assert rc == 0
+        # ... but the skill's real exit code is preserved in the payload.
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["exit_code"] == -1
+        assert payload["error"] == "spawn failed"
+
+
+class TestPythonDashM:
+    """Tests for the ``python -m clauditor`` entry point."""
+
+    def test_python_m_clauditor_help_exits_zero(self):
+        """``python -m clauditor --help`` exits 0 (smoke)."""
+        import subprocess
+        import sys
+
+        result = subprocess.run(
+            [sys.executable, "-m", "clauditor", "--help"],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "usage" in result.stdout.lower()
+
+    def test_main_module_dispatches_to_cli_main(self, monkeypatch):
+        """``__main__`` executes in-process: dispatches to cli.main and
+        raises SystemExit with its return code.
+
+        Runs the module body via ``runpy`` (rather than a subprocess) so
+        coverage instruments ``__main__.py`` — the subprocess smoke test
+        above cannot. ``clauditor.cli.main`` is patched to a sentinel so
+        no real CLI runs.
+        """
+        import runpy
+
+        called = {}
+
+        def _fake_main(argv=None):
+            called["argv"] = argv
+            return 0
+
+        monkeypatch.setattr("clauditor.cli.main", _fake_main)
+        with pytest.raises(SystemExit) as excinfo:
+            runpy.run_module("clauditor", run_name="__main__", alter_sys=True)
+        assert excinfo.value.code == 0
+        assert "argv" in called
 
 
 class TestCmdGrade:
@@ -8048,7 +8217,8 @@ class TestRenderSkillError:
                 "background-task",
                 "Hint: skill launched Task(run_in_background=true) and "
                 "exited before polling — claude -p does not poll "
-                "background tasks, so output is likely truncated",
+                "background tasks, so output is likely truncated. See "
+                "docs/skill-usage.md#skill-compatibility for refactoring recipes",
             ),
             (
                 "timeout",

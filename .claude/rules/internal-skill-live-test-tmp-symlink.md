@@ -121,10 +121,84 @@ Three invariants the setup must preserve:
   assertion checks — an empty `result.output` passes `not_contains`
   assertions trivially and will green-light a broken live path.
 
+## Variant: known-bad fixtures assert the warning, not success
+
+The canonical anchor above asserts `result.succeeded` because the
+skill under test is *expected* to run cleanly. But the same
+tmp-symlink staging applies to a **known-bad fixture** — a skill
+authored to deliberately exhibit a detected failure mode (e.g. the
+#97 background-task non-completion pattern: a skill that launches
+`Task(run_in_background=true)` sub-agents and exits without polling
+them, which `claude -p` cannot complete). For those, the assertion
+target inverts: you assert the WARNING fired, not that the run
+succeeded.
+
+The shape stays identical (triple-lock gate, `tmp_path` project
+dir, `.git` marker, symlink not copy, 360s timeout) — only the
+final assertions change:
+
+```python
+def test_live_run_emits_background_task_warning(self, tmp_path: Path) -> None:
+    skip = _live_run_skip_reason()
+    if skip:
+        pytest.skip(skip)
+
+    project_dir = tmp_path / "project"
+    (project_dir / ".claude" / "skills").mkdir(parents=True)
+    (project_dir / ".git").mkdir()
+    (project_dir / ".claude" / "skills" / "<name>").symlink_to(SKILL_DIR)
+
+    spec = SkillSpec.from_file(SKILL_MD)
+    runner = SkillRunner(project_dir=project_dir, timeout=360)
+    result = runner.run(spec.skill_name)
+
+    # Silent-failure guard STAYS — a missing-symlink / "Unknown
+    # command" misconfiguration produces empty output with no stream
+    # events, which would trivially "pass" the inverted assertions
+    # below (an empty run also "fails", but for the wrong reason).
+    # Require the claude CLI to have actually streamed something.
+    assert result.stream_events, "live run produced no stream events ..."
+
+    # Inverted target: assert the WARNING, not result.succeeded.
+    assert result.error_category == "background-task"
+    assert any(w.startswith(_BACKGROUND_TASK_WARNING_PREFIX)
+               for w in result.warnings)
+    assert result.succeeded_cleanly is False
+```
+
+Two pieces are load-bearing in this variant:
+
+- **The silent-failure guard does NOT move.** It is *more* load-
+  bearing here, not less. In the success-asserting shape, an
+  "Unknown command" misconfiguration trips the `assert
+  result.succeeded` and fails loudly. In the warning-asserting
+  shape, an empty/unresolved run *also* produces `succeeded_cleanly
+  is False` and could trivially "pass" the inverted assertions for
+  the wrong reason. The `assert result.stream_events` precondition
+  is the only thing distinguishing "the detector fired on a real
+  truncated run" from "the slash command never resolved." Keep it
+  first, before the inverted assertions.
+- **Assert the specific failure signal, not just "not succeeded".**
+  `error_category == "background-task"`, a
+  `"background-task:"`-prefixed `warnings` entry, and
+  `succeeded_cleanly is False` together pin the *specific* detected
+  mode. Asserting only `not result.succeeded` would green-light any
+  failure (timeout, auth error, the misconfiguration above) — the
+  point of a known-bad fixture is to prove ONE detector fires
+  end-to-end.
+
+This variant typically pairs with a TEST-ONLY fixture under
+`tests/fixtures/<name>/` (never installed by `clauditor setup`,
+never packaged into `src/clauditor/skills/`) rather than a
+maintainer-only repo-root `.claude/skills/` skill — the deliberately
+broken skill should not be discoverable as a real skill at all. The
+tmp-symlink staging is what lets the test resolve the fixture's
+slash command without it ever becoming user-facing.
+
 ## Canonical implementation
 
 `tests/test_bundled_review_skill.py::TestLiveSkillRun::test_live_run_passes_l1_assertions`
-— first and currently only anchor. Triple-lock gate via
+— first anchor (success-asserting shape). Triple-lock gate via
 `_live_run_skip_reason()`, `tmp_path` symlink setup, 360s timeout,
 `result.succeeded` precondition, then `run_assertions` against the
 live output.
@@ -135,6 +209,23 @@ declared L1 assertions. The first attempt (without the tmp-symlink
 setup) failed silently with `"Unknown command:
 /review-agentskills-spec"` in the stream-json result, which is the
 failure mode this rule exists to prevent.
+
+`tests/test_background_task_fixture.py::TestBackgroundTaskFixture::test_live_run_emits_background_task_warning`
+— second anchor (warning-asserting shape, see "Variant" above).
+Same triple-lock gate, `tmp_path` symlink setup, `.git` marker, and
+360s timeout, but stages a TEST-ONLY known-bad fixture
+(`tests/fixtures/background-task-fanout/`) and inverts the final
+assertions: `error_category == "background-task"`, a
+`"background-task:"`-prefixed `warnings` entry, and
+`succeeded_cleanly is False` (the #97 background-task
+non-completion detector firing end-to-end) instead of
+`result.succeeded`. The `assert result.stream_events`
+silent-failure guard is retained ahead of the inverted assertions
+so an "Unknown command" misconfiguration still fails loudly rather
+than masquerading as the warning under test. Per DEC-003/DEC-004 of
+the #103 epic the run uses no `--sync-tasks` /
+`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` override (that env var would
+suppress the detector).
 
 ## Companion rules
 
@@ -154,6 +245,15 @@ live-runner test that invokes `SkillRunner.run(skill_name)` against
 the real `claude` CLI. The symlink + `tmp_path` project dir is the
 cheapest way to stage the skill for the scope of one test without
 polluting the repo's `.claude/skills/` tree with per-test symlinks.
+
+The same staging also applies to a TEST-ONLY known-bad fixture
+(under `tests/fixtures/<name>/`, never packaged into
+`src/clauditor/skills/` and never installed by `clauditor setup`)
+that deliberately exhibits a detected failure mode — see the
+"Variant: known-bad fixtures assert the warning, not success"
+subsection above. There the assertion target inverts to the
+warning, but every staging invariant (tmp-symlink, `.git` marker,
+360s timeout, triple-lock gate, silent-failure guard) is unchanged.
 
 ## When this rule does NOT apply
 

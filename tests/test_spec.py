@@ -788,7 +788,10 @@ class TestSkillSpecRunWithInputFiles:
         spec.run(run_dir=run_dir)
 
         captured = capsys.readouterr()
-        assert "Staged 2 input file(s)" in captured.out
+        # Progress breadcrumb goes to stderr (keeps stdout pure JSON for
+        # `validate --json` / `run --json` consumers like the npm bridge).
+        assert "Staged 2 input file(s)" in captured.err
+        assert "Staged 2 input file(s)" not in captured.out
 
 
 class TestFailedRunResult:

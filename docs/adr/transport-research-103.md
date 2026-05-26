@@ -96,3 +96,21 @@ With Tier 1.5 landed, the story becomes:
 - **Document the fidelity tradeoff** clearly in `docs/skill-usage.md`: `--sync-tasks` is not a transparent equivalent of async execution.
 - **Upstream issue filed** at [anthropics/claude-code#52917](https://github.com/anthropics/claude-code/issues/52917).
 - **Revisit** when #52856 (headless `claude status --json`) or #28221 (PostTask hook) lands. Either would unblock a clean in-clauditor implementation that does not depend on the model's discretion to wait or on forcing a sync execution model.
+
+## Tier 3 revisit triggers
+
+The no-go decision above stands until one of the upstream issues below
+lands. This table is the maintainer's standing watch-list: when an issue's
+status changes (a PR merges, a milestone is set, the feature ships in a
+`claude` release), tick its checkbox and re-open the Tier 3 go/no-go
+question. Each row names what landing the issue unblocks and the concrete
+clauditor change it would enable. Tracking only — no implementation is
+authorized by this ADR.
+
+| Upstream issue | What landing it unblocks | Concrete clauditor change it enables | Landed? |
+|---|---|---|---|
+| [anthropics/claude-code#52856](https://github.com/anthropics/claude-code/issues/52856) — headless `claude status --json` | A pollable signal for "session is idle and the background-task queue is drained". | A poll loop in `SkillRunner._invoke` that waits on `claude status --json` reporting `state == "idle"` + empty task queue before reading the final `result` — the cleanest fix, no model discretion required. | - [ ] |
+| [anthropics/claude-code#28221](https://github.com/anthropics/claude-code/issues/28221) — PostTask hook (fire when background agent completes) | A completion event clauditor can subscribe to instead of inferring task state from the stream. | A hook-driven barrier: register a PostTask hook, block the runner until every spawned `run_in_background=true` Task has fired its completion hook, then collect the full transcript. | - [ ] |
+| [anthropics/claude-code#48657](https://github.com/anthropics/claude-code/issues/48657) — Fire hooks on background task completion | Hook delivery on background-task completion specifically (the lifecycle event #28221's PostTask hook depends on). | Same barrier shape as #28221; this issue is the lifecycle-event prerequisite that makes a completion hook fire at all for background tasks. | - [ ] |
+| [anthropics/claude-code#52917](https://github.com/anthropics/claude-code/issues/52917) — clauditor-filed gap report (`-p` + `run_in_background`) | Upstream acknowledgement and a tracked fix for clauditor's exact non-interactive shape (parent emits `result` before children complete). | Whatever fix upstream ships for the named gap — likely a `--wait`-style flag or a deferred-`result` semantics change — removes the need for any clauditor-side emulation. | - [ ] |
+| [anthropics/claude-code#50572](https://github.com/anthropics/claude-code/issues/50572) — Background shells reaped on subagent turn end | A guarantee that background work survives past the turn that spawned it, so a synthetic follow-up turn could observe live (not stale) task state. | The `--resume`/`--continue` synthetic-wait-turn approach from Q2 becomes viable: a second `claude -p` turn could poll live background processes instead of reporting reaped/stale status. | - [ ] |

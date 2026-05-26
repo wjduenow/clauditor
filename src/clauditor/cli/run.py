@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -13,6 +14,7 @@ from clauditor._providers import (
     check_codex_auth,
 )
 from clauditor.runner import (
+    SkillResult,
     SkillRunner,
     env_with_sync_tasks,
 )
@@ -28,6 +30,14 @@ def add_parser(subparsers: argparse._SubParsersAction) -> None:
     p_run.add_argument("skill", help="Skill name (e.g., find-kid-activities)")
     p_run.add_argument("--args", help="Arguments to pass to the skill")
     p_run.add_argument("--project-dir", help="Project directory (default: cwd)")
+    p_run.add_argument(
+        "--json",
+        action="store_true",
+        help=(
+            "Print the run result as a JSON object to stdout instead of "
+            "the rendered output. No secrets are included."
+        ),
+    )
     # DEC-014: default shifts from 180 to None so the precedence chain
     # (CLI > spec > runner's 300s default) can kick in. ``_positive_int``
     # rejects <= 0 at parse time with exit 2.
@@ -143,7 +153,43 @@ def cmd_run(args: argparse.Namespace) -> int:
     if not result.succeeded_cleanly:
         print(f"ERROR: {_render_skill_error(result)}", file=sys.stderr)
 
+    if getattr(args, "json", False):
+        # Structured stdout (no schema_version — that is reserved for
+        # persisted sidecars; stdout --json mirrors validate/extract).
+        # Deliberately excludes secret-bearing fields (api_key_source,
+        # raw_messages, stream_events, harness_metadata).
+        print(json.dumps(_result_to_json(result), indent=2))
+        # In --json mode the run result is DATA: the skill's own exit
+        # code (which can be -1 on spawn failure, 124 on timeout, or any
+        # other subprocess code) is carried inside the payload as
+        # ``exit_code``/``error``/``error_category``. Return 0 so a
+        # JSON-consuming wrapper (the npm ``clauditor-eval`` bridge)
+        # receives the parsed object instead of mapping an arbitrary
+        # child exit code to a thrown error per the CLI exit taxonomy.
+        return 0
     if result.output:
         print(result.output)
 
     return result.exit_code
+
+
+def _result_to_json(result: SkillResult) -> dict:
+    """Project a :class:`SkillResult` into the ``run --json`` payload.
+
+    Pure: no I/O, no secrets. The shape is the documented stable
+    surface for ``clauditor run --json`` (no ``schema_version`` — that
+    convention is reserved for persisted sidecars).
+    """
+    return {
+        "output": result.output,
+        "exit_code": result.exit_code,
+        "duration_seconds": result.duration_seconds,
+        "error": result.error,
+        "error_category": result.error_category,
+        "warnings": result.warnings,
+        "input_tokens": result.input_tokens,
+        "output_tokens": result.output_tokens,
+        "harness": result.harness,
+        "skill": result.skill_name,
+        "args": result.args,
+    }
